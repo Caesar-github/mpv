@@ -1,0 +1,53 @@
+Source: mpv
+Section: video
+Priority: optional
+Maintainer: Debian Multimedia Maintainers <pkg-multimedia-maintainers@lists.alioth.debian.org>
+Uploaders: Alessandro Ghedini <ghedo@debian.org>
+Build-Depends: debhelper (>= 9),
+ ladspa-sdk,
+ libasound2-dev,
+ libass-dev,
+ libavcodec-dev,
+ libavdevice-dev,
+ libavformat-dev,
+ libavresample-dev,
+ libavutil-dev,
+ libbs2b-dev,
+ libfdk-aac-dev,
+ libgl1-mesa-dev,
+ libjpeg8-dev,
+ liblircclient-dev,
+ liblcms2-dev,
+ libmp3lame-dev,
+ libpostproc-dev,
+ libswscale-dev,
+ libvdpau-dev,
+ libwayland-dev,
+ libx11-dev,
+ libx264-dev,
+ libxinerama-dev,
+ libxss-dev,
+ libxv-dev,
+ pkg-config,
+ python3-docutils,
+ yasm
+Standards-Version: 3.9.4
+Homepage: http://mpv.io/
+Vcs-Git: git://anonscm.debian.org/pkg-multimedia/mpv.git
+Vcs-Browser: http://anonscm.debian.org/git/pkg-multimedia/mpv.git
+
+Package: mpv
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: video player based on MPlayer/mplayer2
+ mpv is a movie player based on MPlayer and mplayer2. It supports a wide
+ variety of video file formats, audio and video codecs, and subtitle types.
+ .
+ Changes from mplayer2 to mpv include:
+  * Removal of lots of unneeded code to encourage developer activity
+  * Better OSD rendering
+  * Cleaned up terminal output
+  * Improved OpenGL output
+  * Encoding functionality (replacement for mencoder)
+  * Wayland support
+  * ...

@@ -1,0 +1,10 @@
+#!/usr/bin/make -f
+
+%:
+	dh $@
+
+override_dh_auto_configure:
+	./configure --prefix=/usr
+
+override_dh_auto_clean:
+	test -f config.mak && dh_auto_clean || true
