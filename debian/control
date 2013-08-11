@@ -51,4 +51,7 @@ Description: video player based on MPlayer/mplayer2
   * Improved OpenGL output
   * Encoding functionality (replacement for mencoder)
   * Wayland support
+  * Support for playing URLs of popular streaming sites
+  * Screenshot improvements
   * ...
+ See mpv(1) for more info regarding changes between MPlayer, mplayer2 and mpv.
