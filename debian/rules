@@ -8,3 +8,6 @@ override_dh_auto_configure:
 
 override_dh_auto_clean:
 	test -f config.mak && dh_auto_clean || true
+
+override_dh_strip:
+	dh_strip --dbg-package=mpv-dbg
