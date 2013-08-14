@@ -65,15 +65,3 @@ Description: video player based on MPlayer/mplayer2
   * Screenshot improvements
   * ...
  See mpv(1) for more info regarding changes between MPlayer, mplayer2 and mpv.
-
-Package: mpv-dbg
-Priority: extra
-Section: debug
-Architecture: any
-Depends: ${misc:Depends}, mpv (= ${binary:Version})
-Multi-Arch: same
-Description: video player based on MPlayer/mplayer2
- mpv is a movie player based on MPlayer and mplayer2. It supports a wide
- variety of video file formats, audio and video codecs, and subtitle types.
- .
- This package provides the debugging symbols for mpv.
