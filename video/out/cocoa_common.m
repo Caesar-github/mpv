@@ -523,7 +523,7 @@ int vo_cocoa_check_events(struct vo *vo)
 
 void vo_cocoa_fullscreen(struct vo *vo)
 {
-    if (![NSThread isMainThread]) {
+    if (![NSThread isMainThread] && resize_callback_registered(vo)) {
         // This is the secondary thread, unlock since we are going to invoke a
         // method synchronously on the GUI thread using Cocoa.
         vo_cocoa_set_current_context(vo, false);
@@ -535,7 +535,7 @@ void vo_cocoa_fullscreen(struct vo *vo)
                              waitUntilDone:YES];
 
 
-    if (![NSThread isMainThread]) {
+    if (![NSThread isMainThread] && resize_callback_registered(vo)) {
         // Now lock again!
         vo_cocoa_set_current_context(vo, true);
     }
@@ -762,20 +762,15 @@ int vo_cocoa_cgl_color_size(struct vo *vo)
     CGFloat dx = (f.size.width  - ns.width) / 2;
     CGFloat dy = (f.size.height - ns.height - [self titleHeight]) / 2;
     NSRect nf  = NSRectFromCGRect(CGRectInset(NSRectToCGRect(f), dx, dy));
-
-    struct vo *vo = self.videoOutput;
-    if (!(vo && !vo->opts->border)) {
-        NSRect s = [[self screen] visibleFrame];
-        if (nf.origin.y + nf.size.height > s.origin.y + s.size.height)
-            nf.origin.y = s.size.height - nf.size.height;
-    }
-
     [self setFrame:nf display:NO animate:NO];
 }
 
-- (NSRect)constrainFrameRect:(NSRect)rect toScreen:(NSScreen *)screen
+- (NSRect)constrainFrameRect:(NSRect)nf toScreen:(NSScreen *)screen
 {
-    return rect;
+    NSRect s = [[self screen] visibleFrame];
+    if (nf.origin.y + nf.size.height > s.origin.y + s.size.height)
+        nf.origin.y = s.origin.y + s.size.height - nf.size.height;
+    return nf;
 }
 
 @end
