@@ -1,8 +1,10 @@
-mpv (0.1.3-1) UNRELEASED; urgency=low
+mpv (0.1.3-1) unstable; urgency=low
 
   * New upstream release
+  * Enable libpostproc support
+  * Tighten Build-Depends on libav libraries
 
- -- Alessandro Ghedini <ghedo@debian.org>  Sat, 24 Aug 2013 23:04:06 +0200
+ -- Alessandro Ghedini <ghedo@debian.org>  Sun, 25 Aug 2013 10:49:15 +0200
 
 mpv (0.1.0-1) unstable; urgency=low
 
