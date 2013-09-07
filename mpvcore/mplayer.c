@@ -888,7 +888,7 @@ exit:
 static void load_playback_resume(m_config_t *conf, const char *file)
 {
     char *fname = get_playback_resume_config_filename(file);
-    if (fname) {
+    if (fname && mp_path_exists(fname)) {
         // Never apply the saved start position to following files
         m_config_backup_opt(conf, "start");
         try_load_config(conf, fname, false);
@@ -4151,6 +4151,19 @@ static void play_current_file(struct MPContext *mpctx)
 
     mpctx->add_osd_seek_info &= OSD_SEEK_INFO_EDITION;
 
+    if (opts->reset_options) {
+        for (int n = 0; opts->reset_options[n]; n++) {
+            const char *opt = opts->reset_options[n];
+            if (opt[0]) {
+                if (strcmp(opt, "all") == 0) {
+                    m_config_backup_all_opts(mpctx->mconfig);
+                } else {
+                    m_config_backup_opt(mpctx->mconfig, opt);
+                }
+            }
+        }
+    }
+
     load_per_protocol_config(mpctx->mconfig, mpctx->filename);
     load_per_extension_config(mpctx->mconfig, mpctx->filename);
     load_per_file_config(mpctx->mconfig, mpctx->filename, opts->use_filedir_conf);
@@ -4167,17 +4180,6 @@ static void play_current_file(struct MPContext *mpctx)
 
     load_per_file_options(mpctx->mconfig, mpctx->playlist->current->params,
                           mpctx->playlist->current->num_params);
-
-    if (opts->reset_options) {
-        for (int n = 0; opts->reset_options[n]; n++) {
-            const char *opt = opts->reset_options[n];
-            if (strcmp(opt, "all") == 0) {
-                m_config_backup_all_opts(mpctx->mconfig);
-            } else {
-                m_config_backup_opt(mpctx->mconfig, opt);
-            }
-        }
-    }
 
     // We must enable getch2 here to be able to interrupt network connection
     // or cache filling
