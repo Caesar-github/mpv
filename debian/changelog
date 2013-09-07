@@ -1,10 +1,13 @@
-mpv (0.1.4-2) UNRELEASED; urgency=low
+mpv (0.1.5-1) UNRELEASED; urgency=low
 
   [ Andreas Boll ]
   * Restrict wayland support to linux-any
   * Fix Vcs-Browser url
 
- -- Alessandro Ghedini <ghedo@debian.org>  Fri, 06 Sep 2013 14:11:33 +0200
+  [ Alessandro Ghedini ]
+  * New upstream release
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Sat, 07 Sep 2013 11:27:09 +0200
 
 mpv (0.1.4-1) unstable; urgency=low
 
