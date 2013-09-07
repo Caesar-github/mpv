@@ -1,4 +1,4 @@
-mpv (0.1.5-1) UNRELEASED; urgency=low
+mpv (0.1.5-1) unstable; urgency=low
 
   [ Andreas Boll ]
   * Restrict wayland support to linux-any
@@ -7,7 +7,7 @@ mpv (0.1.5-1) UNRELEASED; urgency=low
   [ Alessandro Ghedini ]
   * New upstream release
 
- -- Alessandro Ghedini <ghedo@debian.org>  Sat, 07 Sep 2013 11:27:09 +0200
+ -- Alessandro Ghedini <ghedo@debian.org>  Sat, 07 Sep 2013 12:01:58 +0200
 
 mpv (0.1.4-1) unstable; urgency=low
 
