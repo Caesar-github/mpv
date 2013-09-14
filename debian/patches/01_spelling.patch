@@ -1,0 +1,18 @@
+Description: Fix spelling error
+Origin: vendor
+Forwarded: no
+Author: Alessandro Ghedini <ghedo@debian.org>
+Reviewed-by: Alessandro Ghedini <ghedo@debian.org>
+Last-Update: 2013-09-14
+
+--- a/DOCS/man/en/options.rst
++++ b/DOCS/man/en/options.rst
+@@ -1993,7 +1993,7 @@
+ ``--stop-screensaver``, ``--no-stop-screensaver``
+     Turns off the screensaver (or screen blanker and similar mechanisms) at
+     startup and turns it on again on exit (default: yes). The screensaver is
+-    always reenabled when the player is paused.
++    always re-enabled when the player is paused.
+ 
+     This is not supported on all video outputs or platforms. Sometimes it is
+     implemented, but does not work (happens often on GNOME). You might be able
