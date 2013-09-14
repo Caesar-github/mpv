@@ -40,12 +40,13 @@
 
 #if defined(__MINGW32__)
 #include <windows.h>
+#include <shlobj.h>
 #elif defined(__CYGWIN__)
 #include <windows.h>
 #include <sys/cygwin.h>
 #endif
 
-#ifdef CONFIG_MACOSX_BUNDLE
+#ifdef CONFIG_COCOA
 #include "osdep/macosx_bundle.h"
 #endif
 
@@ -53,7 +54,7 @@
 typedef char *(*lookup_fun)(const char *);
 static const lookup_fun config_lookup_functions[] = {
     mp_find_user_config_file,
-#ifdef CONFIG_MACOSX_BUNDLE
+#ifdef CONFIG_COCOA
     get_bundled_path,
 #endif
     mp_find_global_config_file,
@@ -77,10 +78,24 @@ char *mp_find_config_file(const char *filename)
 char *mp_find_user_config_file(const char *filename)
 {
     char *homedir = NULL, *buff = NULL;
+    static char *homepath = NULL;
 #ifdef __MINGW32__
-    static char *config_dir = "mpv";
+    char *config_dir = "mpv";
+
+    if (homepath == NULL) {
+        char buf[MAX_PATH];
+        if (SHGetFolderPathA(NULL, CSIDL_LOCAL_APPDATA|CSIDL_FLAG_CREATE, NULL,
+            SHGFP_TYPE_CURRENT, buf) == S_OK) {
+
+            homepath = buf;
+        }
+    }
 #else
-    static char *config_dir = ".mpv";
+    char *config_dir = ".mpv";
+
+    if (homepath == NULL) {
+        homepath = getenv("HOME");
+    }
 #endif
 #if defined(__MINGW32__) || defined(__CYGWIN__)
     char *temp = NULL;
@@ -88,15 +103,19 @@ char *mp_find_user_config_file(const char *filename)
     /* Hack to get fonts etc. loaded outside of Cygwin environment. */
     int i, imax = 0;
     int len = (int)GetModuleFileNameA(NULL, exedir, 260);
-    for (i = 0; i < len; i++)
+
+    for (i = 0; i < len; i++) {
         if (exedir[i] == '\\') {
             exedir[i] = '/';
             imax = i;
         }
+    }
+
     exedir[imax] = '\0';
 
-    if (filename)
+    if (filename) {
         temp = mp_path_join(NULL, bstr0(exedir), bstr0(filename));
+    }
 
     if (temp && mp_path_exists(temp) && !mp_path_isdir(temp)) {
         homedir = exedir;
@@ -106,7 +125,7 @@ char *mp_find_user_config_file(const char *filename)
 #endif
     if ((homedir = getenv("MPV_HOME")) != NULL) {
         config_dir = "";
-    } else if ((homedir = getenv("HOME")) == NULL) {
+    } else if ((homedir = homepath) == NULL) {
 #if defined(__MINGW32__) || defined(__CYGWIN__)
         homedir = exedir;
 #else
