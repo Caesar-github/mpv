@@ -12,9 +12,7 @@ a movie player
 ##############
 
 :Author: wm4
-:Date: 2013-09-08
 :Copyright: GPLv3
-:Version: git
 :Manual section: 1
 :Manual group: multimedia
 
@@ -34,7 +32,7 @@ SYNOPSIS
 | **mpv** \dvb://[card\_number@]channel [options]
 | **mpv** \mf://[filemask|\@listfile] [-mf options] [options]
 | **mpv** cdda://track[-endtrack][:speed][/device] [options]
-| **mpv** [file|mms[t]|http|httpproxy|rt[s]p|ftp|udp|smb]:// [user:pass\@]URL[:port] [options]
+| **mpv** [file|mms[t]|http|httpproxy|rt[s]p|ftp|udp|smb]://[user:pass\@]URL[:port] [options]
 
 
 DESCRIPTION
