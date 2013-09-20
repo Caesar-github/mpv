@@ -41,7 +41,7 @@ Build-Depends: debhelper (>= 9),
  libxss-dev,
  libxv-dev,
  pkg-config,
- python3-docutils,
+ python-docutils,
  yasm
 Standards-Version: 3.9.4
 Homepage: http://mpv.io/
