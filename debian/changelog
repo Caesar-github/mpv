@@ -1,8 +1,10 @@
-mpv (0.1.7-1) UNRELEASED; urgency=low
+mpv (0.1.7-1) unstable; urgency=low
 
   * New upstream release
+  * Do not use python3 version of python-docutils
+    (it seems to be having some trouble on the buildd)
 
- -- Alessandro Ghedini <ghedo@debian.org>  Fri, 20 Sep 2013 23:28:53 +0200
+ -- Alessandro Ghedini <ghedo@debian.org>  Sat, 21 Sep 2013 11:39:51 +0200
 
 mpv (0.1.6-1) unstable; urgency=low
 
