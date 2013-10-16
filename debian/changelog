@@ -1,8 +1,9 @@
-mpv (0.1.7-2) UNRELEASED; urgency=low
+mpv (0.2.0-1) UNRELEASED; urgency=low
 
+  * New upstream release
   * Install sample configuration files as examples
 
- -- Alessandro Ghedini <ghedo@debian.org>  Sun, 06 Oct 2013 13:46:11 +0200
+ -- Alessandro Ghedini <ghedo@debian.org>  Wed, 16 Oct 2013 11:33:51 +0200
 
 mpv (0.1.7-1) unstable; urgency=low
 
