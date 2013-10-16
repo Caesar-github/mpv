@@ -26,6 +26,8 @@
 #include "osdep/macosx_application_objc.h"
 #include "osdep/macosx_compat.h"
 
+#define MPV_PROTOCOL @"mpv://"
+
 static pthread_t playback_thread_id;
 
 @interface Application (PrivateMethods)
@@ -45,47 +47,6 @@ static pthread_t playback_thread_id;
 
 @interface NSApplication (NiblessAdditions)
 - (void)setAppleMenu:(NSMenu *)aMenu;
-@end
-
-@implementation InputQueue {
-    NSMutableArray *_fifo;
-}
-
-- (id)init
-{
-    if (self = [super init]) {
-        self->_fifo = [[NSMutableArray alloc] init];
-    }
-
-    return self;
-}
-
-- (void)push:(int)keycode
-{
-    @synchronized (_fifo) {
-        [_fifo addObject:[NSNumber numberWithInt:keycode]];
-    }
-}
-
-- (int)pop
-{
-    int r = -1;
-
-    @synchronized (_fifo) {
-        if ([_fifo count] > 0) {
-            r = [[_fifo objectAtIndex:0] intValue];
-            [_fifo removeObjectAtIndex:0];
-        }
-    }
-
-    return r;
-}
-
-- (void)dealloc
-{
-    [self->_fifo release];
-    [super dealloc];
-}
 @end
 
 Application *mpv_shared_app(void)
@@ -114,7 +75,6 @@ static NSString *escape_loadfile_name(NSString *input)
 @synthesize willStopOnOpenEvent = _will_stop_on_open_event;
 
 @synthesize inputContext = _input_context;
-@synthesize iqueue = _iqueue;
 @synthesize eventsResponder = _events_responder;
 @synthesize menuItems = _menu_items;
 
@@ -132,18 +92,30 @@ static NSString *escape_loadfile_name(NSString *input)
         self.menuItems = [[[NSMutableDictionary alloc] init] autorelease];
         self.files = nil;
         self.argumentsList = [[[NSMutableArray alloc] init] autorelease];
-        self.iqueue = [[[InputQueue alloc] init] autorelease];
         self.eventsResponder = [[[EventsResponder alloc] init] autorelease];
         self.willStopOnOpenEvent = NO;
 
-        [NSEvent addLocalMonitorForEventsMatchingMask:NSKeyDownMask
+        [NSEvent addLocalMonitorForEventsMatchingMask:NSKeyDownMask|NSKeyUpMask
                                               handler:^(NSEvent *event) {
-            return [self.eventsResponder handleKeyDown:event];
+            return [self.eventsResponder handleKey:event];
         }];
 
+        NSAppleEventManager *em = [NSAppleEventManager sharedAppleEventManager];
+        [em setEventHandler:self
+                andSelector:@selector(getUrl:withReplyEvent:)
+              forEventClass:kInternetEventClass
+                 andEventID:kAEGetURL];
     }
 
     return self;
+}
+
+- (void)dealloc
+{
+    NSAppleEventManager *em = [NSAppleEventManager sharedAppleEventManager];
+    [em removeEventHandlerForEventClass:kInternetEventClass
+                             andEventID:kAEGetURL];
+    [super dealloc];
 }
 
 #define _R(P, T, E, K) \
@@ -209,7 +181,7 @@ static NSString *escape_loadfile_name(NSString *input)
 - (void)stopMPV:(char *)cmd
 {
     if (self.inputContext) {
-        mp_cmd_t *cmdt = mp_input_parse_cmd(bstr0(cmd), "");
+        mp_cmd_t *cmdt = mp_input_parse_cmd(self.inputContext, bstr0(cmd), "");
         mp_input_queue_cmd(self.inputContext, cmdt);
     } else {
         terminate_cocoa_application();
@@ -265,6 +237,27 @@ static NSString *escape_loadfile_name(NSString *input)
     [self stopPlayback];
 }
 
+- (void)getUrl:(NSAppleEventDescriptor *)event
+    withReplyEvent:(NSAppleEventDescriptor *)replyEvent
+{
+    NSString *url =
+        [[event paramDescriptorForKeyword:keyDirectObject] stringValue];
+
+    url = [url stringByReplacingOccurrencesOfString:MPV_PROTOCOL
+                withString:@""
+                   options:NSAnchoredSearch
+                     range:NSMakeRange(0, [MPV_PROTOCOL length])];
+
+    self.files = @[url];
+
+    if (self.willStopOnOpenEvent) {
+        self.willStopOnOpenEvent = NO;
+        cocoa_stop_runloop();
+    } else {
+        [self handleFiles];
+    }
+}
+
 - (void)application:(NSApplication *)sender openFiles:(NSArray *)filenames
 {
     Application *app = mpv_shared_app();
@@ -298,7 +291,7 @@ static NSString *escape_loadfile_name(NSString *input)
         const char *file = [escape_loadfile_name(obj) UTF8String];
         const char *append = (i == 0) ? "" : " append";
         char *cmd = talloc_asprintf(ctx, "raw loadfile \"%s\"%s", file, append);
-        mp_cmd_t *cmdt = mp_input_parse_cmd(bstr0(cmd), "");
+        mp_cmd_t *cmdt = mp_input_parse_cmd(self.inputContext, bstr0(cmd), "");
         mp_input_queue_cmd(self.inputContext, cmdt);
     }];
     talloc_free(ctx);
@@ -420,25 +413,48 @@ static void macosx_redirect_output_to_logfile(const char *filename)
     [pool release];
 }
 
-static bool psn_matches_current_process(char *psn_arg_to_check)
+static void get_system_version(int* major, int* minor, int* bugfix)
 {
-    ProcessSerialNumber psn;
-    GetCurrentProcess(&psn);
+    static dispatch_once_t once_token;
+    static int s_major  = 0;
+    static int s_minor  = 0;
+    static int s_bugfix = 0;
+    dispatch_once(&once_token, ^{
+        NSString *version_plist =
+            @"/System/Library/CoreServices/SystemVersion.plist";
+        NSString *version_string =
+            [NSDictionary dictionaryWithContentsOfFile:version_plist]
+                [@"ProductVersion"];
+        NSArray* versions = [version_string componentsSeparatedByString:@"."];
+        int count = [versions count];
+        if (count >= 1)
+            s_major = [versions[0] intValue];
+        if (count >= 2)
+            s_minor = [versions[1] intValue];
+        if (count >= 3)
+            s_bugfix = [versions[2] intValue];
+    });
+    *major  = s_major;
+    *minor  = s_minor;
+    *bugfix = s_bugfix;
+}
 
-    NSString *in_psn   = [NSString stringWithUTF8String:psn_arg_to_check];
-    NSString *real_psn = [NSString stringWithFormat:@"-psn_%u_%u",
-                                   psn.highLongOfPSN, psn.lowLongOfPSN];
-
-    return [real_psn isEqualToString:in_psn];
+static bool is_psn_argument(char *psn_arg_to_check)
+{
+    NSString *psn_arg = [NSString stringWithUTF8String:psn_arg_to_check];
+    return [psn_arg hasPrefix:@"-psn_"];
 }
 
 static bool bundle_started_from_finder(int argc, char **argv)
 {
-    bool bundle_detected     = [[NSBundle mainBundle] bundleIdentifier];
-    bool pre_mavericks_args  = argc==2 && psn_matches_current_process(argv[1]);
-    bool post_mavericks_args = argc==1;
-
-    return bundle_detected && (pre_mavericks_args || post_mavericks_args);
+    bool bundle_detected = [[NSBundle mainBundle] bundleIdentifier];
+    int major, minor, bugfix;
+    get_system_version(&major, &minor, &bugfix);
+    if ((major == 10) && (minor >= 9)) {
+        return bundle_detected && argc==1;
+    } else {
+        return bundle_detected && argc==2 && is_psn_argument(argv[1]);
+    }
 }
 
 void macosx_finder_args_preinit(int *argc, char ***argv)

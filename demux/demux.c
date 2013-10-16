@@ -59,6 +59,7 @@ extern const demuxer_desc_t demuxer_desc_lavf;
 extern const demuxer_desc_t demuxer_desc_mng;
 extern const demuxer_desc_t demuxer_desc_libass;
 extern const demuxer_desc_t demuxer_desc_subreader;
+extern const demuxer_desc_t demuxer_desc_playlist;
 
 /* Please do not add any new demuxers here. If you want to implement a new
  * demuxer, add it to libavformat, except for wrappers around external
@@ -81,6 +82,7 @@ const demuxer_desc_t *const demuxer_list[] = {
 #ifdef CONFIG_MNG
     &demuxer_desc_mng,
 #endif
+    &demuxer_desc_playlist,
     // Pretty aggressive, so should be last.
     &demuxer_desc_subreader,
     /* Please do not add any new demuxers here. If you want to implement a new
@@ -114,12 +116,11 @@ static void ds_free_packs(struct demux_stream *ds)
     ds->eof = 0;
 }
 
-static int packet_destroy(void *ptr)
+static void packet_destroy(void *ptr)
 {
     struct demux_packet *dp = ptr;
     talloc_free(dp->avpacket);
     free(dp->allocation);
-    return 0;
 }
 
 static struct demux_packet *create_packet(size_t len)
@@ -191,10 +192,9 @@ void free_demux_packet(struct demux_packet *dp)
     talloc_free(dp);
 }
 
-static int destroy_avpacket(void *pkt)
+static void destroy_avpacket(void *pkt)
 {
     av_free_packet(pkt);
-    return 0;
 }
 
 struct demux_packet *demux_copy_packet(struct demux_packet *dp)
@@ -309,6 +309,8 @@ static void free_sh_stream(struct sh_stream *sh)
 
 void free_demuxer(demuxer_t *demuxer)
 {
+    if (!demuxer)
+        return;
     if (demuxer->desc->close)
         demuxer->desc->close(demuxer);
     // free streams:
@@ -538,6 +540,7 @@ static struct demuxer *open_given_type(struct MPOpts *opts,
         .filepos = -1,
         .opts = opts,
         .filename = talloc_strdup(demuxer, stream->url),
+        .metadata = talloc_zero(demuxer, struct mp_tags),
     };
     demuxer->params = params; // temporary during open()
     stream_seek(stream, stream->start_pos);
@@ -600,6 +603,10 @@ struct demuxer *demux_open(struct stream *stream, char *force_format,
         }
     }
 
+    // Peek this much data to avoid that stream_read() run by some demuxers
+    // or stream filters will flush previous peeked data.
+    stream_peek(stream, STREAM_BUFFER_SIZE);
+
     // Test demuxers from first to last, one pass for each check_levels[] entry
     for (int pass = 0; check_levels[pass] != -1; pass++) {
         enum demux_check level = check_levels[pass];
@@ -624,8 +631,7 @@ void demux_flush(demuxer_t *demuxer)
     demuxer->warned_queue_overflow = false;
 }
 
-int demux_seek(demuxer_t *demuxer, float rel_seek_secs, float audio_delay,
-               int flags)
+int demux_seek(demuxer_t *demuxer, float rel_seek_secs, int flags)
 {
     if (!demuxer->seekable) {
         mp_tmsg(MSGT_SEEK, MSGL_WARN, "Cannot seek in this file.\n");
@@ -672,9 +678,45 @@ int demux_seek(demuxer_t *demuxer, float rel_seek_secs, float audio_delay,
 
   dmx_seek:
     if (demuxer->desc->seek)
-        demuxer->desc->seek(demuxer, rel_seek_secs, audio_delay, flags);
+        demuxer->desc->seek(demuxer, rel_seek_secs, flags);
 
     return 1;
+}
+
+void mp_tags_set_str(struct mp_tags *tags, const char *key, const char *value)
+{
+    mp_tags_set_bstr(tags, bstr0(key), bstr0(value));
+}
+
+void mp_tags_set_bstr(struct mp_tags *tags, bstr key, bstr value)
+{
+    for (int n = 0; n < tags->num_keys; n++) {
+        if (bstrcasecmp0(key, tags->keys[n]) == 0) {
+            talloc_free(tags->values[n]);
+            tags->values[n] = talloc_strndup(tags, value.start, value.len);
+            return;
+        }
+    }
+
+    MP_RESIZE_ARRAY(tags, tags->keys,   tags->num_keys + 1);
+    MP_RESIZE_ARRAY(tags, tags->values, tags->num_keys + 1);
+    tags->keys[tags->num_keys]   = talloc_strndup(tags, key.start,   key.len);
+    tags->values[tags->num_keys] = talloc_strndup(tags, value.start, value.len);
+    tags->num_keys++;
+}
+
+char *mp_tags_get_str(struct mp_tags *tags, const char *key)
+{
+    return mp_tags_get_bstr(tags, bstr0(key));
+}
+
+char *mp_tags_get_bstr(struct mp_tags *tags, bstr key)
+{
+    for (int n = 0; n < tags->num_keys; n++) {
+        if (bstrcasecmp0(key, tags->keys[n]) == 0)
+            return tags->values[n];
+    }
+    return NULL;
 }
 
 int demux_info_add(demuxer_t *demuxer, const char *opt, const char *param)
@@ -684,49 +726,34 @@ int demux_info_add(demuxer_t *demuxer, const char *opt, const char *param)
 
 int demux_info_add_bstr(demuxer_t *demuxer, struct bstr opt, struct bstr param)
 {
-    char **info = demuxer->info;
-    int n = 0;
-
-
-    for (n = 0; info && info[2 * n] != NULL; n++) {
-        if (!bstrcasecmp(opt, bstr0(info[2*n]))) {
-            if (!bstrcmp(param, bstr0(info[2*n + 1]))) {
-                mp_msg(MSGT_DEMUX, MSGL_V, "Demuxer info %.*s set to unchanged value %.*s\n",
-                       BSTR_P(opt), BSTR_P(param));
-                return 0;
-            }
-            mp_tmsg(MSGT_DEMUX, MSGL_INFO, "Demuxer info %.*s changed to %.*s\n",
-                    BSTR_P(opt), BSTR_P(param));
-            talloc_free(info[2*n + 1]);
-            info[2*n + 1] = talloc_strndup(demuxer->info, param.start, param.len);
+    char *oldval = mp_tags_get_bstr(demuxer->metadata, opt);
+    if (oldval) {
+        if (bstrcmp0(param, oldval) == 0)
             return 0;
-        }
+        mp_tmsg(MSGT_DEMUX, MSGL_INFO, "Demuxer info %.*s changed to %.*s\n",
+                BSTR_P(opt), BSTR_P(param));
     }
 
-    info = demuxer->info = talloc_realloc(demuxer, info, char *, 2 * (n + 2));
-    info[2*n]     = talloc_strndup(demuxer->info, opt.start,   opt.len);
-    info[2*n + 1] = talloc_strndup(demuxer->info, param.start, param.len);
-    memset(&info[2 * (n + 1)], 0, 2 * sizeof(char *));
-
+    mp_tags_set_bstr(demuxer->metadata, opt, param);
     return 1;
 }
 
 int demux_info_print(demuxer_t *demuxer)
 {
-    char **info = demuxer->info;
+    struct mp_tags *info = demuxer->metadata;
     int n;
 
-    if (!info)
+    if (!info || !info->num_keys)
         return 0;
 
     mp_tmsg(MSGT_DEMUX, MSGL_INFO, "Clip info:\n");
-    for (n = 0; info[2 * n] != NULL; n++) {
-        mp_msg(MSGT_DEMUX, MSGL_INFO, " %s: %s\n", info[2 * n],
-               info[2 * n + 1]);
+    for (n = 0; n < info->num_keys; n++) {
+        mp_msg(MSGT_DEMUX, MSGL_INFO, " %s: %s\n", info->keys[n],
+               info->values[n]);
         mp_msg(MSGT_IDENTIFY, MSGL_INFO, "ID_CLIP_INFO_NAME%d=%s\n", n,
-               info[2 * n]);
+               info->keys[n]);
         mp_msg(MSGT_IDENTIFY, MSGL_INFO, "ID_CLIP_INFO_VALUE%d=%s\n", n,
-               info[2 * n + 1]);
+               info->values[n]);
     }
     mp_msg(MSGT_IDENTIFY, MSGL_INFO, "ID_CLIP_INFO_N=%d\n", n);
 
@@ -735,15 +762,7 @@ int demux_info_print(demuxer_t *demuxer)
 
 char *demux_info_get(demuxer_t *demuxer, const char *opt)
 {
-    int i;
-    char **info = demuxer->info;
-
-    for (i = 0; info && info[2 * i] != NULL; i++) {
-        if (!strcasecmp(opt, info[2 * i]))
-            return info[2 * i + 1];
-    }
-
-    return NULL;
+    return mp_tags_get_str(demuxer->metadata, opt);
 }
 
 void demux_info_update(struct demuxer *demuxer)
@@ -849,16 +868,31 @@ void demuxer_sort_chapters(demuxer_t *demuxer)
 }
 
 int demuxer_add_chapter(demuxer_t *demuxer, struct bstr name,
-                        uint64_t start, uint64_t end)
+                        uint64_t start, uint64_t end, uint64_t demuxer_id)
 {
     struct demux_chapter new = {
         .original_index = demuxer->num_chapters,
         .start = start,
         .end = end,
         .name = name.len ? bstrdup0(demuxer, name) : NULL,
+        .metadata = talloc_zero(demuxer, struct mp_tags),
+        .demuxer_id = demuxer_id,
     };
+    mp_tags_set_bstr(new.metadata, bstr0("TITLE"), name);
     MP_TARRAY_APPEND(demuxer, demuxer->chapters, demuxer->num_chapters, new);
     return 0;
+}
+
+void demuxer_add_chapter_info(struct demuxer *demuxer, uint64_t demuxer_id,
+                              bstr key, bstr value)
+{
+    for (int n = 0; n < demuxer->num_chapters; n++) {
+        struct demux_chapter *ch = &demuxer->chapters[n];
+        if (ch->demuxer_id == demuxer_id) {
+            mp_tags_set_bstr(ch->metadata, key, value);
+            return;
+        }
+    }
 }
 
 static void add_stream_chapters(struct demuxer *demuxer)
@@ -871,7 +905,7 @@ static void add_stream_chapters(struct demuxer *demuxer)
         if (stream_control(demuxer->stream, STREAM_CTRL_GET_CHAPTER_TIME, &p)
                 != STREAM_OK)
             return;
-        demuxer_add_chapter(demuxer, bstr0(""), p * 1e9, 0);
+        demuxer_add_chapter(demuxer, bstr0(""), p * 1e9, 0, 0);
     }
 }
 

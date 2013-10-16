@@ -16,6 +16,11 @@
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
+/*
+ * Warning: this is outdated, crappy code. It is used only for --playlist.
+ * New or cleaned up code should be added to demux_playlist.c instead.
+ */
+
 #include "config.h"
 #include <stdlib.h>
 #include <stdio.h>
@@ -371,78 +376,6 @@ static bool parse_pls(play_tree_parser_t* p) {
   return true;
 }
 
-/*
- Reference Ini-Format: Each entry is assumed a reference
- */
-static bool parse_ref_ini(play_tree_parser_t* p) {
-  char *line,*v;
-
-  mp_msg(MSGT_PLAYTREE,MSGL_V,"Trying reference-ini playlist...\n");
-  if (!(line = play_tree_parser_get_line(p)))
-    return NULL;
-  strstrip(line);
-  if(strcasecmp(line,"[Reference]"))
-    return NULL;
-  mp_msg(MSGT_PLAYTREE,MSGL_V,"Detected reference-ini playlist format\n");
-  play_tree_parser_stop_keeping(p);
-  line = play_tree_parser_get_line(p);
-  if(!line)
-    return NULL;
-  while(line) {
-    strstrip(line);
-    if(strncasecmp(line,"Ref",3) == 0) {
-      v = pls_entry_get_value(line+3);
-      if(!v)
-	mp_msg(MSGT_PLAYTREE,MSGL_ERR,"No value in entry %s\n",line);
-      else
-      {
-        mp_msg(MSGT_PLAYTREE,MSGL_DBG2,"Adding entry %s\n",v);
-        playlist_add_file(p->pl, v);
-      }
-    }
-    line = play_tree_parser_get_line(p);
-  }
-
-  return true;
-}
-
-static bool parse_m3u(play_tree_parser_t* p) {
-  char* line;
-
-  mp_msg(MSGT_PLAYTREE,MSGL_V,"Trying extended m3u playlist...\n");
-  if (!(line = play_tree_parser_get_line(p)))
-    return NULL;
-  strstrip(line);
-  if(strcasecmp(line,"#EXTM3U"))
-    return NULL;
-  mp_msg(MSGT_PLAYTREE,MSGL_V,"Detected extended m3u playlist format\n");
-  play_tree_parser_stop_keeping(p);
-
-  while((line = play_tree_parser_get_line(p)) != NULL) {
-    strstrip(line);
-    if(line[0] == '\0')
-      continue;
-    /* EXTM3U files contain such lines:
-     * #EXTINF:<seconds>, <title>
-     * followed by a line with the filename
-     * for now we have no place to put that
-     * so we just skip that extra-info ::atmos
-     */
-    if(line[0] == '#') {
-#if 0 /* code functional */
-      if(strncasecmp(line,"#EXTINF:",8) == 0) {
-        mp_msg(MSGT_PLAYTREE,MSGL_INFO,"[M3U] Duration: %dsec  Title: %s\n",
-          strtol(line+8,&line,10), line+2);
-      }
-#endif
-      continue;
-    }
-    playlist_add_file(p->pl, line);
-  }
-
-  return true;
-}
-
 static bool parse_smil(play_tree_parser_t* p) {
   int entrymode=0;
   char* line,source[512],*pos,*s_start,*s_end,*src_line;
@@ -697,9 +630,11 @@ err_out:
   return success;
 }
 
-struct playlist *playlist_parse_file(const char *file)
+static struct playlist *do_parse(struct stream* stream, bool forced);
+
+struct playlist *playlist_parse_file(const char *file, struct MPOpts *opts)
 {
-  stream_t *stream = stream_open(file, NULL);
+  stream_t *stream = stream_open(file, opts);
   if(!stream) {
       mp_msg(MSGT_PLAYTREE,MSGL_ERR,
              "Error while opening playlist file %s: %s\n",
@@ -710,10 +645,11 @@ struct playlist *playlist_parse_file(const char *file)
   mp_msg(MSGT_PLAYTREE, MSGL_V,
          "Parsing playlist file %s...\n", file);
 
-  struct playlist *ret = playlist_parse(stream);
+  struct playlist *ret = do_parse(stream, true);
   free_stream(stream);
 
-  playlist_add_base_path(ret, mp_dirname(file));
+  if (ret)
+    playlist_add_base_path(ret, mp_dirname(file));
 
   return ret;
 
@@ -723,8 +659,6 @@ typedef bool (*parser_fn)(play_tree_parser_t *);
 static const parser_fn pl_parsers[] = {
     parse_asx,
     parse_pls,
-    parse_m3u,
-    parse_ref_ini,
     parse_smil,
     parse_nsc,
     parse_textplain
@@ -740,7 +674,13 @@ static struct playlist *do_parse(struct stream* stream, bool forced)
   };
 
   bool success = false;
-  if (play_tree_parser_get_line(&p) != NULL) {
+  struct demuxer *pl_demux = demux_open(stream, "playlist", NULL, stream->opts);
+  if (pl_demux && pl_demux->playlist) {
+    playlist_transfer_entries(p.pl, pl_demux->playlist);
+    success = true;
+  }
+  free_demuxer(pl_demux);
+  if (!success && play_tree_parser_get_line(&p) != NULL) {
     for (int n = 0; n < sizeof(pl_parsers) / sizeof(pl_parsers[0]); n++) {
       play_tree_parser_reset(&p);
       if (pl_parsers[n] == parse_textplain && !forced)
@@ -764,14 +704,4 @@ static struct playlist *do_parse(struct stream* stream, bool forced)
     mp_msg(MSGT_PLAYTREE,((forced==1)?MSGL_WARN:MSGL_V),"Warning: empty playlist\n");
 
   return p.pl;
-}
-
-struct playlist *playlist_parse(struct stream* stream)
-{
-    return do_parse(stream, true);
-}
-
-struct playlist *playlist_probe_and_parse(struct stream* stream)
-{
-    return do_parse(stream, false);
 }

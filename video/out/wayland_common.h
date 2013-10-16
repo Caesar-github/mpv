@@ -1,21 +1,19 @@
 /*
- * This file is part of MPlayer.
- * Copyright © 2012-2013 Scott Moreau <oreaus@gmail.com>
- * Copyright © 2012-2013 Alexander Preisinger <alexander.preisinger@gmail.com>
+ * This file is part of mpv video player.
+ * Copyright © 2013 Alexander Preisinger <alexander.preisinger@gmail.com>
  *
- * MPlayer is free software; you can redistribute it and/or modify
+ * mpv is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
- * MPlayer is distributed in the hope that it will be useful,
+ * mpv is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with MPlayer; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ * with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #ifndef MPLAYER_WAYLAND_COMMON_H
@@ -58,34 +56,26 @@ struct vo_wayland_state {
 
         int display_fd;
 
-        uint32_t formats;
+        struct wl_shm *shm;
     } display;
 
     struct {
         int32_t width;
         int32_t height;
-        int32_t p_width; // previous sizes for leaving fullscreen
+        int32_t p_width;  // previous sizes for leaving fullscreen
         int32_t p_height;
+        int32_t sh_width; // sheduled width for resizing
+        int32_t sh_height;
+        int32_t sh_x;     // x, y calculated with the drag edges for moving
+        int32_t sh_y;
         float aspect;
 
         struct wl_surface *surface;
         struct wl_shell_surface *shell_surface;
         int events; /* mplayer events (VO_EVENT_RESIZE) */
-
-        /* Because the egl windows have a special resize windw function we have to
-         * register it first before doing any resizing.
-         * This makes us independet from the output driver */
-        void (*resize_func) (struct vo_wayland_state *wl,
-                             uint32_t edges,
-                             int32_t width,
-                             int32_t height,
-                             void *user_data);
-
-        void *resize_func_data;
     } window;
 
     struct {
-        struct wl_shm *shm;
         struct wl_cursor *default_cursor;
         struct wl_cursor_theme *theme;
         struct wl_surface *surface;

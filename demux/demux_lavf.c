@@ -603,11 +603,32 @@ static int demux_open_lavf(demuxer_t *demuxer, enum demux_check check)
         avfc->pb = priv->pb;
     }
 
-    if (avformat_open_input(&avfc, priv->filename, priv->avif, NULL) < 0) {
+    AVDictionary *dopts = NULL;
+
+    if (matches_avinputformat_name(priv, "rtsp")) {
+        const char *transport = NULL;
+        switch (opts->network_rtsp_transport) {
+        case 1: transport = "udp";  break;
+        case 2: transport = "tcp";  break;
+        case 3: transport = "http"; break;
+        }
+        if (transport)
+            av_dict_set(&dopts, "rtsp_transport", transport, 0);
+    }
+
+    if (avformat_open_input(&avfc, priv->filename, priv->avif, &dopts) < 0) {
         mp_msg(MSGT_HEADER, MSGL_ERR,
                "LAVF_header: avformat_open_input() failed\n");
+        av_dict_free(&dopts);
         return -1;
     }
+
+    t = NULL;
+    while ((t = av_dict_get(dopts, "", t, AV_DICT_IGNORE_SUFFIX))) {
+        mp_msg(MSGT_OPEN, MSGL_V, "[lavf] Could not set demux option %s=%s\n",
+               t->key, t->value);
+    }
+    av_dict_free(&dopts);
 
     priv->avfc = avfc;
     if (avformat_find_stream_info(avfc, NULL) < 0) {
@@ -627,7 +648,12 @@ static int demux_open_lavf(demuxer_t *demuxer, enum demux_check check)
                                       (AVRational){1, 1000000000});
         t = av_dict_get(c->metadata, "title", NULL, 0);
         demuxer_add_chapter(demuxer, t ? bstr0(t->value) : bstr0(NULL),
-                            start, end);
+                            start, end, i);
+        AVDictionaryEntry *t = NULL;
+        while ((t = av_dict_get(c->metadata, "", t, AV_DICT_IGNORE_SUFFIX))) {
+            demuxer_add_chapter_info(demuxer, i, bstr0(t->key),
+                                     bstr0(t->value));
+        }
     }
 
     add_new_streams(demuxer);
@@ -691,10 +717,9 @@ static void seek_reset(demuxer_t *demux)
     priv->num_packets = 0;
 }
 
-static int destroy_avpacket(void *pkt)
+static void destroy_avpacket(void *pkt)
 {
     av_free_packet(pkt);
-    return 0;
 }
 
 static int read_more_av_packets(demuxer_t *demux)
@@ -804,13 +829,12 @@ static int demux_lavf_fill_buffer(demuxer_t *demux)
     return 1;
 }
 
-static void demux_seek_lavf(demuxer_t *demuxer, float rel_seek_secs,
-                            float audio_delay, int flags)
+static void demux_seek_lavf(demuxer_t *demuxer, float rel_seek_secs, int flags)
 {
     lavf_priv_t *priv = demuxer->priv;
     int avsflags = 0;
-    mp_msg(MSGT_DEMUX, MSGL_DBG2, "demux_seek_lavf(%p, %f, %f, %d)\n",
-           demuxer, rel_seek_secs, audio_delay, flags);
+    mp_msg(MSGT_DEMUX, MSGL_DBG2, "demux_seek_lavf(%p, %f, %d)\n",
+           demuxer, rel_seek_secs, flags);
 
     seek_reset(demuxer);
 

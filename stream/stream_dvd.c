@@ -354,13 +354,13 @@ static int fill_buffer(stream_t *s, char *buf, int len)
   pos = dvd_read_sector(s->priv, buf);
   if (pos < 0)
     return -1;
+  // dvd_read_sector() sometimes internally skips disk-level blocks
   s->pos = 2048*(pos - 1);
   return 2048; // full sector
 }
 
 static int seek(stream_t *s, int64_t newpos) {
-  s->pos=newpos; // real seek
-  dvd_seek(s->priv,s->pos/2048);
+  dvd_seek(s->priv,newpos/2048);
   return 1;
 }
 
@@ -1078,21 +1078,21 @@ static int ifo_stream_open (stream_t *stream, int mode)
 }
 
 const stream_info_t stream_info_dvd = {
-  "dvd",
-  open_s,
-  { "dvd", NULL },
+  .name = "dvd",
+  .open = open_s,
+  .protocols = (const char*[]){ "dvd", NULL },
   .priv_size = sizeof(dvd_priv_t),
   .priv_defaults = &stream_priv_dflts,
   .options = stream_opts_fields,
-  .url_options = {
-        {"hostname", "title"},
-        {"filename", "device"},
-        {0}
+  .url_options = (const char*[]){
+        "hostname=title",
+        "filename=device",
+        NULL
    },
 };
 
 const stream_info_t stream_info_ifo = {
-  "ifo",
-  ifo_stream_open,
-  { "file", "", NULL },
+    .name = "ifo",
+    .open = ifo_stream_open,
+    .protocols = (const char*[]){ "file", "", NULL },
 };

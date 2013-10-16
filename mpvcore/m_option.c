@@ -186,6 +186,7 @@ const m_option_type_t m_option_type_store = {
     .size  = sizeof(int),
     .flags = M_OPT_TYPE_OPTIONAL_PARAM,
     .parse = parse_store,
+    .copy  = copy_opt,
 };
 
 // Same for float types
@@ -214,6 +215,7 @@ const m_option_type_t m_option_type_float_store = {
     .size  = sizeof(float),
     .flags = M_OPT_TYPE_OPTIONAL_PARAM,
     .parse = parse_store_float,
+    .copy  = copy_opt,
 };
 
 // Integer
@@ -1330,6 +1332,7 @@ const m_option_type_t m_option_type_color = {
     .name  = "Color",
     .size  = sizeof(struct m_color),
     .parse = parse_color,
+    .copy  = copy_opt,
 };
 
 
@@ -1474,6 +1477,7 @@ const m_option_type_t m_option_type_geometry = {
     .name  = "Window geometry",
     .size  = sizeof(struct m_geometry),
     .parse = parse_geometry,
+    .copy  = copy_opt,
 };
 
 static int parse_size_box(const m_option_t *opt, struct bstr name,
@@ -1503,6 +1507,7 @@ const m_option_type_t m_option_type_size_box = {
     .name  = "Window size",
     .size  = sizeof(struct m_geometry),
     .parse = parse_size_box,
+    .copy  = copy_opt,
 };
 
 
@@ -1596,7 +1601,7 @@ static int parse_afmt(const m_option_t *opt, struct bstr name,
     }
 
     int fmt = af_str2fmt_short(param);
-    if (fmt == -1) {
+    if (!fmt) {
         mp_msg(MSGT_CFGPARSER, MSGL_ERR,
                "Option %.*s: unknown format name: '%.*s'\n",
                BSTR_P(name), BSTR_P(param));
@@ -2398,11 +2403,48 @@ static int parse_obj_settings_list(const m_option_t *opt, struct bstr name,
     return 1;
 }
 
+static void append_param(char **res, char *param)
+{
+    if (strspn(param, NAMECH) == strlen(param)) {
+        *res = talloc_strdup_append(*res, param);
+    } else {
+        // Simple escaping: %BYTECOUNT%STRING
+        *res = talloc_asprintf_append(*res, "%%%zd%%%s", strlen(param), param);
+    }
+}
+
+static char *print_obj_settings_list(const m_option_t *opt, const void *val)
+{
+    m_obj_settings_t *list = VAL(val);
+    char *res = talloc_strdup(NULL, "");
+    for (int n = 0; list && list[n].name; n++) {
+        m_obj_settings_t *entry = &list[n];
+        if (n > 0)
+            res = talloc_strdup_append(res, ",");
+        // Assume labels and names don't need escaping
+        if (entry->label && entry->label[0])
+            res = talloc_asprintf_append(res, "@%s:", entry->label);
+        res = talloc_strdup_append(res, entry->name);
+        if (entry->attribs && entry->attribs[0]) {
+            res = talloc_strdup_append(res, "=");
+            for (int i = 0; entry->attribs[i * 2 + 0]; i++) {
+                if (i > 0)
+                    res = talloc_strdup_append(res, ":");
+                append_param(&res, entry->attribs[i * 2 + 0]);
+                res = talloc_strdup_append(res, "=");
+                append_param(&res, entry->attribs[i * 2 + 1]);
+            }
+        }
+    }
+    return res;
+}
+
 const m_option_type_t m_option_type_obj_settings_list = {
     .name  = "Object settings list",
     .size  = sizeof(m_obj_settings_t *),
     .flags = M_OPT_TYPE_DYNAMIC | M_OPT_TYPE_ALLOW_WILDCARD,
     .parse = parse_obj_settings_list,
+    .print = print_obj_settings_list,
     .copy  = copy_obj_settings_list,
     .free  = free_obj_settings_list,
 };

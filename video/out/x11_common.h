@@ -30,6 +30,7 @@ struct vo;
 struct mp_rect;
 
 struct vo_x11_state {
+    struct mp_log *log;
     Display *display;
     Window window;
     Window rootwin;
@@ -93,14 +94,6 @@ struct vo_x11_state {
     unsigned int oldfuncs;
     XComposeStatus compose_status;
 
-    int vo_gamma;
-    int vo_brightness;
-    int vo_contrast;
-
-    Colormap cmap;
-    XColor cols[256];
-    int cm_size, red_mask, green_mask, blue_mask;
-
     /* XShm stuff */
     int ShmCompletionEvent;
     /* Number of outstanding XShmPutImage requests */
@@ -117,6 +110,7 @@ struct vo_x11_state {
     Atom XA_NET_WM_PID;
     Atom XA_NET_WM_NAME;
     Atom XA_NET_WM_ICON_NAME;
+    Atom XA_NET_WM_ICON;
     Atom XA_WIN_PROTOCOLS;
     Atom XA_WIN_LAYER;
     Atom XA_WIN_HINTS;
@@ -129,8 +123,6 @@ struct vo_x11_state {
 int vo_x11_init(struct vo *vo);
 void vo_x11_uninit(struct vo *vo);
 int vo_x11_check_events(struct vo *vo);
-uint32_t vo_x11_set_equalizer(struct vo *vo, const char *name, int value);
-uint32_t vo_x11_get_equalizer(struct vo *vo, const char *name, int *value);
 bool vo_x11_screen_is_composited(struct vo *vo);
 void fstype_help(void);
 void vo_x11_config_vo_window(struct vo *vo, XVisualInfo *vis,

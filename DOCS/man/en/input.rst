@@ -226,6 +226,15 @@ List of Input Commands
     ``<skip>`` subtitle events is displayed. ``<skip>`` can be negative to step
     backwards.
 
+``sub_seek <skip>``
+    Seek to the next (skip set to 1) or the previous (skip set to -1) subtitle.
+    This is similar to ``sub_step``, except that it seeks video and audio
+    instead of adjusting the subtitle delay.
+
+    Like with ``sub_step``, this works with external text subtitles only. For
+    embedded text subtitles (like with Matroska), this works only with subtitle
+    events that have already been displayed.
+
 ``osd [<level>]``
     Toggle OSD level. If ``<level>`` is specified, set the OSD mode
     (see ``--osd-level`` for valid values).
@@ -315,6 +324,77 @@ Input Commands that are Possibly Subject to Change
 
 ``disable_section "<section>"``
     Disable the named input section. Undoes ``enable_section``.
+
+``overlay_add <id> <x> <y> "<file>" <offset> "<fmt>" <w> <h> <stride>``
+    Add an OSD overlay sourced from raw data. This might be useful for scripts
+    and applications controlling mpv, and which want to display things on top
+    of the video window.
+
+    Overlays are usually displayed in screen resolution, but with some VOs,
+    the resolution is reduced to that of the video's. You can read the
+    ``osd-width`` and ``osd-height`` properties. At least with ``--vo-xv`` and
+    anamorphic video (such as DVD), ``osd-par`` should be read as well, and the
+    overlay should be aspect-compensated. (Future directions: maybe mpv should
+    take care of some of these things automatically, but it's hard to tell
+    where to draw the line.)
+
+    ``id`` is an integer between 0 and 63 identifying the overlay element. The
+    ID can be used to add multiple overlay parts, update a part by using this
+    command with an already existing ID, or to remove a part with
+    ``overlay_remove``. Using a previously unused ID will add a new overlay,
+    while reusing an ID will update it. (Future directions: there should be
+    something to ensure different programs wanting to create overlays don't
+    conflict with each others, should that ever be needed.)
+
+    ``x`` and ``y`` specify the position where the OSD should be displayed.
+
+    ``file`` specifies the file the raw image data is read from. It can be
+    either a numeric UNIX file descriptor prefixed with ``@`` (e.g. ``@4``),
+    or a filename. The file will be mapped into memory with ``mmap()``. Some VOs
+    will pass the mapped pointer directly to display APIs (e.g. opengl or
+    vdpau), so no actual copying is involved. Truncating the source file while
+    the overlay is active will crash the player. You shouldn't change the data
+    while the overlay is active, because the data is essentially accessed at
+    random points. Instead, call ``overlay_add`` again (preferably with a
+    different memory region to prevent tearing).
+
+    ``offset`` is the offset of the first pixel in the source file. It is
+    passed directly to ``mmap`` and is subject to certain restrictions
+    (see ``man mmap`` for details). In particular, this value has to be a
+    multiple of the system's page size.
+
+    ``fmt`` is a string identifying the image format. Currently, only ``bgra``
+    is defined. This format has 4 bytes per pixels, with 8 bits per component.
+    The least significant 8 bits are blue, and the most significant 8 bits
+    are alpha (in little endian, the components are B-G-R-A, with B as first
+    byte). This uses premultiplied alpha: every color component is already
+    multiplied with the alpha component. This means the numeric value of each
+    component is equal to or smaller than the alpha component. (Violating this
+    rule will lead to different results with different VOs: numeric overflows
+    resulting from blending broken alpha values is considered something that
+    shouldn't happen, and consequently implementations don't ensure that you
+    get predictable behavior in this case.)
+
+    ``w``, ``h``, and ``stride`` specify the size of the overlay. ``w`` is the
+    visible width of the overlay, while ``stride`` gives the width in bytes in
+    memory. In the simple case, and with the ``bgra`` format, ``stride==4*w``.
+    In general, the total amount of memory accessed is ``stride * h``.
+    (Technically, the minimum size would be ``stride * (h - 1) + w * 4``, but
+    for simplicity, the player will access all ``stride * h`` bytes.)
+
+    .. admonition:: Warning
+
+        When updating the overlay, you should prepare a second shared memory
+        region (e.g. make use of the offset parameter) and add this as overlay,
+        instead of reusing the same memory every time. Otherwise, you might
+        get the equivalent of tearing, when your application and mpv write/read
+        the buffer at the same time. Also, keep in mind that mpv might access
+        an overlay's memory at random times whenever it feels the need to do
+        so, for example when redrawing the screen.
+
+``overlay_remove <id>``
+    Remove an overlay added with ``overlay_add`` and the same ID. Does nothing
+    if no overlay with this ID exists.
 
 Undocumented commands: ``tv_start_scan``, ``tv_step_channel``, ``tv_step_norm``,
 ``tv_step_chanlist``, ``tv_set_channel``, ``tv_last_channel``, ``tv_set_freq``,
@@ -415,6 +495,7 @@ Name                            W Comment
 ``angle``                       x current DVD angle
 ``metadata``                      metadata key/value pairs
 ``metadata/<key>``                value of metadata entry ``<key>``
+``chapter-metadata``              metadata of current chapter (works similar)
 ``pause``                       x pause status (bool)
 ``cache``                         network cache fill state (0-100)
 ``pts-association-mode``        x see ``--pts-association-mode``
@@ -431,7 +512,7 @@ Name                            W Comment
 ``audio``                       x alias for ``aid``
 ``balance``                     x audio channel balance
 ``fullscreen``                  x see ``--fullscreen``
-``deinterlace``                 x deinterlacing, if available (bool)
+``deinterlace``                 x similar to ``--deinterlace``
 ``colormatrix``                 x see ``--colormatrix``
 ``colormatrix-input-range``     x see ``--colormatrix-input-range``
 ``colormatrix-output-range``    x see ``--colormatrix-output-range``
@@ -453,8 +534,16 @@ Name                            W Comment
 ``dwidth``                        video width (after filters and aspect scaling)
 ``dheight``                       video height
 ``aspect``                      x video aspect
+``osd-width``                     last known OSD width (can be 0)
+``osd-height``                    last known OSD height (can be 0)
+``osd-par``                       last known OSD display pixel aspect (can be 0)
 ``vid``                         x current video track (similar to ``--vid``)
 ``video``                       x alias for ``vid``
+``video-align-x``               x see ``--video-align-x``
+``video-align-y``               x see ``--video-align-y``
+``video-pan-x``                 x see ``--video-pan-x``
+``video-pan-y``                 x see ``--video-pan-y``
+``video-zoom``                  x see ``--video-zoom``
 ``program``                     x switch TS program (write-only)
 ``sid``                         x current subtitle track (similar to ``--sid``)
 ``sub``                         x alias for ``sid``
@@ -503,15 +592,27 @@ The following expansions are supported:
     fails, expand to an error string. (Use ``${NAME:}`` with a trailing
     ``:`` to expand to an empty string instead.)
     If ``NAME`` is prefixed with ``=``, expand to the raw value of the property
-    (see below).
+    (see section below).
 ``${NAME:STR}``
     Expands to the value of the property ``NAME``, or ``STR`` if the
     property cannot be retrieved. ``STR`` is expanded recursively.
+``${?NAME:STR}``
+    Expands to ``STR`` (recursively) if the property ``NAME`` is available.
 ``${!NAME:STR}``
     Expands to ``STR`` (recursively) if the property ``NAME`` cannot be
     retrieved.
-``${?NAME:STR}``
-    Expands to ``STR`` (recursively) if the property ``NAME`` is available.
+``${?NAME==VALUE:STR}``
+    Expands to ``STR`` (recursively) if the property ``NAME`` expands to a
+    string equal to ``VALUE``. You can prefix ``NAME`` with ``=`` in order to
+    compare the raw value of a property (see section below). If the property
+    is unavailable, or other errors happen when retrieving it, the value is
+    never considered equal.
+    Note that ``VALUE`` can't contain any of the characters ``:`` or ``}``.
+    Also, it is possible that escaping with ``"`` or ``%`` might be added in
+    the future, should the need arise.
+``${!NAME==VALUE:STR}``
+    Same as with the ``?`` variant, but ``STR`` is expanded if the value is
+    not equal. (Using the same semantics as with ``?``.)
 ``$$``
     Expands to ``$``.
 ``$}``

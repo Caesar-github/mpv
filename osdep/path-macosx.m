@@ -16,11 +16,15 @@
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
-#ifndef MPV_MACOSX_BUNDLE
-#define MPV_MACOSX_BUNDLE
+#import <Foundation/Foundation.h>
+#include "mpvcore/path.h"
+#include "osdep/path.h"
 
-// Returns absolute path of a resource file in a Mac OS X application bundle.
-char *get_bundled_path(const char *filename);
-
-#endif /* MPV_MACOSX_BUNDLE */
-
+char *mp_get_macosx_bundled_path(const char *file)
+{
+    NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
+    NSString *path = [[NSBundle mainBundle] resourcePath];
+    char *rv = mp_path_join(NULL, bstr0([path UTF8String]), bstr0(file));
+    [pool release];
+    return rv;
+}

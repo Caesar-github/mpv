@@ -20,17 +20,11 @@
 
 #include "stream.h"
 
-static int fill_buffer(stream_t *s, char *buffer, int max_len)
-{
-    return -1;
-}
-
 static int open_f(stream_t *stream, int mode)
 {
     if (mode != STREAM_READ)
         return STREAM_ERROR;
 
-    stream->fill_buffer = fill_buffer;
     stream->type = STREAMTYPE_AVDEVICE;
     stream->demuxer = "lavf";
 
@@ -40,5 +34,5 @@ static int open_f(stream_t *stream, int mode)
 const stream_info_t stream_info_avdevice = {
     .name = "avdevice",
     .open = open_f,
-    .protocols = { "avdevice", "av", NULL },
+    .protocols = (const char*[]){ "avdevice", "av", NULL },
 };

@@ -25,6 +25,7 @@ include config.mak
 
 SOURCES_AUDIO_INPUT-$(ALSA)     += stream/ai_alsa1x.c
 SOURCES_AUDIO_INPUT-$(OSS)      += stream/ai_oss.c
+SOURCES_AUDIO_INPUT-$(SNDIO)    += stream/ai_sndio.c
 SOURCES-$(AUDIO_INPUT)          += $(SOURCES_AUDIO_INPUT-yes)
 SOURCES-$(CDDA)                 += stream/stream_cdda.c \
                                    stream/cdinfo.c
@@ -44,16 +45,21 @@ SOURCES-$(LIBBS2B)              += audio/filter/af_bs2b.c
 SOURCES-$(LIBPOSTPROC)          += video/filter/vf_pp.c
 SOURCES-$(LIBSMBCLIENT)         += stream/stream_smb.c
 
-SOURCES-$(COCOA)                += video/out/cocoa_common.m \
-                                   osdep/macosx_bundle.m \
+SOURCES-$(COCOA)                += video/out/cocoa/view.m \
+                                   video/out/cocoa/window.m \
+                                   video/out/cocoa/additions.m \
+                                   video/out/cocoa_common.m \
                                    osdep/macosx_application.m \
                                    osdep/macosx_events.m \
-                                   osdep/ar/HIDRemote.m
+                                   osdep/ar/HIDRemote.m \
+                                   osdep/path-macosx.m
+
 SOURCES-$(MNG)                  += demux/demux_mng.c
 SOURCES-$(MPG123)               += audio/decode/ad_mpg123.c
 
 SOURCES-$(NEED_GETTIMEOFDAY)    += osdep/gettimeofday.c
 SOURCES-$(NEED_GLOB)            += osdep/glob-win.c
+SOURCES-$(WIN32)                += osdep/path-win.c
 
 SOURCES-$(PRIORITY)             += osdep/priority.c
 SOURCES-$(PVR)                  += stream/stream_pvr.c
@@ -106,15 +112,24 @@ SOURCES-$(OSS)                  += audio/out/ao_oss.c
 SOURCES-$(PULSE)                += audio/out/ao_pulse.c
 SOURCES-$(PORTAUDIO)            += audio/out/ao_portaudio.c
 SOURCES-$(RSOUND)               += audio/out/ao_rsound.c
+SOURCES-$(SNDIO)                += audio/out/ao_sndio.c
 SOURCES-$(VDPAU)                += video/vdpau.c video/out/vo_vdpau.c
+SOURCES-$(VDA)                  += video/decode/vda.c
 SOURCES-$(VDPAU_DEC)            += video/decode/vdpau.c
 SOURCES-$(VDPAU_DEC_OLD)        += video/decode/vdpau_old.c
+SOURCES-$(VAAPI)                += video/out/vo_vaapi.c \
+                                   video/decode/vaapi.c \
+                                   video/vaapi.c
+SOURCES-$(VAAPI_VPP)            += video/filter/vf_vavpp.c
 
 SOURCES-$(X11)                  += video/out/vo_x11.c video/out/x11_common.c
 SOURCES-$(XV)                   += video/out/vo_xv.c
+SOURCES-$(WAYLAND)              += video/out/vo_wayland.c video/out/wayland_common.c
 
 SOURCES-$(VF_LAVFI)             += video/filter/vf_lavfi.c
 SOURCES-$(AF_LAVFI)             += audio/filter/af_lavfi.c
+
+SOURCES-$(LUA)                  += mpvcore/mp_lua.c
 
 ifeq ($(HAVE_AVUTIL_REFCOUNTING),no)
     SOURCES-yes                 += video/decode/lavc_dr1.c
@@ -122,8 +137,7 @@ endif
 
 SOURCES-$(DLOPEN)               += video/filter/vf_dlopen.c
 
-SOURCES = talloc.c \
-          audio/audio.c \
+SOURCES = audio/audio.c \
           audio/chmap.c \
           audio/chmap_sel.c \
           audio/fmt-conversion.c \
@@ -167,8 +181,9 @@ SOURCES = talloc.c \
           demux/demux_lavf.c \
           demux/demux_mf.c \
           demux/demux_mkv.c \
-          demux/demux_subreader.c \
+          demux/demux_playlist.c \
           demux/demux_raw.c \
+          demux/demux_subreader.c \
           demux/ebml.c \
           demux/mf.c \
           mpvcore/asxparser.c \
@@ -203,6 +218,7 @@ SOURCES = talloc.c \
           osdep/numcores.c \
           osdep/timer.c \
           stream/cookies.c \
+          stream/rar.c \
           stream/stream.c \
           stream/stream_avdevice.c \
           stream/stream_file.c \
@@ -210,6 +226,7 @@ SOURCES = talloc.c \
           stream/stream_memory.c \
           stream/stream_mf.c \
           stream/stream_null.c \
+          stream/stream_rar.c \
           sub/dec_sub.c \
           sub/draw_bmp.c \
           sub/find_subfiles.c \
@@ -223,6 +240,9 @@ SOURCES = talloc.c \
           sub/sd_srt.c \
           sub/spudec.c \
           sub/sub.c \
+          ta/ta.c \
+          ta/ta_utils.c \
+          ta/ta_talloc.c \
           video/csputils.c \
           video/fmt-conversion.c \
           video/image_writer.c \
@@ -283,10 +303,16 @@ ALL_TARGETS     += mpv$(EXESUF)
 INSTALL_BIN     += install-mpv
 INSTALL_BIN_STRIP += install-mpv-strip
 INSTALL_MAN      =
+INSTALL_PDF      =
 
 ifeq ($(BUILD_MAN),yes)
     INSTALL_MAN += install-mpv-man
     ALL_TARGETS += DOCS/man/en/mpv.1
+endif
+
+ifeq ($(BUILD_PDF),yes)
+    INSTALL_PDF += install-mpv-pdf
+    ALL_TARGETS += DOCS/man/en/mpv.pdf
 endif
 
 DIRS =  . \
@@ -322,6 +348,12 @@ endif
 ###### generic rules #######
 
 all: $(ALL_TARGETS)
+
+%.tex: %.rst
+	$(RST2LATEX) --config=DOCS/man/docutils.conf $< $@
+
+%.pdf: %.tex
+	pdflatex -interaction=batchmode -jobname=$(basename $@) $<; pdflatex -interaction=batchmode -jobname=$(basename $@) $<
 
 %.1: %.rst
 	$(RST2MAN) $< $@
@@ -367,8 +399,24 @@ video/out/gl_video.c: video/out/gl_video_shaders.h
 video/out/gl_video_shaders.h: TOOLS/file2string.pl video/out/gl_video_shaders.glsl
 	./$^ >$@
 
+video/out/x11_common.c: video/out/x11_icon.inc
+video/out/x11_icon.inc: TOOLS/file2string.pl video/out/x11_icon.bin
+	./$^ >$@
+
 sub/osd_libass.c: sub/osd_font.h
 sub/osd_font.h: TOOLS/file2string.pl sub/osd_font.otf
+	./$^ >$@
+
+mpvcore/mp_lua.c: mpvcore/lua/defaults.inc
+mpvcore/lua/defaults.inc: TOOLS/file2string.pl mpvcore/lua/defaults.lua
+	./$^ >$@
+
+mpvcore/mp_lua.c: mpvcore/lua/assdraw.inc
+mpvcore/lua/assdraw.inc: TOOLS/file2string.pl mpvcore/lua/assdraw.lua
+	./$^ >$@
+
+mpvcore/mp_lua.c: mpvcore/lua/osc.inc
+mpvcore/lua/osc.inc: TOOLS/file2string.pl mpvcore/lua/osc.lua
 	./$^ >$@
 
 # ./configure must be rerun if it changed
@@ -393,22 +441,21 @@ mpvcore/version.c osdep/mpv-rc.o: version.h
 
 osdep/mpv-rc.o: osdep/mpv.exe.manifest etc/mpv-icon.ico
 
-DOCS/man/en/mpv.1: DOCS/man/en/af.rst \
-                   DOCS/man/en/ao.rst \
-                   DOCS/man/en/changes.rst \
-                   DOCS/man/en/encode.rst \
-                   DOCS/man/en/input.rst \
-                   DOCS/man/en/options.rst \
-                   DOCS/man/en/vf.rst \
-                   DOCS/man/en/vo.rst
-
+DOCS/man/en/mpv.1 DOCS/man/en/mpv.pdf: DOCS/man/en/af.rst \
+                                       DOCS/man/en/ao.rst \
+                                       DOCS/man/en/changes.rst \
+                                       DOCS/man/en/encode.rst \
+                                       DOCS/man/en/input.rst \
+                                       DOCS/man/en/options.rst \
+                                       DOCS/man/en/vf.rst \
+                                       DOCS/man/en/vo.rst
 
 ###### installation / clean / generic rules #######
 
-install:               $(INSTALL_BIN)       $(INSTALL_MAN)
-install-no-man:        $(INSTALL_BIN)
-install-strip:         $(INSTALL_BIN_STRIP) $(INSTALL_MAN)
-install-strip-no-man:  $(INSTALL_BIN_STRIP)
+install:               $(INSTALL_BIN)       install-data $(INSTALL_MAN) $(INSTALL_PDF)
+install-no-man:        $(INSTALL_BIN)       install-data
+install-strip:         $(INSTALL_BIN_STRIP) install-data $(INSTALL_MAN) $(INSTALL_PDF)
+install-strip-no-man:  $(INSTALL_BIN_STRIP) install-data
 
 install-dirs:
 	if test ! -d $(BINDIR) ; then $(INSTALL) -d $(BINDIR) ; fi
@@ -425,22 +472,54 @@ install-mpv-man-en: DOCS/man/en/mpv.1
 	if test ! -d $(MANDIR)/man1 ; then $(INSTALL) -d $(MANDIR)/man1 ; fi
 	$(INSTALL) -m 644 DOCS/man/en/mpv.1 $(MANDIR)/man1/
 
+install-mpv-pdf:  install-mpv-pdf-en
+
+install-mpv-pdf-en: DOCS/man/en/mpv.pdf
+	if test ! -d $(DOCDIR) ; then $(INSTALL) -d $(DOCDIR) ; fi
+	$(INSTALL) -m 644 DOCS/man/en/mpv.pdf $(DOCDIR)/
+
+ICONSIZES = 16x16 32x32 64x64
+
+define ICON_INSTALL_RULE
+install-mpv-icon-$(size): etc/mpv-icon-8bit-$(size).png
+	$(INSTALL) -d $(prefix)/share/icons/hicolor/$(size)/apps
+	$(INSTALL) -m 644 etc/mpv-icon-8bit-$(size).png $(prefix)/share/icons/hicolor/$(size)/apps/mpv.png
+endef
+
+$(foreach size,$(ICONSIZES),$(eval $(ICON_INSTALL_RULE)))
+
+install-mpv-icons: $(foreach size,$(ICONSIZES),install-mpv-icon-$(size))
+
+install-mpv-desktop: etc/mpv.desktop
+	$(INSTALL) -d $(prefix)/share/applications
+	$(INSTALL) -m 644 etc/mpv.desktop $(prefix)/share/applications/
+
+install-data: install-mpv-icons install-mpv-desktop
+
 uninstall:
 	$(RM) $(BINDIR)/mpv$(EXESUF)
 	$(RM) $(MANDIR)/man1/mpv.1
 	$(RM) $(MANDIR)/en/man1/mpv.1
+	$(RM) $(DOCDIR)/mpv.pdf
+	$(RM) $(prefix)/share/applications/mpv.desktop
+	$(RM) $(foreach size,$(ICONSIZES),$(prefix)/share/icons/hicolor/$(size)/apps/mpv.png)
 
 clean:
 	-$(RM) $(call ADD_ALL_DIRS,/*.o /*.d /*.a /*.ho /*~)
 	-$(RM) $(call ADD_ALL_DIRS,/*.o /*.a /*.ho /*~)
 	-$(RM) $(call ADD_ALL_EXESUFS,mpv)
-	-$(RM) DOCS/man/en/mpv.1
+	-$(RM) $(call ADDSUFFIXES,.pdf .tex .log .aux .out .toc,DOCS/man/*/mpv)
+	-$(RM) DOCS/man/*/mpv.1
 	-$(RM) version.h
 	-$(RM) mpvcore/input/input_conf.h
 	-$(RM) video/out/vdpau_template.c
 	-$(RM) demux/ebml_types.h demux/ebml_defs.c
 	-$(RM) video/out/gl_video_shaders.h
+	-$(RM) video/out/x11_icon.inc
 	-$(RM) sub/osd_font.h
+	-$(RM) mpvcore/lua/defaults.inc
+	-$(RM) mpvcore/lua/assdraw.inc
+	-$(RM) mpvcore/lua/osc.inc
 
 distclean: clean
 	-$(RM) config.log config.mak config.h TAGS tags

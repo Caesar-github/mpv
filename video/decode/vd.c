@@ -56,23 +56,12 @@ int mpcodecs_reconfig_vo(sh_video_t *sh, const struct mp_image_params *params)
     int vocfg_flags = 0;
     struct mp_image_params p = *params;
 
-    if (!p.w || !p.h) {
-        // ideally, this should be dead code
-        mp_msg(MSGT_DECVIDEO, MSGL_WARN, "Unknown size, using container size.\n");
-        p.w = sh->disp_w;
-        p.h = sh->disp_h;
-    } else {
-        sh->disp_w = p.w;
-        sh->disp_h = p.h;
-    }
+    sh->vf_reconfig_count++;
 
     mp_msg(MSGT_DECVIDEO, MSGL_V,
            "VIDEO:  %dx%d  %5.3f fps  %5.1f kbps (%4.1f kB/s)\n",
-           sh->disp_w, sh->disp_h, sh->fps, sh->i_bps * 0.008,
+           p.w, p.h, sh->fps, sh->i_bps * 0.008,
            sh->i_bps / 1000.0);
-
-    if (!sh->disp_w || !sh->disp_h)
-        return -1;
 
     mp_msg(MSGT_DECVIDEO, MSGL_V, "VDec: vo config request - %d x %d (%s)\n",
            p.w, p.h, vo_format_name(p.imgfmt));
@@ -123,40 +112,28 @@ int mpcodecs_reconfig_vo(sh_video_t *sh, const struct mp_image_params *params)
     }
     // time to do aspect ratio corrections...
 
-    if (opts->movie_aspect > -1.0)
-        sh->aspect = opts->movie_aspect;        // cmdline overrides autodetect
-    else if (sh->stream_aspect != 0.0)
-        sh->aspect = sh->stream_aspect;
+    float force_aspect = opts->movie_aspect;
+    if (force_aspect > -1.0 && sh->stream_aspect != 0.0)
+        force_aspect = sh->stream_aspect;
 
-    int d_w = sh->disp_w;
-    int d_h = sh->disp_h;
+    if (force_aspect >= 0)
+        vf_set_dar(&p.d_w, &p.d_h, p.w, p.h, force_aspect);
 
-    if (sh->aspect > 0.01) {
-        int new_w = d_h * sh->aspect;
-        int new_h = d_h;
-        // we don't like horizontal downscale
-        if (new_w < d_w) {
-            new_w = d_w;
-            new_h = d_w / sh->aspect;
-        }
-        if (abs(d_w - new_w) >= 4 || abs(d_h - new_h) >= 4) {
-            d_w = new_w;
-            d_h = new_h;
-            mp_tmsg(MSGT_CPLAYER, MSGL_V, "Aspect ratio is %.2f:1 - "
-                    "scaling to correct movie aspect.\n", sh->aspect);
-        }
-
+    if (abs(p.d_w - p.w) >= 4 || abs(p.d_h - p.h) >= 4) {
+        mp_tmsg(MSGT_CPLAYER, MSGL_V, "Aspect ratio is %.2f:1 - "
+                "scaling to correct movie aspect.\n", sh->aspect);
         mp_msg(MSGT_IDENTIFY, MSGL_INFO, "ID_VIDEO_ASPECT=%1.4f\n", sh->aspect);
+    } else {
+        p.d_w = p.w;
+        p.d_h = p.h;
     }
-
-    p.d_w = d_w;
-    p.d_h = d_h;
 
     // Apply user overrides
     if (opts->requested_colorspace != MP_CSP_AUTO)
         p.colorspace = opts->requested_colorspace;
     if (opts->requested_input_range != MP_CSP_LEVELS_AUTO)
         p.colorlevels = opts->requested_input_range;
+    p.outputlevels = opts->requested_output_range;
 
     // Detect colorspace from resolution.
     // Make sure the user-overrides are consistent (no RGB csp for YUV, etc.).
@@ -165,9 +142,8 @@ int mpcodecs_reconfig_vo(sh_video_t *sh, const struct mp_image_params *params)
     vocfg_flags = (flip ? VOFLAG_FLIPPING : 0);
 
     // Time to config libvo!
-    mp_msg(MSGT_CPLAYER, MSGL_V,
-           "VO Config (%dx%d->%dx%d,flags=%d,0x%X)\n", sh->disp_w,
-           sh->disp_h, d_w, d_h, vocfg_flags, p.imgfmt);
+    mp_msg(MSGT_CPLAYER, MSGL_V, "VO Config (%dx%d->%dx%d,flags=%d,0x%X)\n",
+           p.w, p.h, p.d_w, p.d_h, vocfg_flags, p.imgfmt);
 
     if (vf_reconfig_wrapper(vf, &p, vocfg_flags) < 0) {
         mp_tmsg(MSGT_CPLAYER, MSGL_WARN, "FATAL: Cannot initialize video driver.\n");
@@ -183,8 +159,6 @@ int mpcodecs_reconfig_vo(sh_video_t *sh, const struct mp_image_params *params)
     if (!sh->vf_input)
         sh->vf_input = talloc(sh, struct mp_image_params);
     *sh->vf_input = p;
-
-    set_video_output_levels(sh);
 
     if (opts->gamma_gamma != 1000)
         set_video_colors(sh, "gamma", opts->gamma_gamma);

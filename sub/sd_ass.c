@@ -35,14 +35,9 @@
 #include "ass_mp.h"
 #include "sd.h"
 
-// Enable code that treats subtitle events with duration 0 specially, and
-// adjust their duration so that they will disappear with the next event.
-#define INCOMPLETE_EVENTS 0
-
 struct sd_ass_priv {
     struct ass_track *ass_track;
     bool is_converted;
-    bool incomplete_event;
     struct sub_bitmap *parts;
     bool flush_on_seek;
     char last_text[500];
@@ -60,13 +55,6 @@ static bool supports_format(const char *format)
     return format && (strcmp(format, "ass") == 0 ||
                       strcmp(format, "ssa") == 0 ||
                       strcmp(format, "ass-text") == 0);
-}
-
-static void free_last_event(ASS_Track *track)
-{
-    assert(track->n_events > 0);
-    ass_free_event(track, track->n_events - 1);
-    track->n_events--;
 }
 
 static int init(struct sd *sd)
@@ -100,68 +88,30 @@ static int init(struct sd *sd)
 
 static void decode(struct sd *sd, struct demux_packet *packet)
 {
-    void *data = packet->buffer;
-    int data_len = packet->len;
-    double pts = packet->pts;
-    double duration = packet->duration;
-    unsigned char *text = data;
     struct sd_ass_priv *ctx = sd->priv;
     ASS_Track *track = ctx->ass_track;
+    long long ipts = packet->pts * 1000 + 0.5;
+    long long iduration = packet->duration * 1000 + 0.5;
     if (strcmp(sd->codec, "ass") == 0) {
-        ass_process_chunk(track, data, data_len,
-                          (long long)(pts*1000 + 0.5),
-                          (long long)(duration*1000 + 0.5));
+        ass_process_chunk(track, packet->buffer, packet->len, ipts, iduration);
         return;
     } else if (strcmp(sd->codec, "ssa") == 0) {
         // broken ffmpeg ASS packet format
         ctx->flush_on_seek = true;
-        ass_process_data(track, data, data_len);
+        ass_process_data(track, packet->buffer, packet->len);
         return;
     }
     // plaintext subs
-    if (pts == MP_NOPTS_VALUE) {
+    if (packet->pts == MP_NOPTS_VALUE) {
         mp_msg(MSGT_SUBREADER, MSGL_WARN, "Subtitle without pts, ignored\n");
         return;
     }
-    long long ipts = pts * 1000 + 0.5;
-    long long iduration = duration * 1000 + 0.5;
-#if INCOMPLETE_EVENTS
-    if (ctx->incomplete_event) {
-        ctx->incomplete_event = false;
-        ASS_Event *event = track->events + track->n_events - 1;
-        if (ipts <= event->Start)
-            free_last_event(track);
-        else
-            event->Duration = ipts - event->Start;
-    }
-    // Note: we rely on there being guaranteed 0 bytes after data packets
-    int len = strlen(text);
-    if (len < 5) {
-        // Some tracks use a whitespace (but not empty) packet to mark end
-        // of previous subtitle.
-        for (int i = 0; i < len; i++)
-            if (!strchr(" \f\n\r\t\v", text[i]))
-                goto not_all_whitespace;
-        return;
-    }
- not_all_whitespace:;
-    if (!sd->no_remove_duplicates) {
-        for (int i = 0; i < track->n_events; i++)
-            if (track->events[i].Start == ipts
-                && (duration <= 0 || track->events[i].Duration == iduration)
-                && strcmp(track->events[i].Text, text) == 0)
-                return;   // We've already added this subtitle
-    }
-    if (duration <= 0) {
-        iduration = 10000;
-        ctx->incomplete_event = true;
-    }
-#else
-    if (duration <= 0) {
+    if (packet->duration <= 0) {
         mp_msg(MSGT_SUBREADER, MSGL_WARN, "Subtitle without duration or "
-               "duration set to 0 at pts %f, ignored\n", pts);
+               "duration set to 0 at pts %f, ignored\n", packet->pts);
         return;
     }
+    unsigned char *text = packet->buffer;
     if (!sd->no_remove_duplicates) {
         for (int i = 0; i < track->n_events; i++) {
             if (track->events[i].Start == ipts
@@ -170,7 +120,6 @@ static void decode(struct sd *sd, struct demux_packet *packet)
                 return;   // We've already added this subtitle
         }
     }
-#endif
     int eid = ass_alloc_event(track);
     ASS_Event *event = track->events + eid;
     event->Start = ipts;
@@ -320,9 +269,6 @@ static void fix_events(struct sd *sd)
 static void reset(struct sd *sd)
 {
     struct sd_ass_priv *ctx = sd->priv;
-    if (ctx->incomplete_event)
-        free_last_event(ctx->ass_track);
-    ctx->incomplete_event = false;
     if (ctx->flush_on_seek)
         ass_flush_events(ctx->ass_track);
     ctx->flush_on_seek = false;
@@ -343,8 +289,11 @@ static int control(struct sd *sd, enum sd_ctrl cmd, void *arg)
     switch (cmd) {
     case SD_CTRL_SUB_STEP: {
         double *a = arg;
-        a[0] = ass_step_sub(ctx->ass_track, a[0] * 1000 + .5, a[1]) / 1000.0;
-        return CONTROL_OK;
+        long long res = ass_step_sub(ctx->ass_track, a[0] * 1000 + 0.5, a[1]);
+        if (!res)
+            return false;
+        a[0] = res / 1000.0;
+        return true;
     case SD_CTRL_SET_VIDEO_PARAMS:
         ctx->video_params = *(struct mp_image_params *)arg;
         return CONTROL_OK;

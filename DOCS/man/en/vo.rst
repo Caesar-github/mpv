@@ -130,6 +130,16 @@ Available video output drivers are:
     ``output_surfaces=<2-15>``
         Allocate this many output surfaces to display video frames (default:
         3). See below for additional information.
+    ``colorkey=<#RRGGBB|#AARRGGBB>``
+        Set the VDPAU presentation queue background color, which in practice
+        is the colorkey used if VDPAU operates in overlay mode (default:
+        ``#020507``, some shade of black). If the alpha component of this value
+        is 0, the default VDPAU colorkey will be used instead (which is usually
+        green).
+    ``force-yuv``
+        Never accept RGBA input. This means mpv will insert a filter to convert
+        to a YUV format before the VO. Sometimes useful to force availability
+        of certain YUV-only features, like video equalizer or deinterlacing.
 
     Using the VDPAU frame queueing functionality controlled by the queuetime
     options makes mpv's frame flip timing less sensitive to system CPU load and
@@ -444,13 +454,20 @@ Available video output drivers are:
         Default is 128x256x64.
         Sizes must be a power of two, and 256 at most.
 
-    ``alpha``
-        Try to create a framebuffer with alpha component. This only makes sense
-        if the video contains alpha information (which is extremely rare). May
-        not be supported on all platforms. If alpha framebuffers are
-        unavailable, it silently falls back on a normal framebuffer. Note
-        that when using FBO indirections (such as with ``opengl-hq``), an FBO
-        format with alpha must be specified with the ``fbo-format`` option.
+    ``alpha=<blend|yes|no>``
+        Decides what to do if the input has an alpha component (default: blend).
+
+        blend
+            Blend the frame against a black background.
+        yes
+            Try to create a framebuffer with alpha component. This only makes sense
+            if the video contains alpha information (which is extremely rare). May
+            not be supported on all platforms. If alpha framebuffers are
+            unavailable, it silently falls back on a normal framebuffer. Note
+            that when using FBO indirections (such as with ``opengl-hq``), an FBO
+            format with alpha must be specified with the ``fbo-format`` option.
+        no
+            Ignore alpha component.
 
     ``chroma-location=<auto|center|left>``
         Set the YUV chroma sample location. auto means use the bitstream
@@ -663,6 +680,46 @@ Available video output drivers are:
     ``switch-mode``
         Instruct SDL to switch the monitor video mode when going fullscreen.
 
+``vaapi``
+    Intel VA API video output driver with support for hardware decoding. Note
+    that there is absolutely no reason to use this, other than wanting to use
+    hardware decoding to save power on laptops, or possibly preventing video
+    tearing with some setups.
+
+    ``scaling=<algorithm>``
+        default
+            Driver default (mpv default as well).
+        fast
+            Fast, but low quality.
+        hq
+            Unspecified driver dependent high-quality scaling, slow.
+        nla
+            ``non-linear anamorphic scaling``
+
+    ``deint-mode=<mode>``
+        Select deinterlacing algorithm. Note that by default deinterlacing is
+        initially always off, and needs to be enabled with the ``D`` key
+        (default key binding for ``cycle deinterlace``).
+
+        This option doesn't apply if libva supports video post processing (vpp).
+        In this case, the default for ``deint-mode`` is ``no``, and enabling
+        deinterlacing via user interaction using the methods mentioned above
+        actually inserts the ``vavpp`` video filter. If vpp is not actually
+        supported with the libva backend in use, you can use this option to
+        forcibly enable VO based deinterlacing.
+
+        no
+            Don't allow deinterlacing (default for newer libva).
+        first-field
+            Show only first field (going by ``--field-dominance``).
+        bob
+            bob deinterlacing (default for older libva).
+
+    ``scaled-osd=<yes|no>``
+        If enabled, then the OSD is rendered at video resolution and scaled to
+        display resolution. By default, this is disabled, and the OSD is
+        rendered at display resolution if the driver supports it.
+
 ``null``
     Produces no video output. Useful for benchmarking.
 
@@ -710,3 +767,13 @@ Available video output drivers are:
         JPEG DPI (default: 72)
     ``outdir=<dirname>``
         Specify the directory to save the image files to (default: ``./``).
+
+``wayland`` (Wayland only)
+    Wayland shared memory video output as fallback for ``opengl``.
+
+    ``default-format``
+        Use the default RGB32 format instead of an auto-detected one.
+
+    ``alpha``
+        Use a buffer format that supports videos and images with alpha
+        informations

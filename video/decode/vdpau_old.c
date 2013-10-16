@@ -162,17 +162,13 @@ static void release_surface(void *ptr)
     talloc_free(state);
 }
 
-static struct mp_image *allocate_image(struct lavc_ctx *ctx, AVFrame *frame)
+static struct mp_image *allocate_image(struct lavc_ctx *ctx, int imgfmt,
+                                       int w, int h)
 {
     struct priv *p = ctx->hwdec_priv;
-    int imgfmt = pixfmt2imgfmt(frame->format);
 
     if (!IMGFMT_IS_VDPAU(imgfmt))
         return NULL;
-
-    // frame->width/height lie. Using them breaks with non-mod 16 video.
-    int w = ctx->avctx->width;
-    int h = ctx->avctx->height;
 
     if (w != p->vid_width || h != p->vid_height || imgfmt != p->image_format) {
         p->vid_width = w;
@@ -223,9 +219,6 @@ static void uninit(struct lavc_ctx *ctx)
 
 static int init(struct lavc_ctx *ctx)
 {
-    if (!ctx->hwdec_info || !ctx->hwdec_info->vdpau_ctx)
-        return -1;
-
     struct priv *p = talloc_ptrtype(NULL, p);
     *p = (struct priv) {
         .mpvdp = ctx->hwdec_info->vdpau_ctx,
@@ -246,22 +239,43 @@ static int init(struct lavc_ctx *ctx)
     return 0;
 }
 
-static void fix_image(struct lavc_ctx *ctx, struct mp_image *img)
+static int probe(struct vd_lavc_hwdec *hwdec, struct mp_hwdec_info *info,
+                 const char *decoder)
+{
+    if (!info || !info->vdpau_ctx)
+        return HWDEC_ERR_NO_CTX;
+    return 0;
+}
+
+static struct mp_image *process_image(struct lavc_ctx *ctx, struct mp_image *img)
 {
     // Make it follow the convention of the "new" vdpau decoder
     struct vdpau_render_state *rndr = (void *)img->planes[0];
     img->planes[0] = (void *)"dummy"; // must be non-NULL, otherwise arbitrary
     img->planes[3] = (void *)(intptr_t)rndr->surface;
+    return img;
 }
 
-const struct vd_lavc_hwdec_functions mp_vd_lavc_vdpau_old = {
+const struct vd_lavc_hwdec mp_vd_lavc_vdpau_old = {
     .image_formats = (const int[]) {
         IMGFMT_VDPAU_MPEG1, IMGFMT_VDPAU_MPEG2, IMGFMT_VDPAU_H264,
         IMGFMT_VDPAU_WMV3, IMGFMT_VDPAU_VC1, IMGFMT_VDPAU_MPEG4,
         0
     },
+    .codec_pairs = (const char *[]) {
+        "h264",         "h264_vdpau",
+        "wmv3",         "wmv3_vdpau",
+        "vc1",          "vc1_vdpau",
+        "mpegvideo",    "mpegvideo_vdpau",
+        "mpeg1video",   "mpeg1video_vdpau",
+        "mpeg2video",   "mpegvideo_vdpau",
+        "mpeg2",        "mpeg2_vdpau",
+        "mpeg4",        "mpeg4_vdpau",
+        NULL
+    },
+    .probe = probe,
     .init = init,
     .uninit = uninit,
     .allocate_image = allocate_image,
-    .fix_image = fix_image,
+    .process_image = process_image,
 };

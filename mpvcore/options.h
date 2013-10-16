@@ -19,7 +19,10 @@ typedef struct mp_vo_opts {
     int native_keyrepeat;
 
     float panscan;
-    float panscanrange;
+    float zoom;
+    float pan_x, pan_y;
+    float align_x, align_y;
+    int unscaled;
 
     struct m_geometry geometry;
     struct m_geometry autofit;
@@ -29,9 +32,7 @@ typedef struct mp_vo_opts {
     int keepaspect;
     int border;
 
-    int nomouse_input;
     int enable_mouse_movements;
-    int cursor_autohide_delay;
 
     int64_t WinID;
 
@@ -44,12 +45,16 @@ typedef struct mp_vo_opts {
 
 typedef struct MPOpts {
     char **reset_options;
+    char **lua_files;
+    int lua_load_osc;
 
     struct m_obj_settings *audio_driver_list;
     int fixed_vo;
+    int force_vo;
     int softvol;
     float mixer_init_volume;
     int mixer_init_mute;
+    char *mixer_restore_volume_data;
     int volstep;
     float softvol_max;
     int gapless_audio;
@@ -67,6 +72,9 @@ typedef struct MPOpts {
     int gamma_hue;
 
     int stop_screensaver;
+    int cursor_autohide_delay;
+    int cursor_autohide_fs;
+
     int requested_colorspace;
     int requested_input_range;
     int requested_output_range;
@@ -81,8 +89,11 @@ typedef struct MPOpts {
     char *stream_capture;
     char *stream_dump;
     int loop_times;
+    int shuffle;
     int ordered_chapters;
     int chapter_merge_threshold;
+    double chapter_seek_threshold;
+    int load_unsafe_playlists;
     int quiet;
     int load_config;
     int use_filedir_conf;
@@ -90,6 +101,7 @@ typedef struct MPOpts {
     int stream_cache_def_size;
     float stream_cache_min_percent;
     float stream_cache_seek_min_percent;
+    int network_rtsp_transport;
     int stream_cache_pause;
     int chapterrange[2];
     int edition_id;
@@ -162,6 +174,7 @@ typedef struct MPOpts {
     double playback_speed;
     struct m_obj_settings *vf_settings;
     struct m_obj_settings *af_settings;
+    int deinterlace;
     float movie_aspect;
     int flip;
     int field_dominance;
@@ -192,6 +205,7 @@ typedef struct MPOpts {
     char *ass_styles_file;
     int ass_style_override;
     int ass_hinting;
+    int ass_shaper;
 
     int hwdec_api;
     char *hwdec_codecs;
@@ -268,6 +282,8 @@ extern char **network_http_header_fields;
 extern char *network_useragent;
 extern char *network_referrer;
 extern int   network_cookies_enabled;
+extern int   network_tls_verify;
+extern char *network_tls_ca_file;
 extern char *cookies_file;
 
 extern const m_option_t mp_opts[];

@@ -29,6 +29,7 @@
 #include "fmt-conversion.h"
 #include "csputils.h"
 #include "mpvcore/mp_msg.h"
+#include "video/filter/vf.h"
 
 //global sws_flags from the command line
 int sws_flags = 2;
@@ -44,6 +45,9 @@ float sws_lum_sharpen = 0.0;
 const int mp_sws_hq_flags = SWS_LANCZOS | SWS_FULL_CHR_H_INT |
                             SWS_FULL_CHR_H_INP | SWS_ACCURATE_RND |
                             SWS_BITEXACT;
+
+// Fast, lossy.
+const int mp_sws_fast_flags = SWS_BILINEAR;
 
 // Set ctx parameters to global command line flags.
 void mp_sws_set_from_cmdline(struct mp_sws_context *ctx)
@@ -146,13 +150,12 @@ static bool cache_valid(struct mp_sws_context *ctx)
            ctx->saturation == old->saturation;
 }
 
-static int free_mp_sws(void *p)
+static void free_mp_sws(void *p)
 {
     struct mp_sws_context *ctx = p;
     sws_freeContext(ctx->sws);
     sws_freeFilter(ctx->src_filter);
     sws_freeFilter(ctx->dst_filter);
-    return 0;
 }
 
 // You're supposed to set your scaling parameters on the returned context.
@@ -176,6 +179,14 @@ struct mp_sws_context *mp_sws_alloc(void *talloc_parent)
 // Optional, but possibly useful to avoid having to handle mp_sws_scale errors.
 int mp_sws_reinit(struct mp_sws_context *ctx)
 {
+    struct mp_image_params *src = &ctx->src;
+    struct mp_image_params *dst = &ctx->dst;
+
+    // Neutralize unsupported or ignored parameters.
+    src->d_w = dst->d_w = 0;
+    src->d_h = dst->d_h = 0;
+    src->outputlevels = dst->outputlevels = MP_CSP_LEVELS_AUTO;
+
     if (cache_valid(ctx))
         return 0;
 
@@ -183,9 +194,6 @@ int mp_sws_reinit(struct mp_sws_context *ctx)
     ctx->sws = sws_alloc_context();
     if (!ctx->sws)
         return -1;
-
-    struct mp_image_params *src = &ctx->src;
-    struct mp_image_params *dst = &ctx->dst;
 
     mp_image_params_guess_csp(src); // sanitize colorspace/colorlevels
     mp_image_params_guess_csp(dst);
@@ -299,6 +307,33 @@ void mp_image_sw_blur_scale(struct mp_image *dst, struct mp_image *src,
     ctx->force_reload = true;
     mp_sws_scale(ctx, dst, src);
     talloc_free(ctx);
+}
+
+int mp_sws_get_vf_equalizer(struct mp_sws_context *sws, struct vf_seteq *eq)
+{
+    if (!strcmp(eq->item, "brightness"))
+        eq->value =  ((sws->brightness * 100) + (1 << 15)) >> 16;
+    else if (!strcmp(eq->item, "contrast"))
+        eq->value = (((sws->contrast  * 100) + (1 << 15)) >> 16) - 100;
+    else if (!strcmp(eq->item, "saturation"))
+        eq->value = (((sws->saturation * 100) + (1 << 15)) >> 16) - 100;
+    else
+        return 0;
+    return 1;
+}
+
+int mp_sws_set_vf_equalizer(struct mp_sws_context *sws, struct vf_seteq *eq)
+{
+    if (!strcmp(eq->item, "brightness"))
+        sws->brightness = ((eq->value << 16) + 50) / 100;
+    else if (!strcmp(eq->item, "contrast"))
+        sws->contrast   = (((eq->value + 100) << 16) + 50) / 100;
+    else if (!strcmp(eq->item, "saturation"))
+        sws->saturation = (((eq->value + 100) << 16) + 50) / 100;
+    else
+        return 0;
+
+    return mp_sws_reinit(sws) >= 0 ? 1 : -1;
 }
 
 // vim: ts=4 sw=4 et tw=80

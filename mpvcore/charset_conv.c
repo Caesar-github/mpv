@@ -41,6 +41,12 @@
 
 #include "charset_conv.h"
 
+bool mp_charset_is_utf8(const char *user_cp)
+{
+    return user_cp && (strcasecmp(user_cp, "utf8") == 0 ||
+                       strcasecmp(user_cp, "utf-8") == 0);
+}
+
 // Split the string on ':' into components.
 // out_arr is at least max entries long.
 // Return number of out_arr entries filled.
@@ -70,9 +76,13 @@ static int split_colon(const char *user_cp, int max, bstr *out_arr)
 bool mp_charset_requires_guess(const char *user_cp)
 {
     bstr res[2] = {{0}};
-    split_colon(user_cp, 2, res);
+    int r = split_colon(user_cp, 2, res);
+    // Note that "utf8" is the UTF-8 codepage, while "utf8:..." specifies UTF-8
+    // by default, plus a codepage that is used if the input is not UTF-8.
     return bstrcasecmp0(res[0], "enca") == 0 ||
-           bstrcasecmp0(res[0], "guess") == 0;
+           bstrcasecmp0(res[0], "guess") == 0 ||
+           (r > 1 && bstrcasecmp0(res[0], "utf-8") == 0) ||
+           (r > 1 && bstrcasecmp0(res[0], "utf8") == 0);
 }
 
 #ifdef CONFIG_ENCA
@@ -110,9 +120,6 @@ static const char *enca_guess(bstr buf, const char *language)
 #ifdef CONFIG_LIBGUESS
 static const char *libguess_guess(bstr buf, const char *language)
 {
-    if (libguess_validate_utf8(buf.start, buf.len))
-        return "UTF-8";
-
     if (!language || !language[0] || strcmp(language, "help") == 0) {
         mp_msg(MSGT_SUBREADER, MSGL_ERR, "libguess needs a language: "
                "japanese taiwanese chinese korean russian arabic turkish "
@@ -129,10 +136,16 @@ static const char *libguess_guess(bstr buf, const char *language)
 // If user_cp doesn't refer to any known auto-detection (for example because
 // it's a real iconv codepage), user_cp is returned without even looking at
 // the buf data.
-const char *mp_charset_guess(bstr buf, const char *user_cp)
+const char *mp_charset_guess(bstr buf, const char *user_cp, int flags)
 {
     if (!mp_charset_requires_guess(user_cp))
         return user_cp;
+
+    // Do our own UTF-8 detection, because at least ENCA seems to get it
+    // wrong sometimes (suggested by divVerent).
+    int r = bstr_validate_utf8(buf);
+    if (r >= 0 || (r > -8 && (flags & MP_ICONV_ALLOW_CUTOFF)))
+        return "UTF-8";
 
     bstr params[3] = {{0}};
     split_colon(user_cp, 3, params);
@@ -152,6 +165,10 @@ const char *mp_charset_guess(bstr buf, const char *user_cp)
     if (bstrcasecmp0(type, "guess") == 0)
         res = libguess_guess(buf, lang);
 #endif
+    if (bstrcasecmp0(type, "utf8") == 0 || bstrcasecmp0(type, "utf-8") == 0) {
+        if (!fallback)
+            fallback = params[1].start; // must be already 0-terminated
+    }
 
     if (res) {
         mp_msg(MSGT_SUBREADER, MSGL_DBG2, "%.*s detected charset: '%s'\n",
@@ -160,8 +177,11 @@ const char *mp_charset_guess(bstr buf, const char *user_cp)
         res = fallback;
         mp_msg(MSGT_SUBREADER, MSGL_DBG2,
                "Detection with %.*s failed: fallback to %s\n",
-               BSTR_P(type), res && res[0] ? res : "no conversion");
+               BSTR_P(type), res && res[0] ? res : "broken UTF-8/Latin1");
     }
+
+    if (!res && !(flags & MP_STRICT_UTF8))
+        res = "UTF-8-BROKEN";
 
     return res;
 }
@@ -176,7 +196,7 @@ const char *mp_charset_guess(bstr buf, const char *user_cp)
 //  returns: same as mp_iconv_to_utf8()
 bstr mp_charset_guess_and_conv_to_utf8(bstr buf, const char *user_cp, int flags)
 {
-    return mp_iconv_to_utf8(buf, mp_charset_guess(buf, user_cp), flags);
+    return mp_iconv_to_utf8(buf, mp_charset_guess(buf, user_cp, flags), flags);
 }
 
 // Use iconv to convert buf to UTF-8.
@@ -193,16 +213,17 @@ bstr mp_charset_guess_and_conv_to_utf8(bstr buf, const char *user_cp, int flags)
 bstr mp_iconv_to_utf8(bstr buf, const char *cp, int flags)
 {
 #ifdef CONFIG_ICONV
-    const char *tocp = "UTF-8";
-
-    if (!cp || !cp[0] || strcasecmp(cp, tocp) == 0)
+    if (!cp || !cp[0] || mp_charset_is_utf8(cp))
         return buf;
 
     if (strcasecmp(cp, "ASCII") == 0)
         return buf;
 
+    if (strcasecmp(cp, "UTF-8-BROKEN") == 0)
+        return bstr_sanitize_utf8_latin1(NULL, buf);
+
     iconv_t icdsc;
-    if ((icdsc = iconv_open(tocp, cp)) == (iconv_t) (-1)) {
+    if ((icdsc = iconv_open("UTF-8", cp)) == (iconv_t) (-1)) {
         if (flags & MP_ICONV_VERBOSE)
             mp_msg(MSGT_SUBREADER, MSGL_ERR,
                    "Error opening iconv with codepage '%s'\n", cp);

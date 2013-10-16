@@ -50,7 +50,7 @@ enum mp_voctrl {
     VOCTRL_SET_EQUALIZER,               // struct voctrl_set_equalizer_args*
     VOCTRL_GET_EQUALIZER,               // struct voctrl_get_equalizer_args*
 
-    /* for vdpau hardware decoding */
+    /* for hardware decoding */
     VOCTRL_GET_HWDEC_INFO,              // struct mp_hwdec_info*
 
     VOCTRL_NEWFRAME,
@@ -238,6 +238,9 @@ struct vo {
     struct mp_log *log; // Using e.g. "[vo/vdpau]" as prefix
     int config_ok;      // Last config call was successful?
     int config_count;   // Total number of successful config calls
+    struct mp_image_params *params; // Configured parameters (as in vo_reconfig)
+
+    bool probing;
 
     bool untimed;       // non-interactive, don't do sleep calls in playloop
 

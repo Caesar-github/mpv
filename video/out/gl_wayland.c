@@ -1,22 +1,19 @@
 /*
- * MPlayer is free software; you can redistribute it and/or modify
+ * This file is part of mpv video player.
+ * Copyright © 2013 Alexander Preisinger <alexander.preisinger@gmail.com>
+ *
+ * mpv is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
- * MPlayer is distributed in the hope that it will be useful,
+ * mpv is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with MPlayer; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
- *
- * You can alternatively redistribute this file and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
+ * with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <wayland-egl.h>
@@ -27,7 +24,6 @@
 #include "gl_common.h"
 
 struct egl_context {
-    struct mp_log *log;
     EGLSurface egl_surface;
 
     struct wl_egl_window *egl_window;
@@ -39,74 +35,42 @@ struct egl_context {
     } egl;
 };
 
-static void egl_resize_func(struct vo_wayland_state *wl,
-                            uint32_t edges,
-                            int32_t width,
-                            int32_t height,
-                            void *user_data)
+static void egl_resize(struct vo_wayland_state *wl,
+                       struct egl_context *ctx)
 {
-    struct egl_context *ctx = user_data;
-    int32_t minimum_size = 150;
-    int32_t x, y;
-    float temp_aspect = width / (float) MPMAX(height, 1);
+    int32_t x = wl->window.sh_x;
+    int32_t y = wl->window.sh_y;
+    int32_t width = wl->window.sh_width;
+    int32_t height = wl->window.sh_height;
 
-    if (!ctx->egl_window)
-        return;
-
-    /* get the real window size of the window */
+    // get the real size of the window
+    // this improves moving the window while resizing it
     wl_egl_window_get_attached_size(ctx->egl_window,
                                     &wl->window.width,
                                     &wl->window.height);
 
-    if (width < minimum_size)
-        width = minimum_size;
-    if (height < minimum_size)
-        height = minimum_size;
+    MP_VERBOSE(wl, "resizing %dx%d -> %dx%d\n", wl->window.width,
+                                                wl->window.height,
+                                                width,
+                                                height);
 
-    /* if only the height is changed we have to calculate the width
-     * in any other case we calculate the height */
-    switch (edges) {
-        case WL_SHELL_SURFACE_RESIZE_TOP:
-        case WL_SHELL_SURFACE_RESIZE_BOTTOM:
-            width = wl->window.aspect * height;
-            break;
-        case WL_SHELL_SURFACE_RESIZE_LEFT:
-        case WL_SHELL_SURFACE_RESIZE_RIGHT:
-        case WL_SHELL_SURFACE_RESIZE_TOP_LEFT:    // just a preference
-        case WL_SHELL_SURFACE_RESIZE_TOP_RIGHT:
-        case WL_SHELL_SURFACE_RESIZE_BOTTOM_LEFT:
-        case WL_SHELL_SURFACE_RESIZE_BOTTOM_RIGHT:
-            height = (1 / wl->window.aspect) * width;
-            break;
-        default:
-            if (wl->window.aspect < temp_aspect)
-                width = wl->window.aspect * height;
-            else
-                height = (1 / wl->window.aspect) * width;
-            break;
-    }
-
-
-    if (edges & WL_SHELL_SURFACE_RESIZE_LEFT)
+    if (x != 0)
         x = wl->window.width - width;
-    else
-        x = 0;
 
-    if (edges & WL_SHELL_SURFACE_RESIZE_TOP)
+    if (y != 0)
         y = wl->window.height - height;
-    else
-        y = 0;
 
-    MP_VERBOSE(ctx, "resizing %dx%d -> %dx%d\n", wl->window.width,
-            wl->window.height, width, height);
     wl_egl_window_resize(ctx->egl_window, width, height, x, y);
 
     wl->window.width = width;
     wl->window.height = height;
 
     /* set size for mplayer */
-    wl->vo->dwidth = width;
-    wl->vo->dheight = height;
+    wl->vo->dwidth = wl->window.width;
+    wl->vo->dheight = wl->window.height;
+
+    wl->vo->want_redraw = true;
+    wl->window.events = 0;
 }
 
 static bool egl_create_context(struct vo_wayland_state *wl,
@@ -137,7 +101,7 @@ static bool egl_create_context(struct vo_wayland_state *wl,
     if (eglInitialize(egl_ctx->egl.dpy, &major, &minor) != EGL_TRUE)
         return false;
 
-    MP_VERBOSE(egl_ctx, "EGL version %d.%d\n", major, minor);
+    MP_VERBOSE(wl, "EGL version %d.%d\n", major, minor);
 
     EGLint context_attribs[] = {
         EGL_CONTEXT_MAJOR_VERSION_KHR,
@@ -175,9 +139,10 @@ static bool egl_create_context(struct vo_wayland_state *wl,
 
     eglstr = eglQueryString(egl_ctx->egl.dpy, EGL_EXTENSIONS);
 
-    mpgl_load_functions(gl, (void*(*)(const GLubyte*))eglGetProcAddress, eglstr);
+    mpgl_load_functions(gl, (void*(*)(const GLubyte*))eglGetProcAddress, eglstr,
+                        wl->log);
     if (!gl->BindProgram)
-        mpgl_load_functions(gl, NULL, eglstr);
+        mpgl_load_functions(gl, NULL, eglstr, wl->log);
 
     return true;
 }
@@ -214,11 +179,6 @@ static bool config_window_wayland(struct MPGLContext *ctx,
     struct vo_wayland_state * wl = ctx->vo->wayland;
     bool enable_alpha = !!(flags & VOFLAG_ALPHA);
     bool ret = false;
-
-    egl_ctx->log = mp_log_new(egl_ctx, wl->log, "EGL");
-
-    wl->window.resize_func = egl_resize_func;
-    wl->window.resize_func_data = (void*) egl_ctx;
 
     if (!vo_wayland_config(ctx->vo, d_width, d_height, flags))
         return false;
@@ -262,7 +222,12 @@ static void releaseGlContext_wayland(MPGLContext *ctx)
 static void swapGlBuffers_wayland(MPGLContext *ctx)
 {
     struct egl_context * egl_ctx = ctx->priv;
+    struct vo_wayland_state *wl = ctx->vo->wayland;
+
     eglSwapBuffers(egl_ctx->egl.dpy, egl_ctx->egl_surface);
+
+    if (wl->window.events & VO_EVENT_RESIZE)
+        egl_resize(wl, egl_ctx);
 }
 
 void mpgl_set_backend_wayland(MPGLContext *ctx)

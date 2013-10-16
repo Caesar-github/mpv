@@ -22,12 +22,29 @@
 struct MPContext;
 struct mp_cmd;
 
-void mp_get_osd_mouse_pos(struct MPContext *mpctx, float *x, float *y);
+void command_init(struct MPContext *mpctx);
+void command_uninit(struct MPContext *mpctx);
 
 void run_command(struct MPContext *mpctx, struct mp_cmd *cmd);
-char *mp_property_expand_string(struct MPContext *mpctx, char *str);
+char *mp_property_expand_string(struct MPContext *mpctx, const char *str);
 void property_print_help(void);
 int mp_property_do(const char* name, int action, void* val,
                    struct MPContext *mpctx);
+
+const struct m_option *mp_get_property_list(void);
+
+enum mp_event {
+    MP_EVENT_NONE,
+    MP_EVENT_TICK,
+    MP_EVENT_PROPERTY,          // char*, property that is changed
+    MP_EVENT_TRACKS_CHANGED,
+    MP_EVENT_START_FILE,
+    MP_EVENT_END_FILE,
+};
+
+void mp_notify(struct MPContext *mpctx, enum mp_event event, void *arg);
+void mp_notify_property(struct MPContext *mpctx, const char *property);
+
+void mp_flush_events(struct MPContext *mpctx);
 
 #endif /* MPLAYER_COMMAND_H */

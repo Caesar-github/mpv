@@ -57,42 +57,49 @@ enum streamtype {
 #define STREAM_READ  0
 #define STREAM_WRITE 1
 
+// flags for stream_open_ext (this includes STREAM_READ and STREAM_WRITE)
+#define STREAM_NO_FILTERS 2
+
 // stream->flags
+#define MP_STREAM_FAST_SKIPPING 1 // allow forward seeks by skipping
 #define MP_STREAM_SEEK_BW  2
 #define MP_STREAM_SEEK_FW  4
 #define MP_STREAM_SEEK  (MP_STREAM_SEEK_BW | MP_STREAM_SEEK_FW)
 
+#define STREAM_NO_MATCH -2
 #define STREAM_UNSUPPORTED -1
 #define STREAM_ERROR 0
 #define STREAM_OK    1
 
 #define MAX_STREAM_PROTOCOLS 20
 
-#define STREAM_CTRL_GET_TIME_LENGTH 1
-#define STREAM_CTRL_SEEK_TO_CHAPTER 2
-#define STREAM_CTRL_GET_CURRENT_CHAPTER 3
-#define STREAM_CTRL_GET_NUM_CHAPTERS 4
-#define STREAM_CTRL_GET_CURRENT_TIME 5
-#define STREAM_CTRL_SEEK_TO_TIME 6
-#define STREAM_CTRL_GET_SIZE 7
-#define STREAM_CTRL_GET_ASPECT_RATIO 8
-#define STREAM_CTRL_GET_NUM_ANGLES 9
-#define STREAM_CTRL_GET_ANGLE 10
-#define STREAM_CTRL_SET_ANGLE 11
-#define STREAM_CTRL_GET_NUM_TITLES 12
-#define STREAM_CTRL_GET_LANG 13
-#define STREAM_CTRL_GET_CURRENT_TITLE 14
-#define STREAM_CTRL_GET_CACHE_SIZE 15
-#define STREAM_CTRL_GET_CACHE_FILL 16
-#define STREAM_CTRL_GET_CACHE_IDLE 17
-#define STREAM_CTRL_RECONNECT 18
-// DVD/Bluray, signal general support for GET_CURRENT_TIME etc.
-#define STREAM_CTRL_MANAGES_TIMELINE 19
-#define STREAM_CTRL_GET_START_TIME 20
-#define STREAM_CTRL_GET_CHAPTER_TIME 21
-#define STREAM_CTRL_GET_DVD_INFO 22
-#define STREAM_CTRL_SET_CONTENTS 23
-#define STREAM_CTRL_GET_METADATA 24
+enum stream_ctrl {
+    STREAM_CTRL_GET_TIME_LENGTH = 1,
+    STREAM_CTRL_SEEK_TO_CHAPTER,
+    STREAM_CTRL_GET_CURRENT_CHAPTER,
+    STREAM_CTRL_GET_NUM_CHAPTERS,
+    STREAM_CTRL_GET_CURRENT_TIME,
+    STREAM_CTRL_SEEK_TO_TIME,
+    STREAM_CTRL_GET_SIZE,
+    STREAM_CTRL_GET_ASPECT_RATIO,
+    STREAM_CTRL_GET_NUM_ANGLES,
+    STREAM_CTRL_GET_ANGLE,
+    STREAM_CTRL_SET_ANGLE,
+    STREAM_CTRL_GET_NUM_TITLES,
+    STREAM_CTRL_GET_LANG,
+    STREAM_CTRL_GET_CURRENT_TITLE,
+    STREAM_CTRL_GET_CACHE_SIZE,
+    STREAM_CTRL_GET_CACHE_FILL,
+    STREAM_CTRL_GET_CACHE_IDLE,
+    STREAM_CTRL_RECONNECT,
+    // DVD/Bluray, signal general support for GET_CURRENT_TIME etc.
+    STREAM_CTRL_MANAGES_TIMELINE,
+    STREAM_CTRL_GET_START_TIME,
+    STREAM_CTRL_GET_CHAPTER_TIME,
+    STREAM_CTRL_GET_DVD_INFO,
+    STREAM_CTRL_SET_CONTENTS,
+    STREAM_CTRL_GET_METADATA,
+};
 
 struct stream_lang_req {
     int type;     // STREAM_AUDIO, STREAM_SUB
@@ -110,11 +117,12 @@ typedef struct stream_info_st {
     const char *name;
     // opts is set from ->opts
     int (*open)(struct stream *st, int mode);
-    const char *protocols[MAX_STREAM_PROTOCOLS];
+    const char **protocols;
     int priv_size;
     const void *priv_defaults;
     const struct m_option *options;
-    const char *url_options[][2];
+    const char **url_options;
+    bool stream_filter;
 } stream_info_t;
 
 typedef struct stream {
@@ -149,12 +157,14 @@ typedef struct stream {
     char *mime_type; // when HTTP streaming is used
     char *demuxer; // request demuxer to be used
     char *lavf_type; // name of expected demuxer type for lavf
+    bool safe_origin; // used for playlists that can be opened safely
     struct MPOpts *opts;
 
     FILE *capture_file;
     char *capture_filename;
 
-    struct stream *uncached_stream;
+    struct stream *uncached_stream; // underlying stream for cache wrapper
+    struct stream *source;
 
     // Includes additional padding in case sizes get rounded up by sector size.
     unsigned char buffer[];
@@ -207,6 +217,7 @@ inline static uint64_t stream_read_qword(stream_t *s)
 
 unsigned char *stream_read_line(stream_t *s, unsigned char *mem, int max,
                                 int utf16);
+int stream_skip_bom(struct stream *s);
 
 inline static int stream_eof(stream_t *s)
 {
@@ -231,6 +242,7 @@ struct bstr stream_read_complete(struct stream *s, void *talloc_ctx,
 int stream_control(stream_t *s, int cmd, void *arg);
 void stream_update_size(stream_t *s);
 void free_stream(stream_t *s);
+struct stream *stream_create(const char *url, int flags, struct MPOpts *options);
 struct stream *stream_open(const char *filename, struct MPOpts *options);
 stream_t *open_output_stream(const char *filename, struct MPOpts *options);
 stream_t *open_memory_stream(void *data, int len);
@@ -247,8 +259,11 @@ int stream_check_interrupt(int time);
 
 bool stream_manages_timeline(stream_t *s);
 
+/* stream/stream_dvd.c */
 extern int dvd_title;
 extern int dvd_angle;
+extern int dvd_speed;
+extern char *dvd_device, *cdrom_device;
 
 extern int bluray_angle;
 extern char *bluray_device;
@@ -261,5 +276,6 @@ typedef struct {
 } stream_language_t;
 
 void mp_url_unescape_inplace(char *buf);
+char *mp_url_escape(void *talloc_ctx, const char *s, const char *ok);
 
 #endif /* MPLAYER_STREAM_H */

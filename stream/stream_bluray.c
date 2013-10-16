@@ -58,6 +58,7 @@ int   bluray_angle   = 0;
 
 struct bluray_priv_s {
     BLURAY *bd;
+    int num_titles;
     int current_angle;
     int current_title;
 
@@ -92,7 +93,6 @@ static int bluray_stream_seek(stream_t *s, int64_t pos)
     if (p == -1)
         return 0;
 
-    s->pos = p;
     return 1;
 }
 
@@ -145,6 +145,10 @@ static int bluray_stream_control(stream_t *s, int cmd, void *arg)
 
     case STREAM_CTRL_GET_CURRENT_TITLE: {
         *((unsigned int *) arg) = b->current_title;
+        return 1;
+    }
+    case STREAM_CTRL_GET_NUM_TITLES: {
+        *((unsigned int *)arg) = b->num_titles;
         return 1;
     }
 
@@ -288,7 +292,7 @@ static int bluray_stream_open(stream_t *s, int mode)
     BLURAY_TITLE_INFO *info = NULL;
     BLURAY *bd;
 
-    int title, title_guess, title_count;
+    int title, title_guess;
     uint64_t title_size;
 
     unsigned int angle = 0;
@@ -318,9 +322,9 @@ static int bluray_stream_open(stream_t *s, int mode)
     }
 
     /* check for available titles on disc */
-    title_count = bd_get_titles(bd, TITLES_RELEVANT, angle);
-    mp_msg(MSGT_IDENTIFY, MSGL_INFO, "ID_BLURAY_TITLES=%d\n", title_count);
-    if (!title_count) {
+    b->num_titles = bd_get_titles(bd, TITLES_RELEVANT, angle);
+    mp_msg(MSGT_IDENTIFY, MSGL_INFO, "ID_BLURAY_TITLES=%d\n", b->num_titles);
+    if (!b->num_titles) {
         mp_msg(MSGT_OPEN, MSGL_ERR,
                "Can't find any Blu-ray-compatible title here.\n");
         bd_close(bd);
@@ -329,7 +333,7 @@ static int bluray_stream_open(stream_t *s, int mode)
 
     /* parse titles information */
     title_guess = BLURAY_DEFAULT_TITLE;
-    for (i = 0; i < title_count; i++) {
+    for (i = 0; i < b->num_titles; i++) {
         BLURAY_TITLE_INFO *ti;
         int sec, msec;
 
@@ -358,7 +362,7 @@ static int bluray_stream_open(stream_t *s, int mode)
 
     /* Select current title */
     title = b->cfg_title ? b->cfg_title - 1: title_guess;
-    title = FFMIN(title, title_count - 1);
+    title = FFMIN(title, b->num_titles - 1);
 
     bd_select_title(bd, title);
 
@@ -403,15 +407,15 @@ err_no_info:
 }
 
 const stream_info_t stream_info_bluray = {
-    "bd",
-    bluray_stream_open,
-    { "bd", "br", "bluray", NULL },
+    .name = "bd",
+    .open = bluray_stream_open,
+    .protocols = (const char*[]){ "bd", "br", "bluray", NULL },
     .priv_defaults = &bluray_stream_priv_dflts,
     .priv_size = sizeof(struct bluray_priv_s),
     .options = bluray_stream_opts_fields,
-    .url_options = {
-        {"hostname", "title"},
-        {"filename", "device"},
-        {0}
+    .url_options = (const char*[]){
+        "hostname=title",
+        "filename=device",
+        NULL
     },
 };

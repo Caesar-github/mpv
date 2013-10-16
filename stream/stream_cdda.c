@@ -50,8 +50,6 @@
 
 #include "mpvcore/mp_msg.h"
 
-extern char *cdrom_device;
-
 typedef struct {
     cdrom_drive_t *cd;
     cdrom_paranoia_t *cdp;
@@ -213,9 +211,8 @@ static int seek(stream_t *s, int64_t newpos)
     int seek_to_track = 0;
     int i;
 
-    s->pos = newpos;
-    sec = s->pos / CDIO_CD_FRAMESIZE_RAW;
-    if (s->pos < 0 || sec > p->end_sector) {
+    sec = newpos / CDIO_CD_FRAMESIZE_RAW;
+    if (newpos < 0 || sec > p->end_sector) {
         p->sector = p->end_sector + 1;
         return 0;
     }
@@ -461,16 +458,16 @@ static int open_cdda(stream_t *st, int m)
 }
 
 const stream_info_t stream_info_cdda = {
-    "cdda",
-    open_cdda,
-    {"cdda", NULL },
+    .name = "cdda",
+    .open = open_cdda,
+    .protocols = (const char*[]){"cdda", NULL },
     .priv_size = sizeof(cdda_priv),
     .priv_defaults = &cdda_dflts,
     .options = cdda_params_fields,
-    .url_options = {
-        {"hostname", "span"},
-        {"port",     "speed"},
-        {"filename", "device"},
-        {0}
+    .url_options = (const char*[]){
+        "hostname=span",
+        "port=speed",
+        "filename=device",
+        NULL
     },
 };

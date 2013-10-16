@@ -56,8 +56,6 @@
 #define vcd_close(priv) (close(((mp_vcd_priv_t*)priv)->fd))
 #endif
 
-extern char *cdrom_device;
-
 static int fill_buffer(stream_t *s, char* buffer, int max_len){
   if(s->pos > s->end_pos) /// don't past end of current track
     return 0;
@@ -67,8 +65,7 @@ static int fill_buffer(stream_t *s, char* buffer, int max_len){
 }
 
 static int seek(stream_t *s,int64_t newpos) {
-  s->pos = newpos;
-  vcd_set_msf(s->priv,s->pos/VCD_SECTOR_DATA);
+  vcd_set_msf(s->priv,newpos/VCD_SECTOR_DATA);
   return 1;
 }
 
@@ -178,7 +175,7 @@ static int open_s(stream_t *stream,int mode)
 }
 
 const stream_info_t stream_info_vcd = {
-  "vcd",
-  open_s,
-  { "vcd", NULL },
+    .name = "vcd",
+    .open = open_s,
+    .protocols = (const char*[]){ "vcd", NULL },
 };

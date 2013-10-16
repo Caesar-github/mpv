@@ -22,15 +22,14 @@
 #include <stdbool.h>
 
 #include "mpvcore/options.h"
-#include "audio/mixer.h"
 #include "demux/demux.h"
 
 // definitions used internally by the core player code
 
 #define INITIALIZED_VO      1
 #define INITIALIZED_AO      2
-#define INITIALIZED_VOL     4
 #define INITIALIZED_GETCH2  8
+#define INITIALIZED_PLAYBACK 16
 #define INITIALIZED_STREAM  64
 #define INITIALIZED_DEMUXER 512
 #define INITIALIZED_ACODEC  1024
@@ -41,7 +40,8 @@
 
 enum stop_play_reason {
     KEEP_PLAYING = 0,   // must be 0, numeric values of others do not matter
-    AT_END_OF_FILE,     // file has ended normally, prepare to play next
+    AT_END_OF_FILE,     // file has ended, prepare to play next
+                        // also returned on unrecoverable playback errors
     PT_NEXT_ENTRY,      // prepare to play next entry in playlist
     PT_CURRENT_ENTRY,   // prepare to play mpctx->playlist->current
     PT_STOP,            // stop playback, clear playlist
@@ -76,6 +76,13 @@ enum mp_osd_seek_info {
     OSD_SEEK_INFO_EDITION       = 8,
 };
 
+enum seek_type {
+    MPSEEK_NONE = 0,
+    MPSEEK_RELATIVE,
+    MPSEEK_ABSOLUTE,
+    MPSEEK_FACTOR,
+};
+
 struct track {
     enum stream_type type;
     // The type specific ID, also called aid (audio), sid (subs), vid (video).
@@ -99,10 +106,9 @@ struct track {
     // If the track's stream changes with the timeline (ordered chapters).
     bool under_timeline;
 
-    // NULL if not backed by a demuxer (e.g. external subtitles).
     // Value can change if under_timeline==true.
     struct demuxer *demuxer;
-    // Invariant: (!demuxer && !stream) || stream->demuxer == demuxer
+    // Invariant: !stream || stream->demuxer == demuxer
     struct sh_stream *stream;
 
     // For external subtitles, which are read fully on init. Do not attempt
@@ -142,6 +148,8 @@ typedef struct MPContext {
     bool has_quit_custom_rc;
     bool error_playing;
 
+    int64_t shown_vframes, shown_aframes;
+
     struct demuxer **sources;
     int num_sources;
 
@@ -160,6 +168,8 @@ typedef struct MPContext {
     struct track **tracks;
     int num_tracks;
 
+    char *track_layout_hash;
+
     // Selected tracks. NULL if no track selected.
     struct track *current_track[STREAM_TYPE_COUNT];
 
@@ -172,7 +182,7 @@ typedef struct MPContext {
     // demuxer defines metadata), or special purpose demuxers like TV.
     struct demuxer *master_demuxer;
 
-    mixer_t mixer;
+    struct mixer *mixer;
     struct ao *ao;
     struct vo *video_out;
 
@@ -222,6 +232,8 @@ typedef struct MPContext {
     double last_vo_pts;
     // Video PTS, or audio PTS if video has ended.
     double playback_pts;
+    // Used to determine whether the video filter chain was rebuilt.
+    long last_vf_reconfig_count;
 
     // History of video frames timestamps that were queued in the VO
     // This includes even skipped frames during hr-seek
@@ -239,7 +251,7 @@ typedef struct MPContext {
 
     double mouse_timer;
     unsigned int mouse_event_ts;
-    int mouse_waiting_hide;
+    bool mouse_cursor_visible;
 
     // used to prevent hanging in some error cases
     double start_timestamp;
@@ -251,9 +263,7 @@ typedef struct MPContext {
 
     // Used to communicate the parameters of a seek between parts
     struct seek_params {
-        enum seek_type {
-            MPSEEK_NONE, MPSEEK_RELATIVE, MPSEEK_ABSOLUTE, MPSEEK_FACTOR
-        } type;
+        enum seek_type type;
         double amount;
         int exact;  // -1 = disable, 0 = default, 1 = enable
         // currently not set by commands, only used internally by seek()
@@ -285,10 +295,9 @@ typedef struct MPContext {
     bool drop_message_shown;
 
     struct screenshot_ctx *screenshot_ctx;
-
-    char *track_layout_hash;
-
+    struct command_ctx *command_ctx;
     struct encode_lavc_context *encode_lavc_ctx;
+    struct lua_ctx *lua_ctx;
 } MPContext;
 
 
@@ -300,7 +309,7 @@ extern int forced_subs_only;
 void uninit_player(struct MPContext *mpctx, unsigned int mask);
 void reinit_audio_chain(struct MPContext *mpctx);
 double playing_audio_pts(struct MPContext *mpctx);
-struct track *mp_add_subtitles(struct MPContext *mpctx, char *filename, int noerr);
+struct track *mp_add_subtitles(struct MPContext *mpctx, char *filename);
 int reinit_video_chain(struct MPContext *mpctx);
 int reinit_video_filters(struct MPContext *mpctx);
 int reinit_audio_filters(struct MPContext *mpctx);
@@ -325,10 +334,13 @@ void mp_switch_track(struct MPContext *mpctx, enum stream_type type,
 struct track *mp_track_by_tid(struct MPContext *mpctx, enum stream_type type,
                               int tid);
 bool mp_remove_track(struct MPContext *mpctx, struct track *track);
-struct playlist_entry *mp_next_file(struct MPContext *mpctx, int direction);
+struct playlist_entry *mp_next_file(struct MPContext *mpctx, int direction,
+                                    bool force);
 int mp_get_cache_percent(struct MPContext *mpctx);
 void mp_write_watch_later_conf(struct MPContext *mpctx);
 void mp_set_playlist_entry(struct MPContext *mpctx, struct playlist_entry *e);
+struct playlist_entry *mp_resume_playlist(struct playlist *playlist,
+                                          struct MPOpts *opts);
 void mp_force_video_refresh(struct MPContext *mpctx);
 
 void mp_print_version(int always);

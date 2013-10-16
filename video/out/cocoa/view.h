@@ -12,19 +12,19 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with mpv; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ * with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#import <Foundation/Foundation.h>
-#include "osdep/macosx_bundle.h"
-#include "mpvcore/path.h"
+#import <Cocoa/Cocoa.h>
+#import "video/out/cocoa/mpvadapter.h"
 
-char *get_bundled_path(const char *file)
-{
-  NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
-  NSString *path = [[NSBundle mainBundle] resourcePath];
-  char *rv =  mp_path_join(NULL, bstr0([path UTF8String]), bstr0(file));
-  [pool release];
-  return rv;
+@interface MpvVideoView : NSView {
+    BOOL hasMouseDown;
 }
+@property(nonatomic, retain) MpvCocoaAdapter *adapter;
+@property(nonatomic, retain) NSTrackingArea *tracker;
+- (void)setFullScreen:(BOOL)willBeFullscreen;
+- (NSRect)frameInPixels;
+- (BOOL)canHideCursor;
+- (void)signalMousePosition;
+@end

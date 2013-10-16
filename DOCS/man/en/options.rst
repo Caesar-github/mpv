@@ -1,3 +1,6 @@
+OPTIONS
+=======
+
 ``--ad=<[+|-]family1:(*|decoder1),[+|-]family2:(*|decoder2),...[-]>``
     Specify a priority list of audio decoders to be used, according to their
     family and decoder name. Entries like ``family:*`` prioritize all decoders
@@ -122,18 +125,32 @@
 
         Using this option may lead to incorrect subtitle rendering.
 
-``--ass-hinting=<type>``
+``--ass-hinting=none|light|normal|native``
     Set font hinting type. <type> can be:
 
-    :0:       no hinting
-    :1:       FreeType autohinter, light mode
-    :2:       FreeType autohinter, normal mode
-    :3:       font native hinter
+    :none:       no hinting (default)
+    :light:      FreeType autohinter, light mode
+    :normal:     FreeType autohinter, normal mode
+    :native:     font native hinter
 
-    The default value is 0 (no hinting).
+    .. admonition:: Warning
+
+        Enabling hinting can lead to mispositioned text (in situations it's
+        supposed to match up with video background), or reduce the smoothness
+        of animations with some badly authored ASS scripts. It is recommended
+        to not use this option, unless really needed.
 
 ``--ass-line-spacing=<value>``
     Set line spacing value for SSA/ASS renderer.
+
+``--ass-shaper=simple|complex``
+    Set the text layout engine used by libass.
+
+    :simple:   uses Fribidi only, fast, doesn't render some languages correctly
+    :complex:  uses HarfBuzz, slower, wider language support
+
+    ``complex`` is the default. If libass hasn't been compiled against HarfBuzz,
+    libass silently reverts to ``simple``.
 
 ``--ass-styles=<filename>``
     Load all SSA/ASS styles found in the specified file and use them for
@@ -453,6 +470,13 @@
     the start of the next one then keep playing video normally over the
     chapter change instead of doing a seek.
 
+``--chapter-seek-threshold=<seconds>``
+    Distance in seconds from the beginning of a chapter within which a backward
+    chapter seek will go to the previous chapter (default: 5.0). Past this
+    threshold, a backward chapter seek will go to the beginning of the current
+    chapter instead. A negative value means always go back to the previous
+    chapter.
+
 ``--colormatrix=<colorspace>``
     Controls the YUV to RGB color space conversion when playing video. There
     are various standards. Normally, BT.601 should be used for SD video, and
@@ -553,9 +577,29 @@
     ``no`` will disable cursor autohide. ``always`` means the cursor will stay
     hidden.
 
+``--cursor-autohide-fs-only``
+    If this option is given, the cursor is always visible in windowed mode. In
+    fullscreen mode, the cursor is shown or hidden according to
+    ``--cursor-autohide``.
+
 ``--audio-delay=<sec>``
     Audio delay in seconds (positive or negative float value). Negative values
     delay the audio, and positive values delay the video.
+
+``--deinterlace=<yes|no|auto>``
+    Enable or disable interlacing (default: auto, which usually means no).
+    Interlaced video shows ugly comb-like artifacts, which are visible on
+    fast movement. Enabling this typically inserts the yadif video filter in
+    order to deinterlace the video, or lets the video output apply deinterlacing
+    if supported.
+
+    This behaves exactly like the ``deinterlace`` input property (usually
+    mapped to ``Shift+D``).
+
+    ``auto`` is a technicality. Strictly speaking, the default for this option
+    is deinterlacing disabled, but the ``auto`` case is needed if ``yadif`` was
+    added to the filter chain manually with ``--vf``. Then the core shouldn't
+    disable deinterlacing just because the ``--deinterlace`` was not set.
 
 ``--demuxer=<[+]name>``
     Force demuxer type. Use a '+' before the name to force it; this will skip
@@ -724,10 +768,10 @@
     Some DVDs contain scenes that can be viewed from multiple angles.
     This option tells mpv which angle to use (default: 1).
 
-``--edition=<ID>``
+``--edition=<ID|auto>``
     (Matroska files only)
     Specify the edition (set of chapters) to use, where 0 is the first. If set
-    to -1 (the default), mpv will choose the first edition declared as a
+    to ``auto`` (the default), mpv will choose the first edition declared as a
     default, or if there is no default, the first edition defined.
 
 ``--embeddedfonts``, ``--no-embeddedfonts``
@@ -762,6 +806,20 @@
     ``opengl``, ``direct3d``), this can be slightly faster or slower,
     depending on GPU drivers and hardware. For other VOs, this just makes
     rendering slower.
+
+``--force-window``
+    Create a video output window even if there is no video. This can be useful
+    when pretending that mpv is a GUI application. Currently, the window
+    always has the size 640x480, and is subject to ``--geometry``,
+    ``--autofit``, and similar options.
+
+    .. warning::
+
+        The window is created only after initialization (to make sure default
+        window placement still works if the video size is different from the
+        ``--force-window`` default window size). This can be a problem if
+        initialization doesn't work perfectly, such as when opening URLs with
+        bad network connection, or opening broken video files.
 
 ``--force-window-position``
     Forcefully move mpv's video output window to default location whenever
@@ -962,7 +1020,8 @@
 ``--heartbeat-cmd=<command>``
     Command that is executed every 30 seconds during playback via *system()* -
     i.e. using the shell. The time between the commands can be customized with
-    the ``--heartbeat-interval`` option.
+    the ``--heartbeat-interval`` option. The command is not run while playback
+    is paused.
 
     .. note::
 
@@ -975,7 +1034,8 @@
     This can be "misused" to disable screensavers that do not support the
     proper X API (see also ``--stop-screensaver``). If you think this is too
     complicated, ask the author of the screensaver program to support the
-    proper X APIs.
+    proper X APIs. Note that the ``--stop-screensaver`` does not influence the
+    heartbeat code at all.
 
     .. admonition:: Example for xscreensaver
 
@@ -1051,9 +1111,21 @@
     ``<api>`` can be one of the following:
 
     :no:        always use software decoding (default)
+    :auto:      see below
     :vdpau:     requires ``--vo=vdpau`` (Linux only)
-    :vda:       OSX
+    :vaapi:     requires ``--vo=vaapi`` (Linux with Intel GPUs only)
+    :vaapi-copy: copies video back into system RAM (Linux with Intel GPUs only)
+    :vda:       requires ``--vo=corevideo`` (OSX only)
     :crystalhd: Broadcom Crystal HD
+
+    ``auto`` tries to automatically enable hardware decoding using the first
+    available method. This still depends what VO you are using. For example,
+    if you are not using ``--vo=vdpau``, vdpau decoding will never be enabled.
+    Also note that if the first found method doesn't actually work, it will
+    always fall back to software decoding, instead of trying the next method.
+
+    The ``vaapi-copy`` function allows you to use vaapi with any VO. Because
+    this copies the decoded video back to system RAM, it's quite inefficient.
 
 ``--hwdec-codecs=<codec1,codec2,...|all>``
     Allow hardware decoding for a given list of codecs only. The default is the
@@ -1182,10 +1254,31 @@
 ``--list-properties``
     Print a list of the available properties.
 
-``--loop=<number|inf|no>``
-    Loops playback ``<number>`` times. ``inf`` means forever and ``no`` disables
-    looping. If several files are specified on command line, the entire playlist
-    is looped.
+``--load-unsafe-playlists``
+    Normally, something like ``mpv playlist.m3u`` won't load the playlist. This
+    is because the playlist code is unsafe. (This is the same in all other
+    variations of MPlayer.)
+
+    See ``--playlist`` for details.
+
+    Note: this option will allow opening playlists using the ``playlist``
+    special demuxer. The ``--playlist`` uses different code, and supports more
+    playlist formats than the playlist demuxer. This means that for now, the
+    ``--playlist`` option should always be used if you intend to open playlists.
+    Background: the special demuxer contains newly written code, while the
+    ``--playlist`` option uses the old MPlayer code. Adding support for more
+    playlist formats to the special demuxer is work in progress, and eventually
+    the old code should disappear.
+
+``--loop=<N|inf|no>``
+    Loops playback ``N`` times. A value of ``1`` plays it one time (default),
+    ``2`` two times, etc. ``inf`` means forever. ``no`` is the same as ``1`` and
+    disables looping. If several files are specified on command line, the
+    entire playlist is looped.
+
+``--lua=<filename>``
+    Load a Lua script. You can load multiple scripts by separating them with
+    commas (``,``).
 
 ``--mc=<seconds/frame>``
     Maximum A-V sync correction per frame (in seconds)
@@ -1218,13 +1311,10 @@
     1). A value of 1 means square pixels (correct for (almost?) all LCDs). See
     also ``--monitoraspect`` and ``--aspect``.
 
-``--mouse-movements``
+``--mouse-movements``, ``--no-mouse-movements``
     Permit mpv to receive pointer events reported by the video output
     driver. Necessary to select the buttons in DVD menus. Supported for
     X11-based VOs (x11, xv, etc) and the gl, direct3d and corevideo VOs.
-
-``--mouseinput``, ``--no-mouseinput``
-    ``--no-mouseinput`` disables mouse button press/release input.
 
 ``--no-msgcolor``
     Disable colorful console output on terminals.
@@ -1323,6 +1413,9 @@
     Disable support for Matroska ordered chapters. mpv will not load or
     search for video segments from other files, and will also ignore any
     chapter order specified for the main file.
+
+``--osc``, ``--no-osc``
+    Whether to load the on-screen-controller (default: no).
 
 ``--no-osd-bar``, ``--osd-bar``
     Disable display of the OSD bar. This will make some things (like seeking)
@@ -1471,14 +1564,6 @@
     movie to make it fit a 4:3 display without black bands). The range
     controls how much of the image is cropped. May not work with all video
     output drivers.
-
-``--panscanrange=<-19.0-99.0>``
-    (experimental)
-    Change the range of the pan-and-scan functionality (default: 1). Positive
-    values mean multiples of the default range. Negative numbers mean you can
-    zoom in up to a factor of ``--panscanrange=+1``. E.g. ``--panscanrange=-3``
-    allows a zoom factor of up to 4. This feature is experimental. Do not
-    report bugs unless you are using ``--vo=opengl``.
 
 ``--playing-msg=<string>``
     Print out a string after starting playback. The string is expanded for
@@ -1635,9 +1720,10 @@
         The following explanations are relevant:
         `<http://quvi.sourceforge.net/doc/0.9/glossary_termino.html#m_stream_id>`_
 
-        With 0.9.x, the ``quvi-format`` property can be used at runtime to cycle
-        through the list of formats. Unfortunately, this resets the playback
-        position and is slow too.
+    The ``quvi-format`` property can be used at runtime to cycle through the
+    list of formats. Unfortunately, this is slow. On libquvi 0.4.x, this
+    functionality is limited to switching between ``best`` and ``default`` if
+    the ``cycle`` input command is used.
 
 ``--radio=<option1:option2:...>``
     These options set various parameters of the radio capture module. For
@@ -1729,6 +1815,11 @@
         - ``--reset-on-next-file=""``
           Do not reset pause mode.
 
+``--rtsp-transport=<lavf|udp|tcp|http>``
+    Select RTSP transport method (default: tcp). This selects the underlying
+    network transport when playing ``rtsp://...`` URLs. The value ``lavf``
+    leaves the decision to libavformat.
+
 ``--saturation=<-100-100>``
     Adjust the saturation of the video signal (default: 0). You can get
     grayscale output with this option. Not supported by all video output
@@ -1737,8 +1828,10 @@
 ``--save-position-on-quit``
     Always save the current playback position on quit. When this file is
     played again later, the player will seek to the old playback position on
-    start. This affects any form of stopping playback (quitting, going to the
-    next file).
+    start. This does not happen if playback of a file is stopped in any other
+    way than quitting. For example, going to the next file in the playlist
+    will not save the position, and start playback at beginning the next time
+    the file is played.
 
     This behavior is disabled by default, but is always available when quitting
     the player with Shift+Q.
@@ -1835,6 +1928,28 @@
             numbers would be more intuitive, but are not easily implementable
             because container formats usually use time stamps for identifying
             frames.)
+    ``%wX``
+        Specify the current playback time using the format string ``X``.
+        ``%p`` is like ``%wH:%wM:%wS``, and ``%P`` is like ``%wH:%wM:%wS.%wT``.
+
+        Valid format specifiers:
+            ``%wH``
+                hour (padded with 0 to two digits)
+            ``%wh``
+                hour (not padded)
+            ``%wM``
+                minutes (00-59)
+            ``%wm``
+                total minutes (includes hours, unlike ``%wM``)
+            ``%wS``
+                seconds (00-59)
+            ``%ws``
+                total seconds (includes hours and minutes)
+            ``%wf``
+                like ``%ws``, but as float
+            ``%wT``
+                milliseconds (000-999)
+
     ``%tX``
         Specify the current local date/time using the format ``X``. This format
         specifier uses the UNIX ``strftime()`` function internally, and inserts
@@ -1863,7 +1978,7 @@
     Play files in random order.
 
 ``--sid=<ID|auto|no>``
-    Display the subtitle stream specified by ``<ID>`` (0-31). ``auto`` selects
+    Display the subtitle stream specified by ``<ID>``. ``auto`` selects
     the default, ``no`` disables subtitles.
 
     See also ``--slang``, ``--no-sub``.
@@ -2033,22 +2148,39 @@
 
 ``--subcp=<codepage>``
     If your system supports ``iconv(3)``, you can use this option to specify
-    the subtitle codepage.
+    the subtitle codepage. By default, ENCA will be used to guess the charset.
+    If mpv is not compiled with ENCA, ``UTF-8:UTF-8-BROKEN`` is the default,
+    which means it will try to use UTF-8, otherwise the ``UTF-8-BROKEN``
+    pseudo codepage (see below).
+
+    .. admonition:: Warning
+
+        If you force the charset, even subtitles that are known to be
+        UTF-8 will be recoded, which is perhaps not what you expect. Prefix
+        codepages with ``utf8:`` if you want the codepage to be used only if the
+        input is not valid UTF-8.
 
     .. admonition:: Examples
 
-        - ``--subcp=latin2``
-        - ``--subcp=cp1250``
+        - ``--subcp=utf8:latin2`` Use Latin 2 if input is not UTF-8.
+        - ``--subcp=utf8:cp1250`` Use CP1250 if input is not UTF-8.
+        - ``--subcp=cp1250`` Always force recoding to cp1250.
+
+    The pseudo codepage ``UTF-8-BROKEN`` is used internally. If this is used
+    as codepage, the subtitle will be interpreted as UTF-8, but with "Latin 1"
+    as fallback for bytes which are not valid UTF-8 sequences. iconv is never
+    involved in this mode.
 
     If the player was compiled with ENCA support, you can control it with the
     following syntax::
 
-        --subcp=enca:<language>:<fallback codepage>
+        ``--subcp=enca:<language>:<fallback codepage>``
 
     You can specify your language using a two letter language code to make
     ENCA detect the codepage automatically. If unsure, enter anything (if the
     language is invalid, mpv will complain and list valid languages).
     Fallback codepage specifies the codepage to use if autodetection fails.
+    If no fallback is specified, ``UTF-8-BROKEN`` is used.
 
     .. admonition:: Examples
 
@@ -2168,6 +2300,14 @@
         the properties used and the window manager. Changing the window title
         is often a slow operation, and if the title changes every frame,
         playback can be ruined.
+
+``--tls-ca-file=<filename>``
+    Certificate authority database file for use with TLS. (Silently fails with
+    older ffmpeg or libav versions.)
+
+``--tls-verify``
+    Verify peer certificates when using TLS (e.g. with ``https://...``).
+     (Silently fails with older ffmpeg or libav versions.)
 
 ``--tv=<option1:option2:...>``
     This option tunes various properties of the TV capture module. For
@@ -2446,6 +2586,51 @@
 ``--vid=<ID|auto|no>``
     Select video channel. ``auto`` selects the default, ``no`` disables video.
 
+``--video-align-x=<-1-1>``, ``--video-align-y=<-1-1>``
+    Moves the video rectangle within the black borders, which are usually added
+    to pad the video to screen if video and screen aspect ratios are different.
+    ``--video-align-y=-1`` would move the video to the top of the screen
+    (leaving a border only on the bottom), a value of ``0`` centers it
+    (default), and a value of ``-1`` would put the video at the bottom of the
+    screen.
+
+    If video and screen aspect match perfectly, these options do nothing.
+
+    This option is disabled if the ``--no-keepaspect`` option is used.
+
+``--video-pan-x=<value>``, ``--video-pan-y=<value>``
+    Moves the displayed video rectangle by the given value in the X or Y
+    direction. The unit is in fractions of the size of the scaled video (the
+    full size, even if parts of the video are not visible due to panscan or
+    other options).
+
+    For example, displaying a 1280x720 video fullscreen on a 1680x1050 screen
+    with ``--video-pan-x=-0.1`` would move the video 168 pixels to the left
+    (making 128 pixels of the source video invisible).
+
+    This option is disabled if the ``--no-keepaspect`` option is used.
+
+``--video-unscaled``
+    Disable scaling of the video. If the window is larger than the video,
+    black bars are added. Otherwise, the video is cropped. The video still
+    can be influenced by the other ``--video-...`` options. (If the
+    ``--video-zoom`` option is set to a value other than ``1``, scaling is
+    enabled, but the video isn't automatically scaled to the window size.)
+
+    Note that the scaler algorithm may still be used, even if the video isn't
+    scaled. For example, this can influence chroma conversion.
+
+    This option is disabled if the ``--no-keepaspect`` option is used.
+
+``--video-zoom=<value>``
+    Adjust the video display scale factor by the given value. The unit is in
+    fractions of original video size.
+
+    For example, given a 1280x720 video, ``--video-zoom=-0.1`` would make the
+    video by 128 pixels smaller in X direction, and 72 pixels in Y direction.
+
+    This option is disabled if the ``--no-keepaspect`` option is used.
+
 ``--vo=<driver1[:suboption1[=value]:...],driver2,...[,]>``
     Specify a priority list of video output drivers to be used. For
     interactive use, one would normally specify a single one to use, but in
@@ -2459,6 +2644,18 @@
 ``--volume=<-1-100>``
     Set the startup volume. A value of -1 (the default) will not change the
     volume. See also ``--softvol``.
+
+``--volume-restore-data=<string>``
+    Used internally for use by playback resume (e.g. with ``quit_watch_later``).
+    Restoring value has to be done carefully, because different AOs as well as
+    softvol can have different value ranges, and we don't want to restore
+    volume if setting the volume changes it system wide. The normal options
+    (like ``--volume``) would always set the volume. This option was added for
+    restoring volume in a safer way (by storing the method used to set the
+    volume), and is not generally useful. Its semantics are considered private
+    to mpv.
+
+    Do not use.
 
 ``--wid=<ID>``
     (X11 and Windows only)

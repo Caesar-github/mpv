@@ -5,7 +5,8 @@ dvbstream
 
 Original authors: Nico, probably Arpi
 
-The latest version can be found at http://www.linuxstb.org/dvbstream
+Some code based on dvbstream, 0.4.3-pre3 (CVS checkout),
+http://sourceforge.net/projects/dvbtools/
 
 Modified for use with MPlayer, for details see the changelog at
 http://svn.mplayerhq.hu/mplayer/trunk/
@@ -830,15 +831,15 @@ dvb_config_t *dvb_get_config(void)
 
 
 const stream_info_t stream_info_dvb = {
-	"dvbin",
-	dvb_open,
-	{ "dvb", NULL },
+    .name = "dvbin",
+    .open = dvb_open,
+    .protocols = (const char*[]){ "dvb", NULL },
     .priv_size = sizeof(dvb_priv_t),
     .priv_defaults = &stream_defaults,
     .options = stream_params,
-    .url_options = {
-        {"hostname", "prog"},
-        {"username", "card"},
-        {0}
+    .url_options = (const char*[]){
+        "hostname=prog",
+        "username=card",
+        NULL
     },
 };

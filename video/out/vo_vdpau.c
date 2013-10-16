@@ -72,6 +72,8 @@ struct vdpctx {
     struct vdp_functions              *vdp;
     VdpDevice                          vdp_device;
 
+    struct m_color                     colorkey;
+
     bool                               is_preempted;
     bool                               preemption_acked;
     bool                               preemption_user_notified;
@@ -85,19 +87,28 @@ struct vdpctx {
     VdpOutputSurface                   output_surfaces[MAX_OUTPUT_SURFACES];
     VdpOutputSurface                   screenshot_surface;
     int                                num_output_surfaces;
+    VdpOutputSurface                   rgb_surfaces[NUM_BUFFERED_VIDEO];
+    VdpOutputSurface                   black_pixel;
     struct buffered_video_surface {
+        // Either surface or rgb_surface is used (never both)
         VdpVideoSurface surface;
+        VdpOutputSurface rgb_surface;
         double pts;
         mp_image_t *mpi;
     } buffered_video[NUM_BUFFERED_VIDEO];
     int                                deint_queue_pos;
+
+    // State for redrawing the screen after seek-reset
+    int                                prev_deint_queue_pos;
+
     int                                output_surface_width, output_surface_height;
 
+    int                                force_yuv;
     VdpVideoMixer                      video_mixer;
     struct mp_csp_details              colorspace;
+    int                                user_deint;
     int                                deint;
     int                                deint_type;
-    int                                deint_counter;
     int                                pullup;
     float                              denoise;
     float                              sharpen;
@@ -135,6 +146,7 @@ struct vdpctx {
     uint32_t                           image_format;
     VdpChromaType                      vdp_chroma_type;
     VdpYCbCrFormat                     vdp_pixel_format;
+    bool                               rgb_mode;
 
     // OSD
     struct osd_bitmap_surface {
@@ -161,8 +173,9 @@ struct vdpctx {
 
 static bool status_ok(struct vo *vo);
 
-static int change_vdptime_sync(struct vdpctx *vc, int64_t *t)
+static int change_vdptime_sync(struct vo *vo, int64_t *t)
 {
+    struct vdpctx *vc = vo->priv;
     struct vdp_functions *vdp = vc->vdp;
     VdpStatus vdp_st;
     VdpTime vdp_time;
@@ -177,7 +190,7 @@ static int change_vdptime_sync(struct vdpctx *vc, int64_t *t)
         else
             vdp_time = old;
     }
-    mp_msg(MSGT_VO, MSGL_DBG2, "[vdpau] adjusting VdpTime offset by %f µs\n",
+    MP_DBG(vo, "adjusting VdpTime offset by %f µs\n",
            (int64_t)(vdp_time - old) / 1000.);
     vc->last_vdp_time = vdp_time;
     vc->last_sync_update = t1;
@@ -191,7 +204,7 @@ static uint64_t sync_vdptime(struct vo *vo)
 
     uint64_t t = mp_time_us();
     if (t - vc->last_sync_update > 5000000)
-        change_vdptime_sync(vc, &t);
+        change_vdptime_sync(vo, &t);
     uint64_t now = (t - vc->last_sync_update) * 1000ULL + vc->last_vdp_time;
     // Make sure nanosecond inaccuracies don't make things inconsistent
     now = FFMAX(now, vc->recent_vsync_time);
@@ -213,12 +226,46 @@ static int render_video_to_output_surface(struct vo *vo,
     struct vdp_functions *vdp = vc->vdp;
     VdpTime dummy;
     VdpStatus vdp_st;
-    if (vc->deint_queue_pos < 0)
-        return -1;
-
     struct buffered_video_surface *bv = vc->buffered_video;
+    int dp = vc->deint_queue_pos;
+
+    // Redraw frame from before seek reset?
+    if (dp < 0)
+        dp = vc->prev_deint_queue_pos;
+    if (dp < 0) {
+        // At least clear the screen if there is nothing to render
+        int flags = VDP_OUTPUT_SURFACE_RENDER_ROTATE_0;
+        vdp_st = vdp->output_surface_render_output_surface(output_surface,
+                                                           NULL, vc->black_pixel,
+                                                           NULL, NULL, NULL,
+                                                           flags);
+        return -1;
+    }
+
+    vdp_st = vdp->presentation_queue_block_until_surface_idle(vc->flip_queue,
+                                                              output_surface,
+                                                              &dummy);
+    CHECK_ST_WARNING("Error when calling "
+                     "vdp_presentation_queue_block_until_surface_idle");
+
+    if (vc->rgb_mode) {
+        int flags = VDP_OUTPUT_SURFACE_RENDER_ROTATE_0;
+        vdp_st = vdp->output_surface_render_output_surface(output_surface,
+                                                           NULL, vc->black_pixel,
+                                                           NULL, NULL, NULL,
+                                                           flags);
+        CHECK_ST_WARNING("Error clearing screen");
+        vdp_st = vdp->output_surface_render_output_surface(output_surface,
+                                                           output_rect,
+                                                           bv[dp/2].rgb_surface,
+                                                           video_rect,
+                                                           NULL, NULL, flags);
+        CHECK_ST_WARNING("Error when calling "
+                         "vdp_output_surface_render_output_surface");
+        return 0;
+    }
+
     int field = VDP_VIDEO_MIXER_PICTURE_STRUCTURE_FRAME;
-    unsigned int dp = vc->deint_queue_pos;
     // dp==0 means last field of latest frame, 1 earlier field of latest frame,
     // 2 last field of previous frame and so on
     if (vc->deint) {
@@ -230,11 +277,6 @@ static int render_video_to_output_surface(struct vo *vo,
         bv[(dp+1)/2].surface, bv[(dp+2)/2].surface};
     const VdpVideoSurface *future_fields = (const VdpVideoSurface []){
         dp >= 1 ? bv[(dp-1)/2].surface : VDP_INVALID_HANDLE};
-    vdp_st = vdp->presentation_queue_block_until_surface_idle(vc->flip_queue,
-                                                              output_surface,
-                                                              &dummy);
-    CHECK_ST_WARNING("Error when calling "
-                     "vdp_presentation_queue_block_until_surface_idle");
 
     vdp_st = vdp->video_mixer_render(vc->video_mixer, VDP_INVALID_HANDLE,
                                      0, field, 2, past_fields,
@@ -305,6 +347,7 @@ static void set_next_frame_info(struct vo *vo, bool eof)
 }
 
 static void add_new_video_surface(struct vo *vo, VdpVideoSurface surface,
+                                  VdpOutputSurface rgb_surface,
                                   struct mp_image *reserved_mpi, double pts)
 {
     struct vdpctx *vc = vo->priv;
@@ -317,6 +360,7 @@ static void add_new_video_surface(struct vo *vo, VdpVideoSurface surface,
     bv[0] = (struct buffered_video_surface){
         .mpi = reserved_mpi,
         .surface = surface,
+        .rgb_surface = rgb_surface,
         .pts = pts,
     };
 
@@ -325,18 +369,28 @@ static void add_new_video_surface(struct vo *vo, VdpVideoSurface surface,
     set_next_frame_info(vo, false);
 }
 
-static void forget_frames(struct vo *vo)
+static void forget_frames(struct vo *vo, bool seek_reset)
 {
     struct vdpctx *vc = vo->priv;
 
+    if (seek_reset) {
+        if (vc->deint_queue_pos >= 0)
+            vc->prev_deint_queue_pos = vc->deint_queue_pos;
+    } else {
+        vc->prev_deint_queue_pos = -1001;
+    }
+
     vc->deint_queue_pos = -1001;
     vc->dropped_frame = false;
-    for (int i = 0; i < NUM_BUFFERED_VIDEO; i++) {
-        struct buffered_video_surface *p = vc->buffered_video + i;
-        mp_image_unrefp(&p->mpi);
-        *p = (struct buffered_video_surface){
-            .surface = VDP_INVALID_HANDLE,
-        };
+    if (vc->prev_deint_queue_pos < 0) {
+        for (int i = 0; i < NUM_BUFFERED_VIDEO; i++) {
+            struct buffered_video_surface *p = vc->buffered_video + i;
+            mp_image_unrefp(&p->mpi);
+            *p = (struct buffered_video_surface){
+                .surface = VDP_INVALID_HANDLE,
+                .rgb_surface = VDP_INVALID_HANDLE,
+            };
+        }
     }
 }
 
@@ -389,7 +443,7 @@ static void resize(struct vo *vo)
                                                 vc->output_surface_height,
                                                 &vc->output_surfaces[i]);
             CHECK_ST_WARNING("Error when calling vdp_output_surface_create");
-            mp_msg(MSGT_VO, MSGL_DBG2, "vdpau out create: %u\n",
+            MP_DBG(vo, "vdpau out create: %u\n",
                    vc->output_surfaces[i]);
         }
     }
@@ -433,11 +487,10 @@ static int win_x11_init_vdpau_procs(struct vo *vo)
     vc->mpvdp.vdp_device = vc->vdp_device;
     if (vdp_st != VDP_STATUS_OK) {
         if (vc->is_preempted)
-            mp_msg(MSGT_VO, MSGL_DBG2, "[vdpau] Error calling "
-                   "vdp_device_create_x11 while preempted: %d\n", vdp_st);
+            MP_DBG(vo, "Error calling vdp_device_create_x11 while preempted: %d\n",
+                   vdp_st);
         else
-            mp_msg(MSGT_VO, MSGL_ERR, "[vdpau] Error when calling "
-                   "vdp_device_create_x11: %d\n", vdp_st);
+            MP_ERR(vo, "Error when calling vdp_device_create_x11: %d\n", vdp_st);
         return -1;
     }
 
@@ -446,8 +499,8 @@ static int win_x11_init_vdpau_procs(struct vo *vo)
         vdp_st = get_proc_address(vc->vdp_device, dsc->id,
                                       (void **)((char *)vdp + dsc->offset));
         if (vdp_st != VDP_STATUS_OK) {
-            mp_msg(MSGT_VO, MSGL_ERR, "[vdpau] Error when calling "
-                   "vdp_get_proc_address(function id %d): %s\n", dsc->id,
+            MP_ERR(vo, "Error when calling vdp_get_proc_address(function "
+                   "id %d): %s\n",  dsc->id,
                    vdp->get_error_string ? vdp->get_error_string(vdp_st) : "?");
             return -1;
         }
@@ -483,11 +536,23 @@ static int win_x11_init_vdpau_flip_queue(struct vo *vo)
         vdp_st = vdp->presentation_queue_create(vc->vdp_device, vc->flip_target,
                                                 &vc->flip_queue);
         if (vc->is_preempted && vdp_st != VDP_STATUS_OK) {
-            mp_msg(MSGT_VO, MSGL_DBG2, "[vdpau] Failed to create flip queue "
-                   "while preempted: %s\n", vdp->get_error_string(vdp_st));
+            MP_DBG(vo, "Failed to create flip queue while preempted: %s\n",
+                   vdp->get_error_string(vdp_st));
             return -1;
         } else
             CHECK_ST_ERROR("Error when calling vdp_presentation_queue_create");
+    }
+
+    if (vc->colorkey.a > 0) {
+        VdpColor color = {
+            .red = vc->colorkey.r / 255.0,
+            .green = vc->colorkey.g / 255.0,
+            .blue = vc->colorkey.b / 255.0,
+            .alpha = 0,
+        };
+        vdp_st = vdp->presentation_queue_set_background_color(vc->flip_queue,
+                                                              &color);
+        CHECK_ST_WARNING("Error setting colorkey");
     }
 
     VdpTime vdp_time;
@@ -498,49 +563,50 @@ static int win_x11_init_vdpau_flip_queue(struct vo *vo)
 
     vc->vsync_interval = 1;
     if (vc->composite_detect && vo_x11_screen_is_composited(vo)) {
-        mp_msg(MSGT_VO, MSGL_INFO, "[vdpau] Compositing window manager "
-               "detected. Assuming timing info is inaccurate.\n");
+        MP_INFO(vo, "Compositing window manager detected. Assuming timing info "
+                "is inaccurate.\n");
     } else if (vc->user_fps > 0) {
         vc->vsync_interval = 1e9 / vc->user_fps;
-        mp_msg(MSGT_VO, MSGL_INFO, "[vdpau] Assuming user-specified display "
-               "refresh rate of %.3f Hz.\n", vc->user_fps);
+        MP_INFO(vo, "Assuming user-specified display refresh rate of %.3f Hz.\n",
+                vc->user_fps);
     } else if (vc->user_fps == 0) {
 #ifdef CONFIG_XF86VM
         double fps = vo_x11_vm_get_fps(vo);
         if (!fps)
-            mp_msg(MSGT_VO, MSGL_WARN, "[vdpau] Failed to get display FPS\n");
+            MP_WARN(vo, "Failed to get display FPS\n");
         else {
             vc->vsync_interval = 1e9 / fps;
             // This is verbose, but I'm not yet sure how common wrong values are
-            mp_msg(MSGT_VO, MSGL_INFO,
-                   "[vdpau] Got display refresh rate %.3f Hz.\n"
-                   "[vdpau] If that value looks wrong give the "
-                   "-vo vdpau:fps=X suboption manually.\n", fps);
+            MP_INFO(vo, "Got display refresh rate %.3f Hz.\n", fps);
+            MP_INFO(vo, "If that value looks wrong give the "
+                    "-vo vdpau:fps=X suboption manually.\n");
         }
 #else
-        mp_msg(MSGT_VO, MSGL_INFO, "[vdpau] This binary has been compiled "
-               "without XF86VidMode support.\n");
-        mp_msg(MSGT_VO, MSGL_INFO, "[vdpau] Can't use vsync-aware timing "
-               "without manually provided -vo vdpau:fps=X suboption.\n");
+        MP_INFO(vo, "This binary has been compiled without XF86VidMode support.\n");
+        MP_INFO(vo, "Can't use vsync-aware timing without manually provided "
+                "-vo vdpau:fps=X suboption.\n");
 #endif
     } else
-        mp_msg(MSGT_VO, MSGL_V, "[vdpau] framedrop/timing logic disabled by "
-               "user.\n");
+        MP_VERBOSE(vo, "framedrop/timing logic disabled by user.\n");
 
     return 0;
 }
 
-static int set_video_attribute(struct vdpctx *vc, VdpVideoMixerAttribute attr,
+static int set_video_attribute(struct vo *vo, VdpVideoMixerAttribute attr,
                                const void *value, char *attr_name)
 {
+    struct vdpctx *vc = vo->priv;
     struct vdp_functions *vdp = vc->vdp;
     VdpStatus vdp_st;
+
+    if (vc->rgb_mode)
+        return -1;
 
     vdp_st = vdp->video_mixer_set_attribute_values(vc->video_mixer, 1, &attr,
                                                    &value);
     if (vdp_st != VDP_STATUS_OK) {
-        mp_msg(MSGT_VO, MSGL_ERR, "[vdpau] Error setting video mixer "
-               "attribute %s: %s\n", attr_name, vdp->get_error_string(vdp_st));
+        MP_ERR(vo, "Error setting video mixer attribute %s: %s\n", attr_name,
+               vdp->get_error_string(vdp_st));
         return -1;
     }
     return 0;
@@ -550,7 +616,7 @@ static void update_csc_matrix(struct vo *vo)
 {
     struct vdpctx *vc = vo->priv;
 
-    mp_msg(MSGT_VO, MSGL_V, "[vdpau] Updating CSC matrix\n");
+    MP_VERBOSE(vo, "Updating CSC matrix\n");
 
     // VdpCSCMatrix happens to be compatible with mplayer's CSC matrix type
     // both are float[3][4]
@@ -561,11 +627,11 @@ static void update_csc_matrix(struct vo *vo)
     mp_csp_copy_equalizer_values(&cparams, &vc->video_eq);
     mp_get_yuv2rgb_coeffs(&cparams, matrix);
 
-    set_video_attribute(vc, VDP_VIDEO_MIXER_ATTRIBUTE_CSC_MATRIX,
+    set_video_attribute(vo, VDP_VIDEO_MIXER_ATTRIBUTE_CSC_MATRIX,
                         &matrix, "CSC matrix");
 }
 
-#define SET_VIDEO_ATTR(attr_name, attr_type, value) set_video_attribute(vc, \
+#define SET_VIDEO_ATTR(attr_name, attr_type, value) set_video_attribute(vo, \
                  VDP_VIDEO_MIXER_ATTRIBUTE_ ## attr_name, &(attr_type){value},\
                  # attr_name)
 static int create_vdp_mixer(struct vo *vo, VdpChromaType vdp_chroma_type)
@@ -614,8 +680,8 @@ static int create_vdp_mixer(struct vo *vo, VdpChromaType vdp_chroma_type)
         if (hqscaling_available)
             features[feature_count++] = hqscaling_feature;
         else
-            mp_msg(MSGT_VO, MSGL_ERR, "[vdpau] Your hardware or VDPAU "
-                   "library does not support requested hqscaling.\n");
+            MP_ERR(vo, "Your hardware or VDPAU library does not support "
+                   "requested hqscaling.\n");
     }
 
     vdp_st = vdp->video_mixer_create(vc->vdp_device, feature_count, features,
@@ -654,7 +720,7 @@ static void free_video_specific(struct vo *vo)
     struct vdp_functions *vdp = vc->vdp;
     VdpStatus vdp_st;
 
-    forget_frames(vo);
+    forget_frames(vo, false);
 
     if (vc->video_mixer != VDP_INVALID_HANDLE) {
         vdp_st = vdp->video_mixer_destroy(vc->video_mixer);
@@ -667,11 +733,35 @@ static void free_video_specific(struct vo *vo)
         CHECK_ST_WARNING("Error when calling vdp_output_surface_destroy");
     }
     vc->screenshot_surface = VDP_INVALID_HANDLE;
+
+    for (int n = 0; n < NUM_BUFFERED_VIDEO; n++) {
+        if (vc->rgb_surfaces[n] != VDP_INVALID_HANDLE) {
+            vdp_st = vdp->output_surface_destroy(vc->rgb_surfaces[n]);
+            CHECK_ST_WARNING("Error when calling vdp_output_surface_destroy");
+        }
+        vc->rgb_surfaces[n] = VDP_INVALID_HANDLE;
+    }
+
+    if (vc->black_pixel != VDP_INVALID_HANDLE) {
+        vdp_st = vdp->output_surface_destroy(vc->black_pixel);
+        CHECK_ST_WARNING("Error when calling vdp_output_surface_destroy");
+    }
+    vc->black_pixel = VDP_INVALID_HANDLE;
+}
+
+static int get_rgb_format(int imgfmt)
+{
+    switch (imgfmt) {
+    case IMGFMT_BGR32: return VDP_RGBA_FORMAT_B8G8R8A8;
+    default:           return -1;
+    }
 }
 
 static int initialize_vdpau_objects(struct vo *vo)
 {
     struct vdpctx *vc = vo->priv;
+    struct vdp_functions *vdp = vc->vdp;
+    VdpStatus vdp_st;
 
     mp_vdpau_get_format(vc->image_format, &vc->vdp_chroma_type,
                         &vc->vdp_pixel_format);
@@ -679,10 +769,29 @@ static int initialize_vdpau_objects(struct vo *vo)
     if (win_x11_init_vdpau_flip_queue(vo) < 0)
         return -1;
 
-    if (create_vdp_mixer(vo, vc->vdp_chroma_type) < 0)
-        return -1;
+    if (vc->rgb_mode) {
+        int format = get_rgb_format(vc->image_format);
+        for (int n = 0; n < NUM_BUFFERED_VIDEO; n++) {
+            vdp_st = vdp->output_surface_create(vc->vdp_device,
+                                                format,
+                                                vc->vid_width, vc->vid_height,
+                                                &vc->rgb_surfaces[n]);
+            CHECK_ST_ERROR("Allocating RGB surface");
+        }
+        vdp_st = vdp->output_surface_create(vc->vdp_device, OUTPUT_RGBA_FORMAT,
+                                            1, 1, &vc->black_pixel);
+        CHECK_ST_ERROR("Allocating clearing surface");
+        const char data[4] = {0};
+        vdp_st = vdp->output_surface_put_bits_native(vc->black_pixel,
+                                                     (const void*[]){data},
+                                                     (uint32_t[]){4}, NULL);
+        CHECK_ST_ERROR("Initializing clearing surface");
+    } else {
+        if (create_vdp_mixer(vo, vc->vdp_chroma_type) < 0)
+            return -1;
+    }
 
-    forget_frames(vo);
+    forget_frames(vo, false);
     resize(vo);
     return 0;
 }
@@ -693,7 +802,10 @@ static void mark_vdpau_objects_uninitialized(struct vo *vo)
 
     for (int i = 0; i < MAX_VIDEO_SURFACES; i++)
         vc->video_surfaces[i].surface = VDP_INVALID_HANDLE;
-    forget_frames(vo);
+    for (int i = 0; i < NUM_BUFFERED_VIDEO; i++)
+        vc->rgb_surfaces[i] = VDP_INVALID_HANDLE;
+    forget_frames(vo, false);
+    vc->black_pixel = VDP_INVALID_HANDLE;
     vc->video_mixer = VDP_INVALID_HANDLE;
     vc->flip_queue = VDP_INVALID_HANDLE;
     vc->flip_target = VDP_INVALID_HANDLE;
@@ -723,8 +835,7 @@ static int handle_preemption(struct vo *vo)
         mark_vdpau_objects_uninitialized(vo);
     vc->preemption_acked = true;
     if (!vc->preemption_user_notified) {
-        mp_tmsg(MSGT_VO, MSGL_ERR, "[vdpau] Got display preemption notice! "
-                "Will attempt to recover.\n");
+        MP_ERR(vo, "Got display preemption notice! Will attempt to recover.\n");
         vc->preemption_user_notified = true;
     }
     /* Trying to initialize seems to be quite slow, so only try once a
@@ -741,7 +852,7 @@ static int handle_preemption(struct vo *vo)
     vc->mpvdp.is_preempted = false;
     vc->mpvdp.preemption_counter++;
     vc->preemption_user_notified = false;
-    mp_tmsg(MSGT_VO, MSGL_INFO, "[vdpau] Recovered from display preemption.\n");
+    MP_INFO(vo, "Recovered from display preemption.\n");
     return 1;
 }
 
@@ -773,6 +884,10 @@ static int config(struct vo *vo, uint32_t width, uint32_t height,
     vc->image_format = format;
     vc->vid_width    = width;
     vc->vid_height   = height;
+
+    vc->rgb_mode = get_rgb_format(format) >= 0;
+
+    vc->deint = vc->rgb_mode ? 0 : vc->user_deint;
 
     free_video_specific(vo);
 
@@ -888,16 +1003,16 @@ static void generate_osd_part(struct vo *vo, struct sub_bitmaps *imgs)
     sfc->packer->padding = imgs->scaled; // assume 2x2 filter on scaling
     int r = packer_pack_from_subbitmaps(sfc->packer, imgs);
     if (r < 0) {
-        mp_msg(MSGT_VO, MSGL_ERR, "[vdpau] OSD bitmaps do not fit on "
-               "a surface with the maximum supported size\n");
+        MP_ERR(vo, "OSD bitmaps do not fit on a surface with the maximum "
+               "supported size\n");
         return;
     } else if (r == 1) {
         if (sfc->surface != VDP_INVALID_HANDLE) {
             vdp_st = vdp->bitmap_surface_destroy(sfc->surface);
             CHECK_ST_WARNING("Error when calling vdp_bitmap_surface_destroy");
         }
-        mp_msg(MSGT_VO, MSGL_V, "[vdpau] Allocating a %dx%d surface for "
-               "OSD bitmaps.\n", sfc->packer->w, sfc->packer->h);
+        MP_VERBOSE(vo, "Allocating a %dx%d surface for OSD bitmaps.\n",
+                   sfc->packer->w, sfc->packer->h);
         vdp_st = vdp->bitmap_surface_create(vc->vdp_device, format,
                                             sfc->packer->w, sfc->packer->h,
                                             true, &sfc->surface);
@@ -996,9 +1111,9 @@ static int update_presentation_queue_status(struct vo *vo)
         if (vc->vsync_interval > 1) {
             uint64_t qtime = vc->queue_time[vc->query_surface_num];
             if (vtime < qtime + vc->vsync_interval / 2)
-                mp_msg(MSGT_VO, MSGL_V, "[vdpau] Frame shown too early\n");
+                MP_VERBOSE(vo, "Frame shown too early\n");
             if (vtime > qtime + vc->vsync_interval)
-                mp_msg(MSGT_VO, MSGL_V, "[vdpau] Frame shown late\n");
+                MP_VERBOSE(vo, "Frame shown late\n");
         }
         vc->query_surface_num = WRAP_ADD(vc->query_surface_num, 1,
                                          vc->num_output_surfaces);
@@ -1006,8 +1121,7 @@ static int update_presentation_queue_status(struct vo *vo)
     }
     int num_queued = WRAP_ADD(vc->surface_num, -vc->query_surface_num,
                               vc->num_output_surfaces);
-    mp_msg(MSGT_VO, MSGL_DBG3, "[vdpau] Queued surface count (before add): "
-           "%d\n", num_queued);
+    MP_DBG(vo, "Queued surface count (before add): %d\n", num_queued);
     return num_queued;
 }
 
@@ -1171,7 +1285,7 @@ static struct mp_image *get_video_surface(struct mp_vdpau_ctx *ctx, int fmt,
             e->w = w;
             e->h = h;
             if (vc->is_preempted) {
-                mp_msg(MSGT_VO, MSGL_WARN, "[vdpau] Preempted, no surface.\n");
+                MP_WARN(vo, "Preempted, no surface.\n");
             } else {
                 vdp_st = vdp->video_surface_create(vc->vdp_device, chroma,
                                                    w, h, &e->surface);
@@ -1181,10 +1295,33 @@ static struct mp_image *get_video_surface(struct mp_vdpau_ctx *ctx, int fmt,
         }
     }
 
-    mp_msg(MSGT_VO, MSGL_ERR, "[vdpau] no surfaces available in "
-           "get_video_surface\n");
+    MP_ERR(vo, "no surfaces available in get_video_surface\n");
     // TODO: this probably breaks things forever, provide a dummy buffer?
     return NULL;
+}
+
+static VdpOutputSurface get_rgb_surface(struct vo *vo)
+{
+    struct vdpctx *vc = vo->priv;
+
+    assert(vc->rgb_mode);
+
+    for (int n = 0; n < NUM_BUFFERED_VIDEO; n++) {
+        VdpOutputSurface surface = vc->rgb_surfaces[n];
+        // Note: we expect to be called before add_new_video_surface(), which
+        //       will lead to vc->buffered_video[NUM_BUFFERED_VIDEO - 1] to be
+        //       marked unused. So this entries rgb_surface can be reused
+        //       freely.
+        for (int i = 0; i < NUM_BUFFERED_VIDEO - 1; i++) {
+            if (vc->buffered_video[i].rgb_surface == surface)
+                goto in_use;
+        }
+        return surface;
+    in_use:;
+    }
+
+    MP_ERR(vo, "no surfaces available in get_rgb_surface\n");
+    return VDP_INVALID_HANDLE;
 }
 
 static void draw_image(struct vo *vo, mp_image_t *mpi)
@@ -1193,17 +1330,31 @@ static void draw_image(struct vo *vo, mp_image_t *mpi)
     struct vdp_functions *vdp = vc->vdp;
     struct mp_image *reserved_mpi = NULL;
     VdpVideoSurface surface = VDP_INVALID_HANDLE;
+    VdpOutputSurface rgb_surface = VDP_INVALID_HANDLE;
+    VdpStatus vdp_st;
+
+    // Forget previous frames, as we can display a new one now.
+    vc->prev_deint_queue_pos = -1001;
 
     if (IMGFMT_IS_VDPAU(vc->image_format)) {
         surface = (VdpVideoSurface)(intptr_t)mpi->planes[3];
         reserved_mpi = mp_image_new_ref(mpi);
+    } else if (vc->rgb_mode) {
+        rgb_surface = get_rgb_surface(vo);
+        if (rgb_surface != VDP_INVALID_HANDLE) {
+            vdp_st = vdp->output_surface_put_bits_native(rgb_surface,
+                                            &(const void *){mpi->planes[0]},
+                                            &(uint32_t){mpi->stride[0]},
+                                            NULL);
+            CHECK_ST_WARNING("Error when calling "
+                             "output_surface_put_bits_native");
+        }
     } else {
         reserved_mpi = get_video_surface(&vc->mpvdp, IMGFMT_VDPAU,
                                          vc->vdp_chroma_type, mpi->w, mpi->h);
         if (!reserved_mpi)
             return;
         surface = (VdpVideoSurface)(intptr_t)reserved_mpi->planes[3];
-        vc->deint_counter = WRAP_ADD(vc->deint_counter, 1, NUM_BUFFERED_VIDEO);
         if (handle_preemption(vo) >= 0) {
             VdpStatus vdp_st;
             const void *destdata[3] = {mpi->planes[0], mpi->planes[2],
@@ -1221,7 +1372,7 @@ static void draw_image(struct vo *vo, mp_image_t *mpi)
     else
         vc->top_field_first = 1;
 
-    add_new_video_surface(vo, surface, reserved_mpi, mpi->pts);
+    add_new_video_surface(vo, surface, rgb_surface, reserved_mpi, mpi->pts);
 
     return;
 }
@@ -1284,12 +1435,17 @@ static struct mp_image *get_window_screenshot(struct vo *vo)
     return image;
 }
 
-
 static int query_format(struct vo *vo, uint32_t format)
 {
-    if (!mp_vdpau_get_format(format, NULL, NULL))
-        return 0;
-    return VFCAP_CSP_SUPPORTED | VFCAP_CSP_SUPPORTED_BY_HW | VFCAP_FLIP;
+    struct vdpctx *vc = vo->priv;
+
+    int flags = VFCAP_CSP_SUPPORTED | VFCAP_CSP_SUPPORTED_BY_HW | VFCAP_FLIP;
+    if (mp_vdpau_get_format(format, NULL, NULL))
+        return flags;
+    int rgb_format = get_rgb_format(format);
+    if (!vc->force_yuv && rgb_format >= 0)
+        return flags;
+    return 0;
 }
 
 static void destroy_vdpau_objects(struct vo *vo)
@@ -1387,6 +1543,10 @@ static int preinit(struct vo *vo)
 static int get_equalizer(struct vo *vo, const char *name, int *value)
 {
     struct vdpctx *vc = vo->priv;
+
+    if (vc->rgb_mode)
+        return false;
+
     return mp_csp_equalizer_get(&vc->video_eq, name, value) >= 0 ?
            VO_TRUE : VO_NOTIMPL;
 }
@@ -1394,6 +1554,9 @@ static int get_equalizer(struct vo *vo, const char *name, int *value)
 static int set_equalizer(struct vo *vo, const char *name, int value)
 {
     struct vdpctx *vc = vo->priv;
+
+    if (vc->rgb_mode)
+        return false;
 
     if (mp_csp_equalizer_set(&vc->video_eq, name, value) < 0)
         return VO_NOTIMPL;
@@ -1419,10 +1582,14 @@ static int control(struct vo *vo, uint32_t request, void *data)
 
     switch (request) {
     case VOCTRL_GET_DEINTERLACE:
+        if (vc->rgb_mode)
+            break;
         *(int *)data = vc->deint;
         return VO_TRUE;
     case VOCTRL_SET_DEINTERLACE:
-        vc->deint = *(int *)data;
+        if (vc->rgb_mode)
+            break;
+        vc->deint = vc->user_deint = *(int *)data;
         if (vc->deint)
             vc->deint = vc->deint_type;
         if (vc->deint_type > 2 && status_ok(vo)) {
@@ -1463,12 +1630,16 @@ static int control(struct vo *vo, uint32_t request, void *data)
         return get_equalizer(vo, args->name, args->valueptr);
     }
     case VOCTRL_SET_YUV_COLORSPACE:
+        if (vc->rgb_mode)
+            break;
         vc->colorspace = *(struct mp_csp_details *)data;
         if (status_ok(vo))
             update_csc_matrix(vo);
         vo->want_redraw = true;
         return true;
     case VOCTRL_GET_YUV_COLORSPACE:
+        if (vc->rgb_mode)
+            break;
         *(struct mp_csp_details *)data = vc->colorspace;
         return true;
     case VOCTRL_NEWFRAME:
@@ -1484,7 +1655,7 @@ static int control(struct vo *vo, uint32_t request, void *data)
             video_to_output_surface(vo);
         return true;
     case VOCTRL_RESET:
-        forget_frames(vo);
+        forget_frames(vo, true);
         return true;
     case VOCTRL_SCREENSHOT: {
         if (!status_ok(vo))
@@ -1543,6 +1714,11 @@ const struct vo_driver video_out_vdpau = {
         OPT_INT("queuetime_fs", flip_offset_fs, 0, OPTDEF_INT(50)),
         OPT_INTRANGE("output_surfaces", num_output_surfaces, 0,
                      2, MAX_OUTPUT_SURFACES, OPTDEF_INT(3)),
+        OPT_COLOR("colorkey", colorkey, 0,
+                  .defval = &(const struct m_color) {
+                      .r = 2, .g = 5, .b = 7, .a = 255,
+                  }),
+        OPT_FLAG("force-yuv", force_yuv, 0),
         {NULL},
     }
 };
