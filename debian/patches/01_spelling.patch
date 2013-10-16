@@ -1,13 +1,13 @@
 Description: Fix spelling error
 Origin: vendor
-Forwarded: no
+Forwarded: https://github.com/mpv-player/mpv/pull/296
 Author: Alessandro Ghedini <ghedo@debian.org>
 Reviewed-by: Alessandro Ghedini <ghedo@debian.org>
-Last-Update: 2013-09-14
+Last-Update: 2013-10-16
 
 --- a/DOCS/man/en/options.rst
 +++ b/DOCS/man/en/options.rst
-@@ -1993,7 +1993,7 @@
+@@ -2108,7 +2108,7 @@
  ``--stop-screensaver``, ``--no-stop-screensaver``
      Turns off the screensaver (or screen blanker and similar mechanisms) at
      startup and turns it on again on exit (default: yes). The screensaver is
@@ -16,3 +16,40 @@ Last-Update: 2013-09-14
  
      This is not supported on all video outputs or platforms. Sometimes it is
      implemented, but does not work (happens often on GNOME). You might be able
+--- a/mpvcore/lua/osc.lua
++++ b/mpvcore/lua/osc.lua
+@@ -52,7 +52,7 @@
+ 
+ -- internal states, do not touch
+ local state = {
+-    showtime,                               -- time of last invokation (last mouse move)
++    showtime,                               -- time of last invocation (last mouse move)
+     osc_visible = false,
+     anistart,                               -- time when the animation started
+     anitype,                                -- current type of animation
+@@ -636,7 +636,7 @@
+     -- kill old Elements
+     elements = {}
+ 
+-    -- set canvas resolution acording to display aspect and scaling setting
++    -- set canvas resolution according to display aspect and scaling setting
+     local baseResY = 720
+     local display_w, display_h, display_aspect = mp.get_screen_size()
+     local scale = 1
+@@ -999,7 +999,7 @@
+ 
+ function show_osc()
+ 
+-    --remember last time of invokation (mouse move)
++    --remember last time of invocation (mouse move)
+     state.showtime = mp.get_timer()
+ 
+     state.osc_visible = true
+--- a/DOCS/man/en/vo.rst
++++ b/DOCS/man/en/vo.rst
+@@ -776,4 +776,4 @@
+ 
+     ``alpha``
+         Use a buffer format that supports videos and images with alpha
+-        informations
++        information
