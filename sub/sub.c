@@ -163,6 +163,11 @@ static void render_object(struct osd_state *osd, struct osd_object *obj,
                 sub_pts -= osd->video_offset - opts->sub_delay;
             sub_get_bitmaps(osd->dec_sub, obj->vo_res, sub_pts, out_imgs);
         }
+    } else if (obj->type == OSDTYPE_EXTERNAL2) {
+        if (osd->external2.format) {
+            *out_imgs = osd->external2;
+            osd->external2.bitmap_id = osd->external2.bitmap_pos_id = 0;
+        }
     } else {
         osd_object_get_bitmaps(osd, obj, out_imgs);
     }
@@ -221,6 +226,9 @@ void osd_draw(struct osd_state *osd, struct mp_osd_res res,
 {
     if (draw_flags & OSD_DRAW_SUB_FILTER)
         draw_flags |= OSD_DRAW_SUB_ONLY;
+
+    if (!(draw_flags & OSD_DRAW_SUB_ONLY))
+        osd->last_vo_res = res;
 
     for (int n = 0; n < MAX_OSD_PARTS; n++) {
         struct osd_object *obj = osd->objs[n];
@@ -303,4 +311,15 @@ void osd_changed_all(struct osd_state *osd)
 {
     for (int n = 0; n < MAX_OSD_PARTS; n++)
         osd_changed(osd, n);
+}
+
+// Scale factor to translate OSD coordinates to what the obj uses internally.
+// osd_coordinates * (sh, sh) = obj_coordinates
+void osd_object_get_scale_factor(struct osd_state *osd, struct osd_object *obj,
+                                 double *sw, double *sh)
+{
+    int nw, nh;
+    osd_object_get_resolution(osd, obj, &nw, &nh);
+    *sw = nw / (double)obj->vo_res.w;
+    *sh = nh / (double)obj->vo_res.h;
 }

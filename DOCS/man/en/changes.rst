@@ -36,6 +36,7 @@ General Changes for MPlayer to mplayer2
 General Changes for mplayer2 to mpv
 -----------------------------------
 
+* Switch back to GPLv2+.
 * Removal of lots of unneeded code to encourage developer activity (less
   obscure scary zombie code that kills any desire for hacking the codebase)
 * Removal of dust and dead bodies (code-wise), such as kernel drivers for
@@ -99,6 +100,9 @@ General Changes for mplayer2 to mpv
 * Support mapping multiple commands to one key.
 * Allow changing/adjusting video filters at runtime. (This is also used to make
   the ``D`` key insert vf_yadif if deinterlacing is not supported otherwise.)
+* Native VAAPI support
+* OSX: VDA support using libavcodec hwaccel API insted of FFmpeg's decoder. Up
+  to 2-2.5x reduction in CPU usage.
 * General bug fixes and removal of long-standing issues
 * General code cleanups (including refactoring or rewrites of many parts)
 * Many more changes
@@ -143,7 +147,7 @@ Command Line Switches
     ``-xineramascreen``         ``--screen`` (different values)
     ``-ss``                     ``--start``
     ``-endpos``                 ``--length``
-    ``--cursor-autohide-delay`` ``--cursor-autohide``
+    ``-cursor-autohide-delay``  ``--cursor-autohide``
     ``-sub-fuzziness``          ``--autosub-match``
     ``-subfont``                ``--sub-text-font``
     ``-font``                   ``--osd-font``
@@ -166,10 +170,12 @@ Command Line Switches
     ``-lavfdopts``              ``--demuxer-lavf-...``
     ``-rawaudio ...``           ``--demuxer-rawaudio-...``
     ``-rawvideo ...``           ``--demuxer-rawvideo-...``
-    ``--mixer``                 AO suboptions (``alsa``, ``oss``)
-    ``--mixer-channel``         AO suboptions (``alsa``, ``oss``)
-    ``--ao=alsa:device=hw=0.3`` ``--ao=alsa:device=[hw:0,3]``
+    ``-mixer``                  AO suboptions (``alsa``, ``oss``)
+    ``-mixer-channel``          AO suboptions (``alsa``, ``oss``)
+    ``-ao alsa:device=hw=0.3``  ``--ao=alsa:device=[hw:0,3]``
     ``-af volnorm``             ``--af=drc`` (renamed)
+    ``-zoom``                   Inverse available as ``--video-unscaled``
+    ``-panscanrange``           ``--video-zoom``, ``--video-pan-x/y``
     =========================== ========================================
 
 .. note::

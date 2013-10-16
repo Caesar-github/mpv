@@ -22,6 +22,13 @@
 #include "cocoa_common.h"
 #include "gl_common.h"
 
+static void gl_clear(void *ctx)
+{
+    struct GL *gl = ctx;
+    gl->ClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+    gl->Clear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+}
+
 static bool config_window_cocoa(struct MPGLContext *ctx, uint32_t d_width,
                                 uint32_t d_height, uint32_t flags)
 {
@@ -30,7 +37,7 @@ static bool config_window_cocoa(struct MPGLContext *ctx, uint32_t d_width,
     if (rv != 0)
         return false;
 
-    mpgl_load_functions(ctx->gl, (void *)vo_cocoa_glgetaddr, NULL);
+    mpgl_load_functions(ctx->gl, (void *)vo_cocoa_glgetaddr, NULL, ctx->vo->log);
 
     ctx->depth_r = vo_cocoa_cgl_color_size(ctx->vo);
     ctx->depth_g = vo_cocoa_cgl_color_size(ctx->vo);
@@ -38,6 +45,8 @@ static bool config_window_cocoa(struct MPGLContext *ctx, uint32_t d_width,
 
     if (!ctx->gl->SwapInterval)
         ctx->gl->SwapInterval = vo_cocoa_swap_interval;
+
+    vo_cocoa_register_gl_clear_callback(ctx->vo, ctx->gl, gl_clear);
 
     return true;
 }

@@ -14,6 +14,7 @@ struct mp_csp_details;
 #define SWS_MIN_BYTE_ALIGN 16
 
 extern const int mp_sws_hq_flags;
+extern const int mp_sws_fast_flags;
 
 bool mp_sws_supported_format(int imgfmt);
 
@@ -51,6 +52,10 @@ int mp_sws_reinit(struct mp_sws_context *ctx);
 void mp_sws_set_from_cmdline(struct mp_sws_context *ctx);
 int mp_sws_scale(struct mp_sws_context *ctx, struct mp_image *dst,
                  struct mp_image *src);
+
+struct vf_seteq;
+int mp_sws_set_vf_equalizer(struct mp_sws_context *sws, struct vf_seteq *eq);
+int mp_sws_get_vf_equalizer(struct mp_sws_context *sws, struct vf_seteq *eq);
 
 #endif /* MP_SWS_UTILS_H */
 

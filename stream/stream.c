@@ -37,8 +37,10 @@
 
 #include "config.h"
 
+#include "mpvcore/mp_common.h"
 #include "mpvcore/bstr.h"
 #include "mpvcore/mp_msg.h"
+#include "mpvcore/path.h"
 #include "osdep/timer.h"
 #include "stream.h"
 #include "demux/demux.h"
@@ -74,15 +76,17 @@ extern const stream_info_t stream_info_file;
 extern const stream_info_t stream_info_ifo;
 extern const stream_info_t stream_info_dvd;
 extern const stream_info_t stream_info_bluray;
+extern const stream_info_t stream_info_rar_filter;
+extern const stream_info_t stream_info_rar_entry;
 
-static const stream_info_t *const auto_open_streams[] = {
+static const stream_info_t *const stream_list[] = {
 #ifdef CONFIG_VCD
     &stream_info_vcd,
 #endif
 #ifdef CONFIG_CDDA
     &stream_info_cdda,
 #endif
-    &stream_info_ffmpeg, // use for rstp:// before http fallback
+    &stream_info_ffmpeg,
     &stream_info_avdevice,
 #ifdef CONFIG_DVBIN
     &stream_info_dvb,
@@ -110,6 +114,8 @@ static const stream_info_t *const auto_open_streams[] = {
     &stream_info_memory,
     &stream_info_null,
     &stream_info_mf,
+    &stream_info_rar_filter,
+    &stream_info_rar_entry,
     &stream_info_file,
     NULL
 };
@@ -147,11 +153,44 @@ void mp_url_unescape_inplace(char *buf)
     buf[o++] = '\0';
 }
 
+// Escape according to http://tools.ietf.org/html/rfc3986#section-2.1
+// Only unreserved characters are not escaped.
+// The argument ok (if not NULL) is as follows:
+//      ok[0] != '~': additional characters that are not escaped
+//      ok[0] == '~': do not escape anything but these characters
+//                    (can't override the unreserved characters, which are
+//                     never escaped, and '%', which is always escaped)
+char *mp_url_escape(void *talloc_ctx, const char *s, const char *ok)
+{
+    int len = strlen(s);
+    char *buf = talloc_array(talloc_ctx, char, len * 3 + 1);
+    int o = 0;
+    for (int i = 0; i < len; i++) {
+        unsigned char c = s[i];
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+            (c >= '0' && c <= '9') || strchr("-._~", c) ||
+            (ok && ((ok[0] != '~') == !!strchr(ok, c)) && c != '%'))
+        {
+            buf[o++] = c;
+        } else {
+            const char hex[] = "0123456789ABCDEF";
+            buf[o++] = '%';
+            buf[o++] = hex[c / 16];
+            buf[o++] = hex[c % 16];
+        }
+    }
+    buf[o++] = '\0';
+    return buf;
+}
+
 static const char *find_url_opt(struct stream *s, const char *opt)
 {
-    for (int n = 0; s->info->url_options && s->info->url_options[n][0]; n++) {
-        if (strcmp(s->info->url_options[n][0], opt) == 0)
-            return s->info->url_options[n][1];
+    for (int n = 0; s->info->url_options && s->info->url_options[n]; n++) {
+        const char *entry = s->info->url_options[n];
+        const char *t = strchr(entry, '=');
+        assert(t);
+        if (strncmp(opt, entry, t - entry) == 0)
+            return t + 1;
     }
     return NULL;
 }
@@ -206,15 +245,46 @@ static stream_t *new_stream(void)
     return s;
 }
 
-static stream_t *open_stream_plugin(const stream_info_t *sinfo,
-                                    const char *url, const char *path, int mode,
-                                    struct MPOpts *options, int *ret)
+static const char *match_proto(const char *url, const char *proto)
 {
+    int l = strlen(proto);
+    if (l > 0) {
+        if (strncasecmp(url, proto, l) == 0 && strncmp("://", url + l, 3) == 0)
+            return url + l + 3;
+    } else if (!mp_is_url(bstr0(url))) {
+        return url; // pure filenames
+    }
+    return NULL;
+}
+
+static int open_internal(const stream_info_t *sinfo, struct stream *underlying,
+                         const char *url, int flags, struct MPOpts *options,
+                         struct stream **ret)
+{
+    if (sinfo->stream_filter != !!underlying)
+        return STREAM_NO_MATCH;
+    if (sinfo->stream_filter && (flags & STREAM_NO_FILTERS))
+        return STREAM_NO_MATCH;
+
+    const char *path = NULL;
+    // Stream filters use the original URL, with no protocol matching at all.
+    if (!sinfo->stream_filter) {
+        for (int n = 0; sinfo->protocols && sinfo->protocols[n]; n++) {
+            path = match_proto(url, sinfo->protocols[n]);
+            if (path)
+                break;
+        }
+
+        if (!path)
+            return STREAM_NO_MATCH;
+    }
+
     stream_t *s = new_stream();
     s->info = sinfo;
     s->opts = options;
     s->url = talloc_strdup(s, url);
     s->path = talloc_strdup(s, path);
+    s->source = underlying;
 
     // Parse options
     if (sinfo->priv_size) {
@@ -228,17 +298,16 @@ static stream_t *open_stream_plugin(const stream_info_t *sinfo,
         if (s->info->url_options && !parse_url(s, config)) {
             mp_tmsg(MSGT_OPEN, MSGL_ERR, "URL parsing failed on url %s\n", url);
             talloc_free(s);
-            *ret = STREAM_ERROR;
-            return NULL;
+            return STREAM_ERROR;
         }
     }
 
     s->flags = 0;
-    s->mode = mode;
-    *ret = sinfo->open(s, mode);
-    if ((*ret) != STREAM_OK) {
+    s->mode = flags & (STREAM_READ | STREAM_WRITE);
+    int r = sinfo->open(s, s->mode);
+    if (r != STREAM_OK) {
         talloc_free(s);
-        return NULL;
+        return r;
     }
 
     if (!s->read_chunk)
@@ -249,7 +318,8 @@ static stream_t *open_stream_plugin(const stream_info_t *sinfo,
     if (s->seek && !(s->flags & MP_STREAM_SEEK))
         s->flags |= MP_STREAM_SEEK;
 
-    s->mode = mode;
+    if (s->flags & MP_STREAM_FAST_SKIPPING)
+        s->flags |= MP_STREAM_SEEK_FW;
 
     s->uncached_type = s->type;
 
@@ -258,67 +328,57 @@ static stream_t *open_stream_plugin(const stream_info_t *sinfo,
     if (s->mime_type)
         mp_msg(MSGT_OPEN, MSGL_V, "Mime-type: '%s'\n", s->mime_type);
 
-    return s;
+    *ret = s;
+    return STREAM_OK;
 }
 
-static const char *match_proto(const char *url, const char *proto)
+struct stream *stream_create(const char *url, int flags, struct MPOpts *options)
 {
-    int l = strlen(proto);
-    if (l > 0) {
-        if (strncasecmp(url, proto, l) == 0 && strncmp("://", url + l, 3) == 0)
-            return url + l + 3;
-    } else {
-        // pure filenames
-        if (!strstr(url, "://"))
-            return url;
-    }
-    return NULL;
-}
-
-static stream_t *open_stream_full(const char *url, int mode,
-                                  struct MPOpts *options)
-{
-    int i, j, r;
-    const stream_info_t *sinfo;
-    stream_t *s;
-
+    struct stream *s = NULL;
     assert(url);
 
-    for (i = 0; auto_open_streams[i]; i++) {
-        sinfo = auto_open_streams[i];
-        if (!sinfo->protocols) {
-            mp_msg(MSGT_OPEN, MSGL_WARN,
-                   "Stream type %s has protocols == NULL, it's a bug\n",
-                   sinfo->name);
+    // Open stream proper
+    for (int i = 0; stream_list[i]; i++) {
+        int r = open_internal(stream_list[i], NULL, url, flags, options, &s);
+        if (r == STREAM_OK)
+            break;
+        if (r == STREAM_NO_MATCH || r == STREAM_UNSUPPORTED)
             continue;
-        }
-        for (j = 0; sinfo->protocols[j]; j++) {
-            const char *path = match_proto(url, sinfo->protocols[j]);
-            if (path) {
-                s = open_stream_plugin(sinfo, url, path, mode, options, &r);
-                if (s)
-                    return s;
-                if (r != STREAM_UNSUPPORTED) {
-                    mp_tmsg(MSGT_OPEN, MSGL_ERR, "Failed to open %s.\n", url);
-                    return NULL;
-                }
-                break;
-            }
+        if (r != STREAM_OK) {
+            mp_tmsg(MSGT_OPEN, MSGL_ERR, "Failed to open %s.\n", url);
+            return NULL;
         }
     }
 
-    mp_tmsg(MSGT_OPEN, MSGL_ERR, "No stream found to handle url %s\n", url);
-    return NULL;
+    if (!s) {
+        mp_tmsg(MSGT_OPEN, MSGL_ERR, "No stream found to handle url %s\n", url);
+        return NULL;
+    }
+
+    // Open stream filters
+    for (;;) {
+        struct stream *new = NULL;
+        for (int i = 0; stream_list[i]; i++) {
+            int r = open_internal(stream_list[i], s, s->url, flags, options, &new);
+            if (r == STREAM_OK)
+                break;
+        }
+        if (!new)
+            break;
+        s = new;
+    }
+
+    return s;
 }
 
 struct stream *stream_open(const char *filename, struct MPOpts *options)
 {
-    return open_stream_full(filename, STREAM_READ, options);
+    return stream_create(filename, STREAM_READ, options);
 }
 
 stream_t *open_output_stream(const char *filename, struct MPOpts *options)
 {
-    return open_stream_full(filename, STREAM_WRITE, options);
+    return stream_create(filename, STREAM_WRITE, options);
 }
 
 static int stream_reconnect(stream_t *s)
@@ -418,13 +478,21 @@ eof_out:
     return len;
 }
 
-int stream_fill_buffer(stream_t *s)
+static int stream_fill_buffer_by(stream_t *s, int64_t len)
 {
-    int len = s->sector_size ? s->sector_size : STREAM_BUFFER_SIZE;
+    len = MPMIN(len, s->read_chunk);
+    len = MPMAX(len, STREAM_BUFFER_SIZE);
+    if (s->sector_size)
+        len = s->sector_size;
     len = stream_read_unbuffered(s, s->buffer, len);
     s->buf_pos = 0;
     s->buf_len = len;
     return s->buf_len;
+}
+
+int stream_fill_buffer(stream_t *s)
+{
+    return stream_fill_buffer_by(s, STREAM_BUFFER_SIZE);
 }
 
 // Read between 1..buf_size bytes of data, return how much data has been read.
@@ -481,7 +549,7 @@ struct bstr stream_peek(stream_t *s, int len)
         memmove(s->buffer, &s->buffer[s->buf_pos], buf_valid);
         // Fill rest of the buffer.
         while (buf_valid < len) {
-            int chunk = len - buf_valid;
+            int chunk = MPMAX(len - buf_valid, STREAM_BUFFER_SIZE);
             if (s->sector_size)
                 chunk = STREAM_BUFFER_SIZE;
             assert(buf_valid + chunk <= TOTAL_BUFFER_SIZE);
@@ -512,6 +580,23 @@ int stream_write_buffer(stream_t *s, unsigned char *buf, int len)
     return rd;
 }
 
+static int stream_skip_read(struct stream *s, int64_t len)
+{
+    while (len > 0) {
+        int x = s->buf_len - s->buf_pos;
+        if (x == 0) {
+            if (!stream_fill_buffer_by(s, len))
+                return 0; // EOF
+            x = s->buf_len - s->buf_pos;
+        }
+        if (x > len)
+            x = len;
+        s->buf_pos += x;
+        len -= x;
+    }
+    return 1;
+}
+
 // Seek function bypassing the local stream buffer.
 static int stream_seek_unbuffered(stream_t *s, int64_t newpos)
 {
@@ -530,6 +615,7 @@ static int stream_seek_unbuffered(stream_t *s, int64_t newpos)
             return 0;
         }
     }
+    s->pos = newpos;
     s->eof = 0; // EOF reset when seek succeeds.
     return -1;
 }
@@ -538,7 +624,6 @@ static int stream_seek_unbuffered(stream_t *s, int64_t newpos)
 // Unlike stream_seek_unbuffered(), it still fills the local buffer.
 static int stream_seek_long(stream_t *s, int64_t pos)
 {
-    int64_t oldpos = s->pos;
     s->buf_pos = s->buf_len = 0;
     s->eof = 0;
 
@@ -552,30 +637,18 @@ static int stream_seek_long(stream_t *s, int64_t pos)
     if (s->sector_size)
         newpos = (pos / s->sector_size) * s->sector_size;
 
-    mp_msg(MSGT_STREAM, MSGL_DBG3, "s->pos=%" PRIX64 "  newpos=%" PRIX64
-           "  new_bufpos=%" PRIX64 "  buflen=%X  \n",
-           (int64_t)s->pos, (int64_t)newpos, (int64_t)pos, s->buf_len);
+    mp_msg(MSGT_STREAM, MSGL_DBG3, "Seek from %" PRId64 " to %" PRId64
+           " (with offset %d)\n", s->pos, pos, (int)(pos - newpos));
 
-    pos -= newpos;
-
-    if (stream_seek_unbuffered(s, newpos) >= 0) {
-        s->pos = oldpos;
+    if (!s->seek && (s->flags & MP_STREAM_FAST_SKIPPING) && pos >= s->pos) {
+        // skipping is handled by generic code below
+    } else if (stream_seek_unbuffered(s, newpos) >= 0) {
         return 0;
     }
 
-    while (s->pos < newpos) {
-        if (stream_fill_buffer(s) <= 0)
-            break; // EOF
-    }
+    if (pos >= s->pos && stream_skip_read(s, pos - s->pos) > 0)
+        return 1; // success
 
-    while (stream_fill_buffer(s) > 0) {
-        if (pos <= s->buf_len) {
-            s->buf_pos = pos; // byte position in sector
-            s->eof = 0;
-            return 1;
-        }
-        pos -= s->buf_len;
-    }
     // Fill failed, but seek still is a success (partially).
     s->buf_pos = 0;
     s->buf_len = 0;
@@ -624,19 +697,7 @@ int stream_skip(stream_t *s, int64_t len)
         }
         return r;
     }
-    while (len > 0) {
-        int x = s->buf_len - s->buf_pos;
-        if (x == 0) {
-            if (!stream_fill_buffer(s))
-                return 0; // EOF
-            x = s->buf_len - s->buf_pos;
-        }
-        if (x > len)
-            x = len;
-        s->buf_pos += x;
-        len -= x;
-    }
-    return 1;
+    return stream_skip_read(s, len);
 }
 
 int stream_control(stream_t *s, int cmd, void *arg)
@@ -665,6 +726,7 @@ void free_stream(stream_t *s)
     if (s->close)
         s->close(s);
     free_stream(s->uncached_stream);
+    free_stream(s->source);
     talloc_free(s);
 }
 
@@ -724,9 +786,6 @@ static int stream_enable_cache(stream_t **stream, int64_t size, int64_t min,
     if (orig->mode != STREAM_READ)
         return 1;
 
-    // Can't handle a loaded buffer.
-    orig->buf_len = orig->buf_pos = 0;
-
     stream_t *cache = new_stream();
     cache->uncached_type = orig->type;
     cache->uncached_stream = orig;
@@ -738,6 +797,7 @@ static int stream_enable_cache(stream_t **stream, int64_t size, int64_t min,
     cache->mime_type = talloc_strdup(cache, orig->mime_type);
     cache->demuxer = talloc_strdup(cache, orig->demuxer);
     cache->lavf_type = talloc_strdup(cache, orig->lavf_type);
+    cache->safe_origin = orig->safe_origin;
     cache->opts = orig->opts;
     cache->start_pos = orig->start_pos;
     cache->end_pos = orig->end_pos;
@@ -858,6 +918,8 @@ unsigned char *stream_read_line(stream_t *s, unsigned char *mem, int max,
     int len;
     const unsigned char *end;
     unsigned char *ptr = mem;
+    if (utf16 == -1)
+        utf16 = 0;
     if (max < 1)
         return NULL;
     max--; // reserve one for 0-termination
@@ -885,6 +947,21 @@ unsigned char *stream_read_line(stream_t *s, unsigned char *mem, int max,
     if (s->eof && ptr == mem)
         return NULL;
     return mem;
+}
+
+static const char *bom[3] = {"\xEF\xBB\xBF", "\xFF\xFE", "\xFE\xFF"};
+
+// Return utf16 argument for stream_read_line
+int stream_skip_bom(struct stream *s)
+{
+    bstr data = stream_peek(s, 4);
+    for (int n = 0; n < 3; n++) {
+        if (bstr_startswith0(data, bom[n])) {
+            stream_skip(s, strlen(bom[n]));
+            return n;
+        }
+    }
+    return -1; // default to 8 bit codepages
 }
 
 // Read the rest of the stream into memory (current pos to EOF), and return it.

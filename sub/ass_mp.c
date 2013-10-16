@@ -39,7 +39,8 @@
 
 // res_y should be track->PlayResY
 // It determines scaling of font sizes and more.
-void mp_ass_set_style(ASS_Style *style, int res_y, struct osd_style_opts *opts)
+void mp_ass_set_style(ASS_Style *style, int res_y,
+                      const struct osd_style_opts *opts)
 {
     if (opts->font) {
         free(style->FontName);
@@ -132,12 +133,15 @@ void mp_ass_configure(ASS_Renderer *priv, struct MPOpts *opts,
 #endif
         set_line_spacing = opts->ass_line_spacing;
         set_font_scale = opts->sub_scale;
-        set_hinting = opts->ass_hinting & 3; // +4 was for no hinting if scaled
+        set_hinting = opts->ass_hinting;
     }
 
     ass_set_use_margins(priv, set_use_margins);
 #if LIBASS_VERSION >= 0x01010000
     ass_set_line_position(priv, set_sub_pos);
+#endif
+#if LIBASS_VERSION >= 0x01000000
+    ass_set_shaper(priv, opts->ass_shaper);
 #endif
     ass_set_font_scale(priv, set_font_scale);
     ass_set_hinting(priv, set_hinting);
@@ -154,9 +158,9 @@ void mp_ass_configure_fonts(ASS_Renderer *priv, struct osd_style_opts *opts)
         default_font = NULL;
     }
 
-    mp_msg(MSGT_ASS, MSGL_V, "[ass] Setting up fonts...\n");
+    mp_msg(MSGT_ASS, MSGL_V, "Setting up fonts...\n");
     ass_set_fonts(priv, default_font, opts->font, 1, config, 1);
-    mp_msg(MSGT_ASS, MSGL_V, "[ass] Done.\n");
+    mp_msg(MSGT_ASS, MSGL_V, "Done.\n");
 
     talloc_free(default_font);
     talloc_free(config);
@@ -211,7 +215,6 @@ static int map_ass_level[] = {
 static void message_callback(int level, const char *format, va_list va, void *ctx)
 {
     level = map_ass_level[level];
-    mp_msg(MSGT_ASS, level, "[ass] ");
     mp_msg_va(MSGT_ASS, level, format, va);
     // libass messages lack trailing \n
     mp_msg(MSGT_ASS, level, "\n");

@@ -43,6 +43,7 @@ enum mp_command_type {
     MP_CMD_PLAYLIST_REMOVE,
     MP_CMD_PLAYLIST_MOVE,
     MP_CMD_SUB_STEP,
+    MP_CMD_SUB_SEEK,
     MP_CMD_TV_SET_CHANNEL,
     MP_CMD_TV_LAST_CHANNEL,
     MP_CMD_TV_SET_FREQ,
@@ -74,7 +75,7 @@ enum mp_command_type {
     MP_CMD_DISABLE_INPUT_SECTION,
 
     /// DVB commands
-    MP_CMD_DVB_SET_CHANNEL = 5101,
+    MP_CMD_DVB_SET_CHANNEL,
 
     /// Audio Filter commands
     MP_CMD_AF,
@@ -84,6 +85,12 @@ enum mp_command_type {
 
     /// Video output commands
     MP_CMD_VO_CMDLINE,
+
+    /// Internal for Lua scripts
+    MP_CMD_SCRIPT_DISPATCH,
+
+    MP_CMD_OVERLAY_ADD,
+    MP_CMD_OVERLAY_REMOVE,
 
     // Internal
     MP_CMD_COMMAND_LIST, // list of sub-commands in args[0].v.p
@@ -116,6 +123,10 @@ enum mp_input_section_flags {
     // other sections for it (like the default section). Instead, an unbound
     // key warning will be printed.
     MP_INPUT_EXCLUSIVE = 1,
+    // Let mp_input_test_dragging() return true, even if inside the mouse area.
+    MP_INPUT_ALLOW_VO_DRAGGING = 2,
+    // Don't force mouse pointer visible, even if inside the mouse area.
+    MP_INPUT_ALLOW_HIDE_CURSOR = 4,
 };
 
 struct input_ctx;
@@ -209,7 +220,8 @@ struct mp_cmd *mp_input_get_cmd(struct input_ctx *ictx, int time,
 
 // Parse text and return corresponding struct mp_cmd.
 // The location parameter is for error messages.
-struct mp_cmd *mp_input_parse_cmd(bstr str, const char *location);
+struct mp_cmd *mp_input_parse_cmd(struct input_ctx *ictx, bstr str,
+                                  const char *location);
 
 // After getting a command from mp_input_get_cmd you need to free it using this
 // function
@@ -262,8 +274,8 @@ bool mp_input_test_mouse_active(struct input_ctx *ictx, int x, int y);
 bool mp_input_test_dragging(struct input_ctx *ictx, int x, int y);
 
 // Initialize the input system
-struct MPOpts;
-struct input_ctx *mp_input_init(struct MPOpts *opts);
+struct mpv_global;
+struct input_ctx *mp_input_init(struct mpv_global *global);
 
 void mp_input_uninit(struct input_ctx *ictx);
 

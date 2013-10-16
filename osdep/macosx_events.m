@@ -150,26 +150,17 @@ static CGEventRef tap_event_callback(CGEventTapProxy proxy, CGEventType type,
 }
 
 void cocoa_init_media_keys(void) {
-    Application *app = mpv_shared_app();
-    [app.eventsResponder startMediaKeys];
+    [mpv_shared_app().eventsResponder startMediaKeys];
 }
 
 void cocoa_uninit_media_keys(void) {
-    Application *app = mpv_shared_app();
-    [app.eventsResponder stopMediaKeys];
-}
-
-void cocoa_check_events(void)
-{
-    Application *app = mpv_shared_app();
-    int key;
-    while ((key = [app.iqueue pop]) >= 0)
-        mp_input_put_key(app.inputContext, key);
+    [mpv_shared_app().eventsResponder stopMediaKeys];
 }
 
 void cocoa_put_key(int keycode)
 {
-    [mpv_shared_app().iqueue push:keycode];
+    if (mpv_shared_app().inputContext)
+        mp_input_put_key(mpv_shared_app().inputContext, keycode);
 }
 
 void cocoa_put_key_with_modifiers(int keycode, int modifiers)
@@ -252,37 +243,14 @@ void cocoa_put_key_with_modifiers(int keycode, int modifiers)
 - (BOOL)handleMediaKey:(NSEvent *)event
 {
     NSDictionary *keymap = @{
-        @(NX_KEYTYPE_PLAY):    @(MP_MK_PLAY),
-        @(NX_KEYTYPE_REWIND):  @(MP_MK_PREV),
-        @(NX_KEYTYPE_FAST):    @(MP_MK_NEXT),
+        @(NX_KEYTYPE_PLAY):    @(MP_KEY_PLAY),
+        @(NX_KEYTYPE_REWIND):  @(MP_KEY_PREV),
+        @(NX_KEYTYPE_FAST):    @(MP_KEY_NEXT),
     };
 
     return [self handleKey:mk_code(event)
                   withMask:[self keyModifierMask:event]
                 andMapping:keymap];
-}
-
-- (NSEvent*)handleKeyDown:(NSEvent *)event
-{
-    NSString *chars;
-
-    if (RightAltPressed([event modifierFlags]))
-        chars = [event characters];
-    else
-        chars = [event charactersIgnoringModifiers];
-
-    int key = convert_key([event keyCode], *[chars UTF8String]);
-
-    if (key > -1) {
-        if ([self isAppKeyEquivalent:chars withEvent:event])
-            // propagate the event in case this is a menu key equivalent
-            return event;
-
-        key |= [self keyModifierMask:event];
-        cocoa_put_key(key);
-    }
-
-    return nil;
 }
 
 - (void)hidRemote:(HIDRemote *)remote
@@ -326,19 +294,60 @@ void cocoa_put_key_with_modifiers(int keycode, int modifiers)
     return mask;
 }
 
+- (int)mapTypeModifiers:(NSEventType)type
+{
+    NSDictionary *map = @{
+        @(NSKeyDown) : @(MP_KEY_STATE_DOWN),
+        @(NSKeyUp)   : @(MP_KEY_STATE_UP),
+    };
+    return [map[@(type)] intValue];
+}
+
 - (int)keyModifierMask:(NSEvent *)event
 {
-    return [self mapKeyModifiers:[event modifierFlags]];
+    return [self mapKeyModifiers:[event modifierFlags]] |
+        [self mapTypeModifiers:[event type]];
+}
+
+-(BOOL)handleMPKey:(int)key withMask:(int)mask
+{
+    if (key > 0) {
+        cocoa_put_key(key | mask);
+        if (mask & MP_KEY_STATE_UP)
+            cocoa_put_key(MP_INPUT_RELEASE_ALL);
+        return YES;
+    } else {
+        return NO;
+    }
 }
 
 -(BOOL)handleKey:(int)key withMask:(int)mask andMapping:(NSDictionary *)mapping
 {
     int mpkey = [mapping[@(key)] intValue];
-    if (mpkey > 0) {
-        cocoa_put_key(mpkey | mask);
-        return YES;
-    } else {
-        return NO;
+    return [self handleMPKey:mpkey withMask:mask];
+}
+
+- (NSEvent*)handleKey:(NSEvent *)event
+{
+    if ([event isARepeat]) return nil;
+
+    NSString *chars;
+
+    if (RightAltPressed([event modifierFlags]))
+        chars = [event characters];
+    else
+        chars = [event charactersIgnoringModifiers];
+
+    int key = convert_key([event keyCode], *[chars UTF8String]);
+
+    if (key > -1) {
+        if ([self isAppKeyEquivalent:chars withEvent:event])
+            // propagate the event in case this is a menu key equivalent
+            return event;
+
+        [self handleMPKey:key withMask:[self keyModifierMask:event]];
     }
+
+    return nil;
 }
 @end

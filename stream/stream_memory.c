@@ -36,7 +36,6 @@ static int fill_buffer(stream_t *s, char* buffer, int len)
 
 static int seek(stream_t *s, int64_t newpos)
 {
-    s->pos = newpos;
     return 1;
 }
 
@@ -73,7 +72,7 @@ static int open_f(stream_t *stream, int mode)
 }
 
 const stream_info_t stream_info_memory = {
-    "memory",
-    open_f,
-    { "memory", NULL },
+    .name = "memory",
+    .open = open_f,
+    .protocols = (const char*[]){ "memory", NULL },
 };

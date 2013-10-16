@@ -70,6 +70,7 @@ extern const vf_info_t vf_info_yadif;
 extern const vf_info_t vf_info_stereo3d;
 extern const vf_info_t vf_info_dlopen;
 extern const vf_info_t vf_info_lavfi;
+extern const vf_info_t vf_info_vaapi;
 
 // list of available filters:
 static const vf_info_t *const filter_list[] = {
@@ -111,6 +112,9 @@ static const vf_info_t *const filter_list[] = {
     &vf_info_stereo3d,
 #ifdef CONFIG_DLOPEN
     &vf_info_dlopen,
+#endif
+#if CONFIG_VAAPI_VPP
+    &vf_info_vaapi,
 #endif
     NULL
 };
@@ -155,6 +159,7 @@ static void vf_fix_img_params(struct mp_image *img, struct mp_image_params *p)
     img->colorspace = p->colorspace;
     img->levels = p->colorlevels;
     img->chroma_location = p->chroma_location;
+    mp_image_set_display_size(img, p->d_w, p->d_h);
 }
 
 // Get a new image for filter output, with size and pixel format according to
@@ -498,6 +503,7 @@ int vf_next_config(struct vf_instance *vf,
         .colorspace = vf->fmt_in.params.colorspace,
         .colorlevels = vf->fmt_in.params.colorlevels,
         .chroma_location = vf->fmt_in.params.chroma_location,
+        .outputlevels = vf->fmt_in.params.outputlevels,
     };
     // Fix csp in case of pixel format change
     mp_image_params_guess_csp(&p);
@@ -579,6 +585,21 @@ void vf_rescale_dsize(int *d_width, int *d_height, int old_w, int old_h,
 {
     *d_width  = *d_width  * new_w / old_w;
     *d_height = *d_height * new_h / old_h;
+}
+
+// Set *d_width/*d_height to display aspect ratio with the givem source size
+void vf_set_dar(int *d_w, int *d_h, int w, int h, double dar)
+{
+    *d_w = w;
+    *d_h = h;
+    if (dar > 0.01) {
+        *d_w = h * dar;
+        // we don't like horizontal downscale
+        if (*d_w < w) {
+            *d_w = w;
+            *d_h = w / dar;
+        }
+    }
 }
 
 void vf_detc_init_pts_buf(struct vf_detc_pts_buf *p)

@@ -155,6 +155,7 @@ static bool check_file_seg(struct MPContext *mpctx, struct demuxer **sources,
 {
     bool was_valid = false;
     struct demuxer_params params = {
+        .matroska_num_wanted_uids = num_sources,
         .matroska_wanted_uids = uid_map,
         .matroska_wanted_segment = segment,
         .matroska_was_valid = &was_valid,
@@ -365,6 +366,7 @@ void build_ordered_chapter_timeline(struct MPContext *mpctx)
     if (missing_time)
         mp_msg(MSGT_CPLAYER, MSGL_ERR, "There are %.3f seconds missing "
                "from the timeline!\n", missing_time / 1e9);
+    talloc_free(mpctx->sources);
     mpctx->sources = sources;
     mpctx->num_sources = num_sources;
     mpctx->timeline = timeline;

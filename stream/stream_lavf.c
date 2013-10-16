@@ -60,8 +60,7 @@ static int seek(stream_t *s, int64_t newpos)
     AVIOContext *avio = s->priv;
     if (!avio)
         return -1;
-    s->pos = newpos;
-    if (avio_seek(avio, s->pos, SEEK_SET) < 0) {
+    if (avio_seek(avio, newpos, SEEK_SET) < 0) {
         return 0;
     }
     return 1;
@@ -180,6 +179,9 @@ static int open_f(stream_t *stream, int mode)
         av_dict_set(&dict, "user-agent", network_useragent, 0);
     if (network_cookies_enabled)
         av_dict_set(&dict, "cookies", talloc_steal(temp, cookies_lavf()), 0);
+    av_dict_set(&dict, "tls_verify", network_tls_verify ? "1" : "0", 0);
+    if (network_tls_ca_file)
+        av_dict_set(&dict, "ca_file", network_tls_ca_file, 0);
     char *cust_headers = talloc_strdup(temp, "");
     if (network_referrer) {
         cust_headers = talloc_asprintf_append(cust_headers, "Referer: %s\r\n",
@@ -201,6 +203,12 @@ static int open_f(stream_t *stream, int mode)
             mp_msg(MSGT_OPEN, MSGL_ERR, "[ffmpeg] Protocol not found. Make sure"
                    " ffmpeg/Libav is compiled with networking support.\n");
         goto out;
+    }
+
+    AVDictionaryEntry *t = NULL;
+    while ((t = av_dict_get(dict, "", t, AV_DICT_IGNORE_SUFFIX))) {
+        mp_msg(MSGT_OPEN, MSGL_V, "[ffmpeg] Could not set stream option %s=%s\n",
+               t->key, t->value);
     }
 
     if (mp_avio_has_opts(avio)) {
@@ -304,8 +312,10 @@ done:
 }
 
 const stream_info_t stream_info_ffmpeg = {
-  "ffmpeg",
-  open_f,
-  { "lavf", "ffmpeg", "rtmp", "rtsp", "http", "https", "mms", "mmst", "mmsh",
-    "mmshttp", "udp", "ftp", "rtp", "httpproxy", NULL },
+  .name = "ffmpeg",
+  .open = open_f,
+  .protocols = (const char*[]){
+     "lavf", "ffmpeg", "rtmp", "rtsp", "http", "https", "mms", "mmst", "mmsh",
+     "mmshttp", "udp", "ftp", "rtp", "httpproxy",
+     NULL },
 };

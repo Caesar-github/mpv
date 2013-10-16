@@ -37,6 +37,9 @@
 #define MP_IMGFIELD_BOTTOM 0x10
 #define MP_IMGFIELD_INTERLACED 0x20
 
+// Describes image parameters that usually stay constant.
+// New fields can be added in the future. Code changing the parameters should
+// usually copy the whole struct, so that fields added later will be preserved.
 struct mp_image_params {
     enum mp_imgfmt imgfmt;      // pixel format
     int w, h;                   // image dimensions
@@ -44,6 +47,10 @@ struct mp_image_params {
     enum mp_csp colorspace;
     enum mp_csp_levels colorlevels;
     enum mp_chroma_location chroma_location;
+    // The image should be converted to these levels. Unlike colorlevels, it
+    // does not describe the current state of the image. (Somewhat similar to
+    // d_w/d_h vs. w/h.)
+    enum mp_csp_levels outputlevels;
 };
 
 /* Memory management:
@@ -153,9 +160,5 @@ void mp_image_copy_fields_to_av_frame(struct AVFrame *dst,
                                       struct mp_image *src);
 struct mp_image *mp_image_from_av_frame(struct AVFrame *av_frame);
 struct AVFrame *mp_image_to_av_frame_and_unref(struct mp_image *img);
-
-// align must be a power of two (align >= 1), v >= 0
-#define MP_ALIGN_UP(v, align) FFALIGN(v, align)
-#define MP_ALIGN_DOWN(v, align) ((v) & ~((align) - 1))
 
 #endif /* MPLAYER_MP_IMAGE_H */

@@ -29,6 +29,7 @@
 
 #include "mpvcore/options.h"
 #include "config.h"
+#include "version.h"
 #include "mpvcore/m_config.h"
 #include "mpvcore/m_option.h"
 #include "stream/tv.h"
@@ -43,16 +44,16 @@
 
 int   network_bandwidth=0;
 int   network_cookies_enabled = 0;
-char *network_useragent="MPlayer 1.1-4.7";
+char *network_useragent="mpv " VERSION;
 char *network_referrer=NULL;
 char **network_http_header_fields=NULL;
+int   network_tls_verify;
+char *network_tls_ca_file;
 
 extern char *lirc_configfile;
 
 extern int mp_msg_color;
 extern int mp_msg_module;
-
-extern int dvd_speed; /* stream/stream_dvd.c */
 
 /* defined in demux: */
 extern const m_option_t demux_rawaudio_opts[];
@@ -176,8 +177,6 @@ static const m_option_t scaler_filter_conf[]={
     {"cs", &sws_chr_sharpen, CONF_TYPE_FLOAT, 0, -100.0, 100.0, NULL},
     {NULL, NULL, 0, 0, 0, 0, NULL}
 };
-
-extern char *dvd_device, *cdrom_device;
 
 extern double mf_fps;
 extern char * mf_type;
@@ -321,7 +320,6 @@ const m_option_t mp_opts[] = {
 
     // handled in command line parser (parser-mpcmd.c)
     {"playlist", NULL, CONF_TYPE_STRING, CONF_NOCFG | M_OPT_MIN, 1, 0, NULL},
-    {"shuffle", NULL, CONF_TYPE_FLAG, CONF_NOCFG, 0, 0, NULL},
     {"{", NULL, CONF_TYPE_STORE, CONF_NOCFG, 0, 0, NULL},
     {"}", NULL, CONF_TYPE_STORE, CONF_NOCFG, 0, 0, NULL},
 
@@ -334,6 +332,8 @@ const m_option_t mp_opts[] = {
     // handled in mplayer.c (looks at the raw argv[])
     {"leak-report", "", CONF_TYPE_STORE, CONF_GLOBAL | CONF_NOCFG },
 
+    OPT_FLAG("shuffle", shuffle, CONF_GLOBAL | CONF_NOCFG),
+
 // ------------------------- common options --------------------
     OPT_FLAG("quiet", quiet, CONF_GLOBAL),
     {"really-quiet", &verbose, CONF_TYPE_STORE, CONF_GLOBAL|CONF_PRE_PARSE, 0, -10, NULL},
@@ -345,6 +345,11 @@ const m_option_t mp_opts[] = {
 #endif
     OPT_FLAG("config", load_config, CONF_GLOBAL | CONF_NOCFG | CONF_PRE_PARSE),
     OPT_STRINGLIST("reset-on-next-file", reset_options, CONF_GLOBAL),
+
+#ifdef CONFIG_LUA
+    OPT_STRINGLIST("lua", lua_files, CONF_GLOBAL),
+    OPT_FLAG("osc", lua_load_osc, CONF_GLOBAL),
+#endif
 
 // ------------------------- stream options --------------------
 
@@ -368,7 +373,8 @@ const m_option_t mp_opts[] = {
     {"dvdangle", &dvd_angle, CONF_TYPE_INT, CONF_RANGE, 1, 99, NULL},
 #endif /* CONFIG_DVDREAD */
     OPT_INTPAIR("chapter", chapterrange, 0),
-    OPT_INTRANGE("edition", edition_id, 0, -1, 8190),
+    OPT_CHOICE_OR_INT("edition", edition_id, 0, 0, 8190,
+                      ({"auto", -1})),
 #ifdef CONFIG_LIBBLURAY
     {"bluray-device",  &bluray_device,  CONF_TYPE_STRING, 0,          0,  0, NULL},
     {"bluray-angle",   &bluray_angle,   CONF_TYPE_INT,    CONF_RANGE, 0, 999, NULL},
@@ -379,6 +385,13 @@ const m_option_t mp_opts[] = {
     {"referrer", &network_referrer, CONF_TYPE_STRING, 0, 0, 0, NULL},
     {"cookies", &network_cookies_enabled, CONF_TYPE_FLAG, 0, 0, 1, NULL},
     {"cookies-file", &cookies_file, CONF_TYPE_STRING, 0, 0, 0, NULL},
+    OPT_CHOICE("rtsp-transport", network_rtsp_transport, 0,
+               ({"lavf", 0},
+                {"udp", 1},
+                {"tcp", 2},
+                {"http", 3})),
+    {"tls-verify", &network_tls_verify, CONF_TYPE_FLAG, 0, 0, 0, NULL},
+    {"tls-ca-file", &network_tls_ca_file, CONF_TYPE_STRING, 0, 0, 0, NULL},
 
 // ------------------------- demuxer options --------------------
 
@@ -458,6 +471,11 @@ const m_option_t mp_opts[] = {
     OPT_SETTINGSLIST("af*", af_settings, 0, &af_obj_list),
     OPT_SETTINGSLIST("vf*", vf_settings, 0, &vf_obj_list),
 
+    OPT_CHOICE("deinterlace", deinterlace, M_OPT_OPTIONAL_PARAM,
+               ({"auto", -1},
+                {"no", 0},
+                {"yes", 1}, {"", 1})),
+
     OPT_STRING("ad", audio_decoders, 0),
     OPT_STRING("vd", video_decoders, 0),
 
@@ -466,9 +484,12 @@ const m_option_t mp_opts[] = {
 
     OPT_CHOICE("hwdec", hwdec_api, 0,
                ({"no", 0},
+                {"auto", -1},
                 {"vdpau", 1},
                 {"vda", 2},
-                {"crystalhd", 3})),
+                {"crystalhd", 3},
+                {"vaapi", 4},
+                {"vaapi-copy", 5})),
     OPT_STRING("hwdec-codecs", hwdec_codecs, 0),
 
     // postprocessing:
@@ -480,8 +501,10 @@ const m_option_t mp_opts[] = {
     // scaling:
     {"sws", &sws_flags, CONF_TYPE_INT, 0, 0, 2, NULL},
     {"ssf", (void *) scaler_filter_conf, CONF_TYPE_SUBCONFIG, 0, 0, 0, NULL},
-    OPT_FLOATRANGE("aspect", movie_aspect, 0, 0.1, 10.0),
-    OPT_FLOAT_STORE("no-aspect", movie_aspect, 0, 0),
+    // -1 means auto aspect (prefer container size until aspect change)
+    //  0 means square pixels
+    OPT_FLOATRANGE("aspect", movie_aspect, 0, -1.0, 10.0),
+    OPT_FLOAT_STORE("no-aspect", movie_aspect, 0, 0.0),
 
     OPT_FLAG_CONSTANTS("flip", flip, 0, 0, 1),
 
@@ -526,7 +549,10 @@ const m_option_t mp_opts[] = {
     OPT_FLAG("embeddedfonts", use_embedded_fonts, 0),
     OPT_STRINGLIST("ass-force-style", ass_force_style_list, 0),
     OPT_STRING("ass-styles", ass_styles_file, 0),
-    OPT_INTRANGE("ass-hinting", ass_hinting, 0, 0, 7),
+    OPT_CHOICE("ass-hinting", ass_hinting, 0,
+               ({"none", 0}, {"light", 1}, {"normal", 2}, {"native", 3})),
+    OPT_CHOICE("ass-shaper", ass_shaper, 0,
+               ({"simple", 0}, {"complex", 1})),
     OPT_CHOICE("ass-style-override", ass_style_override, 0,
                ({"no", 0}, {"yes", 1})),
     OPT_FLAG("osd-bar", osd_bar_visible, 0),
@@ -541,6 +567,7 @@ const m_option_t mp_opts[] = {
     OPT_SETTINGSLIST("vo", vo.video_driver_list, 0, &vo_obj_list),
     OPT_SETTINGSLIST("ao", audio_driver_list, 0, &ao_obj_list),
     OPT_FLAG("fixed-vo", fixed_vo, CONF_GLOBAL),
+    OPT_FLAG("force-window", force_vo, CONF_GLOBAL),
     OPT_FLAG("ontop", vo.ontop, 0),
     OPT_FLAG("border", vo.border, 0),
 
@@ -555,6 +582,7 @@ const m_option_t mp_opts[] = {
                ({"auto", -1},
                 {"no", 0},
                 {"yes", 1}, {"", 1})),
+    OPT_STRING("volume-restore-data", mixer_restore_volume_data, 0),
     OPT_FLAG("gapless-audio", gapless_audio, 0),
 
     // set screen dimensions (when not detectable or virtual!=visible)
@@ -577,7 +605,12 @@ const m_option_t mp_opts[] = {
     OPT_INTRANGE("fsmode-dontuse", vo.fsmode, 0, 31, 4096),
     OPT_FLAG("native-keyrepeat", vo.native_keyrepeat, 0),
     OPT_FLOATRANGE("panscan", vo.panscan, 0, 0.0, 1.0),
-    OPT_FLOATRANGE("panscanrange", vo.panscanrange, 0, -19.0, 99.0),
+    OPT_FLOATRANGE("video-zoom", vo.zoom, 0, -20.0, 20.0),
+    OPT_FLOATRANGE("video-pan-x", vo.pan_x, 0, -3.0, 3.0),
+    OPT_FLOATRANGE("video-pan-y", vo.pan_y, 0, -3.0, 3.0),
+    OPT_FLOATRANGE("video-align-x", vo.align_x, 0, -1.0, 1.0),
+    OPT_FLOATRANGE("video-align-y", vo.align_y, 0, -1.0, 1.0),
+    OPT_FLAG("video-unscaled", vo.unscaled, 0),
     OPT_FLAG("force-rgba-osd-rendering", force_rgba_osd, 0),
     OPT_CHOICE("colormatrix", requested_colorspace, 0,
                ({"auto", MP_CSP_AUTO},
@@ -594,8 +627,9 @@ const m_option_t mp_opts[] = {
                 {"limited", MP_CSP_LEVELS_TV},
                 {"full", MP_CSP_LEVELS_PC})),
 
-    OPT_CHOICE_OR_INT("cursor-autohide", vo.cursor_autohide_delay, 0,
+    OPT_CHOICE_OR_INT("cursor-autohide", cursor_autohide_delay, 0,
                       0, 30000, ({"no", -1}, {"always", -2})),
+    OPT_FLAG("cursor-autohide-fs-only", cursor_autohide_fs, 0),
     OPT_FLAG("stop-screensaver", stop_screensaver, 0),
 
     OPT_INT64("wid", vo.WinID, CONF_GLOBAL),
@@ -604,7 +638,6 @@ const m_option_t mp_opts[] = {
 #endif
     OPT_STRING("heartbeat-cmd", heartbeat_cmd, 0),
     OPT_FLOAT("heartbeat-interval", heartbeat_interval, CONF_MIN, 0),
-    OPT_FLAG_CONSTANTS("mouseinput", vo.nomouse_input, 0, 1, 0),
 
     OPT_CHOICE_OR_INT("screen", vo.screen_id, 0, 0, 32,
                       ({"default", -1})),
@@ -648,8 +681,8 @@ const m_option_t mp_opts[] = {
     {"lircconf", &lirc_configfile, CONF_TYPE_STRING, CONF_GLOBAL, 0, 0, NULL},
 #endif
 
-    OPT_CHOICE_OR_INT("loop", loop_times, M_OPT_GLOBAL, 1, 10000,
-                      ({"no", -1}, {"0", -1},
+    OPT_CHOICE_OR_INT("loop", loop_times, M_OPT_GLOBAL, 2, 10000,
+                      ({"no", -1}, {"1", -1},
                        {"inf", 0})),
 
     OPT_FLAG("resume-playback", position_resume, 0),
@@ -657,6 +690,10 @@ const m_option_t mp_opts[] = {
 
     OPT_FLAG("ordered-chapters", ordered_chapters, 0),
     OPT_INTRANGE("chapter-merge-threshold", chapter_merge_threshold, 0, 0, 10000),
+
+    OPT_DOUBLE("chapter-seek-threshold", chapter_seek_threshold, 0),
+
+    OPT_FLAG("load-unsafe-playlists", load_unsafe_playlists, 0),
 
     // a-v sync stuff:
     OPT_FLAG("correct-pts", correct_pts, 0),
@@ -731,6 +768,7 @@ const struct MPOpts mp_default_opts = {
     .audio_driver_list = NULL,
     .audio_decoders = "-spdif:*", // never select spdif by default
     .video_decoders = NULL,
+    .deinterlace = -1,
     .fixed_vo = 1,
     .softvol = SOFTVOL_AUTO,
     .softvol_max = 200,
@@ -739,12 +777,9 @@ const struct MPOpts mp_default_opts = {
     .volstep = 3,
     .vo = {
         .video_driver_list = NULL,
-        .cursor_autohide_delay = 1000,
         .monitor_pixel_aspect = 1.0,
-        .panscanrange = 1.0,
         .screen_id = -1,
         .fsscreen_id = -1,
-        .nomouse_input = 0,
         .enable_mouse_movements = 1,
         .fsmode = 0,
         .panscan = 0.0f,
@@ -755,6 +790,7 @@ const struct MPOpts mp_default_opts = {
     .wintitle = "mpv - ${media-title}",
     .heartbeat_interval = 30.0,
     .stop_screensaver = 1,
+    .cursor_autohide_delay = 1000,
     .gamma_gamma = 1000,
     .gamma_brightness = 1000,
     .gamma_contrast = 1000,
@@ -766,14 +802,17 @@ const struct MPOpts mp_default_opts = {
     .osd_bar_w = 75.0,
     .osd_bar_h = 3.125,
     .osd_scale = 1,
+    .lua_load_osc = 1,
     .loop_times = -1,
     .ordered_chapters = 1,
     .chapter_merge_threshold = 100,
+    .chapter_seek_threshold = 5.0,
     .load_config = 1,
     .position_resume = 1,
     .stream_cache_min_percent = 20.0,
     .stream_cache_seek_min_percent = 50.0,
     .stream_cache_pause = 10.0,
+    .network_rtsp_transport = 2,
     .chapterrange = {-1, -1},
     .edition_id = -1,
     .default_max_pts_correction = -1,
@@ -791,7 +830,7 @@ const struct MPOpts mp_default_opts = {
     .sub_pos = 100,
     .sub_speed = 1.0,
     .audio_output_channels = MP_CHMAP_INIT_STEREO,
-    .audio_output_format = -1,  // AF_FORMAT_UNKNOWN
+    .audio_output_format = 0,  // AF_FORMAT_UNKNOWN
     .playback_speed = 1.,
     .movie_aspect = -1.,
     .field_dominance = -1,
@@ -805,8 +844,14 @@ const struct MPOpts mp_default_opts = {
     .ass_vsfilter_color_compat = 1,
     .ass_vsfilter_blur_compat = 1,
     .ass_style_override = 1,
+    .ass_shaper = 1,
     .use_embedded_fonts = 1,
     .suboverlap_enabled = 0,
+#ifdef CONFIG_ENCA
+    .sub_cp = "enca",
+#else
+    .sub_cp = "UTF-8:UTF-8-BROKEN",
+#endif
 
     .hwdec_codecs = "all",
 

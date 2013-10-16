@@ -179,6 +179,7 @@ struct gl_video {
     int plane_count;
 
     struct video_image image;
+    bool have_image;
 
     struct fbotex indirect_fbo;         // RGB target
     struct fbotex scale_sep_fbo;        // first pass when doing 2 pass scaling
@@ -271,6 +272,7 @@ static const struct gl_video_opts gl_video_opts_def = {
     .scale_sep = 1,
     .scalers = { "bilinear", "bilinear" },
     .scaler_params = {NAN, NAN},
+    .alpha_mode = 2,
 };
 
 
@@ -319,7 +321,10 @@ const struct m_sub_options gl_video_conf = {
                    ({"auto",   MP_CHROMA_AUTO},
                     {"center", MP_CHROMA_CENTER},
                     {"left",   MP_CHROMA_LEFT})),
-        OPT_FLAG("alpha", enable_alpha, 0),
+        OPT_CHOICE("alpha", alpha_mode, M_OPT_OPTIONAL_PARAM,
+                   ({"no", 0},
+                    {"yes", 1}, {"", 1},
+                    {"blend", 2})),
         {0}
     },
     .size = sizeof(struct gl_video_opts),
@@ -343,7 +348,7 @@ static void default_tex_params(struct GL *gl, GLenum target, GLint filter)
 static void debug_check_gl(struct gl_video *p, const char *msg)
 {
     if (p->gl_debug)
-        glCheckError(p->gl, msg);
+        glCheckError(p->gl, p->log, msg);
 }
 
 void gl_video_set_debug(struct gl_video *p, bool enable)
@@ -779,8 +784,8 @@ static void compile_shaders(struct gl_video *p)
                                    shader_prelude, PRELUDE_END);
 
     // Need to pass alpha through the whole chain. (Not needed for OSD shaders.)
-    bool use_alpha = p->opts.enable_alpha && p->has_alpha;
-    shader_def_opt(&header, "USE_ALPHA", use_alpha);
+    if (p->opts.alpha_mode == 1)
+        shader_def_opt(&header, "USE_ALPHA", p->has_alpha);
 
     char *header_osd = talloc_strdup(tmp, header);
     shader_def_opt(&header_osd, "USE_OSD_LINEAR_CONV", p->opts.srgb &&
@@ -831,8 +836,10 @@ static void compile_shaders(struct gl_video *p)
     shader_def_opt(&header_conv, "USE_INPUT_GAMMA", convert_input_gamma);
     shader_def_opt(&header_conv, "USE_COLORMATRIX", !p->is_rgb);
     shader_def_opt(&header_conv, "USE_CONV_GAMMA", convert_input_to_linear);
-    if (use_alpha && p->plane_count > 3)
+    if (p->opts.alpha_mode > 0 && p->has_alpha && p->plane_count > 3)
         shader_def(&header_conv, "USE_ALPHA_PLANE", "3");
+    if (p->opts.alpha_mode == 2 && p->has_alpha)
+        shader_def(&header_conv, "USE_ALPHA_BLEND", "1");
 
     shader_def_opt(&header_final, "USE_LINEAR_CONV_INV", p->use_lut_3d);
     shader_def_opt(&header_final, "USE_GAMMA_POW", p->opts.gamma);
@@ -1083,7 +1090,7 @@ static void recreate_osd(struct gl_video *p)
 {
     if (p->osd)
         mpgl_osd_destroy(p->osd);
-    p->osd = mpgl_osd_init(p->gl, false);
+    p->osd = mpgl_osd_init(p->gl, p->log, false);
     p->osd->use_pbo = p->opts.pbo;
 }
 
@@ -1347,6 +1354,11 @@ void gl_video_render_frame(struct gl_video *p)
         gl->Clear(GL_COLOR_BUFFER_BIT);
     }
 
+    if (!p->have_image) {
+        gl->Clear(GL_COLOR_BUFFER_BIT);
+        return;
+    }
+
     // Order of processing:
     //  [indirect -> [scale_sep ->]] final
 
@@ -1565,6 +1577,8 @@ void gl_video_upload_image(struct gl_video *p, struct mp_image *mpi)
     }
     gl->ActiveTexture(GL_TEXTURE0);
     gl->BindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+
+    p->have_image = true;
 }
 
 struct mp_image *gl_video_download_image(struct gl_video *p)
@@ -1573,7 +1587,7 @@ struct mp_image *gl_video_download_image(struct gl_video *p)
 
     struct video_image *vimg = &p->image;
 
-    if (!vimg->planes[0].gl_texture)
+    if (!p->have_image || !vimg->planes[0].gl_texture)
         return NULL;
 
     assert(p->image_format == p->image_params.imgfmt);
@@ -1685,11 +1699,11 @@ static bool test_fbo(struct gl_video *p, GLenum format)
             MP_VERBOSE(p, "   %s: %a\n", val_names[i], val - pixel);
         }
         gl->BindFramebuffer(GL_FRAMEBUFFER, 0);
-        glCheckError(gl, "after FBO read");
+        glCheckError(gl, p->log, "after FBO read");
         success = true;
     }
     fbotex_uninit(p, &fbo);
-    glCheckError(gl, "FBO test");
+    glCheckError(gl, p->log, "FBO test");
     gl->ClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     return success;
 }
@@ -1979,6 +1993,14 @@ void gl_video_config(struct gl_video *p, struct mp_image_params *params)
     p->image_dw = params->d_w;
     p->image_dh = params->d_h;
     p->image_params = *params;
+
+    struct mp_csp_details csp = MP_CSP_DETAILS_DEFAULTS;
+    csp.levels_in = params->colorlevels;
+    csp.levels_out = params->outputlevels;
+    csp.format = params->colorspace;
+    p->colorspace = csp;
+
+    p->have_image = false;
 }
 
 void gl_video_set_output_depth(struct gl_video *p, int r, int g, int b)
@@ -2050,16 +2072,6 @@ bool gl_video_get_csp_override(struct gl_video *p, struct mp_csp_details *csp)
 {
     *csp = p->colorspace;
     return true;
-}
-
-bool gl_video_set_csp_override(struct gl_video *p, struct mp_csp_details *csp)
-{
-    if (p->is_yuv) {
-        p->colorspace = *csp;
-        update_all_uniforms(p);
-        return true;
-    }
-    return false;
 }
 
 bool gl_video_set_equalizer(struct gl_video *p, const char *name, int val)

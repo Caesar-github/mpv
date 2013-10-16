@@ -313,12 +313,12 @@ struct m_option {
      */
     void *priv;
 
-    int new;
+    int is_new_option;
 
     int offset;
 
     // Initialize variable to given default before parsing options
-    void *defval;
+    const void *defval;
 };
 
 
@@ -505,12 +505,12 @@ int m_option_required_params(const m_option_t *opt);
 #define OPTDEF_INT(i) .defval = (void *)&(const int){i}
 
 #define OPT_GENERAL(ctype, optname, varname, flagv, ...)                \
-    {.name = optname, .flags = flagv, .new = 1,                         \
+    {.name = optname, .flags = flagv, .is_new_option = 1,               \
     .offset = MP_CHECKED_OFFSETOF(OPT_BASE_STRUCT, varname, ctype),     \
     __VA_ARGS__}
 
 #define OPT_GENERAL_NOTYPE(optname, varname, flagv, ...)                \
-    {.name = optname, .flags = flagv, .new = 1,                         \
+    {.name = optname, .flags = flagv, .is_new_option = 1,               \
     .offset = offsetof(OPT_BASE_STRUCT, varname),                       \
     __VA_ARGS__}
 
@@ -624,7 +624,7 @@ int m_option_required_params(const m_option_t *opt);
     OPT_GENERAL(struct m_geometry, __VA_ARGS__, .type = &m_option_type_size_box)
 
 #define OPT_TRACKCHOICE(name, var) \
-    OPT_CHOICE_OR_INT(name, var, 0, 0, 8190, ({"no", -2}, {"auto", -1}))
+    OPT_CHOICE_OR_INT(name, var, 0, 1, 8190, ({"no", -2}, {"auto", -1}))
 
 #define OPT_STRING_VALIDATE_(optname, varname, flags, validate_fn, ...)        \
     OPT_GENERAL(char*, optname, varname, flags, __VA_ARGS__,                                            \

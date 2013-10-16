@@ -373,7 +373,7 @@ static int demux_mkv_read_info(demuxer_t *demuxer)
                mkv_d->duration);
     }
     if (info.n_title) {
-        demux_info_add_bstr(demuxer, bstr0("title"), info.title);
+        demux_info_add_bstr(demuxer, bstr0("TITLE"), info.title);
     }
     if (info.n_segment_uid) {
         int len = info.segment_uid.len;
@@ -392,11 +392,11 @@ static int demux_mkv_read_info(demuxer_t *demuxer)
     }
     if (demuxer->params && demuxer->params->matroska_wanted_uids) {
         unsigned char (*uids)[16] = demuxer->params->matroska_wanted_uids;
-        if (!info.n_segment_uid)
-            uids = NULL;
-        for (int i = 0; i < MP_TALLOC_ELEMS(uids); i++) {
-            if (!memcmp(info.segment_uid.start, uids[i], 16))
-                goto out;
+        if (info.n_segment_uid) {
+            for (int i = 0; i < demuxer->params->matroska_num_wanted_uids; i++) {
+                if (!memcmp(info.segment_uid.start, uids[i], 16))
+                    goto out;
+            }
         }
         mp_tmsg(MSGT_DEMUX, MSGL_INFO,
                 "[mkv] This is not one of the wanted files. "
@@ -782,6 +782,7 @@ static int demux_mkv_read_chapters(struct demuxer *demuxer)
 {
     struct MPOpts *opts = demuxer->opts;
     stream_t *s = demuxer->stream;
+    int wanted_edition = opts->edition_id;
 
     mp_msg(MSGT_DEMUX, MSGL_V, "[mkv] /---- [ parsing chapters ] ---------\n");
     struct ebml_chapters file_chapters = {};
@@ -793,8 +794,8 @@ static int demux_mkv_read_chapters(struct demuxer *demuxer)
     int selected_edition = 0;
     int num_editions = file_chapters.n_edition_entry;
     struct ebml_edition_entry *editions = file_chapters.edition_entry;
-    if (opts->edition_id >= 0 && opts->edition_id < num_editions) {
-        selected_edition = opts->edition_id;
+    if (wanted_edition >= 0 && wanted_edition < num_editions) {
+        selected_edition = wanted_edition;
         mp_msg(MSGT_DEMUX, MSGL_V, "[mkv] User-specified edition: %d\n",
                selected_edition);
     } else
@@ -878,7 +879,8 @@ static int demux_mkv_read_chapters(struct demuxer *demuxer)
                    BSTR_P(name));
 
             if (idx == selected_edition){
-                demuxer_add_chapter(demuxer, name, chapter.start, chapter.end);
+                demuxer_add_chapter(demuxer, name, chapter.start, chapter.end,
+                                    ca->chapter_uid);
                 if (editions[idx].edition_flag_ordered) {
                     chapter.name = talloc_strndup(m_chapters, name.start,
                                                   name.len);
@@ -913,11 +915,21 @@ static int demux_mkv_read_tags(demuxer_t *demuxer)
     for (int i = 0; i < tags.n_tag; i++) {
         struct ebml_tag tag = tags.tag[i];
         if (tag.targets.target_track_uid  || tag.targets.target_edition_uid ||
-            tag.targets.target_chapter_uid || tag.targets.target_attachment_uid)
+            tag.targets.target_attachment_uid)
             continue;
 
-        for (int j = 0; j < tag.n_simple_tag; j++)
-            demux_info_add_bstr(demuxer, tag.simple_tag[j].tag_name, tag.simple_tag[j].tag_string);
+        if (tag.targets.target_chapter_uid) {
+            for (int j = 0; j < tag.n_simple_tag; j++) {
+                demuxer_add_chapter_info(demuxer, tag.targets.target_chapter_uid,
+                                         tag.simple_tag[j].tag_name,
+                                         tag.simple_tag[j].tag_string);
+            }
+        } else {
+            for (int j = 0; j < tag.n_simple_tag; j++) {
+                demux_info_add_bstr(demuxer, tag.simple_tag[j].tag_name,
+                                    tag.simple_tag[j].tag_string);
+            }
+        }
     }
 
     talloc_free(parse_ctx.talloc_ctx);
@@ -1156,6 +1168,7 @@ static const videocodec_info_t vinfo[] = {
     {MKV_V_VP8,       mmioFOURCC('V', 'P', '8', '0'), 0},
     {MKV_V_VP9,       mmioFOURCC('V', 'P', '9', '0'), 0},
     {MKV_V_DIRAC,     mmioFOURCC('d', 'r', 'a', 'c'), 0},
+    {MKV_V_PRORES,    mmioFOURCC('p', 'r', '0', '0'), 0},
     {NULL, 0, 0}
 };
 
@@ -1617,6 +1630,8 @@ static const char *mkv_sub_tag[][2] = {
     { MKV_S_TEXTASCII,  "subrip"},
     { MKV_S_TEXTUTF8,   "subrip"},
     { MKV_S_PGS,        "hdmv_pgs_subtitle"},
+    { MKV_S_WEBVTT_S,   "webvtt-webm"},
+    { MKV_S_WEBVTT_C,   "webvtt-webm"},
     {0}
 };
 
@@ -2160,6 +2175,14 @@ static void mkv_parse_packet(mkv_track_t *track, bstr *buffer)
             buffer->len = size;
         }
 #endif
+    } else if (track->codec_id && strcmp(track->codec_id, MKV_V_PRORES) == 0) {
+        size_t newlen = buffer->len + 8;
+        char *data = talloc_size(NULL, newlen);
+        AV_WB32(data + 0, newlen);
+        AV_WB32(data + 4, MKBETAG('i', 'c', 'p', 'f'));
+        memcpy(data + 8, buffer->start, buffer->len);
+        buffer->start = data;
+        buffer->len = newlen;
     }
 }
 
@@ -2590,8 +2613,7 @@ static struct mkv_index *seek_with_cues(struct demuxer *demuxer, int seek_id,
     return index;
 }
 
-static void demux_mkv_seek(demuxer_t *demuxer, float rel_seek_secs,
-                           float audio_delay, int flags)
+static void demux_mkv_seek(demuxer_t *demuxer, float rel_seek_secs, int flags)
 {
     mkv_demuxer_t *mkv_d = demuxer->priv;
     int64_t old_pos = stream_tell(demuxer->stream);

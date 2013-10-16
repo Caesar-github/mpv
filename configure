@@ -286,12 +286,16 @@ Installation directories:
   --datadir=DIR          directory for installing machine independent
                          data files (skins, etc) [PREFIX/share/mpv]
   --mandir=DIR           directory for installing man pages [PREFIX/share/man]
+  --docdir=DIR           directory for installing docs [PREFIX/share/doc/mpv]
   --confdir=DIR          directory for installing configuration files
                          [PREFIX/etc/mpv]
   --localedir=DIR        directory for gettext locales [PREFIX/share/locale]
 
 Optional features:
   --disable-encoding     disable encoding functionality [enable]
+  --disable-lua          disable Lua scripting support [autodetect]
+  --lua=LUA              select Lua package which should be autodetected
+                         Choices: 51 51deb 52 52deb luajit
   --disable-libguess     disable libguess [autodetect]
   --enable-terminfo      use terminfo database for key codes [autodetect]
   --enable-termcap       use termcap database for key codes [autodetect]
@@ -346,6 +350,8 @@ Video output:
   --enable-sdl2            enable SDL 2.0+ audio and video output [disable]
   --enable-xv              enable Xv video output [autodetect]
   --enable-vdpau           enable VDPAU acceleration [autodetect]
+  --enable-vda             enable VDA acceleration [autodetect]
+  --enable-vaapi           enable VAAPI acceleration [autodetect]
   --enable-vm              enable XF86VidMode support [autodetect]
   --enable-xinerama        enable Xinerama support [autodetect]
   --enable-x11             enable X11 video output [autodetect]
@@ -358,6 +364,7 @@ Audio output:
   --disable-alsa         disable ALSA audio output [autodetect]
   --disable-ossaudio     disable OSS audio output [autodetect]
   --disable-rsound       disable RSound audio output [autodetect]
+  --disable-sndio        disable sndio audio output [autodetect]
   --disable-pulse        disable Pulseaudio audio output [autodetect]
   --disable-portaudio    disable PortAudio audio output [autodetect]
   --disable-jack         disable JACK audio output [autodetect]
@@ -379,6 +386,7 @@ Miscellaneous options:
   --enable-static        build a statically linked binary
   --with-install=PATH    path to a custom install program
   --disable-manpage      do not build and install manpage [auto]
+  --disable-pdf          do not build and install PDF manual [auto]
   --disable-build-date   do not include binary compile time
 
 Advanced options:
@@ -420,6 +428,9 @@ _wayland=auto
 _xss=auto
 _xv=auto
 _vdpau=auto
+_vda=auto
+_vda_refcounting=auto
+_vaapi=auto
 _direct3d=auto
 _sdl=no
 _sdl2=no
@@ -449,6 +460,7 @@ _lcms2=auto
 _xinerama=auto
 _vm=auto
 _xf86keysym=auto
+_sndio=auto
 _alsa=auto
 _select=yes
 _radio=no
@@ -478,6 +490,7 @@ _pthreads=auto
 _ass=auto
 _libass_osd=auto
 _rpath=no
+lua=auto
 libpostproc=auto
 libavfilter=auto
 vf_lavfi=auto
@@ -488,6 +501,7 @@ _priority=no
 def_dos_paths="#define HAVE_DOS_PATHS 0"
 def_priority="#undef CONFIG_PRIORITY"
 _build_man=auto
+_build_pdf=auto
 _build_date=yes
 for ac_option do
   case "$ac_option" in
@@ -502,6 +516,9 @@ for ac_option do
     ;;
   --mandir=*)
     _mandir=$(echo $ac_option | cut -d '=' -f 2)
+    ;;
+  --docdir=*)
+    _docdir=$(echo $ac_option | cut -d '=' -f 2)
     ;;
   --confdir=*)
     _confdir=$(echo $ac_option | cut -d '=' -f 2)
@@ -580,6 +597,10 @@ for ac_option do
   --disable-xv)         _xv=no          ;;
   --enable-vdpau)       _vdpau=yes      ;;
   --disable-vdpau)      _vdpau=no       ;;
+  --enable-vda)         _vda=yes        ;;
+  --disable-vda)        _vda=no         ;;
+  --enable-vaapi)       _vaapi=yes      ;;
+  --disable-vaapi)      _vaapi=no       ;;
   --enable-direct3d)    _direct3d=yes   ;;
   --disable-direct3d)   _direct3d=no    ;;
   --enable-sdl)         _sdl=yes       ;;
@@ -606,6 +627,8 @@ for ac_option do
   --disable-ossaudio)   _ossaudio=no    ;;
   --enable-rsound)      _rsound=yes     ;;
   --disable-rsound)     _rsound=no      ;;
+  --enable-sndio)       _sndio=yes      ;;
+  --disable-sndio)      _sndio=no       ;;
   --enable-pulse)       _pulse=yes      ;;
   --disable-pulse)      _pulse=no       ;;
   --enable-portaudio)   _portaudio=yes  ;;
@@ -664,6 +687,9 @@ for ac_option do
   --disable-libavresample) _disable_avresample=yes ;;
   --enable-libavresample) _disable_avresample=no   ;;
 
+  --enable-lua)         lua=yes         ;;
+  --disable-lua)        lua=no          ;;
+  --lua=*)              lua_pkg=$(echo $ac_option | cut -d '=' -f 2) ;;
   --enable-lirc)        _lirc=yes       ;;
   --disable-lirc)       _lirc=no        ;;
   --enable-lircc)       _lircc=yes      ;;
@@ -709,6 +735,8 @@ for ac_option do
 
   --enable-manpage) _build_man=yes ;;
   --disable-manpage) _build_man=no ;;
+  --enable-pdf) _build_pdf=yes ;;
+  --disable-pdf) _build_pdf=no ;;
 
   --enable-build-date) _build_date=yes ;;
   --disable-build-date) _build_date=no ;;
@@ -723,6 +751,7 @@ done
 # Atmos: moved this here, to be correct, if --prefix is specified
 test -z "$_bindir"  && _bindir="$_prefix/bin"
 test -z "$_mandir"  && _mandir="$_prefix/share/man"
+test -z "$_docdir"  && _docdir="$_prefix/share/doc/mpv"
 test -z "$_confdir" && _confdir="$_prefix/etc/mpv"
 test -z "$_localedir"  && _localedir="$_prefix/share/locale"
 
@@ -915,6 +944,24 @@ else
     _build_man=no
 fi
 echores "$_build_man"
+
+_rst2latex=rst2latex
+if [ -f "$(which rst2latex.py)" ] ; then
+  _rst2latex=rst2latex.py
+fi
+
+echocheck "whether to build manual PDFs with rst2latex"
+texcheck() {
+    echo test | $_rst2latex --config=DOCS/man/docutils.conf | pdflatex -halt-on-error -draftmode -output-directory="$mplayer_tmpdir"
+}
+
+if test "$_build_pdf" = auto ; then
+    _build_pdf=no
+    command_check texcheck && _build_pdf=yes
+else
+    _build_pdf=no
+fi
+echores "$_build_pdf"
 
 echocheck "whether to print binary build date"
 if test "$_build_date" = yes ; then
@@ -1677,17 +1724,24 @@ depends_on_application_services(){
 
 fi #if darwin
 
+_wlver="1.2.0"
 echocheck "Wayland"
-if test "$_wayland" != no; then
+if test "$_wayland" = yes || test "$_wayland" = auto; then
  _wayland="no"
-  pkg_config_add "wayland-client >= 1.0.0 wayland-egl >= 9.0.0 wayland-cursor >= 1.0.0 xkbcommon >= 0.3.0" \
-  && _wayland="yes"
+ pkg_config_add "wayland-client >= $_wlver wayland-cursor >= $_wlver xkbcommon >= 0.3.0" \
+     && _wayland="yes"
+fi
+if test "$_wayland" = yes; then
   res_comment=""
+  def_wayland='#define CONFIG_WAYLAND'
+  vomodules="wayland $vomodules"
 else
-  _wayland="no"
-  res_comment=""
+  res_comment="version >= $_wlver"
+  def_wayland='#undef CONFIG_WAYLAND'
+  novomodules="wayland $novomodules"
 fi
 echores "$_wayland"
+unset _wlver
 
 echocheck "X11 headers presence"
   _x11_headers="no"
@@ -1826,6 +1880,34 @@ else
   novomodules="vdpau $novomodules"
 fi
 echores "$_vdpau"
+
+
+echocheck "VAAPI"
+_vaapi_vpp=no
+def_vaapi_vpp='#define CONFIG_VAAPI_VPP 0'
+if test "$_vaapi" = auto && test "$_x11" = yes ; then
+  _vaapi=no
+  if test "$_dl" = yes ; then
+    pkg_config_add 'libva >= 0.32.0 libva-x11 >= 0.32.0' && _vaapi=yes
+  fi
+fi
+if test "$_vaapi" = yes ; then
+  def_vaapi='#define CONFIG_VAAPI 1'
+  vomodules="vaapi $vomodules"
+else
+  def_vaapi='#define CONFIG_VAAPI 0'
+  novomodules="vaapi $novomodules"
+fi
+echores "$_vaapi"
+
+if test "$_vaapi" = yes ; then
+  echocheck "VAAPI VPP"
+  if pkg-config 'libva >= 0.34.0' ; then
+    _vaapi_vpp=yes
+    def_vaapi_vpp='#define CONFIG_VAAPI_VPP 1'
+  fi
+  echores "$_vaapi_vpp"
+fi
 
 
 echocheck "Xinerama"
@@ -1999,7 +2081,8 @@ EOF
       fi
     done
   fi
-  if test "$_wayland" = yes && cc_check -DGL_WAYLAND -lGL -lEGL ; then
+  if test "$_wayland" = yes && cc_check -DGL_WAYLAND -lGL -lEGL &&
+      pkg_config_add "wayland-egl >= 9.0.0"; then
     _gl=yes
     _gl_wayland=yes
     libs_mplayer="$libs_mplayer -lGL -lEGL"
@@ -2241,6 +2324,23 @@ if test "$_rsound" = yes ; then
 else
    def_rsound='#undef CONFIG_RSOUND'
    noaomodules="rsound $noaomodules"
+fi
+
+
+echocheck "sndio"
+if test "$_sndio" = auto ; then
+   _sndio=no
+   statement_check sndio.h 'struct sio_par par; sio_initpar(&par);' -lsndio && _sndio=yes
+fi
+echores "$_sndio"
+
+if test "$_sndio" = yes ; then
+  def_sndio='#define CONFIG_SNDIO 1'
+  aomodules="sndio $_aomodules"
+  libs_mplayer="$libs_mplayer -lsndio"
+else
+  def_sndio='#undef CONFIG_SNDIO'
+  noaomodules="sndio $_noaomodules"
 fi
 
 
@@ -2639,16 +2739,6 @@ if test "$_vdpau" = yes ; then
   fi
 fi
 
-echocheck "libavcodec AV_CODEC_PROP_TEXT_SUB API"
-_avcodec_has_text_flag_api=no
-statement_check libavcodec/avcodec.h 'int x = AV_CODEC_PROP_TEXT_SUB' && _avcodec_has_text_flag_api=yes
-if test "$_avcodec_has_text_flag_api" = yes ; then
-  def_avcodec_has_text_flag_api='#define HAVE_AV_CODEC_PROP_TEXT_SUB 1'
-else
-  def_avcodec_has_text_flag_api='#define HAVE_AV_CODEC_PROP_TEXT_SUB 0'
-fi
-echores "$_avcodec_has_text_flag_api"
-
 
 echocheck "libavcodec avcodec_enum_to_chroma_pos API"
 _avcodec_has_chroma_pos_api=no
@@ -2786,6 +2876,44 @@ else
 fi
 echores "$libpostproc"
 
+def_vda='#define CONFIG_VDA 0'
+
+if darwin ; then
+
+echocheck "VDA"
+if test "$_vda" = auto ; then
+ _vda=no
+ if test "$_avutil_has_refcounting" = "yes" ; then
+   header_check VideoDecodeAcceleration/VDADecoder.h &&
+   statement_check libavcodec/vda.h 'ff_vda_create_decoder(NULL, NULL, NULL)' &&
+   _vda=yes
+ else
+   res_comment="libavutil too old"
+ fi
+fi
+if test "$_vda" = yes ; then
+  def_vda='#define CONFIG_VDA 1'
+  libs_mplayer="$libs_mplayer -framework VideoDecodeAcceleration -framework QuartzCore -framework IOSurface"
+else
+  def_vda='#define CONFIG_VDA 0'
+fi
+echores "$_vda"
+
+echocheck "VDA libavcodec refcounting"
+_vda_refcounting=no
+if test "$_vda" = yes ; then
+  statement_check libavcodec/vda.h 'struct vda_context a = (struct vda_context) { .use_ref_buffer = 1 }' &&
+    _vda_refcounting=yes
+fi
+if test "$_vda_refcounting" = "yes" ; then
+  def_vda_refcounting='#define HAVE_VDA_LIBAVCODEC_REFCOUNTING 1'
+else
+  def_vda_refcounting='#define HAVE_VDA_LIBAVCODEC_REFCOUNTING 0'
+fi
+echores "$_vda_refcounting"
+
+fi
+
 
 echocheck "TV interface"
 if test "$_tv" = yes ; then
@@ -2881,6 +3009,111 @@ else
 fi
 echores "$_pvr"
 
+
+# Note: Lua has no official .pc file, so there are different OS-specific ones.
+# Also, we support luajit, which is compatible to 5.1.
+# The situation is further complicated by distros supporting multiple Lua
+# versions, without ensuring libraries linking to conflicting Lua libs don't
+# cause issues. This is a real problem with libquvi.
+
+cat > $TMPC << EOF
+#include <stdlib.h>
+#include <lua.h>
+#include <lualib.h>
+#include <lauxlib.h>
+EOF
+# abuse $TMPH file as second temp file
+cat > $TMPH << EOF
+void test_lua(void) {
+    lua_State *L = luaL_newstate();
+    lua_pushstring(L, "test");
+    lua_setglobal(L, "test");
+}
+void test_other(void) {
+EOF
+
+# test all other Lua using packages (hack that gives us time)
+if test "$_libquvi4" = yes ; then
+
+echo "#include <quvi/quvi.h>" >> $TMPC
+cat >> $TMPH << EOF
+    quvi_t q;
+    if (quvi_init(&q) == QUVI_OK)
+        quvi_supported(q, "http://nope");
+EOF
+
+fi
+
+if test "$_libquvi9" = yes ; then
+
+echo "#include <quvi.h>" >> $TMPC
+cat >> $TMPH << EOF
+    quvi_t q = quvi_new();
+    if (quvi_ok(q))
+        quvi_supports(q, "http://nope", QUVI_SUPPORTS_MODE_OFFLINE, QUVI_SUPPORTS_TYPE_MEDIA);
+EOF
+
+fi
+
+cat >> $TMPH << EOF
+}
+int main(void) {
+    test_lua();
+    test_other();
+    return 0;
+}
+EOF
+
+cat $TMPH >> $TMPC
+
+test_lua() {
+    # changed by pkg_config_add
+    old_extra_cflags="$extra_cflags"
+    old_libs_mplayer="$libs_mplayer"
+    echocheck "Lua $2 ($1)"
+    if test "$lua" = yes ; then
+        echores "no"
+        return 1
+    fi
+    if test "x$lua_pkg" != "x" && test "$lua_pkg" != "$1" ; then
+        echores "no"
+        return 1
+    fi
+    if pkg_config_add "$2" ; then
+        if test $_cross_compile = no ; then
+            if cc_check && tmp_run ; then
+                echo > /dev/null # idiot NOP
+            else
+                extra_cflags="$old_extra_cflags"
+                libs_mplayer="$old_libs_mplayer"
+                echores "no - does not run"
+                return 1
+            fi
+        fi
+        lua=yes
+    fi
+    echores "$lua"
+    test "$lua" = yes
+    return $?
+}
+
+if test "$lua" = auto ; then
+
+lua=no
+test_lua 51 "lua >= 5.1.0 lua < 5.2.0"
+test_lua 51deb "lua5.1 >= 5.1.0" # debian
+test_lua luajit "luajit >= 2.0.0"
+# assume all our dependencies (libquvi in particular) link with 5.1
+test_lua 52 "lua >= 5.2.0"
+test_lua 52deb "lua5.2 >= 5.2.0" # debian
+
+fi
+
+if test "$lua" = yes ; then
+    def_lua='#define CONFIG_LUA 1'
+else
+    def_lua='#undef CONFIG_LUA'
+fi
 
 echocheck "encoding"
 if test "$_encoding" = yes ; then
@@ -2993,6 +3226,7 @@ CONFIGURATION = $configuration
 prefix  = \$(DESTDIR)$_prefix
 BINDIR  = \$(DESTDIR)$_bindir
 MANDIR  = \$(DESTDIR)$_mandir
+DOCDIR  = \$(DESTDIR)$_docdir
 CONFDIR = \$(DESTDIR)$_confdir
 LOCALEDIR = \$(DESTDIR)$_localedir
 
@@ -3011,6 +3245,8 @@ GETCH = $_getch
 TIMER = $_timer
 RST2MAN = $_rst2man
 BUILD_MAN = $_build_man
+RST2LATEX = $_rst2latex
+BUILD_PDF = $_build_pdf
 
 EXESUF      = $_exesuf
 EXESUFS_ALL = .exe
@@ -3052,6 +3288,7 @@ DUMMY_OSD = $_dummy_osd
 LIBBLURAY = $_bluray
 LIBBS2B = $_libbs2b
 LCMS2 = $_lcms2
+LUA = $lua
 LIBPOSTPROC = $libpostproc
 LIBAVDEVICE = $libavdevice
 LIBAVFILTER = $libavfilter
@@ -3074,6 +3311,7 @@ PVR = $_pvr
 RADIO=$_radio
 RADIO_CAPTURE=$_radio_capture
 RSOUND = $_rsound
+SNDIO = $_sndio
 STREAM_CACHE = $_stream_cache
 TV = $_tv
 TV_V4L2 = $_tv_v4l2
@@ -3081,6 +3319,10 @@ VCD = $_vcd
 VDPAU = $_vdpau
 VDPAU_DEC = $_vdpau_dec
 VDPAU_DEC_OLD = $_vdpau_dec_old
+VDA = $_vda
+VDA_REFCOUNTING = $_vda_refcounting
+VAAPI = $_vaapi
+VAAPI_VPP = $_vaapi_vpp
 WIN32 = $_win32
 X11 = $_x11
 WAYLAND = $_wayland
@@ -3090,6 +3332,8 @@ XV = $_xv
 ENCODING = $_encoding
 
 CONFIG_VDPAU    = $_vdpau
+CONFIG_VDA      = $_vda
+CONFIG_VAAPI    = $_vaapi
 CONFIG_ZLIB     = $_zlib
 
 HAVE_PTHREADS   = $_pthreads
@@ -3183,7 +3427,6 @@ $def_zlib
 $def_avutil_has_refcounting
 $def_avutil_has_qp_api
 $def_avcodec_new_vdpau_api
-$def_avcodec_has_text_flag_api
 $def_avcodec_has_chroma_pos_api
 $def_libpostproc
 $def_libavdevice
@@ -3205,6 +3448,7 @@ $def_ossaudio_devmixer
 $def_pulse
 $def_portaudio
 $def_rsound
+$def_sndio
 
 $def_ladspa
 $def_libbs2b
@@ -3233,6 +3477,7 @@ $def_libquvi9
 $def_libguess
 
 $def_lcms2
+$def_lua
 
 
 /* libvo options */
@@ -3255,6 +3500,10 @@ $def_jpeg
 $def_mng
 $def_v4l2
 $def_vdpau
+$def_vda
+$def_vda_refcounting
+$def_vaapi
+$def_vaapi_vpp
 $def_vm
 $def_x11
 $def_wayland

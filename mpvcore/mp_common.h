@@ -36,7 +36,13 @@
 
 #define MPMAX(a, b) ((a) > (b) ? (a) : (b))
 #define MPMIN(a, b) ((a) > (b) ? (b) : (a))
+#define MPSWAP(type, a, b) \
+    do { type SWAP_tmp = b; b = a; a = SWAP_tmp; } while (0)
 #define MP_ARRAY_SIZE(s) (sizeof(s) / sizeof((s)[0]))
+
+// align must be a power of two (align >= 1), x >= 0
+#define MP_ALIGN_UP(x, align) (((x) + (align) - 1) & ~((align) - 1))
+#define MP_ALIGN_DOWN(x, align) ((x) & ~((align) - 1))
 
 #define CONTROL_OK 1
 #define CONTROL_TRUE 1
@@ -49,6 +55,7 @@ extern const char *mplayer_version;
 extern const char *mplayer_builddate;
 
 char *mp_format_time(double time, bool fractions);
+char *mp_format_time_fmt(const char *fmt, double time);
 
 struct mp_rect {
     int x0, y0;

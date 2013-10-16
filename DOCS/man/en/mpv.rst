@@ -1,9 +1,3 @@
-..
-    Hint: To generate a nicely formatted XeLaTeX document from this file, use
-    rst2xetex --use-latex-docinfo --use-latex-toc --hyperlink-color=MidnightBlue --latex-preamble="\usepackage[usenames,dvipsnames]{xcolor}\usepackage{fullpage}\setmainfont{Droid Sans}\setsansfont{Linux Biolinum O}\setmonofont[HyphenChar=None]{DejaVu Sans Mono}" mpv.rst
-
-    You might want to put the .. contents:: directive below to generate a TOC.
-
 mpv
 ###
 
@@ -12,9 +6,14 @@ a movie player
 ##############
 
 :Author: wm4
-:Copyright: GPLv3
+:Copyright: GPLv2+
 :Manual section: 1
 :Manual group: multimedia
+
+.. raw:: latex
+
+    \tableofcontents
+    \pagebreak
 
 SYNOPSIS
 ========
@@ -174,7 +173,9 @@ P
     Show progression bar, elapsed time and total duration on the OSD.
 
 ! and @
-    Seek to the beginning of the previous/next chapter.
+    Seek to the beginning of the previous/next chapter. In most cases,
+    "previous" will actually go to the beginning of the current chapter; see
+    ``--chapter-seek-threshold``.
 
 D (``--vo=vdpau``, ``--vf=yadif`` only)
     Activate/deactivate deinterlacer.
@@ -423,9 +424,6 @@ taking screenshots is handled by the VOs, and adding the screenshot filter will
 break hardware decoding. (The filter may still be useful for taking screenshots
 at a certain point within the video chain when using multiple video filters.)
 
-OPTIONS
-=======
-
 .. include:: options.rst
 
 .. include:: ao.rst
@@ -439,6 +437,10 @@ OPTIONS
 .. include:: encode.rst
 
 .. include:: input.rst
+
+.. include:: osc.rst
+
+.. include:: lua.rst
 
 .. include:: changes.rst
 

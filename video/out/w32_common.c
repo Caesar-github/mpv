@@ -137,7 +137,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam,
             ClientToScreen(w32->window, &p);
             w32->window_x = p.x;
             w32->window_y = p.y;
-            mp_msg(MSGT_VO, MSGL_V, "[vo] move window: %d:%d\n",
+            MP_VERBOSE(vo, "move window: %d:%d\n",
                    w32->window_x, w32->window_y);
             break;
         }
@@ -147,7 +147,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam,
             GetClientRect(w32->window, &r);
             vo->dwidth = r.right;
             vo->dheight = r.bottom;
-            mp_msg(MSGT_VO, MSGL_V, "[vo] resize window: %d:%d\n",
+            MP_VERBOSE(vo, "resize window: %d:%d\n",
                    vo->dwidth, vo->dheight);
             break;
         }
@@ -181,7 +181,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam,
             case SC_SCREENSAVE:
             case SC_MONITORPOWER:
                 if (w32->disable_screensaver) {
-                    mp_msg(MSGT_VO, MSGL_V, "vo: win32: killing screensaver\n");
+                    MP_VERBOSE(vo, "win32: killing screensaver\n");
                     return 0;
                 }
                 break;
@@ -231,11 +231,21 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam,
             w32->tracking = FALSE;
             mp_input_put_key(vo->input_ctx, MP_KEY_MOUSE_LEAVE);
             break;
-        case WM_MOUSEMOVE:
+        case WM_MOUSEMOVE: {
             if (!w32->tracking)
-                w32->tracking = TrackMouseEvent(&w32->trackEvent);;
-            vo_mouse_movement(vo, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
+                w32->tracking = TrackMouseEvent(&w32->trackEvent);
+            // Windows can send spurious mouse events, which would make the mpv
+            // core unhide the mouse cursor on completely unrelated events. See:
+            //  https://blogs.msdn.com/b/oldnewthing/archive/2003/10/01/55108.aspx
+            int x = GET_X_LPARAM(lParam);
+            int y = GET_Y_LPARAM(lParam);
+            if (x != w32->mouse_x || y != w32->mouse_y) {
+                w32->mouse_x = x;
+                w32->mouse_y = y;
+                vo_mouse_movement(vo, x, y);
+            }
             break;
+        }
         case WM_LBUTTONDOWN:
             mouse_button = MP_MOUSE_BTN0 | MP_KEY_STATE_DOWN;
             break;
@@ -269,7 +279,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam,
             break;
     }
 
-    if (mouse_button && !vo->opts->nomouse_input) {
+    if (mouse_button && vo->opts->enable_mouse_movements) {
         int x = GET_X_LPARAM(lParam);
         int y = GET_Y_LPARAM(lParam);
         mouse_button |= mod_state(vo);
@@ -402,8 +412,7 @@ static void updateScreenProperties(struct vo *vo)
     dm.dmDriverExtra = 0;
     dm.dmFields = DM_BITSPERPEL | DM_PELSWIDTH | DM_PELSHEIGHT;
     if (!EnumDisplaySettings(0, ENUM_CURRENT_SETTINGS, &dm)) {
-        mp_msg(MSGT_VO, MSGL_ERR,
-               "vo: win32: unable to enumerate display settings!\n");
+        MP_ERR(vo, "win32: unable to enumerate display settings!\n");
         return;
     }
 
@@ -449,7 +458,7 @@ static int reinit_window_state(struct vo *vo)
             w32->prev_height = vo->dheight;
             w32->prev_x = w32->window_x;
             w32->prev_y = w32->window_y;
-            mp_msg(MSGT_VO, MSGL_V, "[vo] save window bounds: %d:%d:%d:%d\n",
+            MP_VERBOSE(vo, "save window bounds: %d:%d:%d:%d\n",
                    w32->prev_x, w32->prev_y, w32->prev_width, w32->prev_height);
         }
         vo->dwidth = vo->opts->screenwidth;
@@ -459,7 +468,7 @@ static int reinit_window_state(struct vo *vo)
     } else {
         if (toggle_fs) {
             // Restore window position and size when switching from fullscreen.
-            mp_msg(MSGT_VO, MSGL_V, "[vo] restore window bounds: %d:%d:%d:%d\n",
+            MP_VERBOSE(vo, "restore window bounds: %d:%d:%d:%d\n",
                    w32->prev_x, w32->prev_y, w32->prev_width, w32->prev_height);
             vo->dwidth = w32->prev_width;
             vo->dheight = w32->prev_height;
@@ -476,7 +485,7 @@ static int reinit_window_state(struct vo *vo)
     SetWindowLong(w32->window, GWL_STYLE, style);
     add_window_borders(w32->window, &r);
 
-    mp_msg(MSGT_VO, MSGL_V, "[vo] reset window bounds: %d:%d:%d:%d\n",
+    MP_VERBOSE(vo, "reset window bounds: %d:%d:%d:%d\n",
            (int) r.left, (int) r.top, (int)(r.right - r.left),
            (int)(r.bottom - r.top));
 
@@ -520,7 +529,7 @@ int vo_w32_config(struct vo *vo, uint32_t width, uint32_t height,
     pfd.iLayerType = PFD_MAIN_PLANE;
     pf = ChoosePixelFormat(vo_hdc, &pfd);
     if (!pf) {
-        mp_msg(MSGT_VO, MSGL_ERR, "vo: win32: unable to select a valid pixel format!\n");
+        MP_ERR(vo, "win32: unable to select a valid pixel format!\n");
         ReleaseDC(w32->window, vo_hdc);
         return 0;
     }
@@ -610,8 +619,7 @@ int vo_w32_init(struct vo *vo)
     };
 
     if (!RegisterClassExW(&wcex)) {
-        mp_msg(MSGT_VO, MSGL_ERR,
-               "vo: win32: unable to register window class!\n");
+        MP_ERR(vo, "win32: unable to register window class!\n");
         return 0;
     }
 
@@ -634,7 +642,7 @@ int vo_w32_init(struct vo *vo)
     }
 
     if (!w32->window) {
-        mp_msg(MSGT_VO, MSGL_ERR, "vo: win32: unable to create window!\n");
+        MP_ERR(vo, "win32: unable to create window!\n");
         return 0;
     }
 
@@ -654,7 +662,7 @@ int vo_w32_init(struct vo *vo)
 
     updateScreenProperties(vo);
 
-    mp_msg(MSGT_VO, MSGL_V, "vo: win32: running at %dx%d\n",
+    MP_VERBOSE(vo, "win32: running at %dx%d\n",
            vo->opts->screenwidth, vo->opts->screenheight);
 
     return 1;
@@ -763,7 +771,7 @@ int vo_w32_control(struct vo *vo, int *events, int request, void *arg)
 void vo_w32_uninit(struct vo *vo)
 {
     struct vo_w32_state *w32 = vo->w32;
-    mp_msg(MSGT_VO, MSGL_V, "vo: win32: uninit\n");
+    MP_VERBOSE(vo, "win32: uninit\n");
     if (!w32)
         return;
     SetThreadExecutionState(ES_CONTINUOUS);

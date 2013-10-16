@@ -79,6 +79,7 @@
 #define MKV_V_MJPEG      "V_MJPEG"
 #define MKV_V_UNCOMPRESSED "V_UNCOMPRESSED"
 #define MKV_V_DIRAC      "V_DIRAC"
+#define MKV_V_PRORES     "V_PRORES"
 
 #define MKV_S_TEXTASCII  "S_TEXT/ASCII"
 #define MKV_S_TEXTUTF8   "S_TEXT/UTF8"
@@ -88,5 +89,7 @@
 #define MKV_S_PGS        "S_HDMV/PGS"
 #define MKV_S_SSA        "S_SSA" // Deprecated
 #define MKV_S_ASS        "S_ASS" // Deprecated
+#define MKV_S_WEBVTT_S   "D_WEBVTT/SUBTITLES"
+#define MKV_S_WEBVTT_C   "D_WEBVTT/CAPTIONS"
 
 #endif /* MPLAYER_MATROSKA_H */

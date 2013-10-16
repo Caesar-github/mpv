@@ -65,10 +65,6 @@ static int control(struct vf_instance *vf, int request, void *data)
         return vo_control(video_out, VOCTRL_GET_DEINTERLACE, data) == VO_TRUE;
     case VFCTRL_SET_DEINTERLACE:
         return vo_control(video_out, VOCTRL_SET_DEINTERLACE, data) == VO_TRUE;
-    case VFCTRL_GET_YUV_COLORSPACE:
-        return vo_control(video_out, VOCTRL_GET_YUV_COLORSPACE, data) == true;
-    case VFCTRL_SET_YUV_COLORSPACE:
-        return vo_control(video_out, VOCTRL_SET_YUV_COLORSPACE, data) == true;
     case VFCTRL_SET_EQUALIZER: {
         vf_equalizer_t *eq = data;
         if (!video_out->config_ok)
@@ -87,6 +83,8 @@ static int control(struct vf_instance *vf, int request, void *data)
         };
         return vo_control(video_out, VOCTRL_GET_EQUALIZER, &param) == VO_TRUE;
     }
+    case VFCTRL_GET_HWDEC_INFO:
+        return vo_control(video_out, VOCTRL_GET_HWDEC_INFO, data) == VO_TRUE;
     }
     return CONTROL_UNKNOWN;
 }

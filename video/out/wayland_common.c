@@ -1,23 +1,21 @@
 /*
- * This file is part of MPlayer.
+ * This file is part of mpv video player.
  * Copyright © 2008 Kristian Høgsberg
  * Copyright © 2012-2013 Collabora, Ltd.
- * Copyright © 2012-2013 Scott Moreau <oreaus@gmail.com>
- * Copyright © 2012-2013 Alexander Preisinger <alexander.preisinger@gmail.com>
+ * Copyright © 2013 Alexander Preisinger <alexander.preisinger@gmail.com>
  *
- * MPlayer is free software; you can redistribute it and/or modify
+ * mpv is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
- * MPlayer is distributed in the hope that it will be useful,
+ * mpv is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with MPlayer; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ * with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <stdio.h>
@@ -56,10 +54,10 @@ static int lookupkey(int key);
 
 static void hide_cursor(struct vo_wayland_state * wl);
 static void show_cursor(struct vo_wayland_state * wl);
-static void resize_window(struct vo_wayland_state *wl,
-                          uint32_t edges,
-                          int32_t width,
-                          int32_t height);
+static void shedule_resize(struct vo_wayland_state *wl,
+                           uint32_t edges,
+                           int32_t width,
+                           int32_t height);
 
 static void vo_wayland_fullscreen (struct vo *vo);
 
@@ -127,7 +125,7 @@ static void ssurface_handle_configure(void *data,
                                       int32_t height)
 {
     struct vo_wayland_state *wl = data;
-    resize_window(wl, edges, width, height);
+    shedule_resize(wl, edges, width, height);
 }
 
 static void ssurface_handle_popup_done(void *data,
@@ -315,9 +313,6 @@ static void pointer_handle_enter(void *data,
     wl->cursor.serial = serial;
     wl->cursor.pointer = pointer;
 
-    /* Release the left button on pointer enter again
-     * because after moving the shell surface no release event is sent */
-    mp_input_put_key(wl->vo->input_ctx, MP_MOUSE_BTN0 | MP_KEY_STATE_UP);
     show_cursor(wl);
 }
 
@@ -356,9 +351,6 @@ static void pointer_handle_button(void *data,
     mp_input_put_key(wl->vo->input_ctx, MP_MOUSE_BTN0 + (button - BTN_LEFT) |
                     ((state == WL_POINTER_BUTTON_STATE_PRESSED)
                     ? MP_KEY_STATE_DOWN : MP_KEY_STATE_UP));
-
-    if ((button == BTN_LEFT) && (state == WL_POINTER_BUTTON_STATE_PRESSED))
-        wl_shell_surface_move(wl->window.shell_surface, wl->input.seat, serial);
 }
 
 static void pointer_handle_axis(void *data,
@@ -427,19 +419,6 @@ static const struct wl_seat_listener seat_listener = {
     seat_handle_capabilities,
 };
 
-/* SHM LISTENER */
-static void shm_handle_format(void *data,
-                              struct wl_shm *wl_shm,
-                              uint32_t format)
-{
-    struct vo_wayland_state *wl = data;
-    wl->display.formats |= (1 << format);
-}
-
-const struct wl_shm_listener shm_listener = {
-    shm_handle_format
-};
-
 static void registry_handle_global (void *data,
                                     struct wl_registry *registry,
                                     uint32_t id,
@@ -462,11 +441,7 @@ static void registry_handle_global (void *data,
 
     else if (strcmp(interface, "wl_shm") == 0) {
 
-        wl->cursor.shm = wl_registry_bind(reg, id, &wl_shm_interface, 1);
-        wl->cursor.theme = wl_cursor_theme_load(NULL, 32, wl->cursor.shm);
-        wl->cursor.default_cursor = wl_cursor_theme_get_cursor(wl->cursor.theme,
-                                                              "left_ptr");
-        wl_shm_add_listener(wl->cursor.shm, &shm_listener, wl);
+        wl->display.shm = wl_registry_bind(reg, id, &wl_shm_interface, 1);
     }
 
     else if (strcmp(interface, "wl_output") == 0) {
@@ -548,20 +523,62 @@ static void show_cursor (struct vo_wayland_state *wl)
     wl_surface_commit(wl->cursor.surface);
 }
 
-static void resize_window(struct vo_wayland_state *wl,
-                          uint32_t edges,
-                          int32_t width,
-                          int32_t height)
+static void shedule_resize(struct vo_wayland_state *wl,
+                           uint32_t edges,
+                           int32_t width,
+                           int32_t height)
 {
-    MP_VERBOSE(wl, "resizing %dx%d -> %dx%d\n", wl->window.width,
-            wl->window.height, width, height);
-    if (wl->window.resize_func && wl->window.resize_func_data) {
-        wl->window.resize_func(wl, edges, width, height,
-                               wl->window.resize_func_data);
-        wl->window.events |= VO_EVENT_RESIZE;
+    int32_t minimum_size = 150;
+    int32_t x, y;
+    float temp_aspect = width / (float) MPMAX(height, 1);
+
+    if (width < minimum_size)
+        width = minimum_size;
+
+    if (height < minimum_size)
+        height = minimum_size;
+
+    /* if only the height is changed we have to calculate the width
+     * in any other case we calculate the height */
+    switch (edges) {
+        case WL_SHELL_SURFACE_RESIZE_TOP:
+        case WL_SHELL_SURFACE_RESIZE_BOTTOM:
+            width = wl->window.aspect * height;
+            break;
+        case WL_SHELL_SURFACE_RESIZE_LEFT:
+        case WL_SHELL_SURFACE_RESIZE_RIGHT:
+        case WL_SHELL_SURFACE_RESIZE_TOP_LEFT:    // just a preference
+        case WL_SHELL_SURFACE_RESIZE_TOP_RIGHT:
+        case WL_SHELL_SURFACE_RESIZE_BOTTOM_LEFT:
+        case WL_SHELL_SURFACE_RESIZE_BOTTOM_RIGHT:
+            height = (1 / wl->window.aspect) * width;
+            break;
+        default:
+            if (wl->window.aspect < temp_aspect)
+                width = wl->window.aspect * height;
+            else
+                height = (1 / wl->window.aspect) * width;
+            break;
     }
+
+    wl->vo->dwidth = width;
+    wl->vo->dheight = height;
+
+    if (edges & WL_SHELL_SURFACE_RESIZE_LEFT)
+        x = wl->window.width - width;
     else
-        MP_WARN(wl, "no resizing possible\n");
+        x = 0;
+
+    if (edges & WL_SHELL_SURFACE_RESIZE_TOP)
+        y = wl->window.height - height;
+    else
+        y = 0;
+
+    wl->window.sh_width = width;
+    wl->window.sh_height = height;
+    wl->window.sh_x = x;
+    wl->window.sh_y = y;
+    wl->window.events |= VO_EVENT_RESIZE;
 }
 
 
@@ -570,8 +587,10 @@ static bool create_display (struct vo_wayland_state *wl)
     wl->display.display = wl_display_connect(NULL);
 
     if (!wl->display.display) {
-        MP_ERR(wl->vo, "failed to connect to a wayland server: "
-                       "check if a wayland compositor is running\n");
+        MP_MSG(wl, wl->vo->probing ? MSGL_V : MSGL_ERR,
+               "failed to connect to a wayland server: "
+               "check if a wayland compositor is running\n");
+
         return false;
     }
 
@@ -627,10 +646,21 @@ static void destroy_window (struct vo_wayland_state *wl)
 
 static bool create_cursor (struct vo_wayland_state *wl)
 {
+    if (!wl->display.shm) {
+        MP_ERR(wl->vo, "no shm interface available\n");
+        return false;
+    }
+
     wl->cursor.surface =
         wl_compositor_create_surface(wl->display.compositor);
 
-    return wl->cursor.surface != NULL;
+    if (!wl->cursor.surface)
+        return false;
+
+    wl->cursor.theme = wl_cursor_theme_load(NULL, 32, wl->display.shm);
+    wl->cursor.default_cursor = wl_cursor_theme_get_cursor(wl->cursor.theme,
+                                                           "left_ptr");
+    return true;
 }
 
 static void destroy_cursor (struct vo_wayland_state *wl)
@@ -647,18 +677,21 @@ static bool create_input (struct vo_wayland_state *wl)
     wl->input.xkb.context = xkb_context_new(0);
 
     if (!wl->input.xkb.context) {
-        MP_ERR(wl->vo, "failed to initialize input: check xkbcommon\n");
+        MP_ERR(wl, "failed to initialize input: check xkbcommon\n");
         return false;
     }
 
     return true;
 }
 
-
 static void destroy_input (struct vo_wayland_state *wl)
 {
-    if (wl->input.keyboard)
+    if (wl->input.keyboard) {
         wl_keyboard_destroy(wl->input.keyboard);
+        xkb_map_unref(wl->input.xkb.keymap);
+        xkb_state_unref(wl->input.xkb.state);
+        xkb_context_unref(wl->input.xkb.context);
+    }
 
     if (wl->input.pointer)
         wl_pointer_destroy(wl->input.pointer);
@@ -666,7 +699,6 @@ static void destroy_input (struct vo_wayland_state *wl)
     if (wl->input.seat)
         wl_seat_destroy(wl->input.seat);
 
-    xkb_context_unref(wl->input.xkb.context);
 }
 
 /*** mplayer2 interface ***/
@@ -732,7 +764,7 @@ static void vo_wayland_fullscreen (struct vo *vo)
     struct wl_output *fs_output = wl->display.fs_output;
 
     if (vo->opts->fullscreen) {
-        MP_VERBOSE(wl, "going fullscreen\n");
+        MP_DBG(wl, "going fullscreen\n");
         wl->window.p_width = wl->window.width;
         wl->window.p_height = wl->window.height;
         wl_shell_surface_set_fullscreen(wl->window.shell_surface,
@@ -741,9 +773,9 @@ static void vo_wayland_fullscreen (struct vo *vo)
     }
 
     else {
-        MP_VERBOSE(wl, "leaving fullscreen\n");
+        MP_DBG(wl, "leaving fullscreen\n");
         wl_shell_surface_set_toplevel(wl->window.shell_surface);
-        resize_window(wl, 0, wl->window.p_width, wl->window.p_height);
+        shedule_resize(wl, 0, wl->window.p_width, wl->window.p_height);
     }
 }
 
@@ -751,7 +783,6 @@ static int vo_wayland_check_events (struct vo *vo)
 {
     struct vo_wayland_state *wl = vo->wayland;
     struct wl_display *dp = wl->display.display;
-    int ret;
 
     wl_display_dispatch_pending(dp);
     wl_display_flush(dp);
@@ -780,10 +811,8 @@ static int vo_wayland_check_events (struct vo *vo)
             wl_display_flush(dp);
     }
 
-    ret = wl->window.events;
-    wl->window.events = 0;
-
-    return ret;
+    // window events are reset by the resizing code
+    return wl->window.events;
 }
 
 static void vo_wayland_update_screeninfo (struct vo *vo)

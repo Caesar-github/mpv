@@ -55,14 +55,16 @@ enum timestamp_type {
 #define DEMUXER_CTRL_OK 1
 #define DEMUXER_CTRL_GUESS 2
 
-#define DEMUXER_CTRL_UPDATE_INFO 8
-#define DEMUXER_CTRL_SWITCHED_TRACKS 9
-#define DEMUXER_CTRL_GET_TIME_LENGTH 10
-#define DEMUXER_CTRL_GET_START_TIME 11
-#define DEMUXER_CTRL_SWITCH_AUDIO 12
-#define DEMUXER_CTRL_RESYNC 13
-#define DEMUXER_CTRL_SWITCH_VIDEO 14
-#define DEMUXER_CTRL_IDENTIFY_PROGRAM 15
+enum demux_ctrl {
+    DEMUXER_CTRL_UPDATE_INFO = 1,
+    DEMUXER_CTRL_SWITCHED_TRACKS,
+    DEMUXER_CTRL_GET_TIME_LENGTH,
+    DEMUXER_CTRL_GET_START_TIME,
+    DEMUXER_CTRL_SWITCH_AUDIO,
+    DEMUXER_CTRL_RESYNC,
+    DEMUXER_CTRL_SWITCH_VIDEO,
+    DEMUXER_CTRL_IDENTIFY_PROGRAM,
+};
 
 #define SEEK_ABSOLUTE (1 << 0)
 #define SEEK_FACTOR   (1 << 1)
@@ -107,16 +109,23 @@ typedef struct demuxer_desc {
     // The following functions are all optional
     int (*fill_buffer)(struct demuxer *demuxer); // 0 on EOF, otherwise 1
     void (*close)(struct demuxer *demuxer);
-    void (*seek)(struct demuxer *demuxer, float rel_seek_secs,
-                 float audio_delay, int flags);
+    void (*seek)(struct demuxer *demuxer, float rel_seek_secs, int flags);
     int (*control)(struct demuxer *demuxer, int cmd, void *arg);
 } demuxer_desc_t;
+
+struct mp_tags {
+    char **keys;
+    char **values;
+    int num_keys;
+};
 
 typedef struct demux_chapter
 {
     int original_index;
     uint64_t start, end;
     char *name;
+    struct mp_tags *metadata;
+    uint64_t demuxer_id; // for mapping to internal demuxer data structures
 } demux_chapter_t;
 
 struct matroska_data {
@@ -141,6 +150,7 @@ typedef struct demux_attachment
 } demux_attachment_t;
 
 struct demuxer_params {
+    int matroska_num_wanted_uids;
     unsigned char (*matroska_wanted_uids)[16];
     int matroska_wanted_segment;
     bool *matroska_was_valid;
@@ -183,8 +193,12 @@ typedef struct demuxer {
     // for trivial demuxers which just read the whole file for codec to use
     struct bstr file_contents;
 
+    // If the file is a playlist file
+    struct playlist *playlist;
+
+    struct mp_tags *metadata;
+
     void *priv;   // demuxer-specific internal data
-    char **info;  // metadata
     struct MPOpts *opts;
     struct demuxer_params *params;
 } demuxer_t;
@@ -222,8 +236,7 @@ struct demuxer *demux_open(struct stream *stream, char *force_format,
                            struct demuxer_params *params, struct MPOpts *opts);
 
 void demux_flush(struct demuxer *demuxer);
-int demux_seek(struct demuxer *demuxer, float rel_seek_secs, float audio_delay,
-               int flags);
+int demux_seek(struct demuxer *demuxer, float rel_seek_secs, int flags);
 
 int demux_info_add(struct demuxer *demuxer, const char *opt, const char *param);
 int demux_info_add_bstr(struct demuxer *demuxer, struct bstr opt,
@@ -245,7 +258,9 @@ void demuxer_help(void);
 int demuxer_add_attachment(struct demuxer *demuxer, struct bstr name,
                            struct bstr type, struct bstr data);
 int demuxer_add_chapter(struct demuxer *demuxer, struct bstr name,
-                        uint64_t start, uint64_t end);
+                        uint64_t start, uint64_t end, uint64_t demuxer_id);
+void demuxer_add_chapter_info(struct demuxer *demuxer, uint64_t demuxer_id,
+                              bstr key, bstr value);
 int demuxer_seek_chapter(struct demuxer *demuxer, int chapter,
                          double *seek_pts);
 void demuxer_sort_chapters(demuxer_t *demuxer);
@@ -280,5 +295,10 @@ void demux_packet_list_seek(struct demux_packet **pkts, int num_pkts,
 double demux_packet_list_duration(struct demux_packet **pkts, int num_pkts);
 struct demux_packet *demux_packet_list_fill(struct demux_packet **pkts,
                                             int num_pkts, int *current);
+
+void mp_tags_set_str(struct mp_tags *tags, const char *key, const char *value);
+void mp_tags_set_bstr(struct mp_tags *tags, bstr key, bstr value);
+char *mp_tags_get_str(struct mp_tags *tags, const char *key);
+char *mp_tags_get_bstr(struct mp_tags *tags, bstr key);
 
 #endif /* MPLAYER_DEMUXER_H */

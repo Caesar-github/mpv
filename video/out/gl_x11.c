@@ -47,12 +47,12 @@ static bool create_context_x11_old(struct MPGLContext *ctx)
     GLXContext new_context = glXCreateContext(display, glx_ctx->vinfo, NULL,
                                               True);
     if (!new_context) {
-        mp_msg(MSGT_VO, MSGL_FATAL, "[gl] Could not create GLX context!\n");
+        MP_FATAL(vo, "Could not create GLX context!\n");
         return false;
     }
 
     if (!glXMakeCurrent(display, ctx->vo->x11->window, new_context)) {
-        mp_msg(MSGT_VO, MSGL_FATAL, "[gl] Could not set GLX context!\n");
+        MP_FATAL(vo, "Could not set GLX context!\n");
         glXDestroyContext(display, new_context);
         return false;
     }
@@ -68,14 +68,13 @@ static bool create_context_x11_old(struct MPGLContext *ctx)
     if (glXExtStr)
         glxstr = glXExtStr(display, ctx->vo->x11->screen);
 
-    mpgl_load_functions(gl, getProcAddress, glxstr);
+    mpgl_load_functions(gl, getProcAddress, glxstr, vo->log);
     if (!gl->GenPrograms && gl->GetString &&
         gl->version < MPGL_VER(3, 0) &&
         strstr(gl->GetString(GL_EXTENSIONS), "GL_ARB_vertex_program"))
     {
-        mp_msg(MSGT_VO, MSGL_WARN,
-                "Broken glXGetProcAddress detected, trying workaround\n");
-        mpgl_load_functions(gl, NULL, glxstr);
+        MP_WARN(vo, "Broken glXGetProcAddress detected, trying workaround\n");
+        mpgl_load_functions(gl, NULL, glxstr, vo->log);
     }
 
     glx_ctx->context = new_context;
@@ -124,20 +123,20 @@ static bool create_context_x11_gl3(struct MPGLContext *ctx, bool debug)
                                                     glx_ctx->fbc, 0, True,
                                                     context_attribs);
     if (!context) {
-        mp_msg(MSGT_VO, MSGL_FATAL, "[gl] Could not create GLX context!\n");
+        MP_FATAL(vo, "Could not create GLX context!\n");
         return false;
     }
 
     // set context
     if (!glXMakeCurrent(vo->x11->display, vo->x11->window, context)) {
-        mp_msg(MSGT_VO, MSGL_FATAL, "[gl] Could not set GLX context!\n");
+        MP_FATAL(vo, "Could not set GLX context!\n");
         glXDestroyContext(vo->x11->display, context);
         return false;
     }
 
     glx_ctx->context = context;
 
-    mpgl_load_functions(ctx->gl, (void *)glXGetProcAddress, glxstr);
+    mpgl_load_functions(ctx->gl, (void *)glXGetProcAddress, glxstr, vo->log);
 
     if (!glXIsDirect(vo->x11->display, context))
         ctx->gl->mpgl_caps &= ~MPGL_CAP_NO_SW;
@@ -163,6 +162,8 @@ static GLXFBConfig select_fb_config(struct vo *vo, const int *attribs, int flags
     if (flags & VOFLAG_ALPHA) {
         for (int n = 0; n < fbcount; n++) {
             XVisualInfo *v = glXGetVisualFromFBConfig(vo->x11->display, fbc[n]);
+            if (!v)
+                continue;
             // This is a heuristic at best. Note that normal 8 bit Visuals use
             // a depth of 24, even if the pixels are padded to 32 bit. If the
             // depth is higher than 24, the remaining bits must be alpha.
@@ -211,7 +212,7 @@ static bool config_window_x11(struct MPGLContext *ctx, uint32_t d_width,
     if (!glXQueryVersion(vo->x11->display, &glx_major, &glx_minor) ||
         (MPGL_VER(glx_major, glx_minor) <  MPGL_VER(1, 3)))
     {
-        mp_msg(MSGT_VO, MSGL_ERR, "[gl] GLX version older than 1.3.\n");
+        MP_ERR(vo, "GLX version older than 1.3.\n");
         return false;
     }
 
@@ -238,8 +239,8 @@ static bool config_window_x11(struct MPGLContext *ctx, uint32_t d_width,
         set_glx_attrib(glx_attribs, GLX_STEREO, True);
         fbc = select_fb_config(vo, glx_attribs, flags);
         if (!fbc) {
-            mp_msg(MSGT_VO, MSGL_ERR, "[gl] Could not find a stereo visual,"
-                   " 3D will probably not work!\n");
+            MP_ERR(vo, "Could not find a stereo visual,"
+                       " 3D will probably not work!\n");
             set_glx_attrib(glx_attribs, GLX_STEREO, False);
             flags &= ~VOFLAG_STEREO;
         }
@@ -247,15 +248,18 @@ static bool config_window_x11(struct MPGLContext *ctx, uint32_t d_width,
     if (!fbc)
         fbc = select_fb_config(vo, glx_attribs, flags);
     if (!fbc) {
-        mp_msg(MSGT_VO, MSGL_ERR, "[gl] no GLX support present\n");
+        MP_ERR(vo, "no GLX support present\n");
         return false;
     }
 
     glx_ctx->fbc = fbc;
     glx_ctx->vinfo = glXGetVisualFromFBConfig(vo->x11->display, fbc);
+    if (!glx_ctx->vinfo) {
+        MP_ERR(vo, "Selected GLX FB config has no associated X visual\n");
+        return false;
+    }
 
-    mp_msg(MSGT_VO, MSGL_V, "[gl] GLX chose visual with ID 0x%x\n",
-            (int)glx_ctx->vinfo->visualid);
+    MP_VERBOSE(vo, "GLX chose visual with ID 0x%x\n", (int)glx_ctx->vinfo->visualid);
 
     glXGetFBConfigAttrib(vo->x11->display, fbc, GLX_RED_SIZE, &ctx->depth_r);
     glXGetFBConfigAttrib(vo->x11->display, fbc, GLX_GREEN_SIZE, &ctx->depth_g);

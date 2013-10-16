@@ -61,6 +61,8 @@ extern struct vo_driver video_out_direct3d;
 extern struct vo_driver video_out_direct3d_shaders;
 extern struct vo_driver video_out_sdl;
 extern struct vo_driver video_out_corevideo;
+extern struct vo_driver video_out_vaapi;
+extern struct vo_driver video_out_wayland;
 
 const struct vo_driver *video_out_drivers[] =
 {
@@ -86,6 +88,9 @@ const struct vo_driver *video_out_drivers[] =
 #ifdef CONFIG_GL
         &video_out_opengl_old,
 #endif
+#if CONFIG_VAAPI
+        &video_out_vaapi,
+#endif
 #ifdef CONFIG_X11
         &video_out_x11,
 #endif
@@ -100,6 +105,9 @@ const struct vo_driver *video_out_drivers[] =
 #endif
 #ifdef CONFIG_GL
         &video_out_opengl_hq,
+#endif
+#ifdef CONFIG_WAYLAND
+        &video_out_wayland,
 #endif
         NULL
 };
@@ -194,7 +202,7 @@ void vo_queue_image(struct vo *vo, struct mp_image *mpi)
 
 int vo_redraw_frame(struct vo *vo)
 {
-    if (!vo->config_ok || !vo->hasframe)
+    if (!vo->config_ok)
         return -1;
     if (vo_control(vo, VOCTRL_REDRAW_FRAME, NULL) == true) {
         vo->want_redraw = false;
@@ -206,7 +214,7 @@ int vo_redraw_frame(struct vo *vo)
 
 bool vo_get_want_redraw(struct vo *vo)
 {
-    if (!vo->config_ok || !vo->hasframe)
+    if (!vo->config_ok)
         return false;
     return vo->want_redraw;
 }
@@ -399,9 +407,10 @@ int vo_reconfig(struct vo *vo, struct mp_image_params *params, int flags)
     vo->dwidth = d_width;
     vo->dheight = d_height;
 
+    talloc_free(vo->params);
+    vo->params = NULL;
+
     struct mp_image_params p2 = *params;
-    p2.d_w = vo->aspdat.prew;
-    p2.d_h = vo->aspdat.preh;
 
     int ret;
     if (vo->driver->reconfig) {
@@ -414,6 +423,8 @@ int vo_reconfig(struct vo *vo, struct mp_image_params *params, int flags)
     }
     vo->config_ok = (ret >= 0);
     vo->config_count += vo->config_ok;
+    if (vo->config_ok)
+        vo->params = talloc_memdup(vo, &p2, sizeof(p2));
     if (vo->registered_fd == -1 && vo->event_fd != -1 && vo->config_ok) {
         mp_input_add_key_fd(vo->input_ctx, vo->event_fd, 1, event_fd_callback,
                             NULL, vo);
@@ -428,6 +439,7 @@ int vo_reconfig(struct vo *vo, struct mp_image_params *params, int flags)
         struct mp_csp_details csp;
         if (vo_control(vo, VOCTRL_GET_YUV_COLORSPACE, &csp) > 0) {
             csp.levels_in = params->colorlevels;
+            csp.levels_out = params->outputlevels;
             csp.format = params->colorspace;
             vo_control(vo, VOCTRL_SET_YUV_COLORSPACE, &csp);
         }
@@ -483,14 +495,21 @@ static void clamp_size(int size, int *start, int *end)
 #define VID_SRC_ROUND_UP(x) (((x) + 1) & ~1)
 
 static void src_dst_split_scaling(int src_size, int dst_size,
-                                  int scaled_src_size,
+                                  int scaled_src_size, bool unscaled,
+                                  float zoom, float align, float pan,
                                   int *src_start, int *src_end,
                                   int *dst_start, int *dst_end,
                                   int *osd_margin_a, int *osd_margin_b)
 {
+    if (unscaled)
+        scaled_src_size = src_size;
+
+    scaled_src_size += zoom * src_size;
+    align = (align + 1) / 2;
+
     *src_start = 0;
     *src_end = src_size;
-    *dst_start = (dst_size - scaled_src_size) / 2;
+    *dst_start = (dst_size - scaled_src_size) * align + pan * scaled_src_size;
     *dst_end = *dst_start + scaled_src_size;
 
     // Distance of screen frame to video
@@ -509,6 +528,17 @@ static void src_dst_split_scaling(int src_size, int dst_size,
         int border = (*dst_end - dst_size) * s_src / s_dst;
         *src_end -= VID_SRC_ROUND_UP(border);
         *dst_end = dst_size;
+    }
+
+    if (unscaled && zoom == 1.0) {
+        // Force unscaled by reducing the range for src or dst
+        int src_s = *src_end - *src_start;
+        int dst_s = *dst_end - *dst_start;
+        if (src_s > dst_s) {
+            *src_end = *src_start + dst_s;
+        } else if (src_s < dst_s) {
+            *dst_end = *dst_start + src_s;
+        }
     }
 
     // For sanity: avoid bothering VOs with corner cases
@@ -538,10 +568,12 @@ void vo_get_src_dst_rects(struct vo *vo, struct mp_rect *out_src,
     if (opts->keepaspect) {
         int scaled_width, scaled_height;
         aspect_calc_panscan(vo, &scaled_width, &scaled_height);
-        src_dst_split_scaling(src_w, vo->dwidth, scaled_width,
+        src_dst_split_scaling(src_w, vo->dwidth, scaled_width, opts->unscaled,
+                              opts->zoom, opts->align_x, opts->pan_x,
                               &src.x0, &src.x1, &dst.x0, &dst.x1,
                               &osd.ml, &osd.mr);
-        src_dst_split_scaling(src_h, vo->dheight, scaled_height,
+        src_dst_split_scaling(src_h, vo->dheight, scaled_height, opts->unscaled,
+                              opts->zoom, opts->align_y, opts->pan_y,
                               &src.y0, &src.y1, &dst.y0, &dst.y1,
                               &osd.mt, &osd.mb);
     }
@@ -574,5 +606,7 @@ void vo_mouse_movement(struct vo *vo, int posx, int posy)
 {
     if (!vo->opts->enable_mouse_movements)
         return;
-    mp_input_set_mouse_pos(vo->input_ctx, posx, posy);
+    float p[2] = {posx, posy};
+    vo_control(vo, VOCTRL_WINDOW_TO_OSD_COORDS, p);
+    mp_input_set_mouse_pos(vo->input_ctx, p[0], p[1]);
 }

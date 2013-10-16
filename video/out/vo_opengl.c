@@ -144,7 +144,7 @@ static bool config_window(struct gl_priv *p, uint32_t d_width,
     if (p->renderer_opts->stereo_mode == GL_3D_QUADBUFFER)
         flags |= VOFLAG_STEREO;
 
-    if (p->renderer_opts->enable_alpha)
+    if (p->renderer_opts->alpha_mode == 1)
         flags |= VOFLAG_ALPHA;
 
     if (p->use_gl_debug)
@@ -245,13 +245,6 @@ static int control(struct vo *vo, uint32_t request, void *data)
             vo->want_redraw = true;
         return r ? VO_TRUE : VO_NOTIMPL;
     }
-    case VOCTRL_SET_YUV_COLORSPACE: {
-        mpgl_lock(p->glctx);
-        gl_video_set_csp_override(p->renderer, data);
-        mpgl_unlock(p->glctx);
-        vo->want_redraw = true;
-        return VO_TRUE;
-    }
     case VOCTRL_GET_YUV_COLORSPACE:
         mpgl_lock(p->glctx);
         gl_video_get_csp_override(p->renderer, data);
@@ -325,7 +318,7 @@ static int preinit(struct vo *vo)
     gl_video_set_options(p->renderer, p->renderer_opts);
 
     if (p->icc_opts->profile) {
-        struct lut3d *lut3d = mp_load_icc(p->icc_opts);
+        struct lut3d *lut3d = mp_load_icc(p->icc_opts, vo->log);
         if (!lut3d)
             goto err_out;
         gl_video_set_lut3d(p->renderer, lut3d);

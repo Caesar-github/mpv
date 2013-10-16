@@ -37,14 +37,12 @@ static const char osd_font_pfb[] =
 #include "mpvcore/options.h"
 
 
-// NOTE: \fs-5 to reduce the size of the symbols in relation to normal text.
-//       Done because libass doesn't center characters that are too high.
-#define ASS_USE_OSD_FONT "{\\fnOSD\\fs-5}"
+#define ASS_USE_OSD_FONT "{\\fnmpv-osd-symbols}"
 
 void osd_init_backend(struct osd_state *osd)
 {
     osd->osd_ass_library = mp_ass_init(osd->opts);
-    ass_add_font(osd->osd_ass_library, "OSD", (void *)osd_font_pfb,
+    ass_add_font(osd->osd_ass_library, "mpv-osd-symbols", (void *)osd_font_pfb,
                  sizeof(osd_font_pfb) - 1);
 
     osd->osd_render = ass_renderer_init(osd->osd_ass_library);
@@ -92,6 +90,13 @@ static void create_osd_ass_track(struct osd_state *osd, struct osd_object *obj)
         mp_ass_set_style(style, MP_ASS_FONT_PLAYRESY, osd->opts->osd_style);
         // Set to neutral base direction, as opposed to VSFilter LTR default
         style->Encoding = -1;
+
+        sid = ass_alloc_style(track);
+        style = track->styles + sid;
+        style->Name = strdup("Default");
+        const struct osd_style_opts *def = osd_style_conf.defaults;
+        mp_ass_set_style(style, MP_ASS_FONT_PLAYRESY, def);
+        style->Encoding = -1;
     }
 
     obj->osd_track = track;
@@ -104,6 +109,7 @@ static ASS_Event *add_osd_ass_event(ASS_Track *track, const char *text)
     event->Start = 0;
     event->Duration = 100;
     event->Style = track->default_style;
+    event->ReadOrder = n;
     assert(event->Text == NULL);
     if (text)
         event->Text = strdup(text);
@@ -348,6 +354,38 @@ static void update_progbar(struct osd_state *osd, struct osd_object *obj)
     ass_draw_reset(d);
 }
 
+static void update_external(struct osd_state *osd, struct osd_object *obj)
+{
+    create_osd_ass_track(osd, obj);
+    clear_obj(obj);
+
+    if (osd->external_res_x < 1 || osd->external_res_y < 1)
+        return;
+
+    ASS_Track *track = obj->osd_track;
+
+    if (track->PlayResX != osd->external_res_x ||
+        track->PlayResY != osd->external_res_y)
+    {
+        track->PlayResX = osd->external_res_x;
+        track->PlayResY = osd->external_res_y;
+        // Force libass to clear its internal cache - it doesn't check for
+        // PlayRes changes itself.
+        ass_set_frame_size(osd->osd_render, 1, 1);
+    }
+
+    bstr t = bstr0(osd->external);
+    while (t.len) {
+        bstr line;
+        bstr_split_tok(t, "\n", &line, &t);
+        if (line.len) {
+            char *tmp = bstrdup0(NULL, line);
+            add_osd_ass_event(obj->osd_track, tmp);
+            talloc_free(tmp);
+        }
+    }
+}
+
 static void update_sub(struct osd_state *osd, struct osd_object *obj)
 {
     struct MPOpts *opts = osd->opts;
@@ -387,6 +425,9 @@ static void update_object(struct osd_state *osd, struct osd_object *obj)
     case OSDTYPE_PROGBAR:
         update_progbar(osd, obj);
         break;
+    case OSDTYPE_EXTERNAL:
+        update_external(osd, obj);
+        break;
     }
 }
 
@@ -405,4 +446,11 @@ void osd_object_get_bitmaps(struct osd_state *osd, struct osd_object *obj,
     mp_ass_render_frame(osd->osd_render, obj->osd_track, 0,
                         &obj->parts_cache, out_imgs);
     talloc_steal(obj, obj->parts_cache);
+}
+
+void osd_object_get_resolution(struct osd_state *osd, struct osd_object *obj,
+                               int *out_w, int *out_h)
+{
+    *out_w = obj->osd_track ? obj->osd_track->PlayResX : 0;
+    *out_h = obj->osd_track ? obj->osd_track->PlayResY : 0;
 }

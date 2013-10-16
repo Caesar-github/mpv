@@ -173,20 +173,44 @@ int m_config_parse_config_file(m_config_t *config, const char *conffile,
                     }
                 }
                 line_pos++;                 /* skip the closing " or ' */
-            } else {
-                for (param_pos = 0; isprint(line[line_pos])
-                        && !isspace(line[line_pos])
-                        && line[line_pos] != '#'; /* NOTHING */) {
-                    param[param_pos++] = line[line_pos++];
-                    if (param_pos >= MAX_PARAM_LEN) {
+                goto param_done;
+            }
+
+            if (line[line_pos] == '%') {
+                char *start = &line[line_pos + 1];
+                char *end = start;
+                unsigned long len = strtoul(start, &end, 10);
+                if (start != end && end[0] == '%') {
+                    if (len >= MAX_PARAM_LEN - 1 ||
+                        strlen(end + 1) < len)
+                    {
                         PRINT_LINENUM;
-                        mp_msg(MSGT_CFGPARSER, MSGL_ERR, "too long parameter\n");
+                        mp_msg(MSGT_CFGPARSER, MSGL_ERR, "bogus %% length\n");
                         ret = -1;
                         errors++;
                         goto nextline;
                     }
+                    param_pos = snprintf(param, sizeof(param), "%.*s",
+                                         (int)len, end + 1);
+                    line_pos += 1 + (end - start) + 1 + len;
+                    goto param_done;
                 }
             }
+
+            for (param_pos = 0; isprint(line[line_pos])
+                    && !isspace(line[line_pos])
+                    && line[line_pos] != '#'; /* NOTHING */) {
+                param[param_pos++] = line[line_pos++];
+                if (param_pos >= MAX_PARAM_LEN) {
+                    PRINT_LINENUM;
+                    mp_msg(MSGT_CFGPARSER, MSGL_ERR, "too long parameter\n");
+                    ret = -1;
+                    errors++;
+                    goto nextline;
+                }
+            }
+
+        param_done:
 
             while (isspace(line[line_pos]))
                 ++line_pos;
@@ -204,8 +228,11 @@ int m_config_parse_config_file(m_config_t *config, const char *conffile,
         bstr bopt = bstr0(opt);
         bstr bparam = bstr0(param);
 
+        if (bopt.len >= 3)
+            bstr_eatstart0(&bopt, "--");
+
         if (profile && bstr_equals0(bopt, "profile-desc")) {
-            m_profile_set_desc(profile, param);
+            m_profile_set_desc(profile, bparam);
             goto nextline;
         }
 
@@ -215,8 +242,8 @@ int m_config_parse_config_file(m_config_t *config, const char *conffile,
         if (tmp < 0) {
             PRINT_LINENUM;
             mp_msg(MSGT_CFGPARSER, MSGL_ERR,
-                   "error parsing option %s=%s: %s\n",
-                   opt, param, m_option_strerror(tmp));
+                   "error parsing option %.*s=%.*s: %s\n",
+                   BSTR_P(bopt), BSTR_P(bparam), m_option_strerror(tmp));
             continue;
         }
 
@@ -228,7 +255,8 @@ int m_config_parse_config_file(m_config_t *config, const char *conffile,
         if (tmp < 0) {
             PRINT_LINENUM;
             mp_msg(MSGT_CFGPARSER, MSGL_ERR,
-                   "setting option %s='%s' failed.\n", opt, param);
+                   "setting option %.*s='%.*s' failed.\n",
+                   BSTR_P(bopt), BSTR_P(bparam));
             continue;
             /* break */
         }
