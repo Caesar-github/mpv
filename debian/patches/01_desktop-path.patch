@@ -1,0 +1,20 @@
+Description: Use absolute paths for (Try)Exec in mpv.desktop
+Origin: vendor
+Debian-Bug: http://bugs.debian.org/728149
+Forwarded: not-needed
+Author: Alessandro Ghedini <ghedo@debian.org>
+Last-Update: 2013-10-30
+
+--- a/etc/mpv.desktop
++++ b/etc/mpv.desktop
+@@ -15,8 +15,8 @@
+ Comment[ru]=Воспроизвести фильмы и музыку
+ Comment[zh]=多媒体播放器
+ Icon=mpv
+-TryExec=mpv
+-Exec=mpv --really-quiet --force-window -- %F
++TryExec=/usr/bin/mpv
++Exec=/usr/bin/mpv --really-quiet --force-window -- %F
+ Terminal=false
+ NoDisplay=true
+ Categories=AudioVideo;Audio;Video;Player;TV;
