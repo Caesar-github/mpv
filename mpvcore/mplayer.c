@@ -185,6 +185,7 @@ static const char av_desync_help_text[] = _(
 "     Download the file instead.\n"
 "- Try to find out whether audio or video is causing this by experimenting\n"
 "  with --no-video and --no-audio.\n"
+"- If you swiched audio or video tracks, try seeking to force synchronization.\n"
 "If none of this helps you, file a bug report.\n\n");
 
 
@@ -240,7 +241,8 @@ static double get_play_end_pts(struct MPContext *mpctx)
     if (opts->play_end.type) {
         return rel_time_to_abs(mpctx, opts->play_end, MP_NOPTS_VALUE);
     } else if (opts->play_length.type) {
-        double start = rel_time_to_abs(mpctx, opts->play_start, 0);
+        double startpts = get_start_time(mpctx);
+        double start = rel_time_to_abs(mpctx, opts->play_start, startpts);
         double length = rel_time_to_abs(mpctx, opts->play_length, -1);
         if (start != -1 && length != -1)
             return start + length;
@@ -4251,6 +4253,8 @@ static void add_subtitle_fonts_from_sources(struct MPContext *mpctx)
 static struct mp_resolve_result *resolve_url(const char *filename,
                                              struct MPOpts *opts)
 {
+    if (!mp_is_url(bstr0(filename)))
+        return NULL;
 #if defined(CONFIG_LIBQUVI) || defined(CONFIG_LIBQUVI9)
     return mp_resolve_quvi(filename, opts);
 #else
