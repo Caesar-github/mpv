@@ -605,7 +605,7 @@ static void vo_x11_decoration(struct vo *vo, int d)
 
     vo_MotifHints = XInternAtom(x11->display, "_MOTIF_WM_HINTS", 0);
     if (vo_MotifHints != None) {
-        if (!d) {
+        if (!x11->got_motif_hints) {
             MotifWmHints *mhints = NULL;
 
             XGetWindowProperty(x11->display, x11->window,
@@ -620,6 +620,7 @@ static void vo_x11_decoration(struct vo *vo, int d)
                 XFree(mhints);
             }
         }
+        x11->got_motif_hints = true;
 
         memset(&vo_MotifWmHints, 0, sizeof(MotifWmHints));
         vo_MotifWmHints.flags =
@@ -667,7 +668,7 @@ void vo_x11_uninit(struct vo *vo)
         XFreeGC(vo->x11->display, x11->f_gc);
     if (x11->vo_gc != None)
         XFreeGC(vo->x11->display, x11->vo_gc);
-    if (x11->window != None) {
+    if (x11->window != None && x11->window != x11->rootwin) {
         XClearWindow(x11->display, x11->window);
         XUnmapWindow(x11->display, x11->window);
 
@@ -1140,6 +1141,8 @@ void vo_x11_config_vo_window(struct vo *vo, XVisualInfo *vis, int x, int y,
     struct vo_x11_state *x11 = vo->x11;
 
     if (opts->WinID >= 0) {
+        if (opts->WinID == 0)
+            x11->window = x11->rootwin;
         XSelectInput(x11->display, opts->WinID, StructureNotifyMask);
         vo_x11_update_geometry(vo);
         x = x11->win_x; y = x11->win_y;
@@ -1373,7 +1376,7 @@ static void vo_x11_update_geometry(struct vo *vo)
     unsigned w, h, dummy_uint;
     int dummy_int;
     Window dummy_win;
-    Window win = vo->opts->WinID >= 0 ? vo->opts->WinID : x11->window;
+    Window win = vo->opts->WinID > 0 ? vo->opts->WinID : x11->window;
     XGetGeometry(x11->display, win, &dummy_win, &dummy_int, &dummy_int,
                  &w, &h, &dummy_int, &dummy_uint);
     if (w <= INT_MAX && h <= INT_MAX) {
@@ -1498,7 +1501,7 @@ static void vo_x11_ontop(struct vo *vo)
 static void vo_x11_border(struct vo *vo)
 {
     vo->opts->border = !vo->opts->border;
-    vo_x11_decoration(vo, vo->opts->border && !vo->x11->fs);
+    vo_x11_decoration(vo, vo->opts->border);
 }
 
 int vo_x11_control(struct vo *vo, int *events, int request, void *arg)
@@ -1543,7 +1546,7 @@ static void xscreensaver_heartbeat(struct vo_x11_state *x11)
     double time = mp_time_sec();
 
     if (x11->display && x11->screensaver_off &&
-        (time - x11->screensaver_time_last) > 30)
+        (time - x11->screensaver_time_last) >= 10)
     {
         x11->screensaver_time_last = time;
 

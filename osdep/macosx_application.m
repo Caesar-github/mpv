@@ -77,6 +77,7 @@ static NSString *escape_loadfile_name(NSString *input)
 @synthesize inputContext = _input_context;
 @synthesize eventsResponder = _events_responder;
 @synthesize menuItems = _menu_items;
+@synthesize input_ready = _input_ready;
 
 - (void)sendEvent:(NSEvent *)event
 {
@@ -94,6 +95,7 @@ static NSString *escape_loadfile_name(NSString *input)
         self.argumentsList = [[[NSMutableArray alloc] init] autorelease];
         self.eventsResponder = [[[EventsResponder alloc] init] autorelease];
         self.willStopOnOpenEvent = NO;
+        self.input_ready = [[[NSCondition alloc] init] autorelease];
 
         [NSEvent addLocalMonitorForEventsMatchingMask:NSKeyDownMask|NSKeyUpMask
                                               handler:^(NSEvent *event) {
@@ -325,6 +327,11 @@ int cocoa_main(mpv_main_fn mpv_main, int argc, char *argv[])
         init_cocoa_application();
         macosx_finder_args_preinit(&argc, &argv);
         pthread_create(&playback_thread_id, NULL, playback_thread, &ctx);
+
+        [mpv_shared_app().input_ready lock];
+        [mpv_shared_app().input_ready wait];
+        [mpv_shared_app().input_ready unlock];
+
         cocoa_run_runloop();
 
         // This should never be reached: cocoa_run_runloop blocks until the
@@ -380,6 +387,12 @@ void cocoa_stop_runloop(void)
 
 void cocoa_set_input_context(struct input_ctx *input_context)
 {
+    if (input_context) {
+        [mpv_shared_app().input_ready lock];
+        [mpv_shared_app().input_ready signal];
+        [mpv_shared_app().input_ready unlock];
+    }
+
     mpv_shared_app().inputContext = input_context;
 }
 
@@ -450,10 +463,15 @@ static bool bundle_started_from_finder(int argc, char **argv)
     bool bundle_detected = [[NSBundle mainBundle] bundleIdentifier];
     int major, minor, bugfix;
     get_system_version(&major, &minor, &bugfix);
+    bool without_psn = bundle_detected && argc==1;
+    bool with_psn    = bundle_detected && argc==2 && is_psn_argument(argv[1]);
+
     if ((major == 10) && (minor >= 9)) {
-        return bundle_detected && argc==1;
+        // Looks like opening quarantined files from the finder inserts the
+        // -psn argument while normal files do not. Hurr.
+        return with_psn || without_psn;
     } else {
-        return bundle_detected && argc==2 && is_psn_argument(argv[1]);
+        return with_psn;
     }
 }
 
