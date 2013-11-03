@@ -1,8 +1,9 @@
-mpv (0.2.2-1) UNRELEASED; urgency=low
+mpv (0.2.2-1) unstable; urgency=low
 
   * New upstream release
+  * Use absolute paths for (Try)Exec in mpv.desktop (Closes: #728149)
 
- -- Alessandro Ghedini <ghedo@debian.org>  Sat, 02 Nov 2013 23:09:22 +0100
+ -- Alessandro Ghedini <ghedo@debian.org>  Sun, 03 Nov 2013 12:01:35 +0100
 
 mpv (0.2.1-1) unstable; urgency=low
 
