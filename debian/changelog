@@ -1,3 +1,9 @@
+mpv (0.2.3-1) UNRELEASED; urgency=low
+
+  * New upstream release
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Fri, 08 Nov 2013 10:48:56 +0100
+
 mpv (0.2.2-1) unstable; urgency=low
 
   * New upstream release
