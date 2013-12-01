@@ -336,6 +336,47 @@ bool ca_change_format(struct ao *ao, AudioStreamID stream,
     return format_set;
 }
 
+static const int speaker_map[][2] = {
+    { kAudioChannelLabel_Left,                 MP_SPEAKER_ID_FL   },
+    { kAudioChannelLabel_Right,                MP_SPEAKER_ID_FR   },
+    { kAudioChannelLabel_Center,               MP_SPEAKER_ID_FC   },
+    { kAudioChannelLabel_LFEScreen,            MP_SPEAKER_ID_LFE  },
+    { kAudioChannelLabel_LeftSurround,         MP_SPEAKER_ID_BL   },
+    { kAudioChannelLabel_RightSurround,        MP_SPEAKER_ID_BR   },
+    { kAudioChannelLabel_LeftCenter,           MP_SPEAKER_ID_FLC  },
+    { kAudioChannelLabel_RightCenter,          MP_SPEAKER_ID_FRC  },
+    { kAudioChannelLabel_CenterSurround,       MP_SPEAKER_ID_BC   },
+    { kAudioChannelLabel_LeftSurroundDirect,   MP_SPEAKER_ID_SL   },
+    { kAudioChannelLabel_RightSurroundDirect,  MP_SPEAKER_ID_SR   },
+    { kAudioChannelLabel_TopCenterSurround,    MP_SPEAKER_ID_TC   },
+    { kAudioChannelLabel_VerticalHeightLeft,   MP_SPEAKER_ID_TFL  },
+    { kAudioChannelLabel_VerticalHeightCenter, MP_SPEAKER_ID_TFC  },
+    { kAudioChannelLabel_VerticalHeightRight,  MP_SPEAKER_ID_TFR  },
+    { kAudioChannelLabel_TopBackLeft,          MP_SPEAKER_ID_TBL  },
+    { kAudioChannelLabel_TopBackCenter,        MP_SPEAKER_ID_TBC  },
+    { kAudioChannelLabel_TopBackRight,         MP_SPEAKER_ID_TBR  },
+
+    // unofficial extensions
+    { kAudioChannelLabel_RearSurroundLeft,     MP_SPEAKER_ID_SDL  },
+    { kAudioChannelLabel_RearSurroundRight,    MP_SPEAKER_ID_SDR  },
+    { kAudioChannelLabel_LeftWide,             MP_SPEAKER_ID_WL   },
+    { kAudioChannelLabel_RightWide,            MP_SPEAKER_ID_WR   },
+    { kAudioChannelLabel_LFE2,                 MP_SPEAKER_ID_LFE2 },
+
+    { kAudioChannelLabel_HeadphonesLeft,       MP_SPEAKER_ID_DL   },
+    { kAudioChannelLabel_HeadphonesRight,      MP_SPEAKER_ID_DR   },
+
+    { kAudioChannelLabel_Unknown,              -1 },
+};
+
+static int ca_label_to_mp_speaker_id(AudioChannelLabel label)
+{
+    for (int i = 0; speaker_map[i][0] != kAudioChannelLabel_Unknown; i++)
+        if (speaker_map[i][0] == label)
+            return speaker_map[i][1];
+    return -1;
+}
+
 static bool ca_bitmap_from_ch_desc(struct ao *ao, AudioChannelLayout *layout,
                                    uint32_t *bitmap)
 {
@@ -355,14 +396,13 @@ static bool ca_bitmap_from_ch_desc(struct ao *ao, AudioChannelLayout *layout,
 
     for (int j=0; j < ch_num && all_channels_valid; j++) {
         AudioChannelLabel label = layout->mChannelDescriptions[j].mChannelLabel;
-        if (label == kAudioChannelLabel_UseCoordinates ||
-            label == kAudioChannelLabel_Unknown ||
-            label > kAudioChannelLabel_TopBackRight) {
+        const int mp_speaker_id = ca_label_to_mp_speaker_id(label);
+        if (mp_speaker_id < 0) {
             MP_VERBOSE(ao, "channel label=%d unusable to build channel "
                            "bitmap, skipping layout\n", label);
             all_channels_valid = false;
         } else {
-            *bitmap |= 1ULL << (label - 1);
+            *bitmap |= 1ULL << mp_speaker_id;
         }
     }
 

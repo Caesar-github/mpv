@@ -263,6 +263,8 @@ struct gl_functions gl_functions[] = {
             DEF_FN(UniformMatrix2fv),
             DEF_FN(UniformMatrix3fv),
             DEF_FN(TexImage3D),
+            // Added in OpenGL 1.4, but vo_opengl_old doesn't need it
+            DEF_FN(BlendFuncSeparate),
             {0},
         },
     },
@@ -944,7 +946,7 @@ bool mpgl_config_window(struct MPGLContext *ctx, int gl_caps, uint32_t d_width,
 
         MP_WARN(ctx->vo, "Missing OpenGL features:");
         list_features(missing, ctx->vo->log, MSGL_WARN, false);
-        if (missing & MPGL_CAP_NO_SW) {
+        if (missing == MPGL_CAP_NO_SW) {
             MP_WARN(ctx->vo, "Rejecting suspected software OpenGL renderer.\n");
         } else if ((missing & MPGL_CAP_GL21) &&
                    (ctx->gl->mpgl_caps & MPGL_CAP_GL_LEGACY))

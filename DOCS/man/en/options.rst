@@ -55,6 +55,8 @@ OPTIONS
     DTS-HD tracks can be sent over HDMI but not over the original
     coax/toslink S/PDIF system.
 
+    Note: this feature is broken.
+
     ``--dtshd`` and ``--no-dtshd`` are deprecated aliases.
 
 ``--af=<filter1[=parameter1:parameter2:...],filter2,...>``
@@ -2596,7 +2598,7 @@ OPTIONS
     to pad the video to screen if video and screen aspect ratios are different.
     ``--video-align-y=-1`` would move the video to the top of the screen
     (leaving a border only on the bottom), a value of ``0`` centers it
-    (default), and a value of ``-1`` would put the video at the bottom of the
+    (default), and a value of ``1`` would put the video at the bottom of the
     screen.
 
     If video and screen aspect match perfectly, these options do nothing.
