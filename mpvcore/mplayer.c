@@ -2278,6 +2278,7 @@ static int fill_audio_out_buffers(struct MPContext *mpctx, double endpts)
     bool audio_eof = false;
     bool partial_fill = false;
     sh_audio_t * const sh_audio = mpctx->sh_audio;
+    // Can't adjust the start of audio with spdif pass-through.
     bool modifiable_audio_format = !(ao->format & AF_FORMAT_SPECIAL_MASK);
     int unitsize = ao->channels.num * af_fmt2bits(ao->format) / 8;
 
@@ -2316,7 +2317,7 @@ static int fill_audio_out_buffers(struct MPContext *mpctx, double endpts)
             audio_eof = true;
     }
 
-    if (endpts != MP_NOPTS_VALUE && modifiable_audio_format) {
+    if (endpts != MP_NOPTS_VALUE) {
         double bytes = (endpts - written_audio_pts(mpctx) + mpctx->audio_delay)
                        * ao->bps / opts->playback_speed;
         if (playsize > bytes) {
@@ -2481,6 +2482,7 @@ err_out:
 no_video:
     uninit_player(mpctx, INITIALIZED_VCODEC | (opts->force_vo ? 0 : INITIALIZED_VO));
     cleanup_demux_stream(mpctx, STREAM_VIDEO);
+    mpctx->current_track[STREAM_VIDEO] = NULL;
     handle_force_window(mpctx, true);
     mp_tmsg(MSGT_CPLAYER, MSGL_INFO, "Video: no video\n");
     return 0;
@@ -2992,6 +2994,15 @@ static int seek(MPContext *mpctx, struct seek_params seek,
 
     if (mpctx->stop_play == AT_END_OF_FILE)
         mpctx->stop_play = KEEP_PLAYING;
+
+    double hr_seek_offset = opts->hr_seek_demuxer_offset;
+    // Always try to compensate for possibly bad demuxers in "special"
+    // situations where we need more robustness from the hr-seek code, even
+    // if the user doesn't use --hr-seek-demuxer-offset.
+    // The value is arbitrary, but should be "good enough" in most situations.
+    if (seek.exact > 1)
+        hr_seek_offset = MPMAX(hr_seek_offset, 0.5); // arbitrary
+
     bool hr_seek = mpctx->demuxer->accurate_seek && opts->correct_pts;
     hr_seek &= seek.exact >= 0 && seek.type != MPSEEK_FACTOR;
     hr_seek &= (opts->hr_seek == 0 && seek.type == MPSEEK_ABSOLUTE) ||
@@ -3054,7 +3065,7 @@ static int seek(MPContext *mpctx, struct seek_params seek,
         demuxer_style |= SEEK_SUBPREROLL;
 
     if (hr_seek)
-        demuxer_amount -= opts->hr_seek_demuxer_offset;
+        demuxer_amount -= hr_seek_offset;
     int seekresult = demux_seek(mpctx->demuxer, demuxer_amount, demuxer_style);
     if (seekresult == 0) {
         if (need_reset) {
@@ -3422,7 +3433,9 @@ static void handle_pause_on_low_cache(struct MPContext *mpctx)
                 unpause_player(mpctx);
         }
     } else {
-        if (cache >= 0 && cache <= opts->stream_cache_pause && !idle) {
+        if (cache >= 0 && cache <= opts->stream_cache_pause && !idle &&
+            opts->stream_cache_pause < opts->stream_cache_min_percent)
+        {
             bool prev_paused_user = opts->pause;
             pause_player(mpctx);
             mpctx->paused_for_cache = true;
@@ -3512,14 +3525,14 @@ static void handle_backstep(struct MPContext *mpctx)
     if (demuxer_ok && mpctx->sh_video && current_pts != MP_NOPTS_VALUE) {
         double seek_pts = find_previous_pts(mpctx, current_pts);
         if (seek_pts != MP_NOPTS_VALUE) {
-            queue_seek(mpctx, MPSEEK_ABSOLUTE, seek_pts, 1);
+            queue_seek(mpctx, MPSEEK_ABSOLUTE, seek_pts, 2);
         } else {
             double last = get_last_frame_pts(mpctx);
             if (last != MP_NOPTS_VALUE && last >= current_pts &&
                 mpctx->backstep_start_seek_ts != mpctx->vo_pts_history_seek_ts)
             {
                 mp_msg(MSGT_CPLAYER, MSGL_ERR, "Backstep failed.\n");
-                queue_seek(mpctx, MPSEEK_ABSOLUTE, current_pts, 1);
+                queue_seek(mpctx, MPSEEK_ABSOLUTE, current_pts, 2);
             } else if (!mpctx->hrseek_active) {
                 mp_msg(MSGT_CPLAYER, MSGL_V, "Start backstep indexing.\n");
                 // Force it to index the video up until current_pts.
@@ -4674,7 +4687,9 @@ goto_reopen_demuxer: ;
 #ifdef CONFIG_DVBIN
     if (mpctx->dvbin_reopen) {
         mpctx->stop_play = 0;
-        uninit_player(mpctx, INITIALIZED_ALL - (INITIALIZED_STREAM | INITIALIZED_GETCH2 | (opts->fixed_vo ? INITIALIZED_VO : 0)));
+        uninit_player(mpctx, INITIALIZED_ALL -
+            (INITIALIZED_PLAYBACK | INITIALIZED_STREAM | INITIALIZED_GETCH2 |
+             (opts->fixed_vo ? INITIALIZED_VO : 0)));
         mpctx->dvbin_reopen = 0;
         goto goto_reopen_demuxer;
     }
