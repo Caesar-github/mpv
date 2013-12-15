@@ -1,3 +1,11 @@
+mpv (0.2.4-2) unstable; urgency=medium
+
+  * Use /etc/mpv instead of /usr/etc/mpv for configuration (Closes: #732214)
+    - Add 02_fix-config-path.patch to update the manpage regarding
+      config directories
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Sun, 15 Dec 2013 19:31:51 +0100
+
 mpv (0.2.4-1) unstable; urgency=low
 
   * New upstream release
