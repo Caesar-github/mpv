@@ -1,0 +1,28 @@
+Description: System-wide config directory is /etc/mpv
+Origin: vendor
+Bug-Debian: http://bugs.debian.org/732214
+Forwarded: not-needed
+Author: Alessandro Ghedini <ghedo@debian.org>
+Last-Update: 2013-12-15
+
+--- a/DOCS/man/en/mpv.rst
++++ b/DOCS/man/en/mpv.rst
+@@ -331,8 +331,7 @@
+ 
+ You can put all of the options in configuration files which will be read every
+ time mpv is run. The system-wide configuration file 'mpv.conf' is in your
+-configuration directory (e.g. ``/etc/mpv`` or ``/usr/local/etc/mpv``), the
+-user-specific one is ``~/.mpv/config``.
++configuration directory (``/etc/mpv``), the user-specific one is ``~/.mpv/config``.
+ User-specific options override system-wide options and options given on the
+ command line override either. The syntax of the configuration files is
+ ``option=<value>``; everything after a *#* is considered a comment. Options
+@@ -575,7 +574,7 @@
+ FILES
+ =====
+ 
+-``/usr/local/etc/mpv/mpv.conf``
++``/etc/mpv/mpv.conf``
+     mpv system-wide settings (depends on ``--prefix`` passed to configure)
+ 
+ ``~/.mpv/config``
