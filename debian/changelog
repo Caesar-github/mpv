@@ -1,3 +1,10 @@
+mpv (0.3.0-1) UNRELEASED; urgency=medium
+
+  * New upstream release
+    - Fix --vf=expand example in manpage (Closes: #732271)
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Sun, 29 Dec 2013 18:08:47 +0100
+
 mpv (0.2.4-2) unstable; urgency=medium
 
   * Use /etc/mpv instead of /usr/etc/mpv for configuration (Closes: #732214)
