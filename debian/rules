@@ -4,7 +4,17 @@
 	dh $@
 
 override_dh_auto_configure:
-	./configure --prefix=/usr --confdir=/etc/mpv --enable-sdl2
+	python ./waf --nocache configure \
+		     --prefix=/usr       \
+		     --confdir=/etc/mpv  \
+		     --enable-sdl2
+
+override_dh_auto_build:
+	python ./waf --nocache build
+
+override_dh_auto_install:
+	python ./waf --nocache install --destdir=debian/mpv
 
 override_dh_auto_clean:
-	test -f config.mak && dh_auto_clean || true
+	python ./waf --nocache distclean
+	find . -name "*.pyc" -delete
