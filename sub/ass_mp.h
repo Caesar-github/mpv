@@ -36,15 +36,16 @@
 // m_color argument
 #define MP_ASS_COLOR(c) MP_ASS_RGBA((c).r, (c).g, (c).b, (c).a)
 
-#ifdef CONFIG_ASS
+#if HAVE_LIBASS
 #include <ass/ass.h>
 #include <ass/ass_types.h>
 
 struct MPOpts;
+struct mpv_global;
 struct mp_osd_res;
 struct osd_style_opts;
 
-void mp_ass_set_style(ASS_Style *style, int res_y,
+void mp_ass_set_style(ASS_Style *style, double res_y,
                       const struct osd_style_opts *opts);
 
 void mp_ass_add_default_styles(ASS_Track *track, struct MPOpts *opts);
@@ -54,13 +55,14 @@ ASS_Track *mp_ass_default_track(ASS_Library *library, struct MPOpts *opts);
 struct MPOpts;
 void mp_ass_configure(ASS_Renderer *priv, struct MPOpts *opts,
                       struct mp_osd_res *dim);
-void mp_ass_configure_fonts(ASS_Renderer *priv, struct osd_style_opts *opts);
-ASS_Library *mp_ass_init(struct MPOpts *opts);
+void mp_ass_configure_fonts(ASS_Renderer *priv, struct osd_style_opts *opts,
+                            struct mpv_global *global, struct mp_log *log);
+ASS_Library *mp_ass_init(struct mpv_global *global, struct mp_log *log);
 
 struct sub_bitmap;
 struct sub_bitmaps;
 void mp_ass_render_frame(ASS_Renderer *renderer, ASS_Track *track, double time,
                          struct sub_bitmap **parts, struct sub_bitmaps *res);
 
-#endif                          /* CONFIG_ASS */
+#endif                          /* HAVE_LIBASS */
 #endif                          /* MPLAYER_ASS_MP_H */

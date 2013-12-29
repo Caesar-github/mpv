@@ -22,7 +22,8 @@
 #include <inttypes.h>
 
 #include "config.h"
-#include "mpvcore/mp_msg.h"
+#include "common/msg.h"
+#include "options/m_option.h"
 
 #include "video/img_format.h"
 #include "video/mp_image.h"
@@ -65,24 +66,26 @@ static void rotate(unsigned char* dst,unsigned char* src,int dststride,int srcst
     }
 }
 
-static int reconfig(struct vf_instance *vf, struct mp_image_params *p, int flags)
+static int reconfig(struct vf_instance *vf, struct mp_image_params *in,
+                    struct mp_image_params *out)
 {
+    *out = *in;
     if (vf->priv->direction & 4) {
-        if (p->w < p->h)
+        if (in->w < in->h)
             vf->priv->direction &= 3;
     }
     if (vf->priv->direction & 4)
-        return vf_next_reconfig(vf, p, flags);
-    struct mp_imgfmt_desc desc = mp_imgfmt_get_desc(p->imgfmt);
-    int a_w = MP_ALIGN_DOWN(p->w, desc.align_x);
-    int a_h = MP_ALIGN_DOWN(p->h, desc.align_y);
-    vf_rescale_dsize(&p->d_w, &p->d_h, p->w, p->h, a_w, a_h);
-    p->w = a_h;
-    p->h = a_w;
-    int t = p->d_w;
-    p->d_w = p->d_h;
-    p->d_h = t;
-    return vf_next_reconfig(vf, p, flags);
+        return 0;
+    struct mp_imgfmt_desc desc = mp_imgfmt_get_desc(in->imgfmt);
+    int a_w = MP_ALIGN_DOWN(in->w, desc.align_x);
+    int a_h = MP_ALIGN_DOWN(in->h, desc.align_y);
+    vf_rescale_dsize(&out->d_w, &out->d_h, in->w, in->h, a_w, a_h);
+    out->w = a_h;
+    out->h = a_w;
+    int t = out->d_w;
+    out->d_w = out->d_h;
+    out->d_h = t;
+    return 0;
 }
 
 static struct mp_image *filter(struct vf_instance *vf, struct mp_image *mpi)
@@ -115,22 +118,23 @@ static int query_format(struct vf_instance *vf, unsigned int fmt)
     return vf_next_query_format(vf, fmt);
 }
 
-static int vf_open(vf_instance_t *vf, char *args){
+static int vf_open(vf_instance_t *vf){
     vf->reconfig=reconfig;
     vf->filter=filter;
     vf->query_format=query_format;
-    vf->priv=malloc(sizeof(struct vf_priv_s));
-    vf->priv->direction=args?atoi(args):0;
     return 1;
 }
 
+#define OPT_BASE_STRUCT struct vf_priv_s
 const vf_info_t vf_info_rotate = {
-    "rotate",
-    "rotate",
-    "A'rpi",
-    "",
-    vf_open,
-    NULL
+    .description = "rotate",
+    .name = "rotate",
+    .open = vf_open,
+    .priv_size = sizeof(struct vf_priv_s),
+    .options = (const struct m_option[]){
+        OPT_INTRANGE("direction", direction, 0, 0, 7),
+        {0}
+    },
 };
 
 //===========================================================================//

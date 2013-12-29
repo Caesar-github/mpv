@@ -88,22 +88,24 @@ typedef struct af_surround_s
 // Initialization and runtime control
 static int control(struct af_instance* af, int cmd, void* arg)
 {
-  af_surround_t *s = af->setup;
+  af_surround_t *s = af->priv;
   switch(cmd){
   case AF_CONTROL_REINIT:{
+    struct mp_audio *in = arg;
     float fc;
-    mp_audio_copy_config(af->data, (struct mp_audio*)arg);
-    mp_audio_set_channels_old(af->data, ((struct mp_audio*)arg)->nch*2);
-    mp_audio_set_format(af->data, AF_FORMAT_FLOAT_NE);
-
-    if (af->data->nch != 4){
-      mp_msg(MSGT_AFILTER, MSGL_ERR, "[surround] Only stereo input is supported.\n");
-      return AF_DETACH;
+    if (!mp_chmap_is_stereo(&in->channels)) {
+        MP_ERR(af, "[surround] Only stereo input is supported.\n");
+        return AF_DETACH;
     }
+
+    mp_audio_set_format(in, AF_FORMAT_FLOAT);
+    mp_audio_copy_config(af->data, in);
+    mp_audio_set_channels_old(af->data, in->nch * 2);
+
     // Surround filer coefficients
     fc = 2.0 * 7000.0/(float)af->data->rate;
     if (-1 == af_filter_design_fir(L, s->w, &fc, LP|HAMMING, 0)){
-      mp_msg(MSGT_AFILTER, MSGL_ERR, "[surround] Unable to design low-pass filter.\n");
+      MP_ERR(af, "[surround] Unable to design low-pass filter.\n");
       return AF_ERROR;
     }
 
@@ -114,7 +116,7 @@ static int control(struct af_instance* af, int cmd, void* arg)
     s->dl = calloc(LD,af->data->bps);
     s->dr = calloc(LD,af->data->bps);
     if((NULL == s->dl) || (NULL == s->dr))
-      mp_msg(MSGT_AFILTER, MSGL_FATAL, "[delay] Out of memory\n");
+      MP_FATAL(af, "[delay] Out of memory\n");
 
     // Initialize delay queue index
     if(AF_OK != af_from_ms(1, &s->d, &s->wi, af->data->rate, 0.0, 1000.0))
@@ -122,35 +124,10 @@ static int control(struct af_instance* af, int cmd, void* arg)
 //    printf("%i\n",s->wi);
     s->ri = 0;
 
-    if((af->data->format != ((struct mp_audio*)arg)->format) ||
-       (af->data->bps    != ((struct mp_audio*)arg)->bps)){
-      mp_audio_set_format((struct mp_audio*)arg, af->data->format);
-      return AF_FALSE;
-    }
-    return AF_OK;
-  }
-  case AF_CONTROL_COMMAND_LINE:{
-    float d = 0;
-    sscanf((char*)arg,"%f",&d);
-    if ((d < 0) || (d > 1000)){
-      mp_msg(MSGT_AFILTER, MSGL_ERR, "[surround] Invalid delay time, valid time values"
-	     " are 0ms to 1000ms current value is %0.3f ms\n",d);
-      return AF_ERROR;
-    }
-    s->d = d;
     return AF_OK;
   }
   }
   return AF_UNKNOWN;
-}
-
-// Deallocate memory
-static void uninit(struct af_instance* af)
-{
-  if(af->data)
-    free(af->data->audio);
-  free(af->data);
-  free(af->setup);
 }
 
 // The beginnings of an active matrix...
@@ -165,20 +142,19 @@ static float steering_matrix[][12] = {
 //static int amp_L = 0, amp_R = 0, amp_C = 0, amp_S = 0;
 
 // Filter data through filter
-static struct mp_audio* play(struct af_instance* af, struct mp_audio* data){
-  af_surround_t* s   = (af_surround_t*)af->setup;
+static int filter(struct af_instance* af, struct mp_audio* data, int flags){
+  af_surround_t* s   = (af_surround_t*)af->priv;
   float*	 m   = steering_matrix[0];
-  float*     	 in  = data->audio; 	// Input audio data
+  float*     	 in  = data->planes[0]; 	// Input audio data
   float*     	 out = NULL;		// Output audio data
-  float*	 end = in + data->len / sizeof(float); // Loop end
+  float*	 end = in + data->samples * data->nch;
   int 		 i   = s->i;	// Filter queue index
   int 		 ri  = s->ri;	// Read index for delay queue
   int 		 wi  = s->wi;	// Write index for delay queue
 
-  if (AF_OK != RESIZE_LOCAL_BUFFER(af, data))
-    return NULL;
+  mp_audio_realloc_min(af->data, data->samples);
 
-  out = af->data->audio;
+  out = af->data->planes[0];
 
   while(in < end){
     /* Dominance:
@@ -240,32 +216,28 @@ static struct mp_audio* play(struct af_instance* af, struct mp_audio* data){
   s->i  = i; s->ri = ri; s->wi = wi;
 
   // Set output data
-  data->audio = af->data->audio;
-  data->len   *= 2;
+  data->planes[0] = af->data->planes[0];
   mp_audio_set_channels_old(data, af->data->nch);
 
-  return data;
+  return 0;
 }
 
 static int af_open(struct af_instance* af){
   af->control=control;
-  af->uninit=uninit;
-  af->play=play;
-  af->mul=2;
-  af->data=calloc(1,sizeof(struct mp_audio));
-  af->setup=calloc(1,sizeof(af_surround_t));
-  if(af->data == NULL || af->setup == NULL)
-    return AF_ERROR;
-  ((af_surround_t*)af->setup)->d = 20;
+  af->filter=filter;
   return AF_OK;
 }
 
+#define OPT_BASE_STRUCT af_surround_t
 struct af_info af_info_surround =
 {
-        "Surround decoder filter",
-        "surround",
-        "Steve Davies <steve@daviesfam.org>",
-        "",
-        AF_FLAGS_NOT_REENTRANT,
-        af_open
+    .info = "Surround decoder filter",
+    .name = "surround",
+    .flags = AF_FLAGS_NOT_REENTRANT,
+    .open = af_open,
+    .priv_size = sizeof(af_surround_t),
+    .options = (const struct m_option[]) {
+        OPT_FLOATRANGE("d", d, 0, 0, 1000, OPTDEF_FLOAT(20.0)),
+        {0}
+    },
 };

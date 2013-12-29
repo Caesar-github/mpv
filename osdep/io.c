@@ -18,7 +18,28 @@
  * with mplayer2.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <unistd.h>
+
+#include "talloc.h"
+
 #include "config.h"
+#include "osdep/io.h"
+
+// Set the CLOEXEC flag on the given fd.
+// On error, false is returned (and errno set).
+bool mp_set_cloexec(int fd)
+{
+#if defined(FD_CLOEXEC) && defined(F_SETFD)
+    if (fd >= 0) {
+        int flags = fcntl(fd, F_GETFD);
+        if (flags == -1)
+            return false;
+        if (fcntl(fd, F_SETFD, flags | FD_CLOEXEC) == -1)
+            return false;
+    }
+#endif
+    return true;
+}
 
 #ifdef _WIN32
 
@@ -26,9 +47,6 @@
 #include <wchar.h>
 #include <stdio.h>
 #include <stddef.h>
-
-#include "osdep/io.h"
-#include "talloc.h"
 
 //copied and modified from libav
 //http://git.libav.org/?p=libav.git;a=blob;f=libavformat/os_support.c;h=a0fcd6c9ba2be4b0dbcc476f6c53587345cc1152;hb=HEADl30
@@ -59,12 +77,7 @@ char *mp_to_utf8(void *talloc_ctx, const wchar_t *s)
 
 #include <io.h>
 #include <fcntl.h>
-
-#ifdef HAVE_PTHREADS
 #include <pthread.h>
-#endif
-
-#include "mpvcore/mp_talloc.h"
 
 //http://git.libav.org/?p=libav.git;a=blob;f=cmdutils.c;h=ade3f10ce2fc030e32e375a85fbd06c26d43a433#l161
 
@@ -300,12 +313,8 @@ static void init_getenv(void)
 
 char *mp_getenv(const char *name)
 {
-#ifdef HAVE_PTHREADS
     static pthread_once_t once_init_getenv = PTHREAD_ONCE_INIT;
     pthread_once(&once_init_getenv, init_getenv);
-#else
-    init_getenv();
-#endif
     // Copied from musl, http://git.musl-libc.org/cgit/musl/tree/COPYRIGHT
     // Copyright © 2005-2013 Rich Felker, standard MIT license
     int i;

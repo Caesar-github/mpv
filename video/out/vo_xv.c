@@ -3,6 +3,8 @@
  *
  * This file is part of MPlayer.
  *
+ * Original author: Gerd Knorr <kraxel@goldbach.in-berlin.de>
+ *
  * MPlayer is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
@@ -31,7 +33,8 @@
 
 #include "config.h"
 
-#ifdef HAVE_SHM
+#if HAVE_SHM && HAVE_XEXT
+#include <sys/types.h>
 #include <sys/ipc.h>
 #include <sys/shm.h>
 #include <X11/extensions/XShm.h>
@@ -41,27 +44,20 @@
 #include <X11/extensions/Xv.h>
 #include <X11/extensions/Xvlib.h>
 
-#include "mpvcore/options.h"
+#include "options/options.h"
 #include "talloc.h"
-#include "mpvcore/mp_msg.h"
+#include "common/msg.h"
 #include "vo.h"
 #include "video/vfcap.h"
 #include "video/mp_image.h"
 #include "video/img_fourcc.h"
 #include "x11_common.h"
 #include "video/memcpy_pic.h"
-#include "sub/sub.h"
+#include "sub/osd.h"
 #include "sub/draw_bmp.h"
 #include "video/csputils.h"
-#include "mpvcore/m_option.h"
+#include "options/m_option.h"
 #include "osdep/timer.h"
-
-static const vo_info_t info = {
-    "X11/Xv",
-    "xv",
-    "Gerd Knorr <kraxel@goldbach.in-berlin.de> and others",
-    ""
-};
 
 #define CK_METHOD_NONE       0 // no colorkey drawing
 #define CK_METHOD_BACKGROUND 1 // set colorkey as window background
@@ -96,7 +92,7 @@ struct xvctx {
     struct mp_rect dst_rect;
     uint32_t max_width, max_height; // zero means: not set
     int Shmem_Flag;
-#ifdef HAVE_SHM
+#if HAVE_SHM && HAVE_XEXT
     XShmSegmentInfo Shminfo[2];
     int Shm_Warned_Slow;
 #endif
@@ -495,7 +491,7 @@ static bool allocate_xvimage(struct vo *vo, int foo)
     struct vo_x11_state *x11 = vo->x11;
     // align it for faster OSD rendering (draw_bmp.c swscale usage)
     int aligned_w = FFALIGN(ctx->image_width, 32);
-#ifdef HAVE_SHM
+#if HAVE_SHM && HAVE_XEXT
     if (x11->display_is_local && XShmQueryExtension(x11->display)) {
         ctx->Shmem_Flag = 1;
         x11->ShmCompletionEvent = XShmGetEventBase(x11->display)
@@ -549,7 +545,7 @@ static bool allocate_xvimage(struct vo *vo, int foo)
 static void deallocate_xvimage(struct vo *vo, int foo)
 {
     struct xvctx *ctx = vo->priv;
-#ifdef HAVE_SHM
+#if HAVE_SHM && HAVE_XEXT
     if (ctx->Shmem_Flag) {
         XShmDetach(vo->x11->display, &ctx->Shminfo[foo]);
         shmdt(ctx->Shminfo[foo].shmaddr);
@@ -562,7 +558,7 @@ static void deallocate_xvimage(struct vo *vo, int foo)
         XFree(ctx->xvimage[foo]);
 
     ctx->xvimage[foo] = NULL;
-#ifdef HAVE_SHM
+#if HAVE_SHM && HAVE_XEXT
     ctx->Shminfo[foo] = (XShmSegmentInfo){0};
 #endif
 
@@ -578,7 +574,7 @@ static inline void put_xvimage(struct vo *vo, XvImage *xvi)
     struct mp_rect *dst = &ctx->dst_rect;
     int dw = dst->x1 - dst->x0, dh = dst->y1 - dst->y0;
     int sw = src->x1 - src->x0, sh = src->y1 - src->y0;
-#ifdef HAVE_SHM
+#if HAVE_SHM && HAVE_XEXT
     if (ctx->Shmem_Flag) {
         XvShmPutImage(x11->display, ctx->xv_port, x11->window, x11->vo_gc, xvi,
                       src->x0, src->y0, sw, sh,
@@ -625,7 +621,6 @@ static void draw_osd(struct vo *vo, struct osd_state *osd)
         .w = ctx->image_width,
         .h = ctx->image_height,
         .display_par = 1.0 / vo->aspdat.par,
-        .video_par = vo->aspdat.par,
     };
 
     osd_draw_on_image(osd, res, osd->vo_pts, 0, &img);
@@ -633,7 +628,7 @@ static void draw_osd(struct vo *vo, struct osd_state *osd)
 
 static void wait_for_completion(struct vo *vo, int max_outstanding)
 {
-#ifdef HAVE_SHM
+#if HAVE_SHM && HAVE_XEXT
     struct xvctx *ctx = vo->priv;
     struct vo_x11_state *x11 = vo->x11;
     if (ctx->Shmem_Flag) {
@@ -896,7 +891,8 @@ static int control(struct vo *vo, uint32_t request, void *data)
 #define OPT_BASE_STRUCT struct xvctx
 
 const struct vo_driver video_out_xv = {
-    .info = &info,
+    .description = "X11/Xv",
+    .name = "xv",
     .preinit = preinit,
     .query_format = query_format,
     .config = config,

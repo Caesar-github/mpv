@@ -1,6 +1,8 @@
 /*
  * This file is part of MPlayer.
  *
+ * Original author: Aaron Holtzman <aholtzma@ess.engr.uvic.ca>
+ *
  * MPlayer is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
@@ -38,20 +40,20 @@
 
 #include "x11_common.h"
 
-#ifdef HAVE_SHM
+#if HAVE_SHM
 #include <sys/ipc.h>
 #include <sys/shm.h>
 #include <X11/extensions/XShm.h>
 #endif
 
-#include "sub/sub.h"
+#include "sub/osd.h"
 #include "sub/draw_bmp.h"
 
 #include "video/sws_utils.h"
 #include "video/fmt-conversion.h"
 
-#include "mpvcore/mp_msg.h"
-#include "mpvcore/options.h"
+#include "common/msg.h"
+#include "options/options.h"
 #include "osdep/timer.h"
 
 extern int sws_flags;
@@ -92,7 +94,7 @@ struct priv {
     int num_buffers;
 
     int Shmem_Flag;
-#ifdef HAVE_SHM
+#if HAVE_SHM
     int Shm_Warned_Slow;
 
     XShmSegmentInfo Shminfo[2];
@@ -155,7 +157,7 @@ static int find_depth_from_visuals(struct vo *vo, Visual ** visual_return)
 static void getMyXImage(struct priv *p, int foo)
 {
     struct vo *vo = p->vo;
-#ifdef HAVE_SHM
+#if HAVE_SHM && HAVE_XEXT
     if (vo->x11->display_is_local && XShmQueryExtension(vo->x11->display)) {
         p->Shmem_Flag = 1;
         vo->x11->ShmCompletionEvent = XShmGetEventBase(vo->x11->display)
@@ -219,7 +221,7 @@ shmemerror:
     memset(p->myximage[foo]->data, 0, p->myximage[foo]->bytes_per_line
                                       * p->image_height);
     p->ImageData[foo] = p->myximage[foo]->data;
-#ifdef HAVE_SHM
+#if HAVE_SHM && HAVE_XEXT
 }
 #endif
 }
@@ -227,7 +229,7 @@ shmemerror:
 static void freeMyXImage(struct priv *p, int foo)
 {
     struct vo *vo = p->vo;
-#ifdef HAVE_SHM
+#if HAVE_SHM && HAVE_XEXT
     if (p->Shmem_Flag) {
         XShmDetach(vo->x11->display, &p->Shminfo[foo]);
         XDestroyImage(p->myximage[foo]);
@@ -395,7 +397,7 @@ static void Display_Image(struct priv *p, XImage *myximage)
 
     XImage *x_image = p->myximage[p->current_buf];
 
-#ifdef HAVE_SHM
+#if HAVE_SHM && HAVE_XEXT
     if (p->Shmem_Flag) {
         XShmPutImage(vo->x11->display, vo->x11->window, vo->x11->vo_gc, x_image,
                      0, 0, p->dst.x0, p->dst.y0, p->dst_w, p->dst_h,
@@ -441,7 +443,7 @@ static mp_image_t *get_screenshot(struct vo *vo)
 
 static void wait_for_completion(struct vo *vo, int max_outstanding)
 {
-#ifdef HAVE_SHM
+#if HAVE_SHM && HAVE_XEXT
     struct priv *ctx = vo->priv;
     struct vo_x11_state *x11 = vo->x11;
     if (ctx->Shmem_Flag) {
@@ -656,12 +658,8 @@ static int control(struct vo *vo, uint32_t request, void *data)
 }
 
 const struct vo_driver video_out_x11 = {
-    .info = &(const vo_info_t) {
-        "X11 ( XImage/Shm )",
-        "x11",
-        "Aaron Holtzman <aholtzma@ess.engr.uvic.ca>",
-        ""
-    },
+    .description = "X11 ( XImage/Shm )",
+    .name = "x11",
     .priv_size = sizeof(struct priv),
     .options = (const struct m_option []){{0}},
     .preinit = preinit,

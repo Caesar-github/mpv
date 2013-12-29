@@ -24,11 +24,13 @@
 #include "config.h"
 #include "audio/out/ao.h"
 #include "audio/filter/af.h"
-#include "mpvcore/mp_msg.h"
+#include "common/global.h"
+#include "common/msg.h"
 #include "talloc.h"
 #include "mixer.h"
 
 struct mixer {
+    struct mp_log *log;
     struct MPOpts *opts;
     struct ao *ao;
     struct af_stream *af;
@@ -47,11 +49,12 @@ struct mixer {
     float balance;
 };
 
-struct mixer *mixer_init(void *talloc_ctx, struct MPOpts *opts)
+struct mixer *mixer_init(void *talloc_ctx, struct mpv_global *global)
 {
     struct mixer *mixer = talloc_ptrtype(talloc_ctx, mixer);
     *mixer = (struct mixer) {
-        .opts = opts,
+        .log = mp_log_new(mixer, global->log, "mixer"),
+        .opts = global->opts,
         .vol_l = 100,
         .vol_r = 100,
         .driver = "",
@@ -71,12 +74,11 @@ static void checkvolume(struct mixer *mixer)
 
     ao_control_vol_t vol = {mixer->vol_l, mixer->vol_r};
     if (mixer->softvol) {
-        float vals[AF_NCH];
-        if (!af_control_any_rev(mixer->af,
-                                AF_CONTROL_VOLUME_LEVEL | AF_CONTROL_GET, vals))
-            vals[0] = vals[1] = 1.0;
-        vol.left = (vals[0] / (mixer->opts->softvol_max / 100.0)) * 100.0;
-        vol.right = (vals[1] / (mixer->opts->softvol_max / 100.0)) * 100.0;
+        float gain;
+        if (!af_control_any_rev(mixer->af, AF_CONTROL_GET_VOLUME, &gain))
+            gain = 1.0;
+        vol.left = (gain / (mixer->opts->softvol_max / 100.0)) * 100.0;
+        vol.right = (gain / (mixer->opts->softvol_max / 100.0)) * 100.0;
     } else {
         // Rely on the values not changing if the query is not supported
         ao_control(mixer->ao, AOCONTROL_GET_VOLUME, &vol);
@@ -114,26 +116,15 @@ static void setvolume_internal(struct mixer *mixer, float l, float r)
     struct ao_control_vol vol = {.left = l, .right = r};
     if (!mixer->softvol) {
         if (ao_control(mixer->ao, AOCONTROL_SET_VOLUME, &vol) != CONTROL_OK)
-            mp_tmsg(MSGT_GLOBAL, MSGL_ERR,
-                    "[Mixer] Failed to change audio output volume.\n");
+            MP_ERR(mixer, "Failed to change audio output volume.\n");
         return;
     }
-    float vals[AF_NCH];
-    vals[0] = l / 100.0 * mixer->opts->softvol_max / 100.0;
-    vals[1] = r / 100.0 * mixer->opts->softvol_max / 100.0;
-    for (int i = 2; i < AF_NCH; i++)
-        vals[i] = (vals[0] + vals[1]) / 2.0;
-    if (!af_control_any_rev(mixer->af,
-                            AF_CONTROL_VOLUME_LEVEL | AF_CONTROL_SET,
-                            vals))
-    {
-        mp_tmsg(MSGT_GLOBAL, MSGL_V, "[Mixer] Inserting volume filter.\n");
+    float gain = (l + r) / 2.0 / 100.0 * mixer->opts->softvol_max / 100.0;
+    if (!af_control_any_rev(mixer->af, AF_CONTROL_SET_VOLUME, &gain)) {
+        MP_VERBOSE(mixer, "Inserting volume filter.\n");
         if (!(af_add(mixer->af, "volume", NULL)
-              && af_control_any_rev(mixer->af,
-                                    AF_CONTROL_VOLUME_LEVEL | AF_CONTROL_SET,
-                                    vals)))
-            mp_tmsg(MSGT_GLOBAL, MSGL_ERR,
-                    "[Mixer] No volume control available.\n");
+              && af_control_any_rev(mixer->af, AF_CONTROL_SET_VOLUME, &gain)))
+            MP_ERR(mixer, "No volume control available.\n");
     }
 }
 
@@ -201,9 +192,7 @@ void mixer_decvolume(struct mixer *mixer)
 void mixer_getbalance(struct mixer *mixer, float *val)
 {
     if (mixer->af)
-        af_control_any_rev(mixer->af,
-                           AF_CONTROL_PAN_BALANCE | AF_CONTROL_GET,
-                           &mixer->balance);
+        af_control_any_rev(mixer->af, AF_CONTROL_GET_PAN_BALANCE, &mixer->balance);
     *val = mixer->balance;
 }
 
@@ -213,9 +202,7 @@ void mixer_getbalance(struct mixer *mixer, float *val)
  * af_pan instance that was automatically inserted for balance control
  * only and is otherwise an identity transform, but if the filter was
  * there for another reason, then ignoring and overriding the original
- * values is completely wrong. In particular, this will break
- * automatically inserted downmix filters; the original coefficients that
- * are significantly below 1 will be overwritten with much higher values.
+ * values is completely wrong.
  */
 
 void mixer_setbalance(struct mixer *mixer, float val)
@@ -230,16 +217,14 @@ void mixer_setbalance(struct mixer *mixer, float val)
     if (!mixer->af)
         return;
 
-    if (af_control_any_rev(mixer->af,
-                           AF_CONTROL_PAN_BALANCE | AF_CONTROL_SET, &val))
+    if (af_control_any_rev(mixer->af, AF_CONTROL_SET_PAN_BALANCE, &val))
         return;
 
     if (val == 0 || mixer->ao->channels.num < 2)
         return;
 
     if (!(af_pan_balance = af_add(mixer->af, "pan", NULL))) {
-        mp_tmsg(MSGT_GLOBAL, MSGL_ERR,
-                "[Mixer] No balance control available.\n");
+        MP_ERR(mixer, "No balance control available.\n");
         return;
     }
 
@@ -248,14 +233,12 @@ void mixer_setbalance(struct mixer *mixer, float val)
     for (i = 2; i < AF_NCH; i++) {
         arg_ext.ch = i;
         level[i] = 1.f;
-        af_pan_balance->control(af_pan_balance,
-                                AF_CONTROL_PAN_LEVEL | AF_CONTROL_SET,
+        af_pan_balance->control(af_pan_balance, AF_CONTROL_SET_PAN_LEVEL,
                                 &arg_ext);
         level[i] = 0.f;
     }
 
-    af_pan_balance->control(af_pan_balance,
-                            AF_CONTROL_PAN_BALANCE | AF_CONTROL_SET, &val);
+    af_pan_balance->control(af_pan_balance, AF_CONTROL_SET_PAN_BALANCE, &val);
 }
 
 char *mixer_get_volume_restore_data(struct mixer *mixer)
@@ -281,8 +264,7 @@ static void probe_softvol(struct mixer *mixer)
         ao_control_vol_t vol;
         if (ao_control(mixer->ao, AOCONTROL_GET_VOLUME, &vol) != CONTROL_OK) {
             mixer->softvol = true;
-            mp_tmsg(MSGT_GLOBAL, MSGL_WARN,
-                    "[mixer] Hardware volume control unavailable.\n");
+            MP_WARN(mixer, "Hardware volume control unavailable.\n");
         }
     }
 
@@ -303,7 +285,7 @@ static void restore_volume(struct mixer *mixer)
     int force_mute = -1;
 
     const char *prev_driver = mixer->driver;
-    mixer->driver = mixer->softvol ? "softvol" : ao->driver->info->short_name;
+    mixer->driver = mixer->softvol ? "softvol" : ao->driver->name;
 
     bool restore = mixer->softvol || ao->no_persistent_volume;
 

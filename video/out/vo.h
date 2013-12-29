@@ -27,8 +27,8 @@
 #include <stdbool.h>
 
 #include "video/img_format.h"
-#include "mpvcore/mp_common.h"
-#include "mpvcore/options.h"
+#include "common/common.h"
+#include "options/options.h"
 
 #define VO_EVENT_EXPOSE 1
 #define VO_EVENT_RESIZE 2
@@ -71,6 +71,8 @@ enum mp_voctrl {
 
     VOCTRL_UPDATE_SCREENINFO,
     VOCTRL_WINDOW_TO_OSD_COORDS,        // float[2] (x/y)
+    VOCTRL_GET_WINDOW_SIZE,             // int[2] (w/h)
+    VOCTRL_SET_WINDOW_SIZE,             // int[2] (w/h)
 
     VOCTRL_SET_YUV_COLORSPACE,          // struct mp_csp_details*
     VOCTRL_GET_YUV_COLORSPACE,          // struct mp_csp_details*
@@ -123,18 +125,6 @@ struct voctrl_screenshot_args {
 #define VOFLAG_GL_DEBUG         0x40  // Hint to request debug OpenGL context
 #define VOFLAG_ALPHA            0x80  // Hint to request alpha framebuffer
 
-typedef struct vo_info_s
-{
-    /* driver name ("Matrox Millennium G200/G400" */
-    const char *name;
-    /* short name (for config strings) ("vdpau") */
-    const char *short_name;
-    /* author ("Aaron Holtzman <aholtzma@ess.engr.uvic.ca>") */
-    const char *author;
-    /* any additional comments */
-    const char *comment;
-} vo_info_t;
-
 struct vo;
 struct osd_state;
 struct mp_image;
@@ -148,7 +138,9 @@ struct vo_driver {
     // Encoding functionality, which can be invoked via --o only.
     bool encode;
 
-    const vo_info_t *info;
+    const char *name;
+    const char *description;
+
     /*
      *   returns: zero on successful initialization, non-zero on error.
      */
@@ -226,9 +218,6 @@ struct vo_driver {
 
     // List of options to parse into priv struct (requires privsize to be set)
     const struct m_option *options;
-
-    // Parse these options before parsing user options
-    const char *init_option_string;
 };
 
 struct vo {
@@ -258,6 +247,7 @@ struct vo {
     const struct vo_driver *driver;
     void *priv;
     struct mp_vo_opts *opts;
+    struct mpv_global *global;
     struct vo_x11_state *x11;
     struct vo_w32_state *w32;
     struct vo_cocoa_state *cocoa;
@@ -302,7 +292,7 @@ int vo_get_buffered_frame(struct vo *vo, bool eof);
 void vo_skip_frame(struct vo *vo);
 void vo_new_frame_imminent(struct vo *vo);
 void vo_draw_osd(struct vo *vo, struct osd_state *osd);
-void vo_flip_page(struct vo *vo, unsigned int pts_us, int duration);
+void vo_flip_page(struct vo *vo, int64_t pts_us, int duration);
 void vo_check_events(struct vo *vo);
 void vo_seek_reset(struct vo *vo);
 void vo_destroy(struct vo *vo);

@@ -19,8 +19,7 @@
 #ifndef MPLAYER_STREAM_H
 #define MPLAYER_STREAM_H
 
-#include "config.h"
-#include "mpvcore/mp_msg.h"
+#include "common/msg.h"
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
@@ -28,11 +27,7 @@
 #include <sys/types.h>
 #include <fcntl.h>
 
-#include "mpvcore/bstr.h"
-
-#ifndef O_BINARY
-#define O_BINARY 0
-#endif
+#include "bstr/bstr.h"
 
 enum streamtype {
     STREAMTYPE_GENERIC = 0,
@@ -43,6 +38,7 @@ enum streamtype {
     STREAMTYPE_PVR,
     STREAMTYPE_TV,
     STREAMTYPE_MF,
+    STREAMTYPE_EDL,
     STREAMTYPE_AVDEVICE,
 };
 
@@ -71,8 +67,6 @@ enum streamtype {
 #define STREAM_ERROR 0
 #define STREAM_OK    1
 
-#define MAX_STREAM_PROTOCOLS 20
-
 enum stream_ctrl {
     STREAM_CTRL_GET_TIME_LENGTH = 1,
     STREAM_CTRL_SEEK_TO_CHAPTER,
@@ -88,9 +82,11 @@ enum stream_ctrl {
     STREAM_CTRL_GET_NUM_TITLES,
     STREAM_CTRL_GET_LANG,
     STREAM_CTRL_GET_CURRENT_TITLE,
+    STREAM_CTRL_SET_CURRENT_TITLE,
     STREAM_CTRL_GET_CACHE_SIZE,
     STREAM_CTRL_GET_CACHE_FILL,
     STREAM_CTRL_GET_CACHE_IDLE,
+    STREAM_CTRL_RESUME_CACHE,
     STREAM_CTRL_RECONNECT,
     // DVD/Bluray, signal general support for GET_CURRENT_TIME etc.
     STREAM_CTRL_MANAGES_TIMELINE,
@@ -99,6 +95,9 @@ enum stream_ctrl {
     STREAM_CTRL_GET_DVD_INFO,
     STREAM_CTRL_SET_CONTENTS,
     STREAM_CTRL_GET_METADATA,
+    STREAM_CTRL_GET_BASE_FILENAME,
+    STREAM_CTRL_GET_NAV_EVENT,          // struct mp_nav_event**
+    STREAM_CTRL_NAV_CMD,                // struct mp_nav_cmd*
 };
 
 struct stream_lang_req {
@@ -158,7 +157,10 @@ typedef struct stream {
     char *demuxer; // request demuxer to be used
     char *lavf_type; // name of expected demuxer type for lavf
     bool safe_origin; // used for playlists that can be opened safely
+    bool allow_caching; // stream cache makes sense
+    struct mp_log *log;
     struct MPOpts *opts;
+    struct mpv_global *global;
 
     FILE *capture_file;
     char *capture_filename;
@@ -234,17 +236,18 @@ int stream_seek(stream_t *s, int64_t pos);
 int stream_read(stream_t *s, char *mem, int total);
 int stream_read_partial(stream_t *s, char *buf, int buf_size);
 struct bstr stream_peek(stream_t *s, int len);
+void stream_drop_buffers(stream_t *s);
 
-struct MPOpts;
+struct mpv_global;
 
 struct bstr stream_read_complete(struct stream *s, void *talloc_ctx,
                                  int max_size);
 int stream_control(stream_t *s, int cmd, void *arg);
 void stream_update_size(stream_t *s);
 void free_stream(stream_t *s);
-struct stream *stream_create(const char *url, int flags, struct MPOpts *options);
-struct stream *stream_open(const char *filename, struct MPOpts *options);
-stream_t *open_output_stream(const char *filename, struct MPOpts *options);
+struct stream *stream_create(const char *url, int flags, struct mpv_global *global);
+struct stream *stream_open(const char *filename, struct mpv_global *global);
+stream_t *open_output_stream(const char *filename, struct mpv_global *global);
 stream_t *open_memory_stream(void *data, int len);
 struct demux_stream;
 

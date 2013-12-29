@@ -31,9 +31,9 @@
 #include <linux/input.h>
 
 #include "config.h"
-#include "mpvcore/bstr.h"
-#include "mpvcore/options.h"
-#include "mpvcore/mp_msg.h"
+#include "bstr/bstr.h"
+#include "options/options.h"
+#include "common/msg.h"
 #include "libavutil/common.h"
 #include "talloc.h"
 
@@ -43,8 +43,8 @@
 #include "aspect.h"
 #include "osdep/timer.h"
 
-#include "mpvcore/input/input.h"
-#include "mpvcore/input/keycodes.h"
+#include "input/input.h"
+#include "input/keycodes.h"
 
 #define MOD_SHIFT_MASK      0x01
 #define MOD_ALT_MASK        0x02
@@ -111,6 +111,44 @@ static const struct mp_keymap keymap[] = {
 
 
 /** Wayland listeners **/
+
+static void display_handle_error(void *data,
+                                 struct wl_display *display,
+                                 void *object_id,
+                                 uint32_t code,
+                                 const char *message)
+{
+    struct vo_wayland_state *wl = data;
+    const char * error_type_msg = "";
+
+    switch (code) {
+    case WL_DISPLAY_ERROR_INVALID_OBJECT:
+        error_type_msg = "Invalid object";
+        break;
+    case WL_DISPLAY_ERROR_INVALID_METHOD:
+        error_type_msg = "Invalid method";
+        break;
+    case WL_DISPLAY_ERROR_NO_MEMORY:
+        error_type_msg = "No memory";
+        break;
+    }
+
+    MP_ERR(wl, "%s: %s\n", error_type_msg, message);
+}
+
+static void display_handle_delete_id(void *data,
+                                     struct wl_display *display,
+                                     uint32_t id)
+{
+    struct vo_wayland_state *wl = data;
+    MP_DBG(wl, "Object %u deleted\n", id);
+}
+
+const struct wl_display_listener display_listener = {
+    display_handle_error,
+    display_handle_delete_id
+};
+
 static void ssurface_handle_ping(void *data,
                                  struct wl_shell_surface *shell_surface,
                                  uint32_t serial)
@@ -336,11 +374,11 @@ static void pointer_handle_motion(void *data,
     struct vo_wayland_state *wl = data;
 
     wl->cursor.pointer = pointer;
-    wl->window.surf_x = wl_fixed_to_int(sx_w);
-    wl->window.surf_y = wl_fixed_to_int(sy_w);
+    wl->window.mouse_x = wl_fixed_to_int(sx_w);
+    wl->window.mouse_y = wl_fixed_to_int(sy_w);
 
-    vo_mouse_movement(wl->vo, wl->window.surf_x,
-                              wl->window.surf_y);
+    vo_mouse_movement(wl->vo, wl->window.mouse_x,
+                              wl->window.mouse_y);
 }
 
 static void pointer_handle_button(void *data,
@@ -356,7 +394,7 @@ static void pointer_handle_button(void *data,
                     ((state == WL_POINTER_BUTTON_STATE_PRESSED)
                     ? MP_KEY_STATE_DOWN : MP_KEY_STATE_UP));
 
-    if (!mp_input_test_dragging(wl->vo->input_ctx, wl->window.surf_x, wl->window.surf_y) &&
+    if (!mp_input_test_dragging(wl->vo->input_ctx, wl->window.mouse_x, wl->window.mouse_y) &&
         (button == BTN_LEFT) && (state == WL_POINTER_BUTTON_STATE_PRESSED))
         wl_shell_surface_move(wl->window.shell_surface, wl->input.seat, serial);
 }
@@ -605,6 +643,8 @@ static bool create_display (struct vo_wayland_state *wl)
 
         return false;
     }
+
+    wl_display_add_listener(wl->display.display, &display_listener, wl);
 
     wl_list_init(&wl->display.output_list);
     wl->display.registry = wl_display_get_registry(wl->display.display);
@@ -905,6 +945,18 @@ int vo_wayland_control (struct vo *vo, int *events, int request, void *arg)
     case VOCTRL_UPDATE_SCREENINFO:
         vo_wayland_update_screeninfo(vo);
         return VO_TRUE;
+    case VOCTRL_GET_WINDOW_SIZE: {
+        int *s = arg;
+        s[0] = wl->window.width;
+        s[1] = wl->window.height;
+        return VO_TRUE;
+    }
+    case VOCTRL_SET_WINDOW_SIZE: {
+        int *s = arg;
+        if (!wl->window.is_fullscreen)
+            shedule_resize(wl, 0, s[0], s[1]);
+        return VO_TRUE;
+    }
     case VOCTRL_SET_CURSOR_VISIBILITY:
         if (*(bool *)arg) {
             if (!wl->cursor.visible)

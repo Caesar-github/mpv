@@ -27,7 +27,7 @@
 #ifndef GLAPIENTRY
 #ifdef APIENTRY
 #define GLAPIENTRY APIENTRY
-#elif defined(CONFIG_GL_WIN32)
+#elif HAVE_GL_WIN32
 #define GLAPIENTRY __stdcall
 #else
 #define GLAPIENTRY
@@ -222,7 +222,7 @@
 /** \} */ // end of glextdefines group
 
 
-#if defined(CONFIG_GL_WIN32) && !defined(WGL_CONTEXT_MAJOR_VERSION_ARB)
+#if HAVE_GL_WIN32 && !defined(WGL_CONTEXT_MAJOR_VERSION_ARB)
 /* these are supposed to be defined in wingdi.h but mingw's is too old */
 /* only the bits actually used by mplayer are defined */
 /* reference: http://www.opengl.org/registry/specs/ARB/wgl_create_context.txt */
@@ -247,6 +247,22 @@
 #ifndef GL_ARB_framebuffer_sRGB
 #define GL_FRAMEBUFFER_SRGB               0x8DB9
 #endif
+#endif
+
+#ifndef GL_RGB_422_APPLE
+#define GL_RGB_422_APPLE 0x8A1F
+#endif
+
+#ifndef UNSIGNED_SHORT_8_8_APPLE
+#define UNSIGNED_SHORT_8_8_APPLE 0x85BA
+#endif
+
+#ifndef UNSIGNED_SHORT_8_8_APPLE
+#define UNSIGNED_SHORT_8_8_APPLE 0x85BB
+#endif
+
+#ifndef GL_NV_vdpau_interop
+#define GLvdpauSurfaceNV GLintptr
 #endif
 
 #undef MP_GET_GL_WORKAROUNDS

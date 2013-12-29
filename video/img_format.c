@@ -22,6 +22,8 @@
 #include <libavutil/pixfmt.h>
 #include <libavutil/pixdesc.h>
 
+#include "compat/libav.h"
+
 #include "video/img_format.h"
 #include "video/mp_image.h"
 #include "video/fmt-conversion.h"
@@ -121,8 +123,6 @@ struct mp_imgfmt_entry mp_imgfmt_list[] = {
     FMT("vdpau",                IMGFMT_VDPAU)
     FMT("vda",                  IMGFMT_VDA)
     FMT("vaapi",                IMGFMT_VAAPI)
-    FMT("vaapi_mpeg2_idct",     IMGFMT_VAAPI_MPEG2_IDCT)
-    FMT("vaapi_mpeg2_moco",     IMGFMT_VAAPI_MPEG2_MOCO)
     {0}
 };
 
@@ -157,11 +157,11 @@ const char *mp_imgfmt_to_name(unsigned int fmt)
     return NULL;
 }
 
-static struct mp_imgfmt_desc get_avutil_fmt(enum PixelFormat fmt)
+struct mp_imgfmt_desc mp_imgfmt_get_desc(int mpfmt)
 {
-    const AVPixFmtDescriptor *pd = &av_pix_fmt_descriptors[fmt];
-    int mpfmt = pixfmt2imgfmt(fmt);
-    if (!pd || !mpfmt)
+    enum AVPixelFormat fmt = imgfmt2pixfmt(mpfmt);
+    const AVPixFmtDescriptor *pd = av_pix_fmt_desc_get(fmt);
+    if (!pd || fmt == AV_PIX_FMT_NONE)
         return (struct mp_imgfmt_desc) {0};
 
     struct mp_imgfmt_desc desc = {
@@ -173,7 +173,7 @@ static struct mp_imgfmt_desc get_avutil_fmt(enum PixelFormat fmt)
     };
 
     int planedepth[4] = {0};
-    int el_size = (pd->flags & PIX_FMT_BITSTREAM) ? 1 : 8;
+    int el_size = (pd->flags & AV_PIX_FMT_FLAG_BITSTREAM) ? 1 : 8;
     for (int c = 0; c < pd->nb_components; c++) {
         AVComponentDescriptor d = pd->comp[c];
         // multiple components per plane -> Y is definitive, ignore chroma
@@ -194,33 +194,40 @@ static struct mp_imgfmt_desc get_avutil_fmt(enum PixelFormat fmt)
     {
         desc.flags |= MP_IMGFLAG_LE | MP_IMGFLAG_BE;
     } else {
-        desc.flags |= (pd->flags & PIX_FMT_BE) ? MP_IMGFLAG_BE : MP_IMGFLAG_LE;
+        desc.flags |= (pd->flags & AV_PIX_FMT_FLAG_BE)
+                      ? MP_IMGFLAG_BE : MP_IMGFLAG_LE;
     }
 
     desc.plane_bits = planedepth[0];
 
     if (mpfmt == IMGFMT_XYZ12_LE || mpfmt == IMGFMT_XYZ12_BE) {
         desc.flags |= MP_IMGFLAG_XYZ;
-    } else if (!(pd->flags & PIX_FMT_RGB) && fmt != PIX_FMT_MONOBLACK &&
-               fmt != PIX_FMT_PAL8)
+    } else if (!(pd->flags & AV_PIX_FMT_FLAG_RGB) &&
+               fmt != AV_PIX_FMT_MONOBLACK &&
+               fmt != AV_PIX_FMT_PAL8)
     {
         desc.flags |= MP_IMGFLAG_YUV;
     } else {
         desc.flags |= MP_IMGFLAG_RGB;
     }
 
-#ifdef PIX_FMT_ALPHA
-    if (pd->flags & PIX_FMT_ALPHA)
+#ifdef AV_PIX_FMT_FLAG_ALPHA
+    if (pd->flags & AV_PIX_FMT_FLAG_ALPHA)
         desc.flags |= MP_IMGFLAG_ALPHA;
 #else
     if (desc.num_planes > 3)
         desc.flags |= MP_IMGFLAG_ALPHA;
 #endif
 
+    if (mpfmt >= IMGFMT_RGB0_START && mpfmt <= IMGFMT_RGB0_END)
+        desc.flags &= ~MP_IMGFLAG_ALPHA;
+
     if (desc.num_planes == pd->nb_components)
         desc.flags |= MP_IMGFLAG_PLANAR;
 
-    if (!(pd->flags & PIX_FMT_HWACCEL) && !(pd->flags & PIX_FMT_BITSTREAM)) {
+    if (!(pd->flags & AV_PIX_FMT_FLAG_HWACCEL) &&
+        !(pd->flags & AV_PIX_FMT_FLAG_BITSTREAM))
+    {
         desc.flags |= MP_IMGFLAG_BYTE_ALIGNED;
         for (int p = 0; p < desc.num_planes; p++)
             desc.bytes[p] = desc.bpp[p] / 8;
@@ -228,7 +235,7 @@ static struct mp_imgfmt_desc get_avutil_fmt(enum PixelFormat fmt)
 
     // PSEUDOPAL is a complete braindeath nightmare, however it seems various
     // parts of FFmpeg expect that it has a palette allocated.
-    if (pd->flags & (PIX_FMT_PAL | PIX_FMT_PSEUDOPAL))
+    if (pd->flags & (AV_PIX_FMT_FLAG_PAL | AV_PIX_FMT_FLAG_PSEUDOPAL))
         desc.flags |= MP_IMGFLAG_PAL;
 
     if ((desc.flags & MP_IMGFLAG_YUV) && (desc.flags & MP_IMGFLAG_BYTE_ALIGNED))
@@ -254,19 +261,6 @@ static struct mp_imgfmt_desc get_avutil_fmt(enum PixelFormat fmt)
         desc.align_x = 8 / desc.bpp[0]; // expect power of 2
 
     return desc;
-}
-
-struct mp_imgfmt_desc mp_imgfmt_get_desc(unsigned int out_fmt)
-{
-    struct mp_imgfmt_desc fmt = {0};
-    enum PixelFormat avfmt = imgfmt2pixfmt(out_fmt);
-    if (avfmt != PIX_FMT_NONE)
-        fmt = get_avutil_fmt(avfmt);
-    if (!fmt.id) {
-        mp_msg(MSGT_DECVIDEO, MSGL_V, "mp_image: unknown out_fmt: 0x%X\n",
-               out_fmt);
-    }
-    return fmt;
 }
 
 // Find a format that is MP_IMGFLAG_YUV_P with the following configuration.

@@ -22,7 +22,7 @@
 #include <inttypes.h>
 
 #include "config.h"
-#include "mpvcore/mp_msg.h"
+#include "common/msg.h"
 
 #include "video/img_format.h"
 #include "video/mp_image.h"
@@ -95,7 +95,7 @@ static int query_format(struct vf_instance *vf, unsigned int fmt)
     return vf_next_query_format(vf, fmt);
 }
 
-static int vf_open(vf_instance_t *vf, char *args){
+static int vf_open(vf_instance_t *vf){
     vf->config=config;
     vf->filter=filter;
     vf->query_format=query_format;
@@ -103,12 +103,9 @@ static int vf_open(vf_instance_t *vf, char *args){
 }
 
 const vf_info_t vf_info_mirror = {
-    "horizontal mirror",
-    "mirror",
-    "Eyck",
-    "",
-    vf_open,
-    NULL
+    .description = "horizontal mirror",
+    .name = "mirror",
+    .open = vf_open,
 };
 
 //===========================================================================//

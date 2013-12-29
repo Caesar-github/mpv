@@ -22,8 +22,9 @@
 #include <inttypes.h>
 
 #include "config.h"
-#include "mpvcore/mp_msg.h"
-#include "mpvcore/cpudetect.h"
+#include "common/msg.h"
+#include "common/cpudetect.h"
+#include "options/m_option.h"
 
 #include "video/img_format.h"
 #include "video/mp_image.h"
@@ -403,14 +404,11 @@ static int query_format(struct vf_instance *vf, unsigned int fmt)
     return 0;
 }
 
-static int vf_open(vf_instance_t *vf, char *args)
+static int vf_open(vf_instance_t *vf)
 {
     vf->config=config;
     vf->query_format=query_format;
     vf->filter=filter;
-    vf->priv = calloc(1, sizeof(struct vf_priv_s));
-    vf->priv->mode = 1;
-    if (args) sscanf(args, "%d", &vf->priv->mode);
 
     pack_nn = pack_nn_C;
     pack_li_0 = pack_li_0_C;
@@ -429,11 +427,6 @@ static int vf_open(vf_instance_t *vf, char *args)
     case 0:
         vf->priv->pack[0] = vf->priv->pack[1] = pack_nn;
         break;
-    default:
-        mp_msg(MSGT_VFILTER, MSGL_WARN,
-            "ilpack: unknown mode %d (fallback to linear)\n",
-            vf->priv->mode);
-        /* Fallthrough */
     case 1:
         vf->priv->pack[0] = pack_li_0;
         vf->priv->pack[1] = pack_li_1;
@@ -443,11 +436,17 @@ static int vf_open(vf_instance_t *vf, char *args)
     return 1;
 }
 
+#define OPT_BASE_STRUCT struct vf_priv_s
 const vf_info_t vf_info_ilpack = {
-    "4:2:0 planar -> 4:2:2 packed reinterlacer",
-    "ilpack",
-    "Richard Felker",
-    "",
-    vf_open,
-    NULL
+    .description = "4:2:0 planar -> 4:2:2 packed reinterlacer",
+    .name = "ilpack",
+    .open = vf_open,
+    .priv_size = sizeof(struct vf_priv_s),
+    .priv_defaults = &(const struct vf_priv_s){
+        .mode = 1,
+    },
+    .options = (const struct m_option[]){
+        OPT_INTRANGE("mode", mode, 0, 0, 1),
+        {0}
+    },
 };

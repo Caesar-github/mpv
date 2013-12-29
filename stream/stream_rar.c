@@ -33,9 +33,9 @@
 
 #include "osdep/io.h"
 
-#include "mpvcore/mp_msg.h"
+#include "common/msg.h"
 #include "stream.h"
-#include "mpvcore/m_option.h"
+#include "options/m_option.h"
 #include "rar.h"
 
 /*
@@ -75,6 +75,17 @@ static void rar_entry_close(stream_t *s)
     RarFileDelete(rar_file);
 }
 
+static int rar_entry_control(stream_t *s, int cmd, void *arg)
+{
+    rar_file_t *rar_file = s->priv;
+    switch (cmd) {
+    case STREAM_CTRL_GET_BASE_FILENAME:
+        *(char **)arg = talloc_strdup(NULL, rar_file->s->url);
+        return STREAM_OK;
+    }
+    return STREAM_UNSUPPORTED;
+}
+
 static int rar_entry_open(stream_t *stream, int mode)
 {
     if (!strchr(stream->path, '|'))
@@ -86,7 +97,7 @@ static int rar_entry_open(stream_t *stream, int mode)
     mp_url_unescape_inplace(base);
 
     struct stream *rar =
-        stream_create(base, STREAM_READ | STREAM_NO_FILTERS, stream->opts);
+        stream_create(base, STREAM_READ | STREAM_NO_FILTERS, stream->global);
     if (!rar)
         return STREAM_ERROR;
 
@@ -115,7 +126,7 @@ static int rar_entry_open(stream_t *stream, int mode)
     };
     file->current_chunk = &dummy;
     file->s = rar; // transfer ownership
-    file->opts = stream->opts;
+    file->global = stream->global;
     RarSeek(file, 0);
 
     stream->priv = file;
@@ -123,6 +134,7 @@ static int rar_entry_open(stream_t *stream, int mode)
     stream->fill_buffer = rar_entry_fill_buffer;
     stream->seek = rar_entry_seek;
     stream->close = rar_entry_close;
+    stream->control = rar_entry_control;
 
     return STREAM_OK;
 }

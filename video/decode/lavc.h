@@ -5,10 +5,9 @@
 
 #include <libavcodec/avcodec.h>
 
-#include "config.h"
-
 #include "demux/stheader.h"
 #include "video/mp_image.h"
+#include "video/hwdec.h"
 
 // keep in sync with --hwdec option
 enum hwdec_type {
@@ -22,15 +21,14 @@ enum hwdec_type {
 };
 
 typedef struct lavc_ctx {
+    struct mp_log *log;
+    struct MPOpts *opts;
     AVCodecContext *avctx;
     AVFrame *pic;
     struct vd_lavc_hwdec *hwdec;
-    enum PixelFormat pix_fmt;
+    enum AVPixelFormat pix_fmt;
     int do_hw_dr1;
     int best_csp;
-    struct mp_image_params image_params;
-    struct mp_image_params vo_image_params;
-    AVRational last_sample_aspect_ratio;
     enum AVDiscard skip_frame;
     const char *software_fallback_decoder;
 
@@ -72,6 +70,18 @@ enum {
     HWDEC_ERR_NO_CTX = -2,
     HWDEC_ERR_NO_CODEC = -3,
 };
+
+struct hwdec_profile_entry {
+    enum AVCodecID av_codec;
+    int ff_profile;
+    uint64_t hw_profile;
+};
+
+const struct hwdec_profile_entry *hwdec_find_profile(
+    struct lavc_ctx *ctx, const struct hwdec_profile_entry *table);
+bool hwdec_check_codec_support(const char *decoder,
+                               const struct hwdec_profile_entry *table);
+int hwdec_get_max_refs(struct lavc_ctx *ctx);
 
 // lavc_dr1.c
 int mp_codec_get_buffer(AVCodecContext *s, AVFrame *frame);

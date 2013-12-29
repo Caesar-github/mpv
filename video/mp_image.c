@@ -21,6 +21,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <pthread.h>
 #include <assert.h>
 
 #include <libavutil/mem.h>
@@ -36,15 +37,11 @@
 #include "memcpy_pic.h"
 #include "fmt-conversion.h"
 
-#if HAVE_PTHREADS
-#include <pthread.h>
+#include "video/filter/vf.h"
+
 static pthread_mutex_t refcount_mutex = PTHREAD_MUTEX_INITIALIZER;
 #define refcount_lock() pthread_mutex_lock(&refcount_mutex)
 #define refcount_unlock() pthread_mutex_unlock(&refcount_mutex)
-#else
-#define refcount_lock() 0
-#define refcount_unlock() 0
-#endif
 
 struct m_refcount {
     void *arg;
@@ -466,6 +463,26 @@ void mp_image_set_params(struct mp_image *image,
     image->colorspace = params->colorspace;
     image->levels = params->colorlevels;
     image->chroma_location = params->chroma_location;
+}
+
+// Set most image parameters, but not image format or size.
+// Display size is used to set the PAR.
+void mp_image_set_attributes(struct mp_image *image,
+                             const struct mp_image_params *params)
+{
+    struct mp_image_params nparams = *params;
+    nparams.imgfmt = image->imgfmt;
+    nparams.w = image->w;
+    nparams.h = image->h;
+    if (nparams.imgfmt != params->imgfmt)
+        mp_image_params_guess_csp(&nparams);
+    if (nparams.w != params->w || nparams.h != params->h) {
+        if (nparams.d_w && nparams.d_h) {
+            vf_rescale_dsize(&nparams.d_w, &nparams.d_h,
+                             params->w, params->h, nparams.w, nparams.h);
+        }
+    }
+    mp_image_set_params(image, &nparams);
 }
 
 void mp_image_set_colorspace_details(struct mp_image *image,

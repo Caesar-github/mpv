@@ -35,22 +35,22 @@
 #include <AL/alext.h>
 #endif
 
-#include "mpvcore/mp_msg.h"
+#include "common/msg.h"
 
 #include "ao.h"
 #include "audio/format.h"
 #include "osdep/timer.h"
-#include "mpvcore/m_option.h"
+#include "options/m_option.h"
 
 #define MAX_CHANS MP_NUM_CHANNELS
 #define NUM_BUF 128
 #define CHUNK_SIZE 512
+#define CHUNK_SAMPLES (CHUNK_SIZE / 2)
 static ALuint buffers[MAX_CHANS][NUM_BUF];
 static ALuint sources[MAX_CHANS];
 
 static int cur_buf[MAX_CHANS];
 static int unqueue_buf[MAX_CHANS];
-static int16_t *tmpbuf;
 
 static struct ao *ao_data;
 
@@ -79,18 +79,18 @@ static int control(struct ao *ao, enum aocontrol cmd, void *arg)
     return CONTROL_UNKNOWN;
 }
 
-static int validate_device_opt(const m_option_t *opt, struct bstr name,
-                               struct bstr param)
+static int validate_device_opt(struct mp_log *log, const m_option_t *opt,
+                               struct bstr name, struct bstr param)
 {
     if (bstr_equals0(param, "help")) {
         if (alcIsExtensionPresent(NULL, "ALC_ENUMERATE_ALL_EXT") != AL_TRUE) {
-            mp_msg(MSGT_AO, MSGL_FATAL, "Device listing not supported.\n");
+            mp_fatal(log, "Device listing not supported.\n");
             return M_OPT_EXIT;
         }
         const char *list = alcGetString(NULL, ALC_ALL_DEVICES_SPECIFIER);
-        mp_msg(MSGT_AO, MSGL_INFO, "OpenAL devices:\n");
+        mp_info(log, "OpenAL devices:\n");
         while (list && *list) {
-            mp_msg(MSGT_AO, MSGL_INFO, "  '%s'\n", list);
+            mp_info(log, "  '%s'\n", list);
             list = list + strlen(list) + 1;
         }
         return M_OPT_EXIT - 1;
@@ -169,8 +169,7 @@ static int init(struct ao *ao)
     alcGetIntegerv(dev, ALC_FREQUENCY, 1, &freq);
     if (alcGetError(dev) == ALC_NO_ERROR && freq)
         ao->samplerate = freq;
-    ao->format = AF_FORMAT_S16_NE;
-    tmpbuf = malloc(CHUNK_SIZE);
+    ao->format = AF_FORMAT_S16P;
     return 0;
 
 err_out:
@@ -182,7 +181,6 @@ static void uninit(struct ao *ao, bool immed)
 {
     ALCcontext *ctx = alcGetCurrentContext();
     ALCdevice *dev = alcGetContextsDevice(ctx);
-    free(tmpbuf);
     if (!immed) {
         ALint state;
         alGetSourcei(sources[0], AL_SOURCE_STATE, &state);
@@ -251,34 +249,30 @@ static int get_space(struct ao *ao)
     queued = NUM_BUF - queued - 3;
     if (queued < 0)
         return 0;
-    return queued * CHUNK_SIZE * ao->channels.num;
+    return queued * CHUNK_SAMPLES;
 }
 
 /**
  * \brief write data into buffer and reset underrun flag
  */
-static int play(struct ao *ao, void *data, int len, int flags)
+static int play(struct ao *ao, void **data, int samples, int flags)
 {
     ALint state;
-    int i, j, k;
-    int ch;
-    int16_t *d = data;
-    len /= ao->channels.num * CHUNK_SIZE;
-    for (i = 0; i < len; i++) {
-        for (ch = 0; ch < ao->channels.num; ch++) {
-            for (j = 0, k = ch; j < CHUNK_SIZE / 2; j++, k += ao->channels.num)
-                tmpbuf[j] = d[k];
-            alBufferData(buffers[ch][cur_buf[ch]], AL_FORMAT_MONO16, tmpbuf,
+    int num = samples / CHUNK_SAMPLES;
+    for (int i = 0; i < num; i++) {
+        for (int ch = 0; ch < ao->channels.num; ch++) {
+            int16_t *d = data[ch];
+            d += i * CHUNK_SAMPLES;
+            alBufferData(buffers[ch][cur_buf[ch]], AL_FORMAT_MONO16, d,
                          CHUNK_SIZE, ao->samplerate);
             alSourceQueueBuffers(sources[ch], 1, &buffers[ch][cur_buf[ch]]);
             cur_buf[ch] = (cur_buf[ch] + 1) % NUM_BUF;
         }
-        d += ao->channels.num * CHUNK_SIZE / 2;
     }
     alGetSourcei(sources[0], AL_SOURCE_STATE, &state);
     if (state != AL_PLAYING) // checked here in case of an underrun
         alSourcePlayv(ao->channels.num, sources);
-    return len * ao->channels.num * CHUNK_SIZE;
+    return num * CHUNK_SAMPLES;
 }
 
 static float get_delay(struct ao *ao)
@@ -286,18 +280,14 @@ static float get_delay(struct ao *ao)
     ALint queued;
     unqueue_buffers();
     alGetSourcei(sources[0], AL_BUFFERS_QUEUED, &queued);
-    return queued * CHUNK_SIZE / 2 / (float)ao->samplerate;
+    return queued * CHUNK_SAMPLES / (float)ao->samplerate;
 }
 
 #define OPT_BASE_STRUCT struct priv
 
 const struct ao_driver audio_out_openal = {
-    .info = &(const struct ao_info) {
-        "OpenAL audio output",
-        "openal",
-        "Reimar Döffinger <Reimar.Doeffinger@stud.uni-karlsruhe.de>",
-        ""
-    },
+    .description = "OpenAL audio output",
+    .name      = "openal",
     .init      = init,
     .uninit    = uninit,
     .control   = control,

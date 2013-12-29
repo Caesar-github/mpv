@@ -2,9 +2,10 @@
 #define MPLAYER_SD_H
 
 #include "dec_sub.h"
-#include "demux/demux_packet.h"
+#include "demux/packet.h"
 
 struct sd {
+    struct mp_log *log;
     struct MPOpts *opts;
 
     const struct sd_functions *driver;

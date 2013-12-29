@@ -31,8 +31,8 @@
 
 #include <libavutil/intreadwrite.h>
 
-#include "mpvcore/mp_common.h"
-#include "mpvcore/mp_talloc.h"
+#include "talloc.h"
+#include "common/common.h"
 #include "stream.h"
 #include "rar.h"
 
@@ -188,17 +188,17 @@ static int SkipFile(struct stream *s, int *count, rar_file_t ***file,
     const int name_offset = (hdr->flags & RAR_BLOCK_FILE_HAS_HIGH) ? (7+33) : (7+25);
     if (name_offset + name_size <= hdr->size) {
         const int max_size = name_offset + name_size;
-        bstr data = stream_peek(s, max_size);
-        if (data.len < max_size) {
+        bstr namedata = stream_peek(s, max_size);
+        if (namedata.len < max_size) {
             free(name);
             return -1;
         }
-        memcpy(name, &data.start[name_offset], name_size);
+        memcpy(name, &namedata.start[name_offset], name_size);
     }
 
     rar_file_t *current = NULL;
     if (method != 0x30) {
-        mp_msg(MSGT_STREAM, MSGL_WARN, "Ignoring compressed file %s (method=0x%2.2x)\n", name, method);
+        MP_WARN(s, "Ignoring compressed file %s (method=0x%2.2x)\n", name, method);
         goto exit;
     }
 
@@ -386,7 +386,7 @@ int RarParse(struct stream *s, int *count, rar_file_t ***file)
         if (!volume_mrl)
             goto done;
 
-        vol = stream_create(volume_mrl, STREAM_READ | STREAM_NO_FILTERS, s->opts);
+        vol = stream_create(volume_mrl, STREAM_READ | STREAM_NO_FILTERS, s->global);
 
         if (!vol)
             goto done;
@@ -423,7 +423,7 @@ int  RarSeek(rar_file_t *file, uint64_t position)
             free_stream(file->s);
         file->s = stream_create(file->current_chunk->mrl,
                                 STREAM_READ | STREAM_NO_FILTERS,
-                                file->opts);
+                                file->global);
     }
     return file->s ? stream_seek(file->s, offset) : 0;
 }

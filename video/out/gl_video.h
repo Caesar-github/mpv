@@ -19,7 +19,7 @@
 
 #include <stdbool.h>
 
-#include "sub/sub.h"
+#include "sub/osd.h"
 #include "gl_common.h"
 
 struct lut3d {
@@ -46,15 +46,18 @@ struct gl_video_opts {
     int stereo_mode;
     int alpha_mode;
     int chroma_location;
+    int use_rectangle;
 };
 
 extern const struct m_sub_options gl_video_conf;
+extern const struct gl_video_opts gl_video_opts_hq_def;
 
 struct gl_video;
 
 struct gl_video *gl_video_init(GL *gl, struct mp_log *log);
 void gl_video_uninit(struct gl_video *p);
 void gl_video_set_options(struct gl_video *p, struct gl_video_opts *opts);
+bool gl_video_check_format(struct gl_video *p, int mp_format);
 void gl_video_config(struct gl_video *p, struct mp_image_params *params);
 void gl_video_set_output_depth(struct gl_video *p, int r, int g, int b);
 void gl_video_set_lut3d(struct gl_video *p, struct lut3d *lut3d);
@@ -72,6 +75,7 @@ bool gl_video_get_equalizer(struct gl_video *p, const char *name, int *val);
 void gl_video_set_debug(struct gl_video *p, bool enable);
 void gl_video_resize_redraw(struct gl_video *p, int w, int h);
 
-bool gl_video_check_format(int mp_format);
+struct gl_hwdec;
+void gl_video_set_hwdec(struct gl_video *p, struct gl_hwdec *hwdec);
 
 #endif

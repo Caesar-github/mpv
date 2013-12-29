@@ -30,7 +30,7 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <math.h>
-
+#include <pthread.h>
 
 #include <libavcodec/avcodec.h>
 #include <libavutil/avassert.h>
@@ -42,16 +42,11 @@
 #include "config.h"
 
 #include "lavc.h"
+#include "video/decode/dec_video.h"
 
-#if HAVE_PTHREADS
-#include <pthread.h>
 static pthread_mutex_t pool_mutex = PTHREAD_MUTEX_INITIALIZER;
 #define pool_lock() pthread_mutex_lock(&pool_mutex)
 #define pool_unlock() pthread_mutex_unlock(&pool_mutex)
-#else
-#define pool_lock() 0
-#define pool_unlock() 0
-#endif
 
 typedef struct FramePool {
     struct FrameBuffer *list;
@@ -136,8 +131,8 @@ static int alloc_buffer(FramePool *pool, AVCodecContext *s)
 
 int mp_codec_get_buffer(AVCodecContext *s, AVFrame *frame)
 {
-    sh_video_t *sh = s->opaque;
-    struct lavc_ctx *ctx = sh->context;
+    struct dec_video *vd = s->opaque;
+    struct lavc_ctx *ctx = vd->priv;
 
     if (!ctx->dr1_buffer_pool) {
         ctx->dr1_buffer_pool = av_mallocz(sizeof(*ctx->dr1_buffer_pool));

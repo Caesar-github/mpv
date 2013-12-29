@@ -25,6 +25,8 @@
 #ifndef MPLAYER_TV_H
 #define MPLAYER_TV_H
 
+struct mp_log;
+
 typedef struct tv_param_s {
     char *freq;
     char *channel;
@@ -77,7 +79,7 @@ extern tv_param_t stream_tv_defaults;
 
 typedef struct tvi_info_s
 {
-    struct tvi_handle_s * (*tvi_init)(tv_param_t* tv_param);
+    struct tvi_handle_s * (*tvi_init)(struct mp_log *log, tv_param_t* tv_param);
     const char *name;
     const char *short_name;
     const char *author;
@@ -100,6 +102,7 @@ typedef struct tvi_functions_s
 } tvi_functions_t;
 
 typedef struct tvi_handle_s {
+    struct mp_log       *log;
     const tvi_functions_t	*functions;
     void		*priv;
     int 		seq;
@@ -188,7 +191,6 @@ typedef struct {
 /* AUDIO controls */
 #define TVI_CONTROL_AUD_GET_FORMAT	0x301
 #define TVI_CONTROL_AUD_GET_SAMPLERATE	0x302
-#define TVI_CONTROL_AUD_GET_SAMPLESIZE	0x303
 #define TVI_CONTROL_AUD_GET_CHANNELS	0x304
 #define TVI_CONTROL_AUD_SET_SAMPLERATE	0x305
 
@@ -226,7 +228,7 @@ int tv_set_norm(tvi_handle_t *tvh, char* norm);
 
 void tv_start_scan(tvi_handle_t *tvh, int start);
 
-tvi_handle_t *tv_new_handle(int size, const tvi_functions_t *functions);
+tvi_handle_t *tv_new_handle(int size, struct mp_log *log, const tvi_functions_t *functions);
 void tv_free_handle(tvi_handle_t *h);
 
 #define TV_NORM_PAL		1

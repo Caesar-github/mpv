@@ -22,14 +22,16 @@
 #include <libavcodec/avcodec.h>
 #include <libavutil/opt.h>
 
+#include "config.h"
+
 #include "sws_utils.h"
 
-#include "mpvcore/mp_common.h"
+#include "common/common.h"
 #include "video/mp_image.h"
 #include "video/img_format.h"
 #include "fmt-conversion.h"
 #include "csputils.h"
-#include "mpvcore/mp_msg.h"
+#include "common/msg.h"
 #include "video/filter/vf.h"
 
 //global sws_flags from the command line
@@ -79,9 +81,9 @@ void mp_sws_set_from_cmdline(struct mp_sws_context *ctx)
 
 bool mp_sws_supported_format(int imgfmt)
 {
-    enum PixelFormat av_format = imgfmt2pixfmt(imgfmt);
+    enum AVPixelFormat av_format = imgfmt2pixfmt(imgfmt);
 
-    return av_format != PIX_FMT_NONE && sws_isSupportedInput(av_format)
+    return av_format != AV_PIX_FMT_NONE && sws_isSupportedInput(av_format)
         && sws_isSupportedOutput(av_format);
 }
 
@@ -161,10 +163,11 @@ static void free_mp_sws(void *p)
 
 // You're supposed to set your scaling parameters on the returned context.
 // Free the context with talloc_free().
-struct mp_sws_context *mp_sws_alloc(void *talloc_parent)
+struct mp_sws_context *mp_sws_alloc(void *talloc_ctx)
 {
-    struct mp_sws_context *ctx = talloc_ptrtype(talloc_parent, ctx);
+    struct mp_sws_context *ctx = talloc_ptrtype(talloc_ctx, ctx);
     *ctx = (struct mp_sws_context) {
+        .log = mp_null_log,
         .flags = SWS_BILINEAR,
         .contrast = 1 << 16,    // 1.0 in 16.16 fixed point
         .saturation = 1 << 16,
@@ -204,13 +207,19 @@ int mp_sws_reinit(struct mp_sws_context *ctx)
     if (!src_fmt.id || !dst_fmt.id)
         return -1;
 
-    enum PixelFormat s_fmt = imgfmt2pixfmt(src->imgfmt);
-    if (s_fmt == PIX_FMT_NONE || sws_isSupportedInput(s_fmt) < 1)
+    enum AVPixelFormat s_fmt = imgfmt2pixfmt(src->imgfmt);
+    if (s_fmt == AV_PIX_FMT_NONE || sws_isSupportedInput(s_fmt) < 1) {
+        MP_ERR(ctx, "Input image format %s not supported by libswscale.\n",
+               mp_imgfmt_to_name(src->imgfmt));
         return -1;
+    }
 
-    enum PixelFormat d_fmt = imgfmt2pixfmt(dst->imgfmt);
-    if (d_fmt == PIX_FMT_NONE || sws_isSupportedOutput(d_fmt) < 1)
+    enum AVPixelFormat d_fmt = imgfmt2pixfmt(dst->imgfmt);
+    if (d_fmt == AV_PIX_FMT_NONE || sws_isSupportedOutput(d_fmt) < 1) {
+        MP_ERR(ctx, "Output image format %s not supported by libswscale.\n",
+               mp_imgfmt_to_name(dst->imgfmt));
         return -1;
+    }
 
     int s_csp = mp_csp_to_sws_colorspace(src->colorspace);
     int s_range = src->colorlevels == MP_CSP_LEVELS_PC;
@@ -273,7 +282,7 @@ int mp_sws_scale(struct mp_sws_context *ctx, struct mp_image *dst,
 {
     // Hack for older swscale versions which don't support this.
     // We absolutely need this in the OSD rendering path.
-    if (dst->imgfmt == IMGFMT_GBRP && !sws_isSupportedOutput(PIX_FMT_GBRP))
+    if (dst->imgfmt == IMGFMT_GBRP && !sws_isSupportedOutput(AV_PIX_FMT_GBRP))
         return to_gbrp(dst, src, ctx->flags);
 
     mp_image_params_from_image(&ctx->src, src);
@@ -281,7 +290,7 @@ int mp_sws_scale(struct mp_sws_context *ctx, struct mp_image *dst,
 
     int r = mp_sws_reinit(ctx);
     if (r < 0) {
-        mp_msg(MSGT_VFILTER, MSGL_ERR, "libswscale initialization failed.\n");
+        MP_ERR(ctx, "libswscale initialization failed.\n");
         return r;
     }
 

@@ -25,11 +25,11 @@
 #include <libswscale/swscale.h>
 
 #include "config.h"
-#include "mpvcore/bstr.h"
+#include "bstr/bstr.h"
 #include "osdep/io.h"
-#include "mpvcore/path.h"
+#include "options/path.h"
 #include "talloc.h"
-#include "mpvcore/mp_msg.h"
+#include "common/msg.h"
 #include "video/out/vo.h"
 #include "video/csputils.h"
 #include "video/vfcap.h"
@@ -37,8 +37,8 @@
 #include "video/fmt-conversion.h"
 #include "video/image_writer.h"
 #include "video/sws_utils.h"
-#include "sub/sub.h"
-#include "mpvcore/m_option.h"
+#include "sub/osd.h"
+#include "options/m_option.h"
 
 struct priv {
     struct image_writer_opts *opts;
@@ -95,7 +95,6 @@ static void draw_osd(struct vo *vo, struct osd_state *osd)
         .w = asp.orgw,
         .h = asp.orgh,
         .display_par = sar / dar,
-        .video_par = dar / sar,
     };
 
     osd_draw_on_image(osd, dim, osd->vo_pts, OSD_DRAW_SUB_ONLY, p->current);
@@ -115,7 +114,7 @@ static void flip_page(struct vo *vo)
         filename = mp_path_join(t, bstr0(p->outdir), bstr0(filename));
 
     MP_INFO(vo, "Saving %s\n", filename);
-    write_image(p->current, p->opts, filename);
+    write_image(p->current, p->opts, filename, vo->log);
 
     talloc_free(t);
     mp_image_unrefp(&p->current);
@@ -150,12 +149,8 @@ static int control(struct vo *vo, uint32_t request, void *data)
 
 const struct vo_driver video_out_image =
 {
-    .info = &(const vo_info_t) {
-        "Write video frames to image files",
-        "image",
-        "wm4",
-        ""
-    },
+    .description = "Write video frames to image files",
+    .name = "image",
     .priv_size = sizeof(struct priv),
     .options = (const struct m_option[]) {
         OPT_SUBSTRUCT("", opts, image_writer_conf, 0),

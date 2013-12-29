@@ -21,8 +21,8 @@
 /* Stuff for correct aspect scaling. */
 #include "aspect.h"
 #include "vo.h"
-#include "mpvcore/mp_msg.h"
-#include "mpvcore/options.h"
+#include "common/msg.h"
+#include "options/options.h"
 
 #include "vo.h"
 

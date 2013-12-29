@@ -2,6 +2,7 @@
  * VA API output module
  *
  * Copyright (C) 2008-2009 Splitted-Desktop Systems
+ * Gwenole Beauchesne <gbeauchesne@splitted-desktop.com>
  *
  * This file is part of MPlayer.
  *
@@ -28,17 +29,17 @@
 #include <va/va_x11.h>
 
 #include "config.h"
-#include "mpvcore/mp_msg.h"
+#include "common/msg.h"
 #include "video/out/vo.h"
 #include "video/memcpy_pic.h"
-#include "sub/sub.h"
+#include "sub/osd.h"
 #include "sub/img_convert.h"
 #include "x11_common.h"
 
 #include "video/vfcap.h"
 #include "video/mp_image.h"
 #include "video/vaapi.h"
-#include "video/decode/dec_video.h"
+#include "video/hwdec.h"
 
 struct vaapi_osd_image {
     int            w, h;
@@ -133,7 +134,7 @@ static bool alloc_swdec_surfaces(struct priv *p, int w, int h, int imgfmt)
     free_video_specific(p);
     for (int i = 0; i < MAX_OUTPUT_SURFACES; i++) {
         p->swdec_surfaces[i] =
-            va_surface_pool_get_wrapped(p->pool, p->va_image_formats, imgfmt, w, h);
+            va_surface_pool_get_wrapped(p->pool, imgfmt, w, h);
         if (!p->swdec_surfaces[i])
             return false;
     }
@@ -159,7 +160,7 @@ static int reconfig(struct vo *vo, struct mp_image_params *params, int flags)
     vo_x11_config_vo_window(vo, NULL, vo->dx, vo->dy, vo->dwidth, vo->dheight,
                             flags, "vaapi");
 
-    if (!IMGFMT_IS_VAAPI(params->imgfmt)) {
+    if (params->imgfmt != IMGFMT_VAAPI) {
         if (!alloc_swdec_surfaces(p, params->w, params->h, params->imgfmt))
             return -1;
     }
@@ -172,7 +173,7 @@ static int reconfig(struct vo *vo, struct mp_image_params *params, int flags)
 static int query_format(struct vo *vo, uint32_t imgfmt)
 {
     struct priv *p = vo->priv;
-    if (IMGFMT_IS_VAAPI(imgfmt) || va_image_format_from_imgfmt(p->va_image_formats, imgfmt))
+    if (imgfmt == IMGFMT_VAAPI || va_image_format_from_imgfmt(p->va_image_formats, imgfmt))
         return VFCAP_CSP_SUPPORTED | VFCAP_CSP_SUPPORTED_BY_HW;
 
     return 0;
@@ -189,8 +190,7 @@ static bool render_to_screen(struct priv *p, struct mp_image *mpi)
             // 4:2:0 should work everywhere
             int fmt = IMGFMT_420P;
             p->black_surface =
-                va_surface_pool_get_by_imgfmt(p->pool, p->va_image_formats,
-                                              fmt, w, h);
+                va_surface_pool_get_by_imgfmt(p->pool, fmt, w, h);
             if (p->black_surface) {
                 struct mp_image *img = mp_image_alloc(fmt, w, h);
                 mp_image_clear(img, 0, 0, w, h);
@@ -220,7 +220,7 @@ static bool render_to_screen(struct priv *p, struct mp_image *mpi)
                                             sp->dst_x, sp->dst_y,
                                             sp->dst_w, sp->dst_h,
                                             flags);
-            check_va_status(status, "vaAssociateSubpicture()");
+            CHECK_VA_STATUS(p, "vaAssociateSubpicture()");
         }
     }
 
@@ -243,7 +243,7 @@ static bool render_to_screen(struct priv *p, struct mp_image *mpi)
                           p->dst_rect.y1 - p->dst_rect.y0,
                           NULL, 0,
                           flags);
-    check_va_status(status, "vaPutSurface()");
+    CHECK_VA_STATUS(p, "vaPutSurface()");
 
     for (int n = 0; n < MAX_OSD_PARTS; n++) {
         struct vaapi_osd_part *part = &p->osd_parts[n];
@@ -251,7 +251,7 @@ static bool render_to_screen(struct priv *p, struct mp_image *mpi)
             struct vaapi_subpic *sp = &part->subpic;
             status = vaDeassociateSubpicture(p->display, sp->id,
                                              &surface, 1);
-            check_va_status(status, "vaDeassociateSubpicture()");
+            CHECK_VA_STATUS(p, "vaDeassociateSubpicture()");
         }
     }
 
@@ -271,7 +271,7 @@ static void draw_image(struct vo *vo, struct mp_image *mpi)
 {
     struct priv *p = vo->priv;
 
-    if (!IMGFMT_IS_VAAPI(mpi->imgfmt)) {
+    if (mpi->imgfmt != IMGFMT_VAAPI) {
         struct mp_image *wrapper = p->swdec_surfaces[p->output_surface];
         struct va_surface *surface = va_surface_in_mp_image(wrapper);
         if (!surface || !va_surface_upload(surface, mpi)) {
@@ -291,8 +291,7 @@ static struct mp_image *get_screenshot(struct priv *p)
         va_surface_in_mp_image(p->output_surfaces[p->visible_surface]);
     if (!surface)
         return NULL;
-    struct mp_image *img =
-        va_surface_download(surface, p->va_image_formats, NULL);
+    struct mp_image *img = va_surface_download(surface, NULL);
     if (!img)
         return NULL;
     struct mp_image_params params = p->image_params;
@@ -333,10 +332,10 @@ static int new_subpicture(struct priv *p, int w, int h,
     };
 
     status = vaCreateImage(p->display, &p->osd_format, w, h, &m.image);
-    if (!check_va_status(status, "vaCreateImage()"))
+    if (!CHECK_VA_STATUS(p, "vaCreateImage()"))
         goto error;
     status = vaCreateSubpicture(p->display, m.image.image_id, &m.subpic_id);
-    if (!check_va_status(status, "vaCreateSubpicture()"))
+    if (!CHECK_VA_STATUS(p, "vaCreateSubpicture()"))
         goto error;
 
     *out = m;
@@ -376,7 +375,7 @@ static void draw_osd_cb(void *pctx, struct sub_bitmaps *imgs)
 
         struct vaapi_osd_image *img = &part->image;
         struct mp_image vaimg;
-        if (va_image_map(p->display, &img->image, &vaimg) < 0)
+        if (va_image_map(p->mpvaapi, &img->image, &vaimg) < 0)
             goto error;
 
         // Clear borders and regions uncovered by sub-bitmaps
@@ -397,7 +396,7 @@ static void draw_osd_cb(void *pctx, struct sub_bitmaps *imgs)
                        vaimg.stride[0], sub->stride);
         }
 
-        if (va_image_unmap(p->display, &img->image) < 0)
+        if (va_image_unmap(p->mpvaapi, &img->image) < 0)
             goto error;
 
         part->subpic = (struct vaapi_subpic) {
@@ -426,7 +425,6 @@ static void draw_osd(struct vo *vo, struct osd_state *osd)
         .w = p->image_params.w,
         .h = p->image_params.h,
         .display_par = 1.0 / vo->aspdat.par,
-        .video_par = vo->aspdat.par,
     };
 
     struct mp_osd_res *res;
@@ -496,7 +494,7 @@ static int set_equalizer(struct priv *p, const char *name, int value)
     attr->value = ((value + 100) * r) / 200 + attr->min_value;
 
     status = vaSetDisplayAttributes(p->display, attr, 1);
-    if (!check_va_status(status, "vaSetDisplayAttributes()"))
+    if (!CHECK_VA_STATUS(p, "vaSetDisplayAttributes()"))
         return VO_FALSE;
     return VO_TRUE;
 }
@@ -585,13 +583,13 @@ static int preinit(struct vo *vo)
     if (!p->display)
         return -1;
 
-    p->mpvaapi = va_initialize(p->display);
+    p->mpvaapi = va_initialize(p->display, p->log);
     if (!p->mpvaapi) {
         vaTerminate(p->display);
         return -1;
     }
 
-    p->pool = va_surface_pool_alloc(p->display, VA_RT_FORMAT_YUV420);
+    p->pool = va_surface_pool_alloc(p->mpvaapi, VA_RT_FORMAT_YUV420);
     p->va_image_formats = p->mpvaapi->image_formats;
 
     int max_subpic_formats = vaMaxNumSubpictureFormats(p->display);
@@ -601,7 +599,7 @@ static int preinit(struct vo *vo)
                                       p->va_subpic_formats,
                                       p->va_subpic_flags,
                                       &p->va_num_subpic_formats);
-    if (!check_va_status(status, "vaQuerySubpictureFormats()"))
+    if (!CHECK_VA_STATUS(p, "vaQuerySubpictureFormats()"))
         p->va_num_subpic_formats = 0;
     MP_VERBOSE(vo, "%d subpicture formats available:\n",
                p->va_num_subpic_formats);
@@ -634,7 +632,7 @@ static int preinit(struct vo *vo)
     if (p->va_display_attrs) {
         status = vaQueryDisplayAttributes(p->display, p->va_display_attrs,
                                           &p->va_num_display_attrs);
-        if (!check_va_status(status, "vaQueryDisplayAttributes()"))
+        if (!CHECK_VA_STATUS(p, "vaQueryDisplayAttributes()"))
             p->va_num_display_attrs = 0;
     }
     return 0;
@@ -643,12 +641,8 @@ static int preinit(struct vo *vo)
 #define OPT_BASE_STRUCT struct priv
 
 const struct vo_driver video_out_vaapi = {
-    .info = &(const vo_info_t) {
-        "VA API with X11",
-        "vaapi",
-        "Gwenole Beauchesne <gbeauchesne@splitted-desktop.com> and others",
-        ""
-    },
+    .description = "VA API with X11",
+    .name = "vaapi",
     .preinit = preinit,
     .query_format = query_format,
     .reconfig = reconfig,
@@ -661,7 +655,7 @@ const struct vo_driver video_out_vaapi = {
     .priv_defaults = &(const struct priv) {
         .scaling = VA_FILTER_SCALING_DEFAULT,
         .deint = 0,
-#if !CONFIG_VAAPI_VPP
+#if !HAVE_VAAPI_VPP
         .deint_type = 2,
 #endif
     },

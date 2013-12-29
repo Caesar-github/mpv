@@ -30,8 +30,9 @@
 #include <inttypes.h>
 
 #include "config.h"
-#include "mpvcore/mp_msg.h"
-#include "mpvcore/cpudetect.h"
+#include "common/msg.h"
+#include "common/cpudetect.h"
+#include "options/m_option.h"
 
 #include "video/img_format.h"
 #include "video/mp_image.h"
@@ -57,6 +58,7 @@ typedef struct eq2_param_t {
 } eq2_param_t;
 
 typedef struct vf_priv_s {
+  struct mp_log *log;
   eq2_param_t param[3];
 
   double        contrast;
@@ -74,6 +76,8 @@ typedef struct vf_priv_s {
   unsigned char *buf[3];
 
   int gamma_i, contrast_i, brightness_i, saturation_i;
+
+  double   par[8];
 } vf_eq2_t;
 
 
@@ -133,6 +137,7 @@ void affine_1d_MMX (eq2_param_t *par, unsigned char *dst, unsigned char *src,
   int      pel;
   short    brvec[4];
   short    contvec[4];
+  unsigned wcount = w >> 3;
 
 //  printf("\nmmx: src=%p dst=%p w=%d h=%d ds=%d ss=%d\n",src,dst,w,h,dstride,sstride);
 
@@ -170,7 +175,7 @@ void affine_1d_MMX (eq2_param_t *par, unsigned char *dst, unsigned char *src,
       "decl %%eax \n\t"
       "jnz 1b \n\t"
       : "=r" (src), "=r" (dst)
-      : "0" (src), "1" (dst), "r" (w >> 3), "r" (brvec), "r" (contvec)
+      : "0" (src), "1" (dst), "g" (wcount), "r" (brvec), "r" (contvec)
       : "%eax"
     );
 
@@ -309,7 +314,7 @@ void check_values (eq2_param_t *par)
 static
 void print_values (vf_eq2_t *eq2)
 {
-  mp_msg (MSGT_VFILTER, MSGL_V, "vf_eq2: c=%.2f b=%.2f g=%.4f s=%.2f \n",
+  MP_VERBOSE(eq2, "vf_eq2: c=%.2f b=%.2f g=%.4f s=%.2f \n",
     eq2->contrast, eq2->brightness, eq2->gamma, eq2->saturation
   );
 }
@@ -424,7 +429,7 @@ int control (vf_instance_t *vf, int request, void *data)
       break;
   }
 
-  return vf_next_control (vf, request, data);
+  return CONTROL_UNKNOWN;
 }
 
 static
@@ -449,16 +454,15 @@ void uninit (vf_instance_t *vf)
 {
   if (vf->priv != NULL) {
     free (vf->priv->buf[0]);
-    free (vf->priv);
   }
 }
 
 static
-int vf_open(vf_instance_t *vf, char *args)
+int vf_open(vf_instance_t *vf)
 {
   unsigned i;
   vf_eq2_t *eq2;
-  double   par[8];
+  double   *par = vf->priv->par;
 
   vf->control = control;
   vf->query_format = query_format;
@@ -467,6 +471,7 @@ int vf_open(vf_instance_t *vf, char *args)
 
   vf->priv = malloc (sizeof (vf_eq2_t));
   eq2 = vf->priv;
+  eq2->log = vf->log;
 
   for (i = 0; i < 3; i++) {
     eq2->buf[i] = NULL;
@@ -479,29 +484,6 @@ int vf_open(vf_instance_t *vf, char *args)
     eq2->param[i].g = 1.0;
     eq2->param[i].lut_clean = 0;
   }
-
-  eq2->contrast = 1.0;
-  eq2->brightness = 0.0;
-  eq2->saturation = 1.0;
-
-  eq2->gamma = 1.0;
-  eq2->gamma_weight = 1.0;
-  eq2->rgamma = 1.0;
-  eq2->ggamma = 1.0;
-  eq2->bgamma = 1.0;
-
-  if (args != NULL) {
-    par[0] = 1.0;
-    par[1] = 1.0;
-    par[2] = 0.0;
-    par[3] = 1.0;
-    par[4] = 1.0;
-    par[5] = 1.0;
-    par[6] = 1.0;
-    par[7] = 1.0;
-    sscanf (args, "%lf:%lf:%lf:%lf:%lf:%lf:%lf:%lf",
-      par, par + 1, par + 2, par + 3, par + 4, par + 5, par + 6, par + 7
-    );
 
     eq2->rgamma = par[4];
     eq2->ggamma = par[5];
@@ -516,16 +498,27 @@ int vf_open(vf_instance_t *vf, char *args)
     eq2->brightness_i = (int) (100.0 * vf->priv->brightness);
     set_saturation (eq2, par[3]);
     eq2->saturation_i = (int) (100.0 * vf->priv->saturation) - 100;
-  }
 
   return 1;
 }
 
+#define OPT_BASE_STRUCT struct vf_priv_s
 const vf_info_t vf_info_eq = {
-  "Software equalizer",
-  "eq",
-  "Hampa Hug, Daniel Moreno, Richard Felker",
-  "",
-  &vf_open,
-  NULL
+    .description = "Software equalizer",
+    .name = "eq",
+    .open = &vf_open,
+    .priv_size = sizeof(struct vf_priv_s),
+    .options = (const struct m_option[]){
+#define PARAM(name, n, def, min_, max_) \
+    OPT_DOUBLE(name, par[n], CONF_RANGE, .min = min_, .max = max_, OPTDEF_DOUBLE(def))
+        PARAM("gamma",          0, 1.0, 0.1, 10),
+        PARAM("contrast",       1, 1.0, -2, 2),
+        PARAM("brightness",     2, 0.0, -1, 1),
+        PARAM("saturation",     3, 1.0, 0, 3),
+        PARAM("rg",             4, 1.0, 0.1, 10),
+        PARAM("gg",             5, 1.0, 0.1, 10),
+        PARAM("bg",             6, 1.0, 0.1, 10),
+        PARAM("weight",         7, 1.0, 0, 1),
+        {0}
+    },
 };

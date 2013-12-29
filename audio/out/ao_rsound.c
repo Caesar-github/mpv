@@ -29,7 +29,7 @@
 
 #include "talloc.h"
 
-#include "mpvcore/m_option.h"
+#include "options/m_option.h"
 #include "osdep/timer.h"
 #include "audio/format.h"
 #include "ao.h"
@@ -114,6 +114,8 @@ static int init(struct ao *ao)
     rsd_set_param(priv->rd, RSD_SAMPLERATE, &ao->samplerate);
     rsd_set_param(priv->rd, RSD_CHANNELS, &ao->channels.num);
 
+    ao->format = af_fmt_from_planar(ao->format);
+
     int rsd_format = set_format(ao);
     rsd_set_param(priv->rd, RSD_FORMAT, &rsd_format);
 
@@ -161,13 +163,13 @@ static void audio_resume(struct ao *ao)
 static int get_space(struct ao *ao)
 {
     struct priv *priv = ao->priv;
-    return rsd_get_avail(priv->rd);
+    return rsd_get_avail(priv->rd) / ao->sstride;
 }
 
-static int play(struct ao *ao, void *data, int len, int flags)
+static int play(struct ao *ao, void **data, int samples, int flags)
 {
     struct priv *priv = ao->priv;
-    return rsd_write(priv->rd, data, len);
+    return rsd_write(priv->rd, data[0], samples * ao->sstride) / ao->sstride;
 }
 
 static float get_delay(struct ao *ao)
@@ -179,12 +181,8 @@ static float get_delay(struct ao *ao)
 #define OPT_BASE_STRUCT struct priv
 
 const struct ao_driver audio_out_rsound = {
-    .info      = &(const struct ao_info) {
-        .name       = "RSound output driver",
-        .short_name = "rsound",
-        .author     = "Hans-Kristian Arntzen",
-        .comment    = "",
-    },
+    .description = "RSound output driver",
+    .name      = "rsound",
     .init      = init,
     .uninit    = uninit,
     .reset     = reset,

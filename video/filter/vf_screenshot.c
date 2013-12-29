@@ -33,26 +33,13 @@
 #include "vf.h"
 
 struct vf_priv_s {
-    int display_w, display_h;
     struct mp_image *current;
 };
-
-static int config(struct vf_instance *vf,
-                  int width, int height, int d_width, int d_height,
-                  unsigned int flags, unsigned int outfmt)
-{
-    mp_image_unrefp(&vf->priv->current);
-    vf->priv->display_w = d_width;
-    vf->priv->display_h = d_height;
-    return vf_next_config(vf,width,height,d_width,d_height,flags,outfmt);
-}
 
 static struct mp_image *filter(struct vf_instance *vf, struct mp_image *mpi)
 {
     mp_image_unrefp(&vf->priv->current);
     vf->priv->current = talloc_steal(vf, mp_image_new_ref(mpi));
-    mp_image_set_display_size(vf->priv->current, vf->priv->display_w,
-                              vf->priv->display_h);
     return mpi;
 }
 
@@ -63,7 +50,7 @@ static int control (vf_instance_t *vf, int request, void *data)
         args->out_image = mp_image_new_ref(vf->priv->current);
         return CONTROL_TRUE;
     }
-    return vf_next_control (vf, request, data);
+    return CONTROL_UNKNOWN;
 }
 
 static int query_format(struct vf_instance *vf, unsigned int fmt)
@@ -73,9 +60,8 @@ static int query_format(struct vf_instance *vf, unsigned int fmt)
     return 0;
 }
 
-static int vf_open(vf_instance_t *vf, char *args)
+static int vf_open(vf_instance_t *vf)
 {
-    vf->config = config;
     vf->control = control;
     vf->filter = filter;
     vf->query_format = query_format;
@@ -84,10 +70,7 @@ static int vf_open(vf_instance_t *vf, char *args)
 }
 
 const vf_info_t vf_info_screenshot = {
-    "screenshot to file",
-    "screenshot",
-    "A'rpi, Jindrich Makovicka",
-    "",
-    vf_open,
-    NULL
+    .description = "screenshot to file",
+    .name = "screenshot",
+    .open = vf_open,
 };

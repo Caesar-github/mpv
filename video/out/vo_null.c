@@ -25,7 +25,7 @@
 #include <string.h>
 #include <errno.h>
 #include "config.h"
-#include "mpvcore/mp_msg.h"
+#include "common/msg.h"
 #include "vo.h"
 #include "video/vfcap.h"
 #include "video/mp_image.h"
@@ -40,8 +40,6 @@ static void flip_page(struct vo *vo)
 
 static int query_format(struct vo *vo, uint32_t format)
 {
-    if (IMGFMT_IS_HWACCEL(format))
-        return 0;
     return VFCAP_CSP_SUPPORTED;
 }
 
@@ -67,12 +65,8 @@ static int control(struct vo *vo, uint32_t request, void *data)
 }
 
 const struct vo_driver video_out_null = {
-    .info = &(const vo_info_t) {
-        "Null video output",
-        "null",
-        "Aaron Holtzman <aholtzma@ess.engr.uvic.ca>",
-        ""
-    },
+    .description = "Null video output",
+    .name = "null",
     .preinit = preinit,
     .query_format = query_format,
     .config = config,

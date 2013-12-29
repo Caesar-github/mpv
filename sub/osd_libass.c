@@ -25,29 +25,41 @@
 #include "config.h"
 
 #include "talloc.h"
-#include "mpvcore/mp_common.h"
-#include "mpvcore/mp_msg.h"
-#include "sub.h"
+#include "common/common.h"
+#include "common/msg.h"
+#include "osd.h"
 
 static const char osd_font_pfb[] =
 #include "sub/osd_font.h"
 ;
 
 #include "sub/ass_mp.h"
-#include "mpvcore/options.h"
+#include "options/options.h"
 
 
 #define ASS_USE_OSD_FONT "{\\fnmpv-osd-symbols}"
 
 void osd_init_backend(struct osd_state *osd)
 {
-    osd->osd_ass_library = mp_ass_init(osd->opts);
-    ass_add_font(osd->osd_ass_library, "mpv-osd-symbols", (void *)osd_font_pfb,
+}
+
+static void create_ass_renderer(struct osd_state *osd, struct osd_object *obj)
+{
+    if (obj->osd_render)
+        return;
+
+    struct mp_log *ass_log = mp_log_new(obj, osd->log, "libass");
+    obj->osd_ass_library = mp_ass_init(osd->global, ass_log);
+    ass_add_font(obj->osd_ass_library, "mpv-osd-symbols", (void *)osd_font_pfb,
                  sizeof(osd_font_pfb) - 1);
 
-    osd->osd_render = ass_renderer_init(osd->osd_ass_library);
-    mp_ass_configure_fonts(osd->osd_render, osd->opts->osd_style);
-    ass_set_aspect_ratio(osd->osd_render, 1.0, 1.0);
+    obj->osd_render = ass_renderer_init(obj->osd_ass_library);
+    if (!obj->osd_render)
+        abort();
+
+    mp_ass_configure_fonts(obj->osd_render, osd->opts->osd_style,
+                           osd->global, ass_log);
+    ass_set_aspect_ratio(obj->osd_render, 1.0, 1.0);
 }
 
 void osd_destroy_backend(struct osd_state *osd)
@@ -57,47 +69,64 @@ void osd_destroy_backend(struct osd_state *osd)
         if (obj->osd_track)
             ass_free_track(obj->osd_track);
         obj->osd_track = NULL;
+        if (obj->osd_render)
+            ass_renderer_done(obj->osd_render);
+        obj->osd_render = NULL;
+        if (obj->osd_ass_library)
+            ass_library_done(obj->osd_ass_library);
+        obj->osd_ass_library = NULL;
     }
-    if (osd->osd_render)
-        ass_renderer_done(osd->osd_render);
-    osd->osd_render = NULL;
-    ass_library_done(osd->osd_ass_library);
-    osd->osd_ass_library = NULL;
 }
 
-static void create_osd_ass_track(struct osd_state *osd, struct osd_object *obj)
+static void create_ass_track(struct osd_state *osd, struct osd_object *obj,
+                             int res_x, int res_y)
 {
+    create_ass_renderer(osd, obj);
+
     ASS_Track *track = obj->osd_track;
     if (!track)
-        track = ass_new_track(osd->osd_ass_library);
+        track = ass_new_track(obj->osd_ass_library);
+
+    int old_res_x = track->PlayResX;
+    int old_res_y = track->PlayResY;
 
     double aspect = 1.0 * obj->vo_res.w / FFMAX(obj->vo_res.h, 1) /
                     obj->vo_res.display_par;
 
     track->track_type = TRACK_TYPE_ASS;
     track->Timer = 100.;
-    track->PlayResY = MP_ASS_FONT_PLAYRESY;
-    track->PlayResX = track->PlayResY * aspect;
+    track->PlayResY = res_y ? res_y : MP_ASS_FONT_PLAYRESY;
+    track->PlayResX = res_x ? res_x : track->PlayResY * aspect;
     track->WrapStyle = 1; // end-of-line wrapping instead of smart wrapping
+    track->Kerning = true;
 
-    if (track->n_styles == 0) {
-        track->Kerning = true;
+    // Force libass to clear its internal cache - it doesn't check for
+    // PlayRes changes itself.
+    if (old_res_x != track->PlayResX || old_res_y != track->PlayResY)
+        ass_set_frame_size(obj->osd_render, 1, 1);
+
+    if (track->n_styles < 2) {
         int sid = ass_alloc_style(track);
         track->default_style = sid;
         ASS_Style *style = track->styles + sid;
         style->Alignment = 5; // top-title, left
         style->Name = strdup("OSD");
-        mp_ass_set_style(style, MP_ASS_FONT_PLAYRESY, osd->opts->osd_style);
         // Set to neutral base direction, as opposed to VSFilter LTR default
         style->Encoding = -1;
 
         sid = ass_alloc_style(track);
+        assert(sid == track->default_style + 1);
         style = track->styles + sid;
         style->Name = strdup("Default");
-        const struct osd_style_opts *def = osd_style_conf.defaults;
-        mp_ass_set_style(style, MP_ASS_FONT_PLAYRESY, def);
         style->Encoding = -1;
     }
+
+    ASS_Style *s_osd = track->styles + track->default_style;
+    mp_ass_set_style(s_osd, track->PlayResY, osd->opts->osd_style);
+
+    ASS_Style *s_def = track->styles + track->default_style + 1;
+    const struct osd_style_opts *def = osd_style_conf.defaults;
+    mp_ass_set_style(s_def, track->PlayResY, def);
 
     obj->osd_track = track;
 }
@@ -155,7 +184,7 @@ static void update_osd(struct osd_state *osd, struct osd_object *obj)
 {
     struct MPOpts *opts = osd->opts;
 
-    create_osd_ass_track(osd, obj);
+    create_ass_track(osd, obj, 0, 0);
     clear_obj(obj);
     if (!osd->osd_text[0])
         return;
@@ -163,8 +192,13 @@ static void update_osd(struct osd_state *osd, struct osd_object *obj)
     struct osd_style_opts font = *opts->osd_style;
     font.font_size *= opts->osd_scale;
 
+    double playresy = obj->osd_track->PlayResY;
+    // Compensate for libass and mp_ass_set_style scaling the font etc.
+    if (!opts->osd_scale_by_window)
+        playresy *= 720.0 / obj->vo_res.h;
+
     ASS_Style *style = obj->osd_track->styles + obj->osd_track->default_style;
-    mp_ass_set_style(style, obj->osd_track->PlayResY, &font);
+    mp_ass_set_style(style, playresy, &font);
 
     char *text = mangle_ass(osd->osd_text);
     add_osd_ass_event(obj->osd_track, text);
@@ -252,7 +286,7 @@ static void get_osd_bar_box(struct osd_state *osd, struct osd_object *obj,
     struct MPOpts *opts = osd->opts;
 
     bool new_track = !obj->osd_track;
-    create_osd_ass_track(osd, obj);
+    create_ass_track(osd, obj, 0, 0);
     ASS_Track *track = obj->osd_track;
     ASS_Style *style = track->styles + track->default_style;
 
@@ -356,23 +390,8 @@ static void update_progbar(struct osd_state *osd, struct osd_object *obj)
 
 static void update_external(struct osd_state *osd, struct osd_object *obj)
 {
-    create_osd_ass_track(osd, obj);
+    create_ass_track(osd, obj, osd->external_res_x, osd->external_res_y);
     clear_obj(obj);
-
-    if (osd->external_res_x < 1 || osd->external_res_y < 1)
-        return;
-
-    ASS_Track *track = obj->osd_track;
-
-    if (track->PlayResX != osd->external_res_x ||
-        track->PlayResY != osd->external_res_y)
-    {
-        track->PlayResX = osd->external_res_x;
-        track->PlayResY = osd->external_res_y;
-        // Force libass to clear its internal cache - it doesn't check for
-        // PlayRes changes itself.
-        ass_set_frame_size(osd->osd_render, 1, 1);
-    }
 
     bstr t = bstr0(osd->external);
     while (t.len) {
@@ -392,23 +411,26 @@ static void update_sub(struct osd_state *osd, struct osd_object *obj)
 
     clear_obj(obj);
 
-    if (!osd->sub_text || !osd->sub_text[0])
+    if (!obj->sub_text || !obj->sub_text[0] || obj->render_bitmap_subs)
         return;
 
+    create_ass_renderer(osd, obj);
     if (!obj->osd_track)
-        obj->osd_track = mp_ass_default_track(osd->osd_ass_library, osd->opts);
+        obj->osd_track = mp_ass_default_track(obj->osd_ass_library, osd->opts);
 
     struct osd_style_opts font = *opts->sub_text_style;
     font.font_size *= opts->sub_scale;
 
     ASS_Style *style = obj->osd_track->styles + obj->osd_track->default_style;
     mp_ass_set_style(style, obj->osd_track->PlayResY, &font);
+    if (obj->type == OSDTYPE_SUB2)
+        style->Alignment = 6;
 
 #if LIBASS_VERSION >= 0x01010000
-    ass_set_line_position(osd->osd_render, 100 - opts->sub_pos);
+    ass_set_line_position(obj->osd_render, 100 - opts->sub_pos);
 #endif
 
-    char *escaped_text = mangle_ass(osd->sub_text);
+    char *escaped_text = mangle_ass(obj->sub_text);
     add_osd_ass_event(obj->osd_track, escaped_text);
     talloc_free(escaped_text);
 }
@@ -419,7 +441,8 @@ static void update_object(struct osd_state *osd, struct osd_object *obj)
     case OSDTYPE_OSD:
         update_osd(osd, obj);
         break;
-    case OSDTYPE_SUBTEXT:
+    case OSDTYPE_SUB:
+    case OSDTYPE_SUB2:
         update_sub(osd, obj);
         break;
     case OSDTYPE_PROGBAR:
@@ -441,9 +464,9 @@ void osd_object_get_bitmaps(struct osd_state *osd, struct osd_object *obj,
     if (!obj->osd_track)
         return;
 
-    ass_set_frame_size(osd->osd_render, obj->vo_res.w, obj->vo_res.h);
-    ass_set_aspect_ratio(osd->osd_render, obj->vo_res.display_par, 1.0);
-    mp_ass_render_frame(osd->osd_render, obj->osd_track, 0,
+    ass_set_frame_size(obj->osd_render, obj->vo_res.w, obj->vo_res.h);
+    ass_set_aspect_ratio(obj->osd_render, obj->vo_res.display_par, 1.0);
+    mp_ass_render_frame(obj->osd_render, obj->osd_track, 0,
                         &obj->parts_cache, out_imgs);
     talloc_steal(obj, obj->parts_cache);
 }

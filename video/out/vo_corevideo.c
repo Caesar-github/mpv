@@ -23,7 +23,7 @@
 #include "config.h"
 
 #include <QuartzCore/QuartzCore.h>
-#if CONFIG_VDA
+#if HAVE_VDA_HWACCEL
 #include <IOSurface/IOSurface.h>
 #endif
 
@@ -31,8 +31,8 @@
 
 #include "talloc.h"
 #include "video/out/vo.h"
-#include "sub/sub.h"
-#include "mpvcore/m_option.h"
+#include "sub/osd.h"
+#include "options/m_option.h"
 
 #include "video/csputils.h"
 #include "video/vfcap.h"
@@ -140,25 +140,6 @@ static int init_gl(struct vo *vo, uint32_t d_width, uint32_t d_height)
         gl->SwapInterval(1);
 
     return 1;
-}
-
-static int reconfig(struct vo *vo, struct mp_image_params *params, int flags)
-{
-    struct priv *p = vo->priv;
-    p->fns.uninit(vo);
-
-    p->image_width  = params->w;
-    p->image_height = params->h;
-
-    int mpgl_caps = MPGL_CAP_GL_LEGACY;
-    if (!mpgl_config_window(
-            p->mpglctx, mpgl_caps, vo->dwidth, vo->dheight, flags))
-        return -1;
-
-    init_gl(vo, vo->dwidth, vo->dheight);
-    p->fns.init(vo);
-
-    return 0;
 }
 
 // map x/y (in range 0..1) to the video texture, and emit OpenGL vertexes
@@ -446,7 +427,7 @@ static struct cv_functions cv_functions = {
     .set_yuv_colorspace = cv_set_yuv_colorspace,
 };
 
-#if CONFIG_VDA
+#if HAVE_VDA_HWACCEL
 static void iosurface_init(struct vo *vo)
 {
     struct priv *p = vo->priv;
@@ -546,55 +527,64 @@ static struct cv_functions iosurface_functions = {
     .get_yuv_colorspace = get_yuv_colorspace,
     .set_yuv_colorspace = iosurface_set_yuv_csp,
 };
-#endif /* CONFIG_VDA */
+#endif /* HAVE_VDA_HWACCEL */
+
+struct fmt_entry {
+    enum mp_imgfmt imgfmt;
+    OSType cvfmt;
+    struct cv_functions *funs;
+};
+
+static const struct fmt_entry supported_fmts[] = {
+#if HAVE_VDA_HWACCEL
+    { IMGFMT_VDA,   0,                  &iosurface_functions },
+#endif
+    { IMGFMT_YUYV,  kYUVSPixelFormat,   &cv_functions },
+    { IMGFMT_UYVY,  k2vuyPixelFormat,   &cv_functions },
+    { IMGFMT_RGB24, k24RGBPixelFormat,  &cv_functions },
+    { IMGFMT_BGRA,  k32BGRAPixelFormat, &cv_functions },
+    { IMGFMT_NONE,  0,                  NULL }
+};
+
+static int reconfig(struct vo *vo, struct mp_image_params *params, int flags)
+{
+    struct priv *p = vo->priv;
+    if (p->fns.uninit)
+        p->fns.uninit(vo);
+
+    for (int i = 0; supported_fmts[i].imgfmt; i++)
+        if (supported_fmts[i].imgfmt == params->imgfmt) {
+            p->fns       = *supported_fmts[i].funs;
+            p->cv.pixfmt = supported_fmts[i].cvfmt;
+            break;
+        }
+
+    p->image_width  = params->w;
+    p->image_height = params->h;
+
+    int mpgl_caps = MPGL_CAP_GL_LEGACY;
+    if (!mpgl_config_window(
+            p->mpglctx, mpgl_caps, vo->dwidth, vo->dheight, flags))
+        return -1;
+
+    init_gl(vo, vo->dwidth, vo->dheight);
+    p->fns.init(vo);
+
+    return 0;
+}
+
 
 static int query_format(struct vo *vo, uint32_t format)
 {
-    struct priv *p = vo->priv;
-    const int flags = VFCAP_CSP_SUPPORTED | VFCAP_CSP_SUPPORTED_BY_HW;
-
-    switch (format) {
-#if CONFIG_VDA
-        case IMGFMT_VDA:
-            p->fns = iosurface_functions;
-            return flags;
-#endif
-
-        case IMGFMT_YUYV:
-            p->fns       = cv_functions;
-            p->cv.pixfmt = kYUVSPixelFormat;
-            return flags;
-
-        case IMGFMT_UYVY:
-            p->fns       = cv_functions;
-            p->cv.pixfmt = k2vuyPixelFormat;
-            return flags;
-
-        case IMGFMT_RGB24:
-            p->fns       = cv_functions;
-            p->cv.pixfmt = k24RGBPixelFormat;
-            return flags;
-
-        case IMGFMT_ARGB:
-            p->fns       = cv_functions;
-            p->cv.pixfmt = k32ARGBPixelFormat;
-            return flags;
-
-        case IMGFMT_BGRA:
-            p->fns       = cv_functions;
-            p->cv.pixfmt = k32BGRAPixelFormat;
-            return flags;
-    }
+    for (int i = 0; supported_fmts[i].imgfmt; i++)
+        if (supported_fmts[i].imgfmt == format)
+            return VFCAP_CSP_SUPPORTED | VFCAP_CSP_SUPPORTED_BY_HW;
     return 0;
 }
 
 const struct vo_driver video_out_corevideo = {
-    .info = &(const vo_info_t) {
-        "Mac OS X Core Video",
-        "corevideo",
-        "Nicolas Plourde <nicolas.plourde@gmail.com> and others",
-        ""
-    },
+    .name = "corevideo",
+    .description = "Mac OS X Core Video",
     .preinit = preinit,
     .query_format = query_format,
     .reconfig = reconfig,

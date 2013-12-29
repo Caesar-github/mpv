@@ -21,6 +21,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <inttypes.h>
+#include <stdarg.h>
 #include <assert.h>
 
 #include <libavutil/avstring.h>
@@ -35,15 +36,16 @@
 #include <libavfilter/buffersink.h>
 #include <libavfilter/buffersrc.h>
 
-#include "mpvcore/mp_msg.h"
-#include "mpvcore/m_option.h"
-#include "mpvcore/av_opts.h"
+#include "common/msg.h"
+#include "options/m_option.h"
+#include "common/av_opts.h"
 
 #include "video/img_format.h"
 #include "video/mp_image.h"
 #include "video/sws_utils.h"
 #include "video/fmt-conversion.h"
 #include "vf.h"
+#include "vf_lavfi.h"
 
 #define IS_LIBAV_FORK (LIBAVFILTER_VERSION_MICRO < 100)
 
@@ -73,6 +75,10 @@ struct vf_priv_s {
     AVRational timebase_in;
     AVRational timebase_out;
     AVRational par_in;
+
+    // for the lw wrapper
+    void *old_priv;
+    void (*lw_recreate_cb)(struct vf_instance *vf);
 
     // options
     char *cfg_graph;
@@ -120,20 +126,23 @@ static bool recreate_graph(struct vf_instance *vf, int width, int height,
     struct vf_priv_s *p = vf->priv;
     AVFilterContext *in = NULL, *out = NULL, *f_format = NULL;
 
+    if (vf->priv->lw_recreate_cb)
+        vf->priv->lw_recreate_cb(vf);
+
     if (bstr0(p->cfg_graph).len == 0) {
-        mp_msg(MSGT_VFILTER, MSGL_FATAL, "lavfi: no filter graph set\n");
+        MP_FATAL(vf, "lavfi: no filter graph set\n");
         return false;
     }
 
     destroy_graph(vf);
-    mp_msg(MSGT_VFILTER, MSGL_V, "lavfi: create graph: '%s'\n", p->cfg_graph);
+    MP_VERBOSE(vf, "lavfi: create graph: '%s'\n", p->cfg_graph);
 
     AVFilterGraph *graph = avfilter_graph_alloc();
     if (!graph)
         goto error;
 
     if (parse_avopts(graph, p->cfg_avopts) < 0) {
-        mp_msg(MSGT_VFILTER, MSGL_FATAL, "lavfi: could not set opts: '%s'\n",
+        MP_FATAL(vf, "lavfi: could not set opts: '%s'\n",
                p->cfg_avopts);
         goto error;
     }
@@ -205,7 +214,7 @@ static bool recreate_graph(struct vf_instance *vf, int width, int height,
     return true;
 
 error:
-    mp_msg(MSGT_VFILTER, MSGL_FATAL, "Can't configure libavfilter graph.\n");
+    MP_FATAL(vf, "Can't configure libavfilter graph.\n");
     avfilter_graph_free(&graph);
     talloc_free(tmp);
     return false;
@@ -294,18 +303,22 @@ static int filter_ext(struct vf_instance *vf, struct mp_image *mpi)
     return 0;
 }
 
-static int control(vf_instance_t *vf, int request, void *data)
+static void reset(vf_instance_t *vf)
 {
     struct vf_priv_s *p = vf->priv;
+    struct mp_image_params *f = &vf->fmt_in;
+    if (p->graph && f->imgfmt)
+        recreate_graph(vf, f->w, f->h, f->d_w, f->d_h, f->imgfmt);
+}
+
+static int control(vf_instance_t *vf, int request, void *data)
+{
     switch (request) {
     case VFCTRL_SEEK_RESET:
-        if (p->graph) {
-            struct mp_image_params *f = &vf->fmt_in.params;
-            recreate_graph(vf, f->w, f->h, f->d_w, f->d_h, f->imgfmt);
-        }
-        break;
+        reset(vf);
+        return CONTROL_OK;
     }
-    return vf_next_control(vf, request, data);
+    return CONTROL_UNKNOWN;
 }
 
 static void uninit(struct vf_instance *vf)
@@ -315,31 +328,160 @@ static void uninit(struct vf_instance *vf)
     destroy_graph(vf);
 }
 
-static int vf_open(vf_instance_t *vf, char *args)
+static int vf_open(vf_instance_t *vf)
 {
+    vf->reconfig = NULL;
     vf->config = config;
     vf->filter_ext = filter_ext;
+    vf->filter = NULL;
     vf->query_format = query_format;
     vf->control = control;
     vf->uninit = uninit;
     return 1;
 }
 
+static bool is_single_video_only(const AVFilterPad *pads)
+{
+    int count = avfilter_pad_count(pads);
+    if (count != 1)
+        return false;
+    return avfilter_pad_get_type(pads, 0) == AVMEDIA_TYPE_VIDEO;
+}
+
+// Does it have exactly one video input and one video output?
+static bool is_usable(const AVFilter *filter)
+{
+    return is_single_video_only(filter->inputs) &&
+           is_single_video_only(filter->outputs);
+}
+
+static void print_help(struct mp_log *log)
+{
+    mp_info(log, "List of libavfilter filters:\n");
+    for (const AVFilter *filter = avfilter_next(NULL); filter;
+         filter = avfilter_next(filter))
+    {
+        if (is_usable(filter))
+            mp_info(log, " %-16s %s\n", filter->name, filter->description);
+    }
+    mp_info(log, "\n"
+        "This lists video->video filters only. Refer to\n"
+        "\n"
+        " https://ffmpeg.org/ffmpeg-filters.html\n"
+        "\n"
+        "to see how to use each filter and what arguments each filter takes.\n"
+        "Also, be sure to quote the FFmpeg filter string properly, e.g.:\n"
+        "\n"
+        " \"--vf=lavfi=[gradfun=20:30]\"\n"
+        "\n"
+        "Otherwise, mpv and libavfilter syntax will conflict.\n"
+        "\n");
+}
+
 #define OPT_BASE_STRUCT struct vf_priv_s
 static const m_option_t vf_opts_fields[] = {
     OPT_STRING("graph", cfg_graph, M_OPT_MIN, .min = 1),
-    OPT_INT64("sws_flags", cfg_sws_flags, 0),
+    OPT_INT64("sws-flags", cfg_sws_flags, 0),
     OPT_STRING("o", cfg_avopts, 0),
     {0}
 };
 
 const vf_info_t vf_info_lavfi = {
-    "libavfilter bridge",
-    "lavfi",
-    "",
-    "",
-    vf_open,
+    .description = "libavfilter bridge",
+    .name = "lavfi",
+    .open = vf_open,
     .priv_size = sizeof(struct vf_priv_s),
     .priv_defaults = &vf_priv_dflt,
     .options = vf_opts_fields,
+    .print_help = print_help,
 };
+
+// The following code is for the old filters wrapper code.
+
+struct vf_lw_opts {
+    int enable;
+    int64_t sws_flags;
+    char *avopts;
+};
+
+#undef OPT_BASE_STRUCT
+#define OPT_BASE_STRUCT struct vf_lw_opts
+const struct m_sub_options vf_lw_conf = {
+    .opts = (const m_option_t[]) {
+        OPT_FLAG("lavfi", enable, 0),
+        OPT_INT64("lavfi-sws-flags", sws_flags, 0),
+        OPT_STRING("lavfi-o", avopts, 0),
+        {0}
+    },
+    .defaults = &(const struct vf_lw_opts){
+        .enable = 1,
+        .sws_flags = SWS_BICUBIC,
+    },
+    .size = sizeof(struct vf_lw_opts),
+};
+
+static bool have_filter(const char *name)
+{
+    for (const AVFilter *filter = avfilter_next(NULL); filter;
+         filter = avfilter_next(filter))
+    {
+        if (strcmp(filter->name, name) == 0)
+            return true;
+    }
+    return false;
+}
+
+// This is used by "old" filters for wrapping lavfi if possible.
+// On success, this overwrites all vf callbacks and literally takes over the
+// old filter and replaces it with vf_lavfi.
+// On error (<0), nothing is changed.
+int vf_lw_set_graph(struct vf_instance *vf, struct vf_lw_opts *lavfi_opts,
+                    char *filter, char *opts, ...)
+{
+    if (!lavfi_opts)
+        lavfi_opts = (struct vf_lw_opts *)vf_lw_conf.defaults;
+    if (!lavfi_opts->enable || !have_filter(filter))
+        return -1;
+    MP_VERBOSE(vf, "Using libavfilter for '%s'\n", vf->info->name);
+    void *old_priv = vf->priv;
+    struct vf_priv_s *p = talloc(vf, struct vf_priv_s);
+    vf->priv = p;
+    *p = vf_priv_dflt;
+    p->cfg_sws_flags = lavfi_opts->sws_flags;
+    p->cfg_avopts = lavfi_opts->avopts;
+    va_list ap;
+    va_start(ap, opts);
+    char *s = talloc_vasprintf(vf, opts, ap);
+    p->cfg_graph = talloc_asprintf(vf, "%s=%s", filter, s);
+    talloc_free(s);
+    va_end(ap);
+    p->old_priv = old_priv;
+    // Note: we should be sure vf_open really overwrites _all_ vf callbacks.
+    if (vf_open(vf) < 1)
+        abort();
+    return 1;
+}
+
+void *vf_lw_old_priv(struct vf_instance *vf)
+{
+    struct vf_priv_s *p = vf->priv;
+    return p->old_priv;
+}
+
+void vf_lw_update_graph(struct vf_instance *vf, char *filter, char *opts, ...)
+{
+    struct vf_priv_s *p = vf->priv;
+    va_list ap;
+    va_start(ap, opts);
+    char *s = talloc_vasprintf(vf, opts, ap);
+    talloc_free(p->cfg_graph);
+    p->cfg_graph = talloc_asprintf(vf, "%s=%s", filter, s);
+    talloc_free(s);
+    va_end(ap);
+}
+
+void vf_lw_set_recreate_cb(struct vf_instance *vf,
+                           void (*recreate)(struct vf_instance *vf))
+{
+    vf->priv->lw_recreate_cb = recreate;
+}

@@ -103,6 +103,7 @@ General Changes for mplayer2 to mpv
 * Native VAAPI support
 * OSX: VDA support using libavcodec hwaccel API insted of FFmpeg's decoder. Up
   to 2-2.5x reduction in CPU usage.
+* Make hardware decoding in general work with the ``opengl`` video output.
 * General bug fixes and removal of long-standing issues
 * General code cleanups (including refactoring or rewrites of many parts)
 * Many more changes
@@ -135,7 +136,7 @@ Command Line Switches
     =========================== ========================================
     ``-no<opt>``                ``--no-<opt>`` (add a dash)
     ``-nosound``                ``--no-audio``
-    ``-use-filename-title``     ``--title="${filename}"``
+    ``-use-filename-title``     ``--title='${filename}'``
     ``-loop 0``                 ``--loop=inf``
     ``-hardframedrop``          ``--framedrop=hard``
     ``-osdlevel``               ``--osd-level``
@@ -176,11 +177,23 @@ Command Line Switches
     ``-af volnorm``             ``--af=drc`` (renamed)
     ``-zoom``                   Inverse available as ``--video-unscaled``
     ``-panscanrange``           ``--video-zoom``, ``--video-pan-x/y``
+    ``-pp ...``                 ``'--vf=pp=[...]'``
+    ``-pphelp``                 ``--vf=pp:help``
+    ``dvdnav://``               ``dvdnav://menu``
     =========================== ========================================
 
 .. note::
 
     ``-opt val`` becomes ``--opt=val``.
+
+.. note::
+
+    Quite some video filters, video outputs, audio filters, audio outputs, had
+    changes in their option parsing. These aren't mentioned in the table above.
+
+    Also, some video and audio filters have been removed, and you have to use
+    libavfilter (using ``--vf=lavfi=[...]`` or ``--af=lavfi=[...]``) to get
+    them back.
 
 input.conf and Slave Commands
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

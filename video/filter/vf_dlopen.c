@@ -22,13 +22,13 @@
 #include <assert.h>
 
 #include "config.h"
-#include "mpvcore/mp_msg.h"
+#include "common/msg.h"
 
 #include "video/img_format.h"
 #include "video/mp_image.h"
 #include "vf.h"
 
-#include "mpvcore/m_option.h"
+#include "options/m_option.h"
 
 #include "vf_dlopen.h"
 
@@ -44,7 +44,7 @@
 # define DLLSymbol(handle, name) dlsym(handle, name)
 #endif
 
-static struct vf_priv_s {
+struct vf_priv_s {
     char *cfg_dllname;
     int cfg_argc;
     char *cfg_argv[16];
@@ -69,7 +69,7 @@ static struct vf_priv_s {
     unsigned int outfmt;
 
     int argc;
-} const vf_priv_dflt = {};
+};
 
 struct fmtname {
     const char *name;
@@ -135,11 +135,11 @@ static int config(struct vf_instance *vf,
     vf->priv->filter.out_cnt = 1;
 
     if (!vf->priv->filter.in_fmt) {
-        mp_msg(MSGT_VFILTER, MSGL_ERR, "invalid input/output format\n");
+        MP_ERR(vf, "invalid input/output format\n");
         return 0;
     }
     if (vf->priv->filter.config && vf->priv->filter.config(&vf->priv->filter) < 0) {
-        mp_msg(MSGT_VFILTER, MSGL_ERR, "filter config failed\n");
+        MP_ERR(vf, "filter config failed\n");
         return 0;
     }
 
@@ -167,13 +167,11 @@ static int config(struct vf_instance *vf,
     }
 
     if (!vf->priv->outfmt) {
-        mp_msg(MSGT_VFILTER, MSGL_ERR,
-               "filter config wants an unsupported output format\n");
+        MP_ERR(vf, "filter config wants an unsupported output format\n");
         return 0;
     }
     if (!vf->priv->out_cnt || vf->priv->out_cnt > FILTER_MAX_OUTCNT) {
-        mp_msg(MSGT_VFILTER, MSGL_ERR,
-               "filter config wants to yield zero or too many output frames\n");
+        MP_ERR(vf, "filter config wants to yield zero or too many output frames\n");
         return 0;
     }
 
@@ -206,6 +204,21 @@ static void uninit(struct vf_instance *vf)
         free(vf->priv->qbuffer);
         vf->priv->qbuffer = NULL;
     }
+}
+
+static int norm_qscale(int qscale, int type)
+{
+    switch (type) {
+    case 0: // MPEG-1
+        return qscale;
+    case 1: // MPEG-2
+        return qscale >> 1;
+    case 2: // H264
+        return qscale >> 2;
+    case 3: // VP56
+        return (63 - qscale + 2) >> 2;
+    }
+    return qscale;
 }
 
 static int filter(struct vf_instance *vf, struct mp_image *mpi)
@@ -289,18 +302,17 @@ static int query_format(struct vf_instance *vf, unsigned int fmt)
     return vf_next_query_format(vf, outfmt);
 }
 
-static int vf_open(vf_instance_t *vf, char *args)
+static int vf_open(vf_instance_t *vf)
 {
     int i;
     if (!vf->priv->cfg_dllname) {
-        mp_msg(MSGT_VFILTER, MSGL_ERR,
-               "usage: -vf dlopen=filename.so:function:args\n");
+        MP_ERR(vf, "usage: -vf dlopen=filename.so:function:args\n");
         return 0;
     }
 
     vf->priv->dll = DLLOpen(vf->priv->cfg_dllname);
     if (!vf->priv->dll) {
-        mp_msg(MSGT_VFILTER, MSGL_ERR, "library not found: %s\n",
+        MP_ERR(vf, "library not found: %s\n",
                vf->priv->cfg_dllname);
         return 0;
     }
@@ -308,7 +320,7 @@ static int vf_open(vf_instance_t *vf, char *args)
     vf_dlopen_getcontext_func *func =
         (vf_dlopen_getcontext_func *) DLLSymbol(vf->priv->dll, "vf_dlopen_getcontext");
     if (!func) {
-        mp_msg(MSGT_VFILTER, MSGL_ERR, "library is not a filter: %s\n",
+        MP_ERR(vf, "library is not a filter: %s\n",
                vf->priv->cfg_dllname);
         return 0;
     }
@@ -331,15 +343,13 @@ static int vf_open(vf_instance_t *vf, char *args)
     if (func(&vf->priv->filter, vf->priv->cfg_argc,
              (const char **)vf->priv->cfg_argv)  < 0)
     {
-        mp_msg(MSGT_VFILTER, MSGL_ERR,
-               "function did not create a filter: %s\n",
+        MP_ERR(vf, "function did not create a filter: %s\n",
                vf->priv->cfg_dllname);
         return 0;
     }
 
     if (!vf->priv->filter.put_image) {
-        mp_msg(MSGT_VFILTER, MSGL_ERR,
-               "function did not create a filter that can put images: %s\n",
+        MP_ERR(vf, "function did not create a filter that can put images: %s\n",
                vf->priv->cfg_dllname);
         return 0;
     }
@@ -375,13 +385,10 @@ static const m_option_t vf_opts_fields[] = {
 };
 
 const vf_info_t vf_info_dlopen = {
-    "Dynamic library filter",
-    "dlopen",
-    "Rudolf Polzer",
-    "",
-    vf_open,
+    .description = "Dynamic library filter",
+    .name = "dlopen",
+    .open = vf_open,
     .priv_size = sizeof(struct vf_priv_s),
-    .priv_defaults = &vf_priv_dflt,
     .options = vf_opts_fields,
 };
 

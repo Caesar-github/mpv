@@ -1,494 +1,132 @@
 /*
- * This audio filter changes the format of a data block. Valid
- * formats are: AFMT_U8, AFMT_S8, AFMT_S16_LE, AFMT_S16_BE
- * AFMT_U16_LE, AFMT_U16_BE, AFMT_S32_LE and AFMT_S32_BE.
+ * This file is part of mpv.
  *
- * This file is part of MPlayer.
- *
- * MPlayer is free software; you can redistribute it and/or modify
+ * mpv is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
- * MPlayer is distributed in the hope that it will be useful,
+ * mpv is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with MPlayer; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ * with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
-#include <inttypes.h>
-#include <limits.h>
-#include <math.h>
-#include <sys/types.h>
 
-#include "config.h"
+#include <libavutil/common.h>
+
+#include "options/m_option.h"
+
+#include "audio/format.h"
 #include "af.h"
-#include "compat/mpbswap.h"
 
-/* Functions used by play to convert the input audio to the correct
-   format */
+struct priv {
+    struct m_config *config;
 
-// Switch endianness
-static void endian(void* in, void* out, int len, int bps);
-// From signed to unsigned and the other way
-static void si2us(void* data, int len, int bps);
-// Change the number of bits per sample
-static void change_bps(void* in, void* out, int len, int inbps, int outbps);
-// From float to int signed
-static void float2int(float* in, void* out, int len, int bps);
-// From signed int to float
-static void int2float(void* in, float* out, int len, int bps);
+    int in_format;
+    int in_srate;
+    struct mp_chmap in_channels;
+    int out_format;
+    int out_srate;
+    struct mp_chmap out_channels;
 
-static struct mp_audio* play(struct af_instance* af, struct mp_audio* data);
-static struct mp_audio* play_swapendian(struct af_instance* af, struct mp_audio* data);
-static struct mp_audio* play_float_s16(struct af_instance* af, struct mp_audio* data);
-static struct mp_audio* play_s16_float(struct af_instance* af, struct mp_audio* data);
-
-// Helper functions to check sanity for input arguments
-
-// Sanity check for bytes per sample
-static int check_bps(int bps)
-{
-  if(bps != 4 && bps != 3 && bps != 2 && bps != 1){
-    mp_msg(MSGT_AFILTER, MSGL_ERR, "[format] The number of bytes per sample"
-	   " must be 1, 2, 3 or 4. Current value is %i \n",bps);
-    return AF_ERROR;
-  }
-  return AF_OK;
-}
-
-// Check for unsupported formats
-static int check_format(int format)
-{
-  char buf[256];
-  if ((format & AF_FORMAT_SPECIAL_MASK) == 0)
-    return AF_OK;
-  mp_msg(MSGT_AFILTER, MSGL_ERR, "[format] Sample format %s not yet supported \n",
-         af_fmt2str(format,buf,256));
-  return AF_ERROR;
-}
-
-static bool test_conversion(int src_format, int dst_format)
-{
-    // This is the fallback conversion filter, so this filter is always
-    // inserted on format mismatches if no other filter can handle it.
-    // Initializing the filter might still fail.
-    return true;
-}
-
-// Initialization and runtime control
-static int control(struct af_instance* af, int cmd, void* arg)
-{
-  switch(cmd){
-  case AF_CONTROL_REINIT:{
-    char buf1[256];
-    char buf2[256];
-    struct mp_audio *data = arg;
-    int supported_ac3 = 0;
-
-    // Make sure this filter isn't redundant
-    if(af->data->format == data->format)
-      return AF_DETACH;
-
-    // A bit complex because we can convert AC3
-    // to generic iec61937 but not the other way
-    // round.
-    if (AF_FORMAT_IS_AC3(af->data->format))
-      supported_ac3 = AF_FORMAT_IS_AC3(data->format);
-    else if (AF_FORMAT_IS_IEC61937(af->data->format))
-      supported_ac3 = AF_FORMAT_IS_IEC61937(data->format);
-
-    // Allow trivial AC3-endianness conversion
-    if (!supported_ac3)
-    // Check for errors in configuration
-    if((AF_OK != check_bps(data->bps)) ||
-       (AF_OK != check_format(data->format)) ||
-       (AF_OK != check_bps(af->data->bps)) ||
-       (AF_OK != check_format(af->data->format)))
-      return AF_ERROR;
-
-    af_fmt2str(data->format,buf1,256);
-    af_fmt2str(af->data->format,buf2,256);
-    mp_msg(MSGT_AFILTER, MSGL_V, "[format] Changing sample format from %s to %s\n",
-	   buf1, buf2);
-
-    af->data->rate = data->rate;
-    mp_audio_set_channels(af->data, &data->channels);
-    af->mul        = (double)af->data->bps / data->bps;
-
-    af->play = play; // set default
-
-    // look whether only endianness differences are there
-    if ((af->data->format & ~AF_FORMAT_END_MASK) ==
-	(data->format & ~AF_FORMAT_END_MASK))
-    {
-	mp_msg(MSGT_AFILTER, MSGL_V, "[format] Accelerated endianness conversion only\n");
-	af->play = play_swapendian;
-    }
-    if ((data->format == AF_FORMAT_FLOAT_NE) &&
-	(af->data->format == AF_FORMAT_S16_NE))
-    {
-	mp_msg(MSGT_AFILTER, MSGL_V, "[format] Accelerated %s to %s conversion\n",
-	   buf1, buf2);
-	af->play = play_float_s16;
-    }
-    if ((data->format == AF_FORMAT_S16_NE) &&
-	(af->data->format == AF_FORMAT_FLOAT_NE))
-    {
-	mp_msg(MSGT_AFILTER, MSGL_V, "[format] Accelerated %s to %s conversion\n",
-	   buf1, buf2);
-	af->play = play_s16_float;
-    }
-    return AF_OK;
-  }
-  case AF_CONTROL_COMMAND_LINE:{
-    int format = af_str2fmt_short(bstr0(arg));
-    if (!format) {
-      mp_msg(MSGT_AFILTER, MSGL_ERR, "[format] %s is not a valid format\n", (char *)arg);
-      return AF_ERROR;
-    }
-    if(AF_OK != af->control(af, AF_CONTROL_FORMAT_FMT | AF_CONTROL_SET,&format))
-      return AF_ERROR;
-    return AF_OK;
-  }
-  case AF_CONTROL_FORMAT_FMT | AF_CONTROL_SET:{
-    // Check for errors in configuration
-    if(!AF_FORMAT_IS_AC3(*(int*)arg) && AF_OK != check_format(*(int*)arg))
-      return AF_ERROR;
-
-    mp_audio_set_format(af->data, *(int*)arg);
-
-    return AF_OK;
-  }
-  }
-  return AF_UNKNOWN;
-}
-
-// Deallocate memory
-static void uninit(struct af_instance* af)
-{
-  if (af->data)
-      free(af->data->audio);
-  free(af->data);
-  af->setup = 0;
-}
-
-static struct mp_audio* play_swapendian(struct af_instance* af, struct mp_audio* data)
-{
-  struct mp_audio*   l   = af->data;	// Local data
-  struct mp_audio*   c   = data;	// Current working data
-  int 	       len = c->len/c->bps; // Length in samples of current audio block
-
-  if(AF_OK != RESIZE_LOCAL_BUFFER(af,data))
-    return NULL;
-
-  endian(c->audio,l->audio,len,c->bps);
-
-  c->audio = l->audio;
-  mp_audio_set_format(c, l->format);
-
-  return c;
-}
-
-static struct mp_audio* play_float_s16(struct af_instance* af, struct mp_audio* data)
-{
-  struct mp_audio*   l   = af->data;	// Local data
-  struct mp_audio*   c   = data;	// Current working data
-  int 	       len = c->len/4; // Length in samples of current audio block
-
-  if(AF_OK != RESIZE_LOCAL_BUFFER(af,data))
-    return NULL;
-
-  float2int(c->audio, l->audio, len, 2);
-
-  c->audio = l->audio;
-  mp_audio_set_format(c, l->format);
-  c->len = len*2;
-
-  return c;
-}
-
-static struct mp_audio* play_s16_float(struct af_instance* af, struct mp_audio* data)
-{
-  struct mp_audio*   l   = af->data;	// Local data
-  struct mp_audio*   c   = data;	// Current working data
-  int 	       len = c->len/2; // Length in samples of current audio block
-
-  if(AF_OK != RESIZE_LOCAL_BUFFER(af,data))
-    return NULL;
-
-  int2float(c->audio, l->audio, len, 2);
-
-  c->audio = l->audio;
-  mp_audio_set_format(c, l->format);
-  c->len = len*4;
-
-  return c;
-}
-
-// Filter data through filter
-static struct mp_audio* play(struct af_instance* af, struct mp_audio* data)
-{
-  struct mp_audio*   l   = af->data;	// Local data
-  struct mp_audio*   c   = data;	// Current working data
-  int 	       len = c->len/c->bps; // Length in samples of current audio block
-
-  if(AF_OK != RESIZE_LOCAL_BUFFER(af,data))
-    return NULL;
-
-  // Change to cpu native endian format
-  if((c->format&AF_FORMAT_END_MASK)!=AF_FORMAT_NE)
-    endian(c->audio,c->audio,len,c->bps);
-
-  // Conversion table
-  if((c->format & AF_FORMAT_POINT_MASK) == AF_FORMAT_F) {
-      float2int(c->audio, l->audio, len, l->bps);
-      if((l->format&AF_FORMAT_SIGN_MASK) == AF_FORMAT_US)
-	si2us(l->audio,len,l->bps);
-  } else {
-    // Input must be int
-
-    // Change signed/unsigned
-    if((c->format&AF_FORMAT_SIGN_MASK) != (l->format&AF_FORMAT_SIGN_MASK)){
-      si2us(c->audio,len,c->bps);
-    }
-    // Convert to special formats
-    switch(l->format&AF_FORMAT_POINT_MASK){
-    case(AF_FORMAT_F):
-      int2float(c->audio, l->audio, len, c->bps);
-      break;
-    default:
-      // Change the number of bits
-      if(c->bps != l->bps)
-	change_bps(c->audio,l->audio,len,c->bps,l->bps);
-      else
-	memcpy(l->audio,c->audio,len*c->bps);
-      break;
-    }
-  }
-
-  // Switch from cpu native endian to the correct endianness
-  if((l->format&AF_FORMAT_END_MASK)!=AF_FORMAT_NE)
-    endian(l->audio,l->audio,len,l->bps);
-
-  // Set output data
-  c->audio  = l->audio;
-  mp_audio_set_format(c, l->format);
-  c->len    = len*l->bps;
-  return c;
-}
-
-// Allocate memory and set function pointers
-static int af_open(struct af_instance* af){
-  af->control=control;
-  af->uninit=uninit;
-  af->play=play;
-  af->mul=1;
-  af->data=calloc(1,sizeof(struct mp_audio));
-  if(af->data == NULL)
-    return AF_ERROR;
-  return AF_OK;
-}
-
-// Description of this filter
-struct af_info af_info_format = {
-  "Sample format conversion",
-  "format",
-  "Anders",
-  "",
-  AF_FLAGS_REENTRANT,
-  af_open,
-  .test_conversion = test_conversion,
+    int fail;
 };
 
-static inline uint32_t load24bit(void* data, int pos) {
-#if BYTE_ORDER == BIG_ENDIAN
-  return (((uint32_t)((uint8_t*)data)[3*pos])<<24) |
-	 (((uint32_t)((uint8_t*)data)[3*pos+1])<<16) |
-	 (((uint32_t)((uint8_t*)data)[3*pos+2])<<8);
-#else
-  return (((uint32_t)((uint8_t*)data)[3*pos])<<8) |
-	 (((uint32_t)((uint8_t*)data)[3*pos+1])<<16) |
-	 (((uint32_t)((uint8_t*)data)[3*pos+2])<<24);
-#endif
-}
-
-static inline void store24bit(void* data, int pos, uint32_t expanded_value) {
-#if BYTE_ORDER == BIG_ENDIAN
-      ((uint8_t*)data)[3*pos]=expanded_value>>24;
-      ((uint8_t*)data)[3*pos+1]=expanded_value>>16;
-      ((uint8_t*)data)[3*pos+2]=expanded_value>>8;
-#else
-      ((uint8_t*)data)[3*pos]=expanded_value>>8;
-      ((uint8_t*)data)[3*pos+1]=expanded_value>>16;
-      ((uint8_t*)data)[3*pos+2]=expanded_value>>24;
-#endif
-}
-
-// Function implementations used by play
-static void endian(void* in, void* out, int len, int bps)
+static void force_in_params(struct af_instance *af, struct mp_audio *in)
 {
-  register int i;
-  switch(bps){
-    case(2):{
-      for(i=0;i<len;i++){
-	((uint16_t*)out)[i]=bswap_16(((uint16_t*)in)[i]);
-      }
-      break;
-    }
-    case(3):{
-      register uint8_t s;
-      for(i=0;i<len;i++){
-	s=((uint8_t*)in)[3*i];
-	((uint8_t*)out)[3*i]=((uint8_t*)in)[3*i+2];
-	if (in != out)
-	  ((uint8_t*)out)[3*i+1]=((uint8_t*)in)[3*i+1];
-	((uint8_t*)out)[3*i+2]=s;
-      }
-      break;
-    }
-    case(4):{
-      for(i=0;i<len;i++){
-	((uint32_t*)out)[i]=bswap_32(((uint32_t*)in)[i]);
-      }
-      break;
-    }
-  }
+    struct priv *priv = af->priv;
+
+    if (priv->in_format != AF_FORMAT_UNKNOWN)
+        mp_audio_set_format(in, priv->in_format);
+
+    if (priv->in_channels.num)
+        mp_audio_set_channels(in, &priv->in_channels);
+
+    if (priv->in_srate)
+        in->rate = priv->in_srate;
 }
 
-static void si2us(void* data, int len, int bps)
+static void force_out_params(struct af_instance *af, struct mp_audio *out)
 {
-  register long i = -(len * bps);
-  register uint8_t *p = &((uint8_t *)data)[len * bps];
-#if AF_FORMAT_NE == AF_FORMAT_LE
-  p += bps - 1;
-#endif
-  if (len <= 0) return;
-  do {
-    p[i] ^= 0x80;
-  } while (i += bps);
+    struct priv *priv = af->priv;
+
+    if (priv->out_format != AF_FORMAT_UNKNOWN)
+        mp_audio_set_format(out, priv->out_format);
+
+    if (priv->out_channels.num)
+        mp_audio_set_channels(out, &priv->out_channels);
+
+    if (priv->out_srate)
+        out->rate = priv->out_srate;
 }
 
-static void change_bps(void* in, void* out, int len, int inbps, int outbps)
+static int control(struct af_instance *af, int cmd, void *arg)
 {
-  register int i;
-  switch(inbps){
-  case(1):
-    switch(outbps){
-    case(2):
-      for(i=0;i<len;i++)
-	((uint16_t*)out)[i]=((uint16_t)((uint8_t*)in)[i])<<8;
-      break;
-    case(3):
-      for(i=0;i<len;i++)
-	store24bit(out, i, ((uint32_t)((uint8_t*)in)[i])<<24);
-      break;
-    case(4):
-      for(i=0;i<len;i++)
-	((uint32_t*)out)[i]=((uint32_t)((uint8_t*)in)[i])<<24;
-      break;
+    struct priv *priv = af->priv;
+
+    switch (cmd) {
+    case AF_CONTROL_REINIT: {
+        struct mp_audio *in = arg;
+        struct mp_audio orig_in = *in;
+        struct mp_audio *out = af->data;
+
+        force_in_params(af, in);
+        mp_audio_copy_config(out, in);
+        force_out_params(af, out);
+
+        if (in->nch != out->nch || in->bps != out->bps) {
+            MP_ERR(af, "[af_format] Forced input/output formats are incompatible.\n");
+            return AF_ERROR;
+        }
+
+        if (priv->fail) {
+            MP_ERR(af, "[af_format] Failing on purpose.\n");
+            return AF_ERROR;
+        }
+
+        return mp_audio_config_equals(in, &orig_in) ? AF_OK : AF_FALSE;
     }
-    break;
-  case(2):
-    switch(outbps){
-    case(1):
-      for(i=0;i<len;i++)
-	((uint8_t*)out)[i]=(uint8_t)((((uint16_t*)in)[i])>>8);
-      break;
-    case(3):
-      for(i=0;i<len;i++)
-	store24bit(out, i, ((uint32_t)((uint16_t*)in)[i])<<16);
-      break;
-    case(4):
-      for(i=0;i<len;i++)
-	((uint32_t*)out)[i]=((uint32_t)((uint16_t*)in)[i])<<16;
-      break;
     }
-    break;
-  case(3):
-    switch(outbps){
-    case(1):
-      for(i=0;i<len;i++)
-	((uint8_t*)out)[i]=(uint8_t)(load24bit(in, i)>>24);
-      break;
-    case(2):
-      for(i=0;i<len;i++)
-	((uint16_t*)out)[i]=(uint16_t)(load24bit(in, i)>>16);
-      break;
-    case(4):
-      for(i=0;i<len;i++)
-	((uint32_t*)out)[i]=(uint32_t)load24bit(in, i);
-      break;
-    }
-    break;
-  case(4):
-    switch(outbps){
-    case(1):
-      for(i=0;i<len;i++)
-	((uint8_t*)out)[i]=(uint8_t)((((uint32_t*)in)[i])>>24);
-      break;
-    case(2):
-      for(i=0;i<len;i++)
-	((uint16_t*)out)[i]=(uint16_t)((((uint32_t*)in)[i])>>16);
-      break;
-    case(3):
-      for(i=0;i<len;i++)
-        store24bit(out, i, ((uint32_t*)in)[i]);
-      break;
-    }
-    break;
-  }
+    return AF_UNKNOWN;
 }
 
-static void float2int(float* in, void* out, int len, int bps)
+static int filter(struct af_instance *af, struct mp_audio *data, int flags)
 {
-  register int i;
-  switch(bps){
-  case(1):
-    for(i=0;i<len;i++)
-      ((int8_t*)out)[i] = lrintf(127.0 * clamp(in[i], -1.0f, +1.0f));
-    break;
-  case(2):
-    for(i=0;i<len;i++)
-      ((int16_t*)out)[i] = lrintf(32767.0 * clamp(in[i], -1.0f, +1.0f));
-    break;
-  case(3):
-    for(i=0;i<len;i++)
-      store24bit(out, i, lrintf(2147483647.0 * clamp(in[i], -1.0f, +1.0f)));
-    break;
-  case(4):
-    for(i=0;i<len;i++)
-      ((int32_t*)out)[i] = lrintf(2147483647.0 * clamp(in[i], -1.0f, +1.0f));
-    break;
-  }
+    mp_audio_copy_config(data, af->data);
+    return 0;
 }
 
-static void int2float(void* in, float* out, int len, int bps)
+static int af_open(struct af_instance *af)
 {
-  register int i;
-  switch(bps){
-  case(1):
-    for(i=0;i<len;i++)
-      out[i]=(1.0/128.0)*((int8_t*)in)[i];
-    break;
-  case(2):
-    for(i=0;i<len;i++)
-      out[i]=(1.0/32768.0)*((int16_t*)in)[i];
-    break;
-  case(3):
-    for(i=0;i<len;i++)
-      out[i]=(1.0/2147483648.0)*((int32_t)load24bit(in, i));
-    break;
-  case(4):
-    for(i=0;i<len;i++)
-      out[i]=(1.0/2147483648.0)*((int32_t*)in)[i];
-    break;
-  }
+    af->control = control;
+    af->filter = filter;
+
+    force_in_params(af, af->data);
+    force_out_params(af, af->data);
+
+    return AF_OK;
 }
+
+#define OPT_BASE_STRUCT struct priv
+
+struct af_info af_info_format = {
+    .info = "Force audio format",
+    .name = "format",
+    .open = af_open,
+    .priv_size = sizeof(struct priv),
+    .options = (const struct m_option[]) {
+        OPT_AUDIOFORMAT("format", in_format, 0),
+        OPT_INTRANGE("srate", in_srate, 0, 1000, 8*48000),
+        OPT_CHMAP("channels", in_channels, CONF_MIN, .min = 0),
+        OPT_AUDIOFORMAT("out-format", out_format, 0),
+        OPT_INTRANGE("out-srate", out_srate, 0, 1000, 8*48000),
+        OPT_CHMAP("out-channels", out_channels, CONF_MIN, .min = 0),
+        OPT_FLAG("fail", fail, 0),
+        {0}
+    },
+};

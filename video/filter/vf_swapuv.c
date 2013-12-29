@@ -24,7 +24,7 @@
 #include <inttypes.h>
 #include <assert.h>
 
-#include "mpvcore/mp_msg.h"
+#include "common/msg.h"
 #include "video/img_format.h"
 #include "video/mp_image.h"
 #include "vf.h"
@@ -49,19 +49,16 @@ static int query_format(struct vf_instance *vf, unsigned int fmt)
     return vf_next_query_format(vf, fmt);
 }
 
-static int vf_open(vf_instance_t *vf, char *args){
+static int vf_open(vf_instance_t *vf){
     vf->filter=filter;
     vf->query_format=query_format;
     return 1;
 }
 
 const vf_info_t vf_info_swapuv = {
-    "UV swapper",
-    "swapuv",
-    "Michael Niedermayer",
-    "",
-    vf_open,
-    NULL
+    .description = "UV swapper",
+    .name = "swapuv",
+    .open = vf_open,
 };
 
 //===========================================================================//

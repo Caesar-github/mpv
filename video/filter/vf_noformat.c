@@ -22,13 +22,13 @@
 #include <inttypes.h>
 
 #include "config.h"
-#include "mpvcore/mp_msg.h"
+#include "common/msg.h"
 
 #include "video/img_format.h"
 #include "video/mp_image.h"
 #include "vf.h"
 
-#include "mpvcore/m_option.h"
+#include "options/m_option.h"
 
 static struct vf_priv_s {
     int fmt;
@@ -44,7 +44,7 @@ static int query_format(struct vf_instance *vf, unsigned int fmt){
     return 0;
 }
 
-static int vf_open(vf_instance_t *vf, char *args){
+static int vf_open(vf_instance_t *vf){
     vf->query_format=query_format;
     return 1;
 }
@@ -56,11 +56,9 @@ static const m_option_t vf_opts_fields[] = {
 };
 
 const vf_info_t vf_info_noformat = {
-    "disallow one output format",
-    "noformat",
-    "Joey",
-    "",
-    vf_open,
+    .description = "disallow one output format",
+    .name = "noformat",
+    .open = vf_open,
     .priv_size = sizeof(struct vf_priv_s),
     .priv_defaults = &vf_priv_dflt,
     .options = vf_opts_fields,

@@ -16,12 +16,13 @@
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
+#include <stdio.h>
 #include <pthread.h>
 #include "talloc.h"
 
-#include "mpvcore/mp_msg.h"
-#include "mpvcore/input/input.h"
-#include "mpvcore/input/keycodes.h"
+#include "common/msg.h"
+#include "input/input.h"
+#include "input/keycodes.h"
 
 #include "osdep/macosx_application_objc.h"
 #include "osdep/macosx_compat.h"
@@ -336,9 +337,9 @@ int cocoa_main(mpv_main_fn mpv_main, int argc, char *argv[])
 
         // This should never be reached: cocoa_run_runloop blocks until the
         // process is quit
-        mp_msg(MSGT_CPLAYER, MSGL_ERR, "There was either a problem "
-               "initializing Cocoa or the Runloop was stopped unexpectedly. "
-               "Please report this issues to a developer.\n");
+        fprintf(stderr, "There was either a problem "
+                "initializing Cocoa or the Runloop was stopped unexpectedly. "
+                "Please report this issues to a developer.\n");
         pthread_join(playback_thread_id, NULL);
         return 1;
     }

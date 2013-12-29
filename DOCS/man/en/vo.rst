@@ -10,6 +10,12 @@ syntax is:
 If the list has a trailing ',', mpv will fall back on drivers not contained
 in the list. Suboptions are optional and can mostly be omitted.
 
+You can also set defaults for each driver. The defaults are applied before the
+normal driver parameters.
+
+``--vo-defaults=<driver1[:parameter1:parameter2:...],driver2,...>``
+    Set defaults for each driver.
+
 .. note::
 
     See ``--vo=help`` for a list of compiled-in video output drivers.
@@ -241,6 +247,11 @@ Available video output drivers are:
     Some features are available with OpenGL 3 capable graphics drivers only
     (or if the necessary extensions are available).
 
+    Hardware decoding over OpenGL-interop is supported to some degree. Note
+    that in this mode, some corner case might not be gracefully handled, and
+    colorspace conversion and chroma upsampling is generally in the hand of
+    the hardware decoder APIs.
+
     ``lscale=<filter>``
 
         ``bilinear``
@@ -320,8 +331,10 @@ Available video output drivers are:
         slightly different gamma.
 
     ``pbo``
-        Enable use of PBOs. This is faster, but can sometimes lead to sporadic
-        and temporary image corruption.
+        Enable use of PBOs. This is slightly faster, but can sometimes lead to
+        sporadic and temporary image corruption (in theory, because reupload
+        is not retried when it fails), and perhaps actually triggers slower
+        paths with drivers that don't support PBOs properly.
 
     ``dither-depth=<N|no|auto>``
         Set dither target depth to N. Default: no.
@@ -473,12 +486,17 @@ Available video output drivers are:
         Set the YUV chroma sample location. auto means use the bitstream
         flags (default: auto).
 
+    ``rectangle-textures``
+        Force use of rectangle textures (default: no). Normally this shouldn't
+        have any advantages over normal textures. Note that hardware decoding
+        overrides this flag.
+
 ``opengl-hq``
     Same as ``opengl``, but with default settings for high quality rendering.
 
     This is equivalent to::
 
-        --vo=opengl:lscale=lanczos2:dither-depth=auto:pbo:fbo-format=rgb16
+        --vo=opengl:lscale=lanczos2:dither-depth=auto:fbo-format=rgb16
 
     Note that some cheaper LCDs do dithering that gravely interferes with
     ``opengl``'s dithering. Disabling dithering with ``dither-depth=no`` helps.

@@ -24,10 +24,5 @@
 #define VFCAP_CSP_SUPPORTED 0x1
 // set, if the given colorspace is supported _without_ conversion
 #define VFCAP_CSP_SUPPORTED_BY_HW 0x2
-// driver/filter can do vertical flip (upside-down)
-#define VFCAP_FLIP 0x80
-
-// filter does postprocessing (so you shouldn't scale/filter image before it)
-#define VFCAP_POSTPROC 0x800
 
 #endif /* MPLAYER_VFCAP_H */

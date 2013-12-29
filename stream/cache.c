@@ -50,11 +50,12 @@
 #include "config.h"
 
 #include "osdep/timer.h"
+#include "osdep/threads.h"
 
-#include "mpvcore/mp_msg.h"
+#include "common/msg.h"
 
 #include "stream.h"
-#include "mpvcore/mp_common.h"
+#include "common/common.h"
 
 
 // Note: (struct priv*)(cache->priv)->cache == cache
@@ -72,6 +73,8 @@ struct priv {
     int64_t seek_limit;     // keep filling cache if distance is less that seek limit
     struct byte_meta *bm;   // additional per-byte metadata
 
+    struct mp_log *log;
+
     // Owned by the main thread
     stream_t *cache;        // wrapper stream, used by demuxer etc.
 
@@ -88,6 +91,7 @@ struct priv {
     int64_t offset;         // buffer[offset] correponds to max_filepos
 
     bool idle;              // cache thread has stopped reading
+    int64_t reads;          // number of actual read attempts performed
 
     int64_t read_filepos;   // client read position (mirrors cache->pos)
     int control;            // requested STREAM_CTRL_... or CACHE_CTRL_...
@@ -129,30 +133,6 @@ static int64_t mp_clipi64(int64_t val, int64_t min, int64_t max)
     return val;
 }
 
-// pthread_cond_timedwait() with a relative timeout in seconds
-static int cond_timed_wait(pthread_cond_t *cond, pthread_mutex_t *mutex,
-                           double timeout)
-{
-    struct timespec ts;
-#if defined(_POSIX_TIMERS) && _POSIX_TIMERS > 0
-    clock_gettime(CLOCK_REALTIME, &ts);
-#else
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    ts.tv_sec = tv.tv_sec;
-    ts.tv_nsec = tv.tv_usec * 1000UL;
-#endif
-    unsigned long seconds = (int)timeout;
-    unsigned long nsecs = (timeout - seconds) * 1000000000UL;
-    if (nsecs + ts.tv_nsec >= 1000000000UL) {
-        seconds += 1;
-        nsecs -= 1000000000UL;
-    }
-    ts.tv_sec += seconds;
-    ts.tv_nsec += nsecs;
-    return pthread_cond_timedwait(cond, mutex, &ts);
-}
-
 // Used by the main thread to wakeup the cache thread, and to wait for the
 // cache thread. The cache mutex has to be locked when calling this function.
 // *retry_time should be set to 0 on the first call.
@@ -164,16 +144,15 @@ static int cache_wakeup_and_wait(struct priv *s, double *retry_time)
 
     // Print a "more severe" warning after waiting 1 second and no new data
     if ((*retry_time) >= 1.0) {
-        mp_msg(MSGT_CACHE, MSGL_ERR, "Cache keeps not responding.\n");
+        MP_ERR(s, "Cache keeps not responding.\n");
     } else if (*retry_time > 0.1) {
-        mp_msg(MSGT_CACHE, MSGL_WARN,
-               "Cache is not responding - slow/stuck network connection?\n");
+        MP_WARN(s, "Cache is not responding - slow/stuck network connection?\n");
     }
 
     double start = mp_time_sec();
 
     pthread_cond_signal(&s->wakeup);
-    cond_timed_wait(&s->wakeup, &s->mutex, CACHE_WAIT_TIME);
+    mpthread_cond_timed_wait(&s->wakeup, &s->mutex, CACHE_WAIT_TIME);
 
     *retry_time += mp_time_sec() - start;
 
@@ -195,10 +174,11 @@ static int cache_read(struct priv *s, unsigned char *buf, int size)
         return 0;
 
     double retry = 0;
+    int64_t eof_retry = s->reads - 1; // try at least 1 read on EOF
     while (s->read_filepos >= s->max_filepos ||
            s->read_filepos < s->min_filepos)
     {
-        if (s->eof && s->read_filepos >= s->max_filepos)
+        if (s->eof && s->read_filepos >= s->max_filepos && s->reads >= eof_retry)
             return 0;
         if (cache_wakeup_and_wait(s, &retry) == CACHE_INTERRUPTED)
             return 0;
@@ -232,14 +212,13 @@ static bool cache_fill(struct priv *s)
 
     if (read < s->min_filepos || read > s->max_filepos) {
         // seek...
-        mp_msg(MSGT_CACHE, MSGL_DBG2,
-               "Out of boundaries... seeking to 0x%" PRIX64 "  \n", read);
+        MP_DBG(s, "Out of boundaries... seeking to %" PRId64 "  \n", read);
         // drop cache contents only if seeking backward or too much fwd.
         // This is also done for on-disk files, since it loses the backseek cache.
         // That in turn can cause major bandwidth increase and performance
         // issues with e.g. mov or badly interleaved files
         if (read < s->min_filepos || read >= s->max_filepos + s->seek_limit) {
-            mp_msg(MSGT_CACHE, MSGL_V, "Dropping cache at pos %"PRId64", "
+            MP_VERBOSE(s, "Dropping cache at pos %"PRId64", "
                    "cached range: %"PRId64"-%"PRId64".\n", read,
                    s->min_filepos, s->max_filepos);
             cache_drop_contents(s);
@@ -263,6 +242,7 @@ static bool cache_fill(struct priv *s)
 
     if (space < s->fill_limit) {
         s->idle = true;
+        s->reads++; // don't stuck main thread
         return false;
     }
 
@@ -296,8 +276,11 @@ static bool cache_fill(struct priv *s)
     if (pos + len == s->buffer_size)
         s->offset += s->buffer_size; // wrap...
 
-    s->eof = len > 0 ? 0 : 1;
+    s->eof = len <= 0;
     s->idle = s->eof;
+    s->reads++;
+    if (s->eof)
+        MP_VERBOSE(s, "EOF reached.\n");
 
     pthread_cond_signal(&s->wakeup);
 
@@ -390,6 +373,10 @@ static int cache_get_cached_control(stream_t *cache, int cmd, void *arg)
         }
         return STREAM_UNSUPPORTED;
     }
+    case STREAM_CTRL_RESUME_CACHE:
+        s->idle = s->eof = false;
+        pthread_cond_signal(&s->wakeup);
+        return STREAM_OK;
     }
     return STREAM_ERROR;
 }
@@ -400,6 +387,7 @@ static bool control_needs_flush(int stream_ctrl)
     case STREAM_CTRL_SEEK_TO_TIME:
     case STREAM_CTRL_SEEK_TO_CHAPTER:
     case STREAM_CTRL_SET_ANGLE:
+    case STREAM_CTRL_SET_CURRENT_TITLE:
         return true;
     }
     return false;
@@ -416,10 +404,10 @@ static void cache_execute_control(struct priv *s)
     bool pos_changed = old_pos != stream_tell(s->stream);
     bool ok = s->control_res == STREAM_OK;
     if (pos_changed && !ok) {
-        mp_msg(MSGT_STREAM, MSGL_ERR, "STREAM_CTRL changed stream pos but "
+        MP_ERR(s, "STREAM_CTRL changed stream pos but "
                "returned error, this is not allowed!\n");
     } else if (pos_changed || (ok && control_needs_flush(s->control))) {
-        mp_msg(MSGT_CACHE, MSGL_V, "Dropping cache due to control()\n");
+        MP_VERBOSE(s, "Dropping cache due to control()\n");
         s->read_filepos = stream_tell(s->stream);
         s->control_flush = true;
         cache_drop_contents(s);
@@ -450,11 +438,11 @@ static void *cache_thread(void *arg)
             s->control = CACHE_CTRL_NONE;
         }
         if (s->idle && s->control == CACHE_CTRL_NONE)
-            cond_timed_wait(&s->wakeup, &s->mutex, CACHE_IDLE_SLEEP_TIME);
+            mpthread_cond_timed_wait(&s->wakeup, &s->mutex, CACHE_IDLE_SLEEP_TIME);
     }
     pthread_cond_signal(&s->wakeup);
     pthread_mutex_unlock(&s->mutex);
-    mp_msg(MSGT_CACHE, MSGL_V, "Cache exiting...\n");
+    MP_VERBOSE(s, "Cache exiting...\n");
     return NULL;
 }
 
@@ -466,8 +454,7 @@ static int cache_fill_buffer(struct stream *cache, char *buffer, int max_len)
     pthread_mutex_lock(&s->mutex);
 
     if (cache->pos != s->read_filepos)
-        mp_msg(MSGT_CACHE, MSGL_ERR,
-               "!!! read_filepos differs !!! report this bug...\n");
+        MP_ERR(s, "!!! read_filepos differs !!! report this bug...\n");
 
     int t = cache_read(s, buffer, max_len);
     // wakeup the cache thread, possibly make it read more data ahead
@@ -483,8 +470,8 @@ static int cache_seek(stream_t *cache, int64_t pos)
 
     pthread_mutex_lock(&s->mutex);
 
-    mp_msg(MSGT_CACHE, MSGL_DBG2, "CACHE2_SEEK: 0x%" PRIX64 " <= 0x%" PRIX64
-           " (0x%" PRIX64 ") <= 0x%" PRIX64 "  \n",
+    MP_DBG(s, "request seek: %" PRId64 " <= to=%" PRId64
+           " (cur=%" PRId64 ") <= %" PRId64 "  \n",
            s->min_filepos, pos, s->read_filepos, s->max_filepos);
 
     cache->pos = s->read_filepos = pos;
@@ -508,7 +495,7 @@ static int cache_control(stream_t *cache, int cmd, void *arg)
     if (r != STREAM_ERROR)
         goto done;
 
-    mp_msg(MSGT_CACHE, MSGL_V, "[cache] blocking for STREAM_CTRL %d\n", cmd);
+    MP_VERBOSE(s, "[cache] blocking for STREAM_CTRL %d\n", cmd);
 
     s->control = cmd;
     s->control_arg = arg;
@@ -536,7 +523,7 @@ static void cache_uninit(stream_t *cache)
 {
     struct priv *s = cache->priv;
     if (s->cache_thread_running) {
-        mp_msg(MSGT_CACHE, MSGL_V, "Terminating cache...\n");
+        MP_VERBOSE(s, "Terminating cache...\n");
         pthread_mutex_lock(&s->mutex);
         s->control = CACHE_CTRL_QUIT;
         pthread_cond_signal(&s->wakeup);
@@ -558,16 +545,16 @@ int stream_cache_init(stream_t *cache, stream_t *stream, int64_t size,
     if (size < 1)
         return -1;
 
-    mp_tmsg(MSGT_NETWORK, MSGL_INFO, "Cache size set to %" PRId64 " KiB\n",
+    MP_INFO(cache, "Cache size set to %" PRId64 " KiB\n",
             size / 1024);
 
     if (size > SIZE_MAX) {
-        mp_msg(MSGT_CACHE, MSGL_FATAL,
-               "Cache size larger than max. allocation size\n");
+        MP_FATAL(cache, "Cache size larger than max. allocation size\n");
         return -1;
     }
 
     struct priv *s = talloc_zero(NULL, struct priv);
+    s->log = cache->log;
 
     //64kb min_size
     s->fill_limit = FFMAX(16 * 1024, BYTE_META_CHUNK_SIZE * 2);
@@ -578,7 +565,7 @@ int stream_cache_init(stream_t *cache, stream_t *stream, int64_t size,
     s->bm = malloc((s->buffer_size / BYTE_META_CHUNK_SIZE + 2) *
                    sizeof(struct byte_meta));
     if (!s->buffer || !s->bm) {
-        mp_msg(MSGT_CACHE, MSGL_ERR, "Failed to allocate cache buffer.\n");
+        MP_ERR(s, "Failed to allocate cache buffer.\n");
         free(s->buffer);
         free(s->bm);
         talloc_free(s);
@@ -606,7 +593,7 @@ int stream_cache_init(stream_t *cache, stream_t *stream, int64_t size,
         min = s->buffer_size - s->fill_limit;
 
     if (pthread_create(&s->cache_thread, NULL, cache_thread, s) != 0) {
-        mp_msg(MSGT_CACHE, MSGL_ERR, "Starting cache process/thread failed: %s.\n",
+        MP_ERR(s, "Starting cache process/thread failed: %s.\n",
                strerror(errno));
         return -1;
     }
@@ -622,7 +609,7 @@ int stream_cache_init(stream_t *cache, stream_t *stream, int64_t size,
             break;
         if (stream_control(s->cache, STREAM_CTRL_GET_CACHE_IDLE, &idle) < 0)
             break;
-        mp_tmsg(MSGT_CACHE, MSGL_STATUS, "\rCache fill: %5.2f%% "
+        MP_INFO(s, "\rCache fill: %5.2f%% "
                 "(%" PRId64 " bytes)   ", 100.0 * fill / s->buffer_size, fill);
         if (fill >= min)
             break;
@@ -635,6 +622,6 @@ int stream_cache_init(stream_t *cache, stream_t *stream, int64_t size,
         cache_wakeup_and_wait(s, &(double){0});
         pthread_mutex_unlock(&s->mutex);
     }
-    mp_msg(MSGT_CACHE, MSGL_STATUS, "\n");
+    MP_INFO(s, "\n");
     return 1;
 }

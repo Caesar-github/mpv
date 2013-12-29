@@ -25,6 +25,8 @@ void mp_image_sw_blur_scale(struct mp_image *dst, struct mp_image *src,
                             float gblur);
 
 struct mp_sws_context {
+    // Can be set for verbose error printing.
+    struct mp_log *log;
     // User configuration. These can be changed freely, at any time.
     // mp_sws_scale() will handle the changes transparently.
     int flags;
@@ -47,7 +49,7 @@ struct mp_sws_context {
     struct mp_sws_context *cached;
 };
 
-struct mp_sws_context *mp_sws_alloc(void *talloc_parent);
+struct mp_sws_context *mp_sws_alloc(void *talloc_ctx);
 int mp_sws_reinit(struct mp_sws_context *ctx);
 void mp_sws_set_from_cmdline(struct mp_sws_context *ctx);
 int mp_sws_scale(struct mp_sws_context *ctx, struct mp_image *dst,

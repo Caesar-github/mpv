@@ -29,6 +29,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "common/common.h"
 #include "af.h"
 
 // Data for specific instances of this filter
@@ -40,7 +41,7 @@ typedef struct af_center_s
 // Initialization and runtime control
 static int control(struct af_instance* af, int cmd, void* arg)
 {
-  af_center_t* s   = af->setup;
+  af_center_t* s   = af->priv;
 
   switch(cmd){
   case AF_CONTROL_REINIT:{
@@ -48,47 +49,23 @@ static int control(struct af_instance* af, int cmd, void* arg)
     if(!arg) return AF_ERROR;
 
     af->data->rate   = ((struct mp_audio*)arg)->rate;
-    mp_audio_set_channels_old(af->data, max(s->ch+1,((struct mp_audio*)arg)->nch));
-    mp_audio_set_format(af->data, AF_FORMAT_FLOAT_NE);
+    mp_audio_set_channels_old(af->data, MPMAX(s->ch+1,((struct mp_audio*)arg)->nch));
+    mp_audio_set_format(af->data, AF_FORMAT_FLOAT);
 
     return af_test_output(af,(struct mp_audio*)arg);
   }
-  case AF_CONTROL_COMMAND_LINE:{
-    int   ch=1;
-    sscanf(arg,"%i", &ch);
-    return control(af,AF_CONTROL_CENTER_CH | AF_CONTROL_SET, &ch);
-  }
-  case AF_CONTROL_CENTER_CH | AF_CONTROL_SET: // Requires reinit
-    // Sanity check
-    if((*(int*)arg >= AF_NCH) || (*(int*)arg < 0)){
-      mp_msg(MSGT_AFILTER, MSGL_ERR, "[sub] Center channel number must be between "
-	     " 0 and %i current value is %i\n", AF_NCH-1, *(int*)arg);
-      return AF_ERROR;
-    }
-    s->ch = *(int*)arg;
-    return AF_OK;
-  case AF_CONTROL_CENTER_CH | AF_CONTROL_GET:
-    *(int*)arg = s->ch;
-    return AF_OK;
   }
   return AF_UNKNOWN;
 }
 
-// Deallocate memory
-static void uninit(struct af_instance* af)
-{
-    free(af->data);
-    free(af->setup);
-}
-
 // Filter data through filter
-static struct mp_audio* play(struct af_instance* af, struct mp_audio* data)
+static int filter(struct af_instance* af, struct mp_audio* data, int flags)
 {
   struct mp_audio*    c   = data;	 // Current working data
-  af_center_t*  s   = af->setup; // Setup for this instance
-  float*   	a   = c->audio;	 // Audio data
-  int		len = c->len/4;	 // Number of samples in current audio block
+  af_center_t*  s   = af->priv; // Setup for this instance
+  float*   	a   = c->planes[0];	 // Audio data
   int		nch = c->nch;	 // Number of channels
+  int		len = c->samples*c->nch;	 // Number of samples in current audio block
   int		ch  = s->ch;	 // Channel in which to insert the center audio
   register int  i;
 
@@ -98,31 +75,25 @@ static struct mp_audio* play(struct af_instance* af, struct mp_audio* data)
     a[i+ch] = (a[i]/2) + (a[i+1]/2);
   }
 
-  return c;
+  return 0;
 }
 
 // Allocate memory and set function pointers
 static int af_open(struct af_instance* af){
-  af_center_t* s;
   af->control=control;
-  af->uninit=uninit;
-  af->play=play;
-  af->mul=1;
-  af->data=calloc(1,sizeof(struct mp_audio));
-  af->setup=s=calloc(1,sizeof(af_center_t));
-  if(af->data == NULL || af->setup == NULL)
-    return AF_ERROR;
-  // Set default values
-  s->ch = 1;  	 // Channel nr 2
+  af->filter=filter;
   return AF_OK;
 }
 
-// Description of this filter
+#define OPT_BASE_STRUCT af_center_t
 struct af_info af_info_center = {
-    "Audio filter for adding a center channel",
-    "center",
-    "Alex Beregszaszi",
-    "",
-    AF_FLAGS_NOT_REENTRANT,
-    af_open
+    .info = "Audio filter for adding a center channel",
+    .name = "center",
+    .flags = AF_FLAGS_NOT_REENTRANT,
+    .open = af_open,
+    .priv_size = sizeof(af_center_t),
+    .options = (const struct m_option[]) {
+        OPT_INTRANGE("channel", ch, 0, 0, AF_NCH - 1, OPTDEF_INT(1)),
+        {0}
+    },
 };

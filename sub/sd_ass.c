@@ -25,12 +25,11 @@
 
 #include "talloc.h"
 
-#include "mpvcore/options.h"
-#include "mpvcore/mp_common.h"
-#include "mpvcore/mp_msg.h"
+#include "options/options.h"
+#include "common/common.h"
+#include "common/msg.h"
 #include "video/csputils.h"
 #include "video/mp_image.h"
-#include "sub.h"
 #include "dec_sub.h"
 #include "ass_mp.h"
 #include "sd.h"
@@ -103,12 +102,12 @@ static void decode(struct sd *sd, struct demux_packet *packet)
     }
     // plaintext subs
     if (packet->pts == MP_NOPTS_VALUE) {
-        mp_msg(MSGT_SUBREADER, MSGL_WARN, "Subtitle without pts, ignored\n");
+        MP_WARN(sd, "Subtitle without pts, ignored\n");
         return;
     }
     if (packet->duration <= 0) {
-        mp_msg(MSGT_SUBREADER, MSGL_WARN, "Subtitle without duration or "
-               "duration set to 0 at pts %f, ignored\n", packet->pts);
+        MP_WARN(sd, "Subtitle without duration or "
+                "duration set to 0 at pts %f, ignored\n", packet->pts);
         return;
     }
     unsigned char *text = packet->buffer;
@@ -142,7 +141,10 @@ static void get_bitmaps(struct sd *sd, struct mp_osd_res dim, double pts,
     if (!ctx->is_converted && (!opts->ass_style_override ||
                                opts->ass_vsfilter_aspect_compat))
     {
-        scale = scale * dim.video_par;
+        // Let's use the original video PAR for vsfilter compatibility:
+        scale = scale
+            * (ctx->video_params.d_w / (double)ctx->video_params.d_h)
+            / (ctx->video_params.w   / (double)ctx->video_params.h);
     }
     mp_ass_configure(renderer, opts, &dim);
     ass_set_aspect_ratio(renderer, scale, 1);
@@ -388,7 +390,7 @@ static void mangle_colors(struct sd *sd, struct sub_bitmaps *parts)
     {
         int msgl = basic_conv ? MSGL_V : MSGL_WARN;
         ctx->last_params = params;
-        mp_msg(MSGT_SUBREADER, msgl, "[sd_ass] mangling colors like vsfilter: "
+        MP_MSG(sd, msgl, "mangling colors like vsfilter: "
                "RGB -> %s %s -> %s %s -> RGB\n", mp_csp_names[csp],
                mp_csp_levels_names[levels], mp_csp_names[params.colorspace],
                mp_csp_levels_names[params.colorlevels]);

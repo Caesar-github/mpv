@@ -11,6 +11,12 @@ syntax is:
 
     To get a full list of available audio filters, see ``--af=help``.
 
+You can also set defaults for each filter. The defaults are applied before the
+normal filter parameters.
+
+``--af-defaults=<filter1[=parameter1:parameter2:...],filter2,...>``
+    Set defaults for each filter.
+
 Audio filters are managed in lists. There are a few commands to manage the
 filter list:
 
@@ -35,7 +41,7 @@ Available filters are:
     This filter is automatically enabled if the audio output does not support
     the audio configuration of the file being played.
 
-    It supports only the following sample formats: u8, s16ne, s32ne, floatne.
+    It supports only the following sample formats: u8, s16, s32, float.
 
     ``filter-size=<length>``
         Length of the filter with respect to the lower sampling rate. (default:
@@ -50,9 +56,9 @@ Available filters are:
         entries. (default: no)
     ``no-detach``
         Do not detach if input and output audio format/rate/channels match.
-        You should add this option if you specify additional parameters, as
-        automatically inserted lavrresample instances will use the default
-        settings.
+        (If you just want to set defaults for this filter that will be used
+        even by automatically inserted lavrresample instances, you should
+        prefer setting them with ``--af-defaults=lavrresample:...``.)
     ``o=<string>``
         Set AVOptions on the SwrContext or AVAudioResampleContext. These should
         be documented by FFmpeg or Libav.
@@ -64,17 +70,18 @@ Available filters are:
     outputting to S/PDIF. If the input sample rate is not 48 kHz, 44.1 kHz or
     32 kHz, it will be resampled to 48 kHz.
 
-    ``<tospdif>``
-        Output raw AC-3 stream if zero or not set, output to S/PDIF for
-        passthrough when ``<tospdif>`` is set non-zero.
-    ``<bitrate>``
-        The bitrate use for the AC-3 stream. Set it to either 384 or 384000
-        to get 384 kbps.
+    ``tospdif=<yes|no>``
+        Output raw AC-3 stream if ``no``, output to S/PDIF for
+        passthrough if ``yes`` (default).
+
+    ``bitrate=<rate>``
+        The bitrate use for the AC-3 stream. Set it to 384 to get 384 kbps.
 
         Valid values: 32, 40, 48, 56, 64, 80, 96, 112, 128,
         160, 192, 224, 256, 320, 384, 448, 512, 576, 640.
 
-        Default bitrate is based on the input channel number:
+        The special value ``default`` selects a default bitrate based on the
+        input channel number:
 
         :1ch: 96
         :2ch: 192
@@ -83,7 +90,7 @@ Available filters are:
         :5ch: 448
         :6ch: 448
 
-    ``<minchn>``
+    ``minchn=<n>``
         If the input channel number is less than ``<minchn>``, the filter will
         detach itself (default: 5).
 
@@ -177,7 +184,7 @@ Available filters are:
             Would amplify the sound in the upper and lower frequency region
             while canceling it almost completely around 1kHz.
 
-``channels=nch[:nr:from1:to1:from2:to2:from3:to3:...]``
+``channels=nch[:routes]``
     Can be used for adding, removing, routing and copying audio channels. If
     only ``<nch>`` is given, the default routing is used. It works as follows:
     If the number of output channels is greater than the number of input
@@ -188,45 +195,52 @@ Available filters are:
 
     ``<nch>``
         number of output channels (1-8)
-    ``<nr>``
-        number of routes (1-8)
-    ``<from1:to1:from2:to2:from3:to3:...>``
-        Pairs of numbers between 0 and 7 that define where to route each
-        channel.
+    ``<routes>``
+        List of ``,`` separated routes, in the form ``from1-to1,from2-to2,...``.
+        Each pair defines where to route each channel. There can be at most
+        8 routes. Without this argument, the default routing is used. Since
+        ``,`` is also used to separate filters, you must quote this argument
+        with ``[...]`` or similar.
 
     .. admonition:: Examples
 
-        ``mpv --af=channels=4:4:0:1:1:0:2:2:3:3 media.avi``
+        ``mpv --af=channels=4:[0-1,1-0,0-2,1-3] media.avi``
             Would change the number of channels to 4 and set up 4 routes that
             swap channel 0 and channel 1 and leave channel 2 and 3 intact.
             Observe that if media containing two channels were played back,
             channels 2 and 3 would contain silence but 0 and 1 would still be
             swapped.
 
-        ``mpv --af=channels=6:4:0:0:0:1:0:2:0:3 media.avi``
+        ``mpv --af=channels=6:[0-0,0-1,0-2,0-3] media.avi``
             Would change the number of channels to 6 and set up 4 routes that
             copy channel 0 to channels 0 to 3. Channel 4 and 5 will contain
             silence.
 
-``force=in-format:in-srate:in-channels:out-format:out-srate:out-channels``
+    .. note::
+
+        You should probably not use this filter. If you want to change the
+        output channel layout, try the ``format`` filter, which can make mpv
+        automatically up- and downmix standard channel layouts.
+
+``format=format:srate:channels:out-format:out-srate:out-channels``
     Force a specific audio format/configuration without actually changing the
     audio data. Keep in mind that the filter system might auto-insert actual
     conversion filters before or after this filter if needed.
 
-    All parameters are optional. The ``in-`` variants restrict what the filter
-    accepts as input. The ``out-`` variants change the audio format, without
+    All parameters are optional. The first 3 parameters restrict what the filter
+    accepts as input. The ``out-`` parameters change the audio format, without
     actually doing a conversion. The data will be 'reinterpreted' by the
     filters or audio outputs following this filter.
 
-    ``<in-format>``
-        Force conversion to this format. See ``format`` filter for valid audio
-        format values.
+    ``<format>``
+        Force conversion to this format. Use ``--af=format=format=help`` to get
+        a list of valid formats.
 
-    ``<in-srate>``
+    ``<srate>``
         Force conversion to a specific sample rate. The rate is an integer,
         48000 for example.
 
-    ``<in-channels>``
+    ``<channels>``
         Force mixing to a specific channel layout. See ``--channels`` option
         for possible values.
 
@@ -236,55 +250,53 @@ Available filters are:
 
     ``<out-channels>``
 
-``format[=format]``
-    Convert between different sample formats. Automatically enabled when
-    needed by the audio output or another filter. See also ``--format``.
+    See also ``--format``, ``--srate``, and ``--channels`` for related options.
+    Keep in mind that ``--channels`` does not actually force the number of
+    channels in most cases, while this filter can do this.
 
-    ``<format>``
-        Sets the desired format. The general form is 'sbe', where 's' denotes
-        the sign (either 's' for signed or 'u' for unsigned), 'b' denotes the
-        number of bits per sample (16, 24 or 32) and 'e' denotes the
-        endianness ('le' means little-endian, 'be' big-endian and 'ne' the
-        endianness of the computer mpv is running on). Valid values (amongst
-        others) are: 's16le', 'u32be' and 'u24ne'. Exceptions to this rule that
-        are also valid format specifiers: u8, s8, floatle, floatbe, floatne,
-        mpeg2, and ac3.
+    *NOTE*: this filter used to be named ``force``. Also, unlike the old
+    ``format`` filter, this does not do any actual conversion anymore.
+    Conversion is done by other, automatically inserted filters.
 
-``volume[=v[:sc[:fast]]]``
+``convert24``
+    Filter for internal use only. Converts between 24-bit and 32-bit sample
+    formats.
+
+``convertsignendian``
+    Filter for internal use only. Converts between signed/unsigned formats
+    and formats with different endian.
+
+``volume[=volumedb[:softclip[:s16]]]``
     Implements software volume control. Use this filter with caution since it
     can reduce the signal to noise ratio of the sound. In most cases it is
     best to use the *Master* volume control of your sound card or the volume
     knob on your amplifier.
 
-    This filter has a second feature: It measures the overall maximum sound
-    level and prints out that level when mpv exits. This feature currently
-    only works with floating-point data.
-
     *NOTE*: This filter is not reentrant and can therefore only be enabled
     once for every audio stream.
 
-    ``<v>``
+    ``<volumedb>``
         Sets the desired gain in dB for all channels in the stream from -200dB
         to +60dB, where -200dB mutes the sound completely and +60dB equals a
         gain of 1000 (default: 0).
-    ``<sc>``
-        Turns soft clipping on (1) or off (0). Soft-clipping can make the
+    ``<softclip>``
+        Turns soft clipping on. Soft-clipping can make the
         sound more smooth if very high volume levels are used. Enable this
         option if the dynamic range of the loudspeakers is very low.
 
         *WARNING*: This feature creates distortion and should be considered a
         last resort.
-    ``<fast>``
-        Force S16 sample format if set to 1. Lower quality, but might be faster
+    ``<s16>``
+        Force S16 sample format if set. Lower quality, but might be faster
         in some situations.
 
     .. admonition:: Example
 
-        ``mpv --af=volume=10.1:0 media.avi``
+        ``mpv --af=volume=10.1 media.avi``
             Would amplify the sound by 10.1dB and hard-clip if the sound level
             is too high.
 
-``pan=n[:L00:L01:L02:...L10:L11:L12:...Ln0:Ln1:Ln2:...]``
+``pan=n[:<matrix>]``
     Mixes channels arbitrarily. Basically a combination of the volume and the
     channels filter that can be used to down-mix many channels to only a few,
     e.g. stereo to mono, or vary the "width" of the center speaker in a
@@ -296,19 +308,23 @@ Available filters are:
 
     ``<n>``
         Number of output channels (1-8).
-    ``<Lij>``
-        How much of input channel i is mixed into output channel j (0-1). So
-        in principle you first have n numbers saying what to do with the first
-        input channel, then n numbers that act on the second input channel
-        etc. If you do not specify any numbers for some input channels, 0 is
-        assumed.
+    ``<matrix>``
+        A list of values ``[L00,L01,L02,...,L10,L11,L12,...,Ln0,Ln1,Ln2,...]``,
+        where each element ``Lij`` means how much of input channel i is mixed
+        into output channel j (range 0-1). So in principle you first have n
+        numbers saying what to do with the first input channel, then n numbers
+        that act on the second input channel etc. If you do not specify any
+        numbers for some input channels, 0 is assumed.
+        Note that the values are separated by ``,``, which is already used
+        by the option parser to separate filters. This is why you must quote
+        the value list with ``[...]`` or similar.
 
     .. admonition:: Examples
 
-        ``mpv --af=pan=1:0.5:0.5 media.avi``
+        ``mpv --af=pan=1:[0.5,0.5] media.avi``
             Would downmix from stereo to mono.
 
-        ``mpv --af=pan=3:1:0:0.5:0:1:0.5 media.avi``
+        ``mpv --af=pan=3:[1,0,0.5,0,1,0.5] media.avi``
             Would give 3 channel output leaving channels 0 and 1 intact, and mix
             channels 0 and 1 into output channel 2 (which could be sent to a
             subwoofer for example).
@@ -316,8 +332,8 @@ Available filters are:
     .. note::
 
         If you just want to force remixing to a certain output channel layout,
-        it is easier to use the ``force`` filter. For example,
-        ``mpv '--af=force=channels=5.1' '--channels=5.1'`` would always force
+        it is easier to use the ``format`` filter. For example,
+        ``mpv '--af=format=channels=5.1' '--channels=5.1'`` would always force
         remixing audio to 5.1 and output it like this.
 
 ``sub[=fc:ch]``
@@ -378,12 +394,12 @@ Available filters are:
             Would add surround sound decoding with 15ms delay for the sound to
             the rear speakers.
 
-``delay[=ch1:ch2:...]``
+``delay[=[ch1,ch2,...]]``
     Delays the sound to the loudspeakers such that the sound from the
     different channels arrives at the listening position simultaneously. It is
     only useful if you have more than 2 loudspeakers.
 
-    ``ch1,ch2,...``
+    ``[ch1,ch2,...]``
         The delay in ms that should be imposed on each channel (floating point
         number between 0 and 1000).
 
@@ -402,11 +418,11 @@ Available filters are:
 
     .. admonition:: Example
 
-        ``mpv --af=delay=10.5:10.5:0:0:7:0 media.avi``
+        ``mpv --af=delay=[10.5,10.5,0,0,7,0] media.avi``
             Would delay front left and right by 10.5ms, the two rear channels
             and the subwoofer by 0ms and the center channel by 7ms.
 
-``export[=mmapped_file[:nsamples]]``
+``export=mmapped_file:nsamples]``
     Exports the incoming signal to other processes using memory mapping
     (``mmap()``). Memory mapped areas contain a header::
 
@@ -418,7 +434,7 @@ Available filters are:
     The rest is payload (non-interleaved) 16-bit data.
 
     ``<mmapped_file>``
-        File to map data to (default: ``~/.mpv/mpv-af_export``).
+        File to map data to (required)
     ``<nsamples>``
         number of samples per channel (default: 512).
 
@@ -459,7 +475,7 @@ Available filters are:
         This filter can cause distortion with audio signals that have a very
         large dynamic range.
 
-``ladspa=file:label[:controls...]``
+``ladspa=file:label:[<control0>,<control1>,...]``
     Load a LADSPA (Linux Audio Developer's Simple Plugin API) plugin. This
     filter is reentrant, so multiple LADSPA plugins can be used at once.
 
@@ -475,12 +491,21 @@ Available filters are:
         one filter, but others contain many of them. Entering 'help' here
         will list all available filters within the specified library, which
         eliminates the use of 'listplugins' from the LADSPA SDK.
-    ``<controls>``
-        Controls are zero or more floating point values that determine the
-        behavior of the loaded plugin (for example delay, threshold or gain).
+    ``[<control0>,<control1>,...]``
+        Controls are zero or more ``,`` separated floating point values that
+        determine the behavior of the loaded plugin (for example delay,
+        threshold or gain).
         In verbose mode (add ``-v`` to the mpv command line), all
         available controls and their valid ranges are printed. This eliminates
         the use of 'analyseplugin' from the LADSPA SDK.
+        Note that ``,`` is already used by the option parser to separate
+        filters, so you must quote the list of values with ``[...]`` or
+        similar.
+
+    .. admonition:: Example
+
+        ``mpv --af=ladspa='/usr/lib/ladspa/delay.so':delay_5s:[0.5,0.2] media.avi``
+            Does something.
 
 ``karaoke``
     Simple voice removal filter exploiting the fact that voice is usually
@@ -547,7 +572,7 @@ Available filters are:
         ``mpv --af=scaletempo=stride=30:overlap=.50:search=10 media.ogg``
             Would tweak the quality and performace parameters.
 
-        ``mpv --af=format=floatne,scaletempo media.ogg``
+        ``mpv --af=format=float,scaletempo media.ogg``
             Would make scaletempo use float code. Maybe faster on some
             platforms.
 

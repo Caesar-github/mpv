@@ -2,6 +2,8 @@
  * The name speaks for itself. This filter is a dummy and will
  * not blow up regardless of what you do with it.
  *
+ * Original author: Anders
+ *
  * This file is part of MPlayer.
  *
  * MPlayer is free software; you can redistribute it and/or modify
@@ -31,46 +33,29 @@ static int control(struct af_instance* af, int cmd, void* arg)
   switch(cmd){
   case AF_CONTROL_REINIT: ;
     *af->data = *(struct mp_audio*)arg;
-    mp_msg(MSGT_AFILTER, MSGL_V, "[dummy] Was reinitialized: %iHz/%ich/%s\n",
-	af->data->rate,af->data->nch,af_fmt2str_short(af->data->format));
+    MP_VERBOSE(af, "[dummy] Was reinitialized: %iHz/%ich/%s\n",
+	af->data->rate,af->data->nch,af_fmt_to_str(af->data->format));
     return AF_OK;
   }
   return AF_UNKNOWN;
 }
 
-// Deallocate memory
-static void uninit(struct af_instance* af)
-{
-    free(af->data);
-}
-
 // Filter data through filter
-static struct mp_audio* play(struct af_instance* af, struct mp_audio* data)
+static int filter(struct af_instance* af, struct mp_audio* data, int flags)
 {
-  // Do something necessary to get rid of annoying warning during compile
-  if(!af)
-    mp_msg(MSGT_AFILTER, MSGL_ERR, "EEEK: Argument af == NULL in af_dummy.c play().");
-  return data;
+    return 0;
 }
 
 // Allocate memory and set function pointers
 static int af_open(struct af_instance* af){
   af->control=control;
-  af->uninit=uninit;
-  af->play=play;
-  af->mul=1;
-  af->data=malloc(sizeof(struct mp_audio));
-  if(af->data == NULL)
-    return AF_ERROR;
+  af->filter=filter;
   return AF_OK;
 }
 
 // Description of this filter
 struct af_info af_info_dummy = {
-    "dummy",
-    "dummy",
-    "Anders",
-    "",
-    AF_FLAGS_REENTRANT,
-    af_open
+    .info = "dummy",
+    .name = "dummy",
+    .open = af_open,
 };

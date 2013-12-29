@@ -35,16 +35,16 @@
 #include "compat/libav.h"
 
 #include "config.h"
-#include "mpvcore/options.h"
-#include "mpvcore/mp_msg.h"
-#include "mpvcore/av_opts.h"
-#include "mpvcore/av_common.h"
-#include "mpvcore/bstr.h"
+#include "options/options.h"
+#include "common/msg.h"
+#include "common/av_opts.h"
+#include "common/av_common.h"
+#include "bstr/bstr.h"
 
 #include "stream/stream.h"
 #include "demux.h"
 #include "stheader.h"
-#include "mpvcore/m_option.h"
+#include "options/m_option.h"
 
 #define INITIAL_PROBE_SIZE STREAM_BUFFER_SIZE
 #define PROBE_BUF_SIZE FFMIN(STREAM_MAX_BUFFER_SIZE, 2 * 1024 * 1024)
@@ -65,7 +65,7 @@ const m_option_t lavfdopts_conf[] = {
     OPT_INTRANGE("probescore", lavfdopts.probescore, 0, 0, 100),
     OPT_STRING("cryptokey", lavfdopts.cryptokey, 0),
     OPT_CHOICE("genpts-mode", lavfdopts.genptsmode, 0,
-               ({"auto", 0}, {"lavf", 1}, {"builtin", 2}, {"no", 3})),
+               ({"lavf", 1}, {"no", 0})),
     OPT_STRING("o", lavfdopts.avopt, 0),
     {NULL, NULL, 0, 0, 0, 0, NULL}
 };
@@ -82,13 +82,7 @@ typedef struct lavf_priv {
     struct sh_stream **streams; // NULL for unknown streams
     int num_streams;
     int cur_program;
-    bool use_dts;
-    bool seek_by_bytes;
-    int bitrate;
     char *mime_type;
-    bool genpts_hack;
-    AVPacket *packets[MAX_PKT_QUEUE];
-    int num_packets;
 } lavf_priv_t;
 
 struct format_hack {
@@ -127,8 +121,7 @@ static int mp_read(void *opaque, uint8_t *buf, int size)
 
     ret = stream_read(stream, buf, size);
 
-    mp_msg(MSGT_HEADER, MSGL_DBG2,
-           "%d=mp_read(%p, %p, %d), pos: %"PRId64", eof:%d\n",
+    MP_DBG(demuxer, "%d=mp_read(%p, %p, %d), pos: %"PRId64", eof:%d\n",
            ret, stream, buf, size, stream_tell(stream), stream->eof);
     return ret;
 }
@@ -138,7 +131,7 @@ static int64_t mp_seek(void *opaque, int64_t pos, int whence)
     struct demuxer *demuxer = opaque;
     struct stream *stream = demuxer->stream;
     int64_t current_pos;
-    mp_msg(MSGT_HEADER, MSGL_DBG2, "mp_seek(%p, %"PRId64", %d)\n",
+    MP_DBG(demuxer, "mp_seek(%p, %"PRId64", %d)\n",
            stream, pos, whence);
     if (whence == SEEK_CUR)
         pos += stream_tell(stream);
@@ -177,12 +170,12 @@ static int64_t mp_read_seek(void *opaque, int stream_idx, int64_t ts, int flags)
     return ret;
 }
 
-static void list_formats(void)
+static void list_formats(struct demuxer *demuxer)
 {
-    mp_msg(MSGT_DEMUX, MSGL_INFO, "Available lavf input formats:\n");
+    MP_INFO(demuxer, "Available lavf input formats:\n");
     AVInputFormat *fmt = NULL;
     while ((fmt = av_iformat_next(fmt)))
-        mp_msg(MSGT_DEMUX, MSGL_INFO, "%15s : %s\n", fmt->name, fmt->long_name);
+        MP_INFO(demuxer, "%15s : %s\n", fmt->name, fmt->long_name);
 }
 
 static char *remove_prefix(char *s, const char **prefixes)
@@ -212,7 +205,7 @@ static int lavf_check_file(demuxer_t *demuxer, enum demux_check check)
     priv->filename = s->url;
     if (!priv->filename) {
         priv->filename = "mp:unknown";
-        mp_msg(MSGT_DEMUX, MSGL_WARN, "Stream url is not set!\n");
+        MP_WARN(demuxer, "Stream url is not set!\n");
     }
 
     priv->filename = remove_prefix(priv->filename, prefixes);
@@ -222,8 +215,7 @@ static int lavf_check_file(demuxer_t *demuxer, enum demux_check check)
         // always require filename in the form "format:filename"
         char *sep = strchr(priv->filename, ':');
         if (!sep) {
-            mp_msg(MSGT_DEMUX, MSGL_FATAL,
-                   "Must specify filename in 'format:filename' form\n");
+            MP_FATAL(demuxer, "Must specify filename in 'format:filename' form\n");
             return -1;
         }
         avdevice_format = talloc_strndup(priv, priv->filename,
@@ -250,15 +242,15 @@ static int lavf_check_file(demuxer_t *demuxer, enum demux_check check)
         format = avdevice_format;
     if (format) {
         if (strcmp(format, "help") == 0) {
-            list_formats();
+            list_formats(demuxer);
             return -1;
         }
         priv->avif = av_find_input_format(format);
         if (!priv->avif) {
-            mp_msg(MSGT_DEMUX, MSGL_FATAL, "Unknown lavf format %s\n", format);
+            MP_FATAL(demuxer, "Unknown lavf format %s\n", format);
             return -1;
         }
-        mp_msg(MSGT_DEMUX, MSGL_INFO, "Forced lavf %s demuxer\n",
+        MP_INFO(demuxer, "Forced lavf %s demuxer\n",
                priv->avif->long_name);
         goto success;
     }
@@ -290,7 +282,7 @@ static int lavf_check_file(demuxer_t *demuxer, enum demux_check check)
         priv->avif = av_probe_input_format2(&avpd, avpd.buf_size > 0, &score);
 
         if (priv->avif) {
-            mp_msg(MSGT_HEADER, MSGL_V, "Found '%s' at score=%d size=%d.\n",
+            MP_VERBOSE(demuxer, "Found '%s' at score=%d size=%d.\n",
                    priv->avif->name, score, avpd.buf_size);
 
             if (score >= min_probe)
@@ -311,7 +303,7 @@ static int lavf_check_file(demuxer_t *demuxer, enum demux_check check)
     if (priv->avif && !format) {
         for (int n = 0; format_blacklist[n]; n++) {
             if (strcmp(format_blacklist[n], priv->avif->name) == 0) {
-                mp_msg(MSGT_HEADER, MSGL_V, "Format blacklisted.\n");
+                MP_VERBOSE(demuxer, "Format blacklisted.\n");
                 priv->avif = NULL;
                 break;
             }
@@ -319,8 +311,7 @@ static int lavf_check_file(demuxer_t *demuxer, enum demux_check check)
     }
 
     if (!priv->avif) {
-        mp_msg(MSGT_HEADER, MSGL_V,
-               "No format found, try lowering probescore or forcing the format.\n");
+        MP_VERBOSE(demuxer, "No format found, try lowering probescore or forcing the format.\n");
         return -1;
     }
 
@@ -396,7 +387,7 @@ static void handle_stream(demuxer_t *demuxer, int i)
             break;
         sh_audio_t *sh_audio = sh->audio;
 
-        sh_audio->format = codec->codec_tag;
+        sh->format = codec->codec_tag;
 
         // probably unneeded
         mp_chmap_from_channels(&sh_audio->channels, codec->channels);
@@ -421,7 +412,7 @@ static void handle_stream(demuxer_t *demuxer, int i)
             sh->attached_picture->keyframe = true;
         }
 
-        sh_video->format = codec->codec_tag;
+        sh->format = codec->codec_tag;
         sh_video->disp_w = codec->width;
         sh_video->disp_h = codec->height;
         /* Try to make up some frame rate value, even if it's not reliable.
@@ -447,7 +438,10 @@ static void handle_stream(demuxer_t *demuxer, int i)
                     / (float)(codec->height * codec->sample_aspect_ratio.den);
         sh_video->i_bps = codec->bit_rate / 8;
 
-        mp_msg(MSGT_DEMUX, MSGL_DBG2, "aspect= %d*%d/(%d*%d)\n",
+        // This also applies to vfw-muxed mkv, but we can't detect these easily.
+        sh_video->avi_dts = matches_avinputformat_name(priv, "avi");
+
+        MP_DBG(demuxer, "aspect= %d*%d/(%d*%d)\n",
                codec->width, codec->sample_aspect_ratio.num,
                codec->height, codec->sample_aspect_ratio.den);
         break;
@@ -534,33 +528,18 @@ static int demux_open_lavf(demuxer_t *demuxer, enum demux_check check)
     if (!priv)
         return -1;
 
-    stream_seek(demuxer->stream, 0);
-
     avfc = avformat_alloc_context();
 
     if (lavfdopts->cryptokey)
         parse_cryptokey(avfc, lavfdopts->cryptokey);
-    if (matches_avinputformat_name(priv, "avi")) {
-        /* for avi libavformat returns the avi timestamps in .dts,
-         * some made-up stuff that's not really pts in .pts */
-        priv->use_dts = true;
-        demuxer->timestamp_type = TIMESTAMP_TYPE_SORT;
-    } else {
-        int mode = lavfdopts->genptsmode;
-        if (mode == 0 && opts->correct_pts)
-            mode = demuxer->stream->uncached_type == STREAMTYPE_DVD ? 2 : 1;
-        if (mode == 1)
-            avfc->flags |= AVFMT_FLAG_GENPTS;
-        if (mode == 2)
-            priv->genpts_hack = true;
-    }
+    if (lavfdopts->genptsmode)
+        avfc->flags |= AVFMT_FLAG_GENPTS;
     if (opts->index_mode == 0)
         avfc->flags |= AVFMT_FLAG_IGNIDX;
 
     if (lavfdopts->probesize) {
         if (av_opt_set_int(avfc, "probesize", lavfdopts->probesize, 0) < 0)
-            mp_msg(MSGT_HEADER, MSGL_ERR,
-                   "demux_lavf, couldn't set option probesize to %u\n",
+            MP_ERR(demuxer, "demux_lavf, couldn't set option probesize to %u\n",
                    lavfdopts->probesize);
     }
 
@@ -571,22 +550,24 @@ static int demux_open_lavf(demuxer_t *demuxer, enum demux_check check)
     if (analyze_duration > 0) {
         if (av_opt_set_int(avfc, "analyzeduration",
                            analyze_duration * AV_TIME_BASE, 0) < 0)
-            mp_msg(MSGT_HEADER, MSGL_ERR, "demux_lavf, couldn't set option "
+            MP_ERR(demuxer, "demux_lavf, couldn't set option "
                    "analyzeduration to %f\n", analyze_duration);
     }
 
     if (lavfdopts->avopt) {
         if (parse_avopts(avfc, lavfdopts->avopt) < 0) {
-            mp_msg(MSGT_HEADER, MSGL_ERR,
-                   "Your options /%s/ look like gibberish to me pal\n",
+            MP_ERR(demuxer, "Your options /%s/ look like gibberish to me pal\n",
                    lavfdopts->avopt);
             return -1;
         }
     }
 
-    if (!(priv->avif->flags & AVFMT_NOFILE) &&
-        demuxer->stream->type != STREAMTYPE_AVDEVICE)
+    if ((priv->avif->flags & AVFMT_NOFILE) ||
+        demuxer->stream->type == STREAMTYPE_AVDEVICE)
     {
+        // This might be incorrect.
+        demuxer->seekable = true;
+    } else {
         void *buffer = av_malloc(lavfdopts->buffersize);
         if (!buffer)
             return -1;
@@ -597,9 +578,7 @@ static int demux_open_lavf(demuxer_t *demuxer, enum demux_check check)
             return -1;
         }
         priv->pb->read_seek = mp_read_seek;
-        priv->pb->seekable = demuxer->stream->end_pos
-                 && (demuxer->stream->flags & MP_STREAM_SEEK) == MP_STREAM_SEEK
-                ? AVIO_SEEKABLE_NORMAL : 0;
+        priv->pb->seekable = demuxer->seekable ? AVIO_SEEKABLE_NORMAL : 0;
         avfc->pb = priv->pb;
     }
 
@@ -617,27 +596,25 @@ static int demux_open_lavf(demuxer_t *demuxer, enum demux_check check)
     }
 
     if (avformat_open_input(&avfc, priv->filename, priv->avif, &dopts) < 0) {
-        mp_msg(MSGT_HEADER, MSGL_ERR,
-               "LAVF_header: avformat_open_input() failed\n");
+        MP_ERR(demuxer, "LAVF_header: avformat_open_input() failed\n");
         av_dict_free(&dopts);
         return -1;
     }
 
     t = NULL;
     while ((t = av_dict_get(dopts, "", t, AV_DICT_IGNORE_SUFFIX))) {
-        mp_msg(MSGT_OPEN, MSGL_V, "[lavf] Could not set demux option %s=%s\n",
+        MP_VERBOSE(demuxer, "[lavf] Could not set demux option %s=%s\n",
                t->key, t->value);
     }
     av_dict_free(&dopts);
 
     priv->avfc = avfc;
     if (avformat_find_stream_info(avfc, NULL) < 0) {
-        mp_msg(MSGT_HEADER, MSGL_ERR,
-               "LAVF_header: av_find_stream_info() failed\n");
+        MP_ERR(demuxer, "LAVF_header: av_find_stream_info() failed\n");
         return -1;
     }
 
-    mp_msg(MSGT_HEADER, MSGL_V, "demux_lavf: avformat_find_stream_info() "
+    MP_VERBOSE(demuxer, "demux_lavf: avformat_find_stream_info() "
            "finished after %"PRId64" bytes.\n", stream_tell(demuxer->stream));
 
     for (i = 0; i < avfc->nb_chapters; i++) {
@@ -649,7 +626,7 @@ static int demux_open_lavf(demuxer_t *demuxer, enum demux_check check)
         t = av_dict_get(c->metadata, "title", NULL, 0);
         demuxer_add_chapter(demuxer, t ? bstr0(t->value) : bstr0(NULL),
                             start, end, i);
-        AVDictionaryEntry *t = NULL;
+        t = NULL;
         while ((t = av_dict_get(c->metadata, "", t, AV_DICT_IGNORE_SUFFIX))) {
             demuxer_add_chapter_info(demuxer, i, bstr0(t->key),
                                      bstr0(t->value));
@@ -674,47 +651,17 @@ static int demux_open_lavf(demuxer_t *demuxer, enum demux_check check)
         for (p = 0; p < avfc->nb_programs; p++) {
             AVProgram *program = avfc->programs[p];
             t = av_dict_get(program->metadata, "title", NULL, 0);
-            mp_msg(MSGT_HEADER, MSGL_INFO, "LAVF: Program %d %s\n",
+            MP_INFO(demuxer, "LAVF: Program %d %s\n",
                    program->id, t ? t->value : "");
-            mp_msg(MSGT_IDENTIFY, MSGL_V, "PROGRAM_ID=%d\n", program->id);
+            MP_VERBOSE(demuxer, "PROGRAM_ID=%d\n", program->id);
         }
     }
 
-    mp_msg(MSGT_HEADER, MSGL_V, "LAVF: build %d\n", LIBAVFORMAT_BUILD);
+    MP_VERBOSE(demuxer, "LAVF: build %d\n", LIBAVFORMAT_BUILD);
 
     demuxer->ts_resets_possible = priv->avif->flags & AVFMT_TS_DISCONT;
 
-    // disabled because unreliable per-stream bitrate values returned
-    // by libavformat trigger this heuristic incorrectly and break things
-#if 0
-    /* libavformat sets bitrate for mpeg based on pts at start and end
-     * of file, which fails for files with pts resets. So calculate our
-     * own bitrate estimate. */
-    if (priv->avif->flags & AVFMT_TS_DISCONT) {
-        for (int i = 0; i < avfc->nb_streams; i++)
-            priv->bitrate += avfc->streams[i]->codec->bit_rate;
-        /* pts-based is more accurate if there are no resets; try to make
-         * a somewhat reasonable guess */
-        if (!avfc->duration || avfc->duration == AV_NOPTS_VALUE
-            || priv->bitrate && (avfc->bit_rate < priv->bitrate / 2
-                                 || avfc->bit_rate > priv->bitrate * 2))
-            priv->seek_by_bytes = true;
-        if (!priv->bitrate)
-            priv->bitrate = 1440000;
-    }
-#endif
-    demuxer->accurate_seek = !priv->seek_by_bytes;
-
     return 0;
-}
-
-static void seek_reset(demuxer_t *demux)
-{
-    lavf_priv_t *priv = demux->priv;
-
-    for (int n = 0; n < priv->num_packets; n++)
-        talloc_free(priv->packets[n]);
-    priv->num_packets = 0;
 }
 
 static void destroy_avpacket(void *pkt)
@@ -722,19 +669,16 @@ static void destroy_avpacket(void *pkt)
     av_free_packet(pkt);
 }
 
-static int read_more_av_packets(demuxer_t *demux)
+static int demux_lavf_fill_buffer(demuxer_t *demux)
 {
     lavf_priv_t *priv = demux->priv;
-
-    if (priv->num_packets >= MAX_PKT_QUEUE)
-        return -1;
-
-    demux->filepos = stream_tell(demux->stream);
+    demux_packet_t *dp;
+    MP_DBG(demux, "demux_lavf_fill_buffer()\n");
 
     AVPacket *pkt = talloc(NULL, AVPacket);
     if (av_read_frame(priv->avfc, pkt) < 0) {
         talloc_free(pkt);
-        return -2; // eof
+        return 0; // eof
     }
     talloc_set_destructor(pkt, destroy_avpacket);
 
@@ -742,10 +686,11 @@ static int read_more_av_packets(demuxer_t *demux)
 
     assert(pkt->stream_index >= 0 && pkt->stream_index < priv->num_streams);
     struct sh_stream *stream = priv->streams[pkt->stream_index];
+    AVStream *st = priv->avfc->streams[pkt->stream_index];
 
     if (!demuxer_stream_is_selected(demux, stream)) {
         talloc_free(pkt);
-        return 0; // skip
+        return 1; // don't signal EOF if skipping a packet
     }
 
     // If the packet has pointers to temporary fields that could be
@@ -754,76 +699,28 @@ static int read_more_av_packets(demuxer_t *demux)
     if (av_dup_packet(pkt) < 0)
         abort();
 
-    priv->packets[priv->num_packets++] = pkt;
-    talloc_steal(priv, pkt);
-    return 1;
-}
-
-static int read_av_packet(demuxer_t *demux, AVPacket **pkt)
-{
-    lavf_priv_t *priv = demux->priv;
-
-    if (priv->num_packets < 1) {
-        int r = read_more_av_packets(demux);
-        if (r <= 0)
-            return r;
-    }
-
-    AVPacket *next = priv->packets[0];
-    if (priv->genpts_hack && next->dts != AV_NOPTS_VALUE) {
-        int n = 1;
-        while (next->pts == AV_NOPTS_VALUE) {
-            while (n >= priv->num_packets) {
-                if (read_more_av_packets(demux) < 0)
-                    goto end; // queue limit or EOF reached - just use as is
-            }
-            AVPacket *cur = priv->packets[n];
-            if (cur->stream_index == next->stream_index) {
-                if (next->dts < cur->dts && cur->pts != cur->dts)
-                    next->pts = cur->dts;
-            }
-            n++;
-        }
-    }
-
-end:
-    MP_TARRAY_REMOVE_AT(priv->packets, priv->num_packets, 0);
-    *pkt = next;
-    return 1;
-}
-
-static int demux_lavf_fill_buffer(demuxer_t *demux)
-{
-    lavf_priv_t *priv = demux->priv;
-    demux_packet_t *dp;
-    mp_msg(MSGT_DEMUX, MSGL_DBG2, "demux_lavf_fill_buffer()\n");
-
-    AVPacket *pkt;
-    int r = read_av_packet(demux, &pkt);
-    if (r <= 0)
-        return r == 0; // don't signal EOF if skipping a packet
-
-    AVStream *st = priv->avfc->streams[pkt->stream_index];
-    struct sh_stream *stream = priv->streams[pkt->stream_index];
-
     dp = new_demux_packet_fromdata(pkt->data, pkt->size);
     dp->avpacket = talloc_steal(dp, pkt);
 
-    int64_t ts = priv->use_dts ? pkt->dts : pkt->pts;
-    if (ts != AV_NOPTS_VALUE) {
-        dp->pts = ts * av_q2d(st->time_base);
-        priv->last_pts = dp->pts * AV_TIME_BASE;
-        dp->duration = pkt->duration * av_q2d(st->time_base);
-        if (pkt->convergence_duration > 0)
-            dp->duration = pkt->convergence_duration * av_q2d(st->time_base);
-    }
-    dp->pos = demux->filepos;
+    if (pkt->pts != AV_NOPTS_VALUE)
+        dp->pts = pkt->pts * av_q2d(st->time_base);
+    if (pkt->dts != AV_NOPTS_VALUE)
+        dp->dts = pkt->dts * av_q2d(st->time_base);
+    dp->duration = pkt->duration * av_q2d(st->time_base);
+    if (pkt->convergence_duration > 0)
+        dp->duration = pkt->convergence_duration * av_q2d(st->time_base);
+    dp->pos = pkt->pos;
     dp->keyframe = pkt->flags & AV_PKT_FLAG_KEY;
     // Use only one stream for stream_pts, otherwise PTS might be jumpy.
     if (stream->type == STREAM_VIDEO) {
         double pts;
         if (stream_control(demux->stream, STREAM_CTRL_GET_CURRENT_TIME, &pts) > 0)
             dp->stream_pts = pts;
+    }
+    if (dp->pts != MP_NOPTS_VALUE) {
+        priv->last_pts = dp->pts * AV_TIME_BASE;
+    } else if (dp->dts != MP_NOPTS_VALUE) {
+        priv->last_pts = dp->dts * AV_TIME_BASE;
     }
     demuxer_add_packet(demux, stream, dp);
     return 1;
@@ -833,18 +730,8 @@ static void demux_seek_lavf(demuxer_t *demuxer, float rel_seek_secs, int flags)
 {
     lavf_priv_t *priv = demuxer->priv;
     int avsflags = 0;
-    mp_msg(MSGT_DEMUX, MSGL_DBG2, "demux_seek_lavf(%p, %f, %d)\n",
+    MP_DBG(demuxer, "demux_seek_lavf(%p, %f, %d)\n",
            demuxer, rel_seek_secs, flags);
-
-    seek_reset(demuxer);
-
-    if (priv->seek_by_bytes) {
-        int64_t pos = demuxer->filepos;
-        rel_seek_secs *= priv->bitrate / 8;
-        pos += rel_seek_secs;
-        av_seek_frame(priv->avfc, -1, pos, AVSEEK_FLAG_BYTE);
-        return;
-    }
 
     if (flags & SEEK_ABSOLUTE)
         priv->last_pts = 0;
@@ -857,12 +744,12 @@ static void demux_seek_lavf(demuxer_t *demuxer, float rel_seek_secs, int flags)
         avsflags = AVSEEK_FLAG_BACKWARD;
 
     if (flags & SEEK_FACTOR) {
-        if (demuxer->movi_end > 0 && demuxer->ts_resets_possible &&
+        struct stream *s = demuxer->stream;
+        if (s->end_pos > 0 && demuxer->ts_resets_possible &&
             !(priv->avif->flags & AVFMT_NO_BYTE_SEEK))
         {
             avsflags |= AVSEEK_FLAG_BYTE;
-            priv->last_pts = (demuxer->movi_end - demuxer->movi_start) *
-                             rel_seek_secs;
+            priv->last_pts = (s->end_pos - s->start_pos) * rel_seek_secs;
         } else if (priv->avfc->duration != 0 &&
                    priv->avfc->duration != AV_NOPTS_VALUE)
         {
@@ -922,15 +809,6 @@ static int demux_lavf_control(demuxer_t *demuxer, int cmd, void *arg)
 
     switch (cmd) {
     case DEMUXER_CTRL_GET_TIME_LENGTH:
-        if (priv->seek_by_bytes) {
-            /* Our bitrate estimate may be better than would be used in
-             * otherwise similar fallback code at higher level */
-            if (demuxer->movi_end <= 0)
-                return DEMUXER_CTRL_DONTKNOW;
-            *(double *)arg = (demuxer->movi_end - demuxer->movi_start) * 8 /
-                             priv->bitrate;
-            return DEMUXER_CTRL_GUESS;
-        }
         if (priv->avfc->duration == 0 || priv->avfc->duration == AV_NOPTS_VALUE)
             return DEMUXER_CTRL_DONTKNOW;
 
@@ -1017,10 +895,10 @@ redo:
          * call the new API instead of relying on av_seek_frame() to do this
          * for us.
          */
+        stream_drop_buffers(demuxer->stream);
         avio_flush(priv->avfc->pb);
         av_seek_frame(priv->avfc, 0, stream_tell(demuxer->stream),
                       AVSEEK_FLAG_BYTE);
-        seek_reset(demuxer);
         avio_flush(priv->avfc->pb);
         return DEMUXER_CTRL_OK;
     default:

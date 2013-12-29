@@ -24,9 +24,9 @@
 #include <windows.h>
 #endif
 
-#include "mpvcore/mp_msg.h"
+#include "common/msg.h"
 #include "stream.h"
-#include "mpvcore/m_option.h"
+#include "options/m_option.h"
 
 #include <fcntl.h>
 #include <stdlib.h>
@@ -55,6 +55,8 @@
 #ifndef vcd_close
 #define vcd_close(priv) (close(((mp_vcd_priv_t*)priv)->fd))
 #endif
+
+#include "osdep/io.h"
 
 static int fill_buffer(stream_t *s, char* buffer, int max_len){
   if(s->pos > s->end_pos) /// don't past end of current track
@@ -112,31 +114,29 @@ static int open_s(stream_t *stream,int mode)
 	  OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, NULL);
   f = _open_osfhandle((intptr_t)hd, _O_RDONLY);
 #else
-  f=open(dev,O_RDONLY);
+  f=open(dev,O_RDONLY | O_CLOEXEC);
 #endif
   if(f<0){
-    mp_tmsg(MSGT_OPEN,MSGL_ERR,"CD-ROM Device '%s' not found.\n",dev);
+    MP_ERR(stream, "CD-ROM Device '%s' not found.\n",dev);
     return STREAM_ERROR;
   }
 
-  vcd = vcd_read_toc(f);
+  vcd = vcd_read_toc(stream, f);
   if(!vcd) {
-    mp_msg(MSGT_OPEN,MSGL_ERR,"Failed to get cd toc\n");
+    MP_ERR(stream, "Failed to get cd toc\n");
     close(f);
     return STREAM_ERROR;
   }
   ret2=vcd_get_track_end(vcd,1);
   if(ret2<0){
-      mp_msg(MSGT_OPEN, MSGL_ERR, "%s (get)\n",
-             mp_gtext("Error selecting VCD track."));
+      MP_ERR(stream, "%s (get)\n", "Error selecting VCD track.");
     close(f);
     free(vcd);
     return STREAM_ERROR;
   }
   ret=vcd_seek_to_track(vcd,1);
   if(ret<0){
-      mp_msg(MSGT_OPEN, MSGL_ERR, "%s (seek)\n",
-             mp_gtext("Error selecting VCD track."));
+      MP_ERR(stream, "%s (seek)\n", "Error selecting VCD track.");
     close(f);
     free(vcd);
     return STREAM_ERROR;
@@ -149,15 +149,15 @@ static int open_s(stream_t *stream,int mode)
     if (vcd_read(vcd, mem) != VCD_SECTOR_DATA || mem[2] || mem[3])
       break;
   }
-  mp_msg(MSGT_OPEN, MSGL_DBG2, "%d leading sectors skipped\n", tmp - sect);
+  MP_DBG(stream, "%d leading sectors skipped\n", tmp - sect);
   vcd_set_msf(vcd, tmp);
   ret = tmp * VCD_SECTOR_DATA;
 
-  mp_msg(MSGT_OPEN,MSGL_V,"VCD start byte position: 0x%X  end: 0x%X\n",ret,ret2);
+  MP_VERBOSE(stream, "VCD start byte position: 0x%X  end: 0x%X\n",ret,ret2);
 
 #if defined(__FreeBSD__) || defined(__FreeBSD_kernel__)
   if (ioctl (f, CDRIOCSETBLOCKSIZE, &bsize) == -1) {
-    mp_msg(MSGT_OPEN,MSGL_WARN,"Error in CDRIOCSETBLOCKSIZE");
+    MP_WARN(stream, "Error in CDRIOCSETBLOCKSIZE");
   }
 #endif
 

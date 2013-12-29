@@ -21,22 +21,12 @@
 #include <string.h>
 
 #include "config.h"
-#include "mpvcore/mp_msg.h"
+#include "common/msg.h"
 
 #include "video/mp_image.h"
 #include "vf.h"
 
 #include "video/out/vo.h"
-
-//===========================================================================//
-
-static int config(struct vf_instance *vf, int width, int height,
-                  int d_width, int d_height,
-                  unsigned int flags, unsigned int outfmt)
-{
-    flags &= ~VOFLAG_FLIPPING; // remove the VO flip flag
-    return vf_next_config(vf,width,height,d_width,d_height,flags,outfmt);
-}
 
 static struct mp_image *filter(struct vf_instance *vf, struct mp_image *mpi)
 {
@@ -51,20 +41,14 @@ static int query_format(struct vf_instance *vf, unsigned int fmt)
     return 0;
 }
 
-static int vf_open(vf_instance_t *vf, char *args){
-    vf->config=config;
+static int vf_open(vf_instance_t *vf){
     vf->filter=filter;
     vf->query_format = query_format;
     return 1;
 }
 
 const vf_info_t vf_info_flip = {
-    "flip image upside-down",
-    "flip",
-    "A'rpi",
-    "",
-    vf_open,
-    NULL
+    .description = "flip image upside-down",
+    .name = "flip",
+    .open = vf_open,
 };
-
-//===========================================================================//

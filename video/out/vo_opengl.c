@@ -1,6 +1,8 @@
 /*
  * This file is part of MPlayer.
  *
+ * Based on vo_gl.c by Reimar Doeffinger.
+ *
  * MPlayer is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
@@ -33,19 +35,20 @@
 #include "config.h"
 
 #include "talloc.h"
-#include "mpvcore/mp_common.h"
-#include "mpvcore/bstr.h"
-#include "mpvcore/mp_msg.h"
-#include "mpvcore/m_config.h"
+#include "common/common.h"
+#include "bstr/bstr.h"
+#include "common/msg.h"
+#include "options/m_config.h"
 #include "vo.h"
 #include "video/vfcap.h"
 #include "video/mp_image.h"
-#include "sub/sub.h"
+#include "sub/osd.h"
 
 #include "gl_common.h"
 #include "gl_osd.h"
 #include "filter_kernels.h"
 #include "video/memcpy_pic.h"
+#include "video/hwdec.h"
 #include "gl_video.h"
 #include "gl_lcms.h"
 
@@ -55,6 +58,8 @@ struct gl_priv {
     GL *gl;
 
     struct gl_video *renderer;
+
+    struct gl_hwdec *hwdec;
 
     // Options
     struct gl_video_opts *renderer_opts;
@@ -132,8 +137,9 @@ static void draw_image(struct vo *vo, mp_image_t *mpi)
 
 static int query_format(struct vo *vo, uint32_t format)
 {
-    int caps = VFCAP_CSP_SUPPORTED | VFCAP_CSP_SUPPORTED_BY_HW | VFCAP_FLIP;
-    if (!gl_video_check_format(format))
+    struct gl_priv *p = vo->priv;
+    int caps = VFCAP_CSP_SUPPORTED | VFCAP_CSP_SUPPORTED_BY_HW;
+    if (!gl_video_check_format(p->renderer, format))
         return 0;
     return caps;
 }
@@ -189,6 +195,73 @@ static int reconfig(struct vo *vo, struct mp_image_params *params, int flags)
     return 0;
 }
 
+
+static void load_hwdec_driver(struct gl_priv *p,
+                              const struct gl_hwdec_driver *drv)
+{
+    assert(!p->hwdec);
+    struct gl_hwdec *hwdec = talloc(NULL, struct gl_hwdec);
+    *hwdec = (struct gl_hwdec) {
+        .driver = drv,
+        .log = mp_log_new(hwdec, p->vo->log, drv->api_name),
+        .mpgl = p->glctx,
+        .info = talloc_zero(hwdec, struct mp_hwdec_info),
+        .gl_texture_target = GL_TEXTURE_2D,
+    };
+    mpgl_lock(p->glctx);
+    if (hwdec->driver->create(hwdec) < 0) {
+        mpgl_unlock(p->glctx);
+        talloc_free(hwdec);
+        MP_ERR(p->vo, "Couldn't load hwdec driver '%s'\n", drv->api_name);
+        return;
+    }
+    p->hwdec = hwdec;
+    gl_video_set_hwdec(p->renderer, p->hwdec);
+    mpgl_unlock(p->glctx);
+}
+
+static void request_hwdec_api(struct mp_hwdec_info *info, const char *api_name)
+{
+    struct gl_priv *p = info->load_api_ctx;
+    // Load at most one hwdec API
+    if (p->hwdec)
+        return;
+    for (int n = 0; mpgl_hwdec_drivers[n]; n++) {
+        const struct gl_hwdec_driver *drv = mpgl_hwdec_drivers[n];
+        if (api_name && strcmp(drv->api_name, api_name) == 0) {
+            load_hwdec_driver(p, drv);
+            if (p->hwdec) {
+                *info = *p->hwdec->info;
+                return;
+            }
+        }
+    }
+}
+
+static void get_hwdec_info(struct gl_priv *p, struct mp_hwdec_info *info)
+{
+    if (p->hwdec) {
+        *info = *p->hwdec->info;
+    } else {
+        *info = (struct mp_hwdec_info) {
+            .load_api = request_hwdec_api,
+            .load_api_ctx = p,
+        };
+    }
+}
+
+static void unload_hwdec_driver(struct gl_priv *p)
+{
+    if (p->hwdec) {
+        mpgl_lock(p->glctx);
+        gl_video_set_hwdec(p->renderer, NULL);
+        p->hwdec->driver->destroy(p->hwdec);
+        talloc_free(p->hwdec);
+        p->hwdec = NULL;
+        mpgl_unlock(p->glctx);
+    }
+}
+
 static bool reparse_cmdline(struct gl_priv *p, char *args)
 {
     struct m_config *cfg = NULL;
@@ -198,9 +271,11 @@ static bool reparse_cmdline(struct gl_priv *p, char *args)
     if (strcmp(args, "-") == 0) {
         opts = p->renderer_opts;
     } else {
-        cfg = m_config_new(NULL, sizeof(*opts), gl_video_conf.defaults,
-                           gl_video_conf.opts,
-                           p->vo->driver->init_option_string);
+        const struct gl_priv *vodef = p->vo->driver->priv_defaults;
+        const struct gl_video_opts *def =
+            vodef ? vodef->renderer_opts : gl_video_conf.defaults;
+        cfg = m_config_new(NULL, p->vo->log, sizeof(*opts), def,
+                           gl_video_conf.opts);
         opts = cfg->optstruct;
         r = m_config_parse_suboptions(cfg, "opengl", args);
     }
@@ -260,6 +335,10 @@ static int control(struct vo *vo, uint32_t request, void *data)
         mpgl_unlock(p->glctx);
         return true;
     }
+    case VOCTRL_GET_HWDEC_INFO: {
+        get_hwdec_info(p, data);
+        return true;
+    }
     case VOCTRL_REDRAW_FRAME:
         mpgl_lock(p->glctx);
         gl_video_render_frame(p->renderer);
@@ -288,6 +367,7 @@ static void uninit(struct vo *vo)
     struct gl_priv *p = vo->priv;
 
     if (p->glctx) {
+        unload_hwdec_driver(p);
         if (p->renderer)
             gl_video_uninit(p->renderer);
         mpgl_uninit(p->glctx);
@@ -318,7 +398,7 @@ static int preinit(struct vo *vo)
     gl_video_set_options(p->renderer, p->renderer_opts);
 
     if (p->icc_opts->profile) {
-        struct lut3d *lut3d = mp_load_icc(p->icc_opts, vo->log);
+        struct lut3d *lut3d = mp_load_icc(p->icc_opts, vo->log, vo->global);
         if (!lut3d)
             goto err_out;
         gl_video_set_lut3d(p->renderer, lut3d);
@@ -348,12 +428,8 @@ const struct m_option options[] = {
 };
 
 const struct vo_driver video_out_opengl = {
-    .info = &(const vo_info_t) {
-        "Extended OpenGL Renderer",
-        "opengl",
-        "Based on vo_gl.c by Reimar Doeffinger",
-        ""
-    },
+    .description = "Extended OpenGL Renderer",
+    .name = "opengl",
     .preinit = preinit,
     .query_format = query_format,
     .reconfig = reconfig,
@@ -367,12 +443,8 @@ const struct vo_driver video_out_opengl = {
 };
 
 const struct vo_driver video_out_opengl_hq = {
-    .info = &(const vo_info_t) {
-        "Extended OpenGL Renderer (high quality rendering preset)",
-        "opengl-hq",
-        "Based on vo_gl.c by Reimar Doeffinger",
-        ""
-    },
+    .description = "Extended OpenGL Renderer (high quality rendering preset)",
+    .name = "opengl-hq",
     .preinit = preinit,
     .query_format = query_format,
     .reconfig = reconfig,
@@ -382,6 +454,8 @@ const struct vo_driver video_out_opengl_hq = {
     .flip_page = flip_page,
     .uninit = uninit,
     .priv_size = sizeof(struct gl_priv),
+    .priv_defaults = &(const struct gl_priv){
+        .renderer_opts = (struct gl_video_opts *)&gl_video_opts_hq_def,
+    },
     .options = options,
-    .init_option_string = "lscale=lanczos2:dither-depth=auto:pbo:fbo-format=rgb16",
 };

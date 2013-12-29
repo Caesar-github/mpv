@@ -19,36 +19,88 @@
 #ifndef MPLAYER_DEC_VIDEO_H
 #define MPLAYER_DEC_VIDEO_H
 
+#include <stdbool.h>
+
 #include "demux/stheader.h"
+#include "video/hwdec.h"
+#include "video/mp_image.h"
 
-struct osd_state;
 struct mp_decoder_list;
+struct vo;
 
-struct mp_decoder_list *mp_video_decoder_list(void);
+struct dec_video {
+    struct mp_log *log;
+    struct mpv_global *global;
+    struct MPOpts *opts;
+    struct vf_chain *vfilter;  // video filter chain
+    struct vo *vo;  // (still) needed by video_set/get_colors
+    const struct vd_functions *vd_driver;
+    struct mp_hwdec_info hwdec_info; // video output hwdec handles
+    struct sh_stream *header;
 
-int init_best_video_codec(sh_video_t *sh_video, char* video_decoders);
-void uninit_video(sh_video_t *sh_video);
+    char *decoder_desc;
+
+    struct mp_image_params decoder_output; // last output of the decoder
+    struct mp_image_params vf_input; // video filter input params
+
+    // Used temporarily during format changes
+    struct mp_image *waiting_decoded_mpi;
+
+    void *priv; // for free use by vd_driver
+
+    // Last PTS from decoder (set with each vd_driver->decode() call)
+    double codec_pts;
+    int num_codec_pts_problems;
+
+    // Last packet DTS from decoder (passed through from source packets)
+    double codec_dts;
+    int num_codec_dts_problems;
+
+    // PTS sorting (obscure, non-default)
+    double buffered_pts[32];
+    int num_buffered_pts;
+    double sorted_pts;
+    int num_sorted_pts_problems;
+    double unsorted_pts;
+    int num_unsorted_pts_problems;
+    int pts_assoc_mode;
+
+    // PTS or DTS of packet last read
+    double last_packet_pdts;
+
+    // There was at least one packet with non-sense timestamps.
+    int has_broken_packet_pts; // <0: uninitialized, 0: no problems, 1: broken
+
+    // Final PTS of previously decoded image
+    double decoded_pts;
+
+    float stream_aspect;  // aspect ratio in media headers (DVD IFO files)
+    int i_bps;            // == bitrate  (compressed bytes/sec)
+    float fps;            // FPS from demuxer or from user override
+    float initial_decoder_aspect;
+
+    // State used only by player/video.c
+    double last_pts;
+};
+
+struct mp_decoder_list *video_decoder_list(void);
+
+bool video_init_best_codec(struct dec_video *d_video, char* video_decoders);
+void video_uninit(struct dec_video *d_video);
 
 struct demux_packet;
-void *decode_video(sh_video_t *sh_video, struct demux_packet *packet,
-                   int drop_frame, double pts);
+struct mp_image *video_decode(struct dec_video *d_video,
+                              struct demux_packet *packet,
+                              int drop_frame);
 
-int get_video_quality_max(sh_video_t *sh_video);
+int video_get_colors(struct dec_video *d_video, const char *item, int *value);
+int video_set_colors(struct dec_video *d_video, const char *item, int value);
+void video_reset_decoding(struct dec_video *d_video);
+int video_vd_control(struct dec_video *d_video, int cmd, void *arg);
 
-int get_video_colors(sh_video_t *sh_video, const char *item, int *value);
-int set_video_colors(sh_video_t *sh_video, const char *item, int value);
-void resync_video_stream(sh_video_t *sh_video);
-void video_reinit_vo(struct sh_video *sh_video);
-int get_current_video_decoder_lag(sh_video_t *sh_video);
-int vd_control(struct sh_video *sh_video, int cmd, void *arg);
+int video_reconfig_filters(struct dec_video *d_video,
+                           const struct mp_image_params *params);
 
-extern int divx_quality;
-
-// Used to communicate hardware decoder API handles from VO to video decoder.
-// The VO can set the context pointer for supported APIs.
-struct mp_hwdec_info {
-    struct mp_vdpau_ctx *vdpau_ctx;
-    struct mp_vaapi_ctx *vaapi_ctx;
-};
+int video_vf_vo_control(struct dec_video *d_video, int vf_cmd, void *data);
 
 #endif /* MPLAYER_DEC_VIDEO_H */

@@ -28,9 +28,9 @@
 
 #include "config.h"
 #include "audio/format.h"
-#include "mpvcore/mp_msg.h"
+#include "common/msg.h"
 #include "ao.h"
-#include "mpvcore/input/input.h"
+#include "input/input.h"
 
 #define PULSE_CLIENT_NAME "mpv"
 
@@ -286,6 +286,8 @@ static int init(struct ao *ao)
     ss.channels = ao->channels.num;
     ss.rate = ao->samplerate;
 
+    ao->format = af_fmt_from_planar(ao->format);
+
     const struct format_map *fmt_map = format_maps;
     while (fmt_map->mp_format != ao->format) {
         if (fmt_map->mp_format == AF_FORMAT_UNKNOWN) {
@@ -375,14 +377,14 @@ static void cork(struct ao *ao, bool pause)
 }
 
 // Play the specified data to the pulseaudio server
-static int play(struct ao *ao, void *data, int len, int flags)
+static int play(struct ao *ao, void **data, int samples, int flags)
 {
     struct priv *priv = ao->priv;
     pa_threaded_mainloop_lock(priv->mainloop);
-    if (pa_stream_write(priv->stream, data, len, NULL, 0,
+    if (pa_stream_write(priv->stream, data[0], samples * ao->sstride, NULL, 0,
                         PA_SEEK_RELATIVE) < 0) {
         GENERIC_ERR_MSG("pa_stream_write() failed");
-        len = -1;
+        samples = -1;
     }
     if (flags & AOPLAY_FINAL_CHUNK) {
         // Force start in case the stream was too short for prebuf
@@ -390,7 +392,7 @@ static int play(struct ao *ao, void *data, int len, int flags)
         pa_operation_unref(op);
     }
     pa_threaded_mainloop_unlock(priv->mainloop);
-    return len;
+    return samples;
 }
 
 // Reset the audio stream, i.e. flush the playback buffer on the server side
@@ -425,14 +427,14 @@ static void resume(struct ao *ao)
     cork(ao, false);
 }
 
-// Return number of bytes that may be written to the server without blocking
+// Return number of samples that may be written to the server without blocking
 static int get_space(struct ao *ao)
 {
     struct priv *priv = ao->priv;
     pa_threaded_mainloop_lock(priv->mainloop);
     size_t space = pa_stream_writable_size(priv->stream);
     pa_threaded_mainloop_unlock(priv->mainloop);
-    return space;
+    return space / ao->sstride;
 }
 
 // Return the current latency in seconds
@@ -582,6 +584,19 @@ static int control(struct ao *ao, enum aocontrol cmd, void *arg)
         pa_threaded_mainloop_unlock(priv->mainloop);
         return CONTROL_OK;
     }
+
+    case AOCONTROL_UPDATE_STREAM_TITLE: {
+        char *title = (char *)arg;
+        pa_threaded_mainloop_lock(priv->mainloop);
+        if (!waitop(priv, pa_stream_set_name(priv->stream, title,
+                                             success_cb, ao)))
+        {
+            GENERIC_ERR_MSG("pa_stream_set_name() failed");
+            return CONTROL_ERROR;
+        }
+        return CONTROL_OK;
+    }
+
     default:
         return CONTROL_UNKNOWN;
     }
@@ -590,12 +605,8 @@ static int control(struct ao *ao, enum aocontrol cmd, void *arg)
 #define OPT_BASE_STRUCT struct priv
 
 const struct ao_driver audio_out_pulse = {
-    .info = &(const struct ao_info) {
-        "PulseAudio audio output",
-        "pulse",
-        "Lennart Poettering",
-        "",
-    },
+    .description = "PulseAudio audio output",
+    .name      = "pulse",
     .control   = control,
     .init      = init,
     .uninit    = uninit,

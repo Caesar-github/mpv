@@ -29,10 +29,11 @@
 #include <sys/stat.h>
 
 #include "config.h"
-#include "mpvcore/options.h"
-#include "mpvcore/av_common.h"
+#include "options/options.h"
+#include "common/av_common.h"
 #include "talloc.h"
-#include "mpvcore/mp_msg.h"
+#include "common/msg.h"
+#include "common/global.h"
 
 #include "stream/stream.h"
 #include "demux.h"
@@ -56,7 +57,6 @@ extern const demuxer_desc_t demuxer_desc_tv;
 extern const demuxer_desc_t demuxer_desc_mf;
 extern const demuxer_desc_t demuxer_desc_matroska;
 extern const demuxer_desc_t demuxer_desc_lavf;
-extern const demuxer_desc_t demuxer_desc_mng;
 extern const demuxer_desc_t demuxer_desc_libass;
 extern const demuxer_desc_t demuxer_desc_subreader;
 extern const demuxer_desc_t demuxer_desc_playlist;
@@ -70,18 +70,15 @@ const demuxer_desc_t *const demuxer_list[] = {
     &demuxer_desc_cue,
     &demuxer_desc_rawaudio,
     &demuxer_desc_rawvideo,
-#ifdef CONFIG_TV
+#if HAVE_TV
     &demuxer_desc_tv,
 #endif
-#ifdef CONFIG_ASS
+#if HAVE_LIBASS
     &demuxer_desc_libass,
 #endif
     &demuxer_desc_matroska,
     &demuxer_desc_lavf,
     &demuxer_desc_mf,
-#ifdef CONFIG_MNG
-    &demuxer_desc_mng,
-#endif
     &demuxer_desc_playlist,
     // Pretty aggressive, so should be last.
     &demuxer_desc_subreader,
@@ -126,8 +123,7 @@ static void packet_destroy(void *ptr)
 static struct demux_packet *create_packet(size_t len)
 {
     if (len > 1000000000) {
-        mp_msg(MSGT_DEMUXER, MSGL_FATAL, "Attempt to allocate demux packet "
-               "over 1 GB!\n");
+        fprintf(stderr, "Attempt to allocate demux packet over 1 GB!\n");
         abort();
     }
     struct demux_packet *dp = talloc(NULL, struct demux_packet);
@@ -135,8 +131,11 @@ static struct demux_packet *create_packet(size_t len)
     *dp = (struct demux_packet) {
         .len = len,
         .pts = MP_NOPTS_VALUE,
+        .dts = MP_NOPTS_VALUE,
         .duration = -1,
         .stream_pts = MP_NOPTS_VALUE,
+        .pos = -1,
+        .stream = -1,
     };
     return dp;
 }
@@ -146,7 +145,7 @@ struct demux_packet *new_demux_packet(size_t len)
     struct demux_packet *dp = create_packet(len);
     dp->buffer = malloc(len + MP_INPUT_BUFFER_PADDING_SIZE);
     if (!dp->buffer) {
-        mp_msg(MSGT_DEMUXER, MSGL_FATAL, "Memory allocation failure!\n");
+        fprintf(stderr, "Memory allocation failure!\n");
         abort();
     }
     memset(dp->buffer + len, 0, MP_INPUT_BUFFER_PADDING_SIZE);
@@ -172,14 +171,13 @@ struct demux_packet *new_demux_packet_from(void *data, size_t len)
 void resize_demux_packet(struct demux_packet *dp, size_t len)
 {
     if (len > 1000000000) {
-        mp_msg(MSGT_DEMUXER, MSGL_FATAL, "Attempt to realloc demux packet "
-               "over 1 GB!\n");
+        fprintf(stderr, "Attempt to realloc demux packet over 1 GB!\n");
         abort();
     }
     assert(dp->allocation);
     dp->buffer = realloc(dp->buffer, len + MP_INPUT_BUFFER_PADDING_SIZE);
     if (!dp->buffer) {
-        mp_msg(MSGT_DEMUXER, MSGL_FATAL, "Memory allocation failure!\n");
+        fprintf(stderr, "Memory allocation failure!\n");
         abort();
     }
     memset(dp->buffer + len, 0, MP_INPUT_BUFFER_PADDING_SIZE);
@@ -219,6 +217,7 @@ struct demux_packet *demux_copy_packet(struct demux_packet *dp)
         memcpy(new->buffer, dp->buffer, new->len);
     }
     new->pts = dp->pts;
+    new->dts = dp->dts;
     new->duration = dp->duration;
     new->stream_pts = dp->stream_pts;
     return new;
@@ -227,7 +226,7 @@ struct demux_packet *demux_copy_packet(struct demux_packet *dp)
 struct sh_stream *new_sh_stream(demuxer_t *demuxer, enum stream_type type)
 {
     if (demuxer->num_streams > MAX_SH_STREAMS) {
-        mp_msg(MSGT_DEMUXER, MSGL_WARN, "Too many streams.");
+        MP_WARN(demuxer, "Too many streams.");
         return NULL;
     }
 
@@ -243,31 +242,22 @@ struct sh_stream *new_sh_stream(demuxer_t *demuxer, enum stream_type type)
         .demuxer = demuxer,
         .index = demuxer->num_streams,
         .demuxer_id = demuxer_id, // may be overwritten by demuxer
-        .opts = demuxer->opts,
         .ds = talloc_zero(sh, struct demux_stream),
     };
     MP_TARRAY_APPEND(demuxer, demuxer->streams, demuxer->num_streams, sh);
     switch (sh->type) {
         case STREAM_VIDEO: {
             struct sh_video *sht = talloc_zero(demuxer, struct sh_video);
-            sht->gsh = sh;
-            sht->opts = sh->opts;
             sh->video = sht;
             break;
         }
         case STREAM_AUDIO: {
             struct sh_audio *sht = talloc_zero(demuxer, struct sh_audio);
-            sht->gsh = sh;
-            sht->opts = sh->opts;
-            sht->samplesize = 2;
-            sht->sample_format = AF_FORMAT_S16_NE;
             sh->audio = sht;
             break;
         }
         case STREAM_SUB: {
             struct sh_sub *sht = talloc_zero(demuxer, struct sh_sub);
-            sht->gsh = sh;
-            sht->opts = sh->opts;
             sh->sub = sht;
             break;
         }
@@ -279,34 +269,6 @@ struct sh_stream *new_sh_stream(demuxer_t *demuxer, enum stream_type type)
     return sh;
 }
 
-static void free_sh_sub(sh_sub_t *sh)
-{
-    free(sh->extradata);
-}
-
-static void free_sh_audio(sh_audio_t *sh)
-{
-    free(sh->wf);
-    free(sh->codecdata);
-}
-
-static void free_sh_video(sh_video_t *sh)
-{
-    free(sh->bih);
-}
-
-static void free_sh_stream(struct sh_stream *sh)
-{
-    ds_free_packs(sh->ds);
-
-    switch (sh->type) {
-    case STREAM_AUDIO: free_sh_audio(sh->audio); break;
-    case STREAM_VIDEO: free_sh_video(sh->video); break;
-    case STREAM_SUB:   free_sh_sub(sh->sub);     break;
-    default: abort();
-    }
-}
-
 void free_demuxer(demuxer_t *demuxer)
 {
     if (!demuxer)
@@ -315,7 +277,7 @@ void free_demuxer(demuxer_t *demuxer)
         demuxer->desc->close(demuxer);
     // free streams:
     for (int n = 0; n < demuxer->num_streams; n++)
-        free_sh_stream(demuxer->streams[n]);
+        ds_free_packs(demuxer->streams[n]->ds);
     talloc_free(demuxer);
 }
 
@@ -355,6 +317,17 @@ int demuxer_add_packet(demuxer_t *demuxer, struct sh_stream *stream,
         return 0;
     }
 
+    if (stream->type == STREAM_VIDEO && !dp->len) {
+        /* Video packets with size 0 are assumed to not correspond to frames,
+         * but to indicate the absence of a frame in formats like AVI
+         * that must have packets at fixed timestamp intervals. */
+        talloc_free(dp);
+        return 1;
+    }
+
+    dp->stream = stream->index;
+    dp->next = NULL;
+
     ds->packs++;
     ds->bytes += dp->len;
     if (ds->tail) {
@@ -365,8 +338,23 @@ int demuxer_add_packet(demuxer_t *demuxer, struct sh_stream *stream,
         // first packet in stream
         ds->head = ds->tail = dp;
     }
-    mp_dbg(MSGT_DEMUXER, MSGL_DBG2,
-           "DEMUX: Append packet to %s, len=%d  pts=%5.3f  pos=%"PRIu64" "
+    /* ds_get_packets() can set ds->eof to 1 when another stream runs out of
+     * buffer space. That makes sense because in that situation the calling
+     * code should not count on being able to demux more packets from this
+     * stream. (Can happen with e.g. badly interleaved files.)
+     * In this case, we didn't necessarily reach EOF, and new packet can
+     * appear. */
+    ds->eof = 0;
+
+    if (dp->pos >= 0)
+        demuxer->filepos = dp->pos;
+
+    // For video, PTS determination is not trivial, but for other media types
+    // distinguishing PTS and DTS is not useful.
+    if (stream->type != STREAM_VIDEO && dp->pts == MP_NOPTS_VALUE)
+        dp->pts = dp->dts;
+
+    MP_DBG(demuxer, "DEMUX: Append packet to %s, len=%d  pts=%5.3f  pos=%"PRIu64" "
            "[packs: A=%d V=%d S=%d]\n", stream_type_name(stream->type),
            dp->len, dp->pts, dp->pos, count_packs(demuxer, STREAM_AUDIO),
            count_packs(demuxer, STREAM_VIDEO), count_packs(demuxer, STREAM_SUB));
@@ -385,13 +373,13 @@ static bool demux_check_queue_full(demuxer_t *demux)
 overflow:
 
     if (!demux->warned_queue_overflow) {
-        mp_tmsg(MSGT_DEMUXER, MSGL_ERR, "\nToo many packets in the demuxer "
-                "packet queue (video: %d packets in %d bytes, audio: %d "
-                "packets in %d bytes, sub: %d packets in %d bytes).\n",
-                count_packs(demux, STREAM_VIDEO), count_bytes(demux, STREAM_VIDEO),
-                count_packs(demux, STREAM_AUDIO), count_bytes(demux, STREAM_AUDIO),
-                count_packs(demux, STREAM_SUB), count_bytes(demux, STREAM_SUB));
-        mp_tmsg(MSGT_DEMUXER, MSGL_HINT, "Maybe you are playing a non-"
+        MP_ERR(demux, "\nToo many packets in the demuxer "
+               "packet queue (video: %d packets in %d bytes, audio: %d "
+               "packets in %d bytes, sub: %d packets in %d bytes).\n",
+               count_packs(demux, STREAM_VIDEO), count_bytes(demux, STREAM_VIDEO),
+               count_packs(demux, STREAM_AUDIO), count_bytes(demux, STREAM_AUDIO),
+               count_packs(demux, STREAM_SUB), count_bytes(demux, STREAM_SUB));
+        MP_INFO(demux, "Maybe you are playing a non-"
                 "interleaved stream/file or the codec failed?\n");
     }
     demux->warned_queue_overflow = true;
@@ -411,20 +399,11 @@ static void ds_get_packets(struct sh_stream *sh)
 {
     struct demux_stream *ds = sh->ds;
     demuxer_t *demux = sh->demuxer;
-    mp_dbg(MSGT_DEMUXER, MSGL_DBG3, "ds_get_packets (%s) called\n",
-           stream_type_name(sh->type));
+    MP_TRACE(demux, "ds_get_packets (%s) called\n",
+             stream_type_name(sh->type));
     while (1) {
-        if (ds->head) {
-            /* The code below can set ds->eof to 1 when another stream runs
-             * out of buffer space. That makes sense because in that situation
-             * the calling code should not count on being able to demux more
-             * packets from this stream.
-             * If however the situation improves and we're called again
-             * despite the eof flag then it's better to clear it to avoid
-             * weird behavior. */
-            ds->eof = 0;
+        if (ds->head)
             return;
-        }
 
         if (demux_check_queue_full(demux))
             break;
@@ -432,8 +411,8 @@ static void ds_get_packets(struct sh_stream *sh)
         if (!demux_fill_buffer(demux))
             break; // EOF
     }
-    mp_msg(MSGT_DEMUXER, MSGL_V, "ds_get_packets: EOF reached (stream: %s)\n",
-           stream_type_name(sh->type));
+    MP_VERBOSE(demux, "ds_get_packets: EOF reached (stream: %s)\n",
+               stream_type_name(sh->type));
     ds->eof = 1;
 }
 
@@ -497,16 +476,15 @@ bool demux_stream_eof(struct sh_stream *sh)
 
 // ====================================================================
 
-void demuxer_help(void)
+void demuxer_help(struct mp_log *log)
 {
     int i;
 
-    mp_msg(MSGT_DEMUXER, MSGL_INFO, "Available demuxers:\n");
-    mp_msg(MSGT_DEMUXER, MSGL_INFO, " demuxer:   info:\n");
-    mp_msg(MSGT_IDENTIFY, MSGL_INFO, "ID_DEMUXERS\n");
+    mp_info(log, "Available demuxers:\n");
+    mp_info(log, " demuxer:   info:\n");
     for (i = 0; demuxer_list[i]; i++) {
-        mp_msg(MSGT_DEMUXER, MSGL_INFO, "%10s  %s\n",
-               demuxer_list[i]->name, demuxer_list[i]->desc);
+        mp_info(log, "%10s  %s\n",
+                demuxer_list[i]->name, demuxer_list[i]->desc);
     }
 }
 
@@ -521,7 +499,8 @@ static const char *d_level(enum demux_check level)
     abort();
 }
 
-static struct demuxer *open_given_type(struct MPOpts *opts,
+static struct demuxer *open_given_type(struct mpv_global *global,
+                                       struct mp_log *log,
                                        const struct demuxer_desc *desc,
                                        struct stream *stream,
                                        struct demuxer_params *params,
@@ -533,39 +512,48 @@ static struct demuxer *open_given_type(struct MPOpts *opts,
         .type = desc->type,
         .stream = stream,
         .stream_pts = MP_NOPTS_VALUE,
-        .movi_start = stream->start_pos,
-        .movi_end = stream->end_pos,
-        .seekable = 1,
+        .seekable = (stream->flags & MP_STREAM_SEEK) == MP_STREAM_SEEK &&
+                    stream->end_pos > 0,
         .accurate_seek = true,
         .filepos = -1,
-        .opts = opts,
+        .opts = global->opts,
+        .global = global,
+        .log = mp_log_new(demuxer, log, desc->name),
+        .glog = log,
         .filename = talloc_strdup(demuxer, stream->url),
         .metadata = talloc_zero(demuxer, struct mp_tags),
     };
     demuxer->params = params; // temporary during open()
     stream_seek(stream, stream->start_pos);
 
-    mp_msg(MSGT_DEMUXER, MSGL_V, "Trying demuxer: %s (force-level: %s)\n",
-           desc->name, d_level(check));
+    mp_verbose(log, "Trying demuxer: %s (force-level: %s)\n",
+               desc->name, d_level(check));
 
     int ret = demuxer->desc->open(demuxer, check);
     if (ret >= 0) {
         demuxer->params = NULL;
         if (demuxer->filetype)
-            mp_tmsg(MSGT_DEMUXER, MSGL_INFO, "Detected file format: %s (%s)\n",
+            mp_info(log, "Detected file format: %s (%s)\n",
                     demuxer->filetype, desc->desc);
         else
-            mp_tmsg(MSGT_DEMUXER, MSGL_INFO, "Detected file format: %s\n",
-                    desc->desc);
+            mp_info(log, "Detected file format: %s\n", desc->desc);
         if (stream_manages_timeline(demuxer->stream)) {
             // Incorrect, but fixes some behavior with DVD/BD
             demuxer->ts_resets_possible = false;
             // Doesn't work, because stream_pts is a "guess".
             demuxer->accurate_seek = false;
+            // Can be seekable even if the stream isn't.
+            demuxer->seekable = true;
         }
         add_stream_chapters(demuxer);
         demuxer_sort_chapters(demuxer);
         demux_info_update(demuxer);
+        // Pretend we can seek if we can't seek, but there's a cache.
+        if (!demuxer->seekable && stream->uncached_stream) {
+            mp_warn(log,
+                    "File is not seekable, but there's a cache: enabling seeking.\n");
+            demuxer->seekable = true;
+        }
         return demuxer;
     }
 
@@ -578,10 +566,13 @@ static const int d_request[] = {DEMUX_CHECK_REQUEST, -1};
 static const int d_force[]   = {DEMUX_CHECK_FORCE, -1};
 
 struct demuxer *demux_open(struct stream *stream, char *force_format,
-                           struct demuxer_params *params, struct MPOpts *opts)
+                           struct demuxer_params *params,
+                           struct mpv_global *global)
 {
     const int *check_levels = d_normal;
     const struct demuxer_desc *check_desc = NULL;
+    struct mp_log *log = mp_log_new(NULL, global->log, "!demux");
+    struct demuxer *demuxer = NULL;
 
     if (!force_format)
         force_format = stream->demuxer;
@@ -597,9 +588,8 @@ struct demuxer *demux_open(struct stream *stream, char *force_format,
                 check_desc = demuxer_list[n];
         }
         if (!check_desc) {
-            mp_msg(MSGT_DEMUXER, MSGL_ERR, "Demuxer %s does not exist.\n",
-                   force_format);
-            return NULL;
+            mp_err(log, "Demuxer %s does not exist.\n", force_format);
+            goto done;
         }
     }
 
@@ -613,15 +603,19 @@ struct demuxer *demux_open(struct stream *stream, char *force_format,
         for (int n = 0; demuxer_list[n]; n++) {
             const struct demuxer_desc *desc = demuxer_list[n];
             if (!check_desc || desc == check_desc) {
-                struct demuxer *demuxer = open_given_type(opts, desc, stream,
-                                                          params, level);
-                if (demuxer)
-                    return demuxer;
+                demuxer = open_given_type(global, log, desc, stream, params, level);
+                if (demuxer) {
+                    talloc_steal(demuxer, log);
+                    log = NULL;
+                    goto done;
+                }
             }
         }
     }
 
-    return NULL;
+done:
+    talloc_free(log);
+    return demuxer;
 }
 
 void demux_flush(demuxer_t *demuxer)
@@ -634,7 +628,7 @@ void demux_flush(demuxer_t *demuxer)
 int demux_seek(demuxer_t *demuxer, float rel_seek_secs, int flags)
 {
     if (!demuxer->seekable) {
-        mp_tmsg(MSGT_SEEK, MSGL_WARN, "Cannot seek in this file.\n");
+        MP_WARN(demuxer, "Cannot seek in this file.\n");
         return 0;
     }
 
@@ -644,9 +638,9 @@ int demux_seek(demuxer_t *demuxer, float rel_seek_secs, int flags)
     // clear demux buffers:
     demux_flush(demuxer);
 
-    /* HACK: assume any demuxer used with these streams can cope with
-     * the stream layer suddenly seeking to a different position under it
-     * (nothing actually implements DEMUXER_CTRL_RESYNC now).
+    /* Note: this is for DVD and BD playback. The stream layer has to do these
+     * seeks, and the demuxer has to react to DEMUXER_CTRL_RESYNC in order to
+     * deal with the suddenly changing stream position.
      */
     struct stream *stream = demuxer->stream;
     if (stream_manages_timeline(stream)) {
@@ -730,7 +724,7 @@ int demux_info_add_bstr(demuxer_t *demuxer, struct bstr opt, struct bstr param)
     if (oldval) {
         if (bstrcmp0(param, oldval) == 0)
             return 0;
-        mp_tmsg(MSGT_DEMUX, MSGL_INFO, "Demuxer info %.*s changed to %.*s\n",
+        MP_INFO(demuxer, "Demuxer info %.*s changed to %.*s\n",
                 BSTR_P(opt), BSTR_P(param));
     }
 
@@ -746,16 +740,15 @@ int demux_info_print(demuxer_t *demuxer)
     if (!info || !info->num_keys)
         return 0;
 
-    mp_tmsg(MSGT_DEMUX, MSGL_INFO, "Clip info:\n");
+    mp_info(demuxer->glog, "Clip info:\n");
     for (n = 0; n < info->num_keys; n++) {
-        mp_msg(MSGT_DEMUX, MSGL_INFO, " %s: %s\n", info->keys[n],
-               info->values[n]);
-        mp_msg(MSGT_IDENTIFY, MSGL_INFO, "ID_CLIP_INFO_NAME%d=%s\n", n,
+        mp_info(demuxer->glog, " %s: %s\n", info->keys[n], info->values[n]);
+        mp_msg(demuxer->glog, MSGL_SMODE, "ID_CLIP_INFO_NAME%d=%s\n", n,
                info->keys[n]);
-        mp_msg(MSGT_IDENTIFY, MSGL_INFO, "ID_CLIP_INFO_VALUE%d=%s\n", n,
+        mp_msg(demuxer->glog, MSGL_SMODE, "ID_CLIP_INFO_VALUE%d=%s\n", n,
                info->values[n]);
     }
-    mp_msg(MSGT_IDENTIFY, MSGL_INFO, "ID_CLIP_INFO_N=%d\n", n);
+    mp_msg(demuxer->glog, MSGL_SMODE, "ID_CLIP_INFO_N=%d\n", n);
 
     return 0;
 }
