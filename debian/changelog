@@ -1,9 +1,15 @@
-mpv (0.3.0-1) UNRELEASED; urgency=medium
+mpv (0.3.0-1) unstable; urgency=medium
 
   * New upstream release
     - Fix --vf=expand example in manpage (Closes: #732271)
+  * Add 03_waf.patch to provide uncompressed waf scripts and modules
+  * Switch to waf build script
+  * Drop libmng-dev Build-Depends (not used anymore)
+  * Bump Standards-Version to 3.9.5 (no changes needed)
+  * Enable support for dvdnav
+  * Install more docs
 
- -- Alessandro Ghedini <ghedo@debian.org>  Sun, 29 Dec 2013 18:08:47 +0100
+ -- Alessandro Ghedini <ghedo@debian.org>  Sun, 29 Dec 2013 20:04:26 +0100
 
 mpv (0.2.4-2) unstable; urgency=medium
 
