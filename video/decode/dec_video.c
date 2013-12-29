@@ -17,21 +17,21 @@
  */
 
 #include "config.h"
-#include "mpvcore/options.h"
+#include "options/options.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
 #include <assert.h>
 
-#include "mpvcore/mp_msg.h"
+#include "common/msg.h"
 
 #include "osdep/timer.h"
 
 #include "stream/stream.h"
-#include "demux/demux_packet.h"
+#include "demux/packet.h"
 
-#include "mpvcore/codecs.h"
+#include "common/codecs.h"
 
 #include "video/out/vo.h"
 #include "video/csputils.h"
@@ -42,57 +42,71 @@
 
 #include "video/decode/dec_video.h"
 
+extern const vd_functions_t mpcodecs_vd_ffmpeg;
 
-int vd_control(struct sh_video *sh_video, int cmd, void *arg)
+/* Please do not add any new decoders here. If you want to implement a new
+ * decoder, add it to libavcodec, except for wrappers around external
+ * libraries and decoders requiring binary support. */
+
+const vd_functions_t * const mpcodecs_vd_drivers[] = {
+    &mpcodecs_vd_ffmpeg,
+    /* Please do not add any new decoders here. If you want to implement a new
+     * decoder, add it to libavcodec, except for wrappers around external
+     * libraries and decoders requiring binary support. */
+    NULL
+};
+
+void video_reset_decoding(struct dec_video *d_video)
 {
-    const struct vd_functions *vd = sh_video->vd_driver;
+    video_vd_control(d_video, VDCTRL_RESET, NULL);
+    if (d_video->vfilter && d_video->vfilter->initialized == 1)
+        vf_seek_reset(d_video->vfilter);
+    mp_image_unrefp(&d_video->waiting_decoded_mpi);
+    d_video->num_buffered_pts = 0;
+    d_video->last_pts = MP_NOPTS_VALUE;
+    d_video->last_packet_pdts = MP_NOPTS_VALUE;
+    d_video->decoded_pts = MP_NOPTS_VALUE;
+    d_video->codec_pts = MP_NOPTS_VALUE;
+    d_video->codec_dts = MP_NOPTS_VALUE;
+    d_video->sorted_pts = MP_NOPTS_VALUE;
+    d_video->unsorted_pts = MP_NOPTS_VALUE;
+}
+
+int video_vd_control(struct dec_video *d_video, int cmd, void *arg)
+{
+    const struct vd_functions *vd = d_video->vd_driver;
     if (vd)
-        return vd->control(sh_video, cmd, arg);
+        return vd->control(d_video, cmd, arg);
     return CONTROL_UNKNOWN;
 }
 
-int get_video_quality_max(sh_video_t *sh_video)
+int video_set_colors(struct dec_video *d_video, const char *item, int value)
 {
-    vf_instance_t *vf = sh_video->vfilter;
-    if (vf) {
-        int ret = vf_control(vf, VFCTRL_QUERY_MAX_PP_LEVEL, NULL);
-        if (ret > 0) {
-            mp_tmsg(MSGT_DECVIDEO, MSGL_INFO, "[PP] Using external postprocessing filter, max q = %d.\n", ret);
-            return ret;
-        }
-    }
-    return 0;
-}
-
-int set_video_colors(sh_video_t *sh_video, const char *item, int value)
-{
-    vf_instance_t *vf = sh_video->vfilter;
     vf_equalizer_t data;
 
     data.item = item;
     data.value = value;
 
-    mp_dbg(MSGT_DECVIDEO, MSGL_V, "set video colors %s=%d \n", item, value);
-    if (vf) {
-        int ret = vf_control(vf, VFCTRL_SET_EQUALIZER, &data);
+    MP_VERBOSE(d_video, "set video colors %s=%d \n", item, value);
+    if (d_video->vfilter) {
+        int ret = video_vf_vo_control(d_video, VFCTRL_SET_EQUALIZER, &data);
         if (ret == CONTROL_TRUE)
             return 1;
     }
-    mp_tmsg(MSGT_DECVIDEO, MSGL_V, "Video attribute '%s' is not supported by selected vo.\n",
-           item);
+    MP_VERBOSE(d_video, "Video attribute '%s' is not supported by selected vo.\n",
+               item);
     return 0;
 }
 
-int get_video_colors(sh_video_t *sh_video, const char *item, int *value)
+int video_get_colors(struct dec_video *d_video, const char *item, int *value)
 {
-    vf_instance_t *vf = sh_video->vfilter;
     vf_equalizer_t data;
 
     data.item = item;
 
-    mp_dbg(MSGT_DECVIDEO, MSGL_V, "get video colors %s \n", item);
-    if (vf) {
-        int ret = vf_control(vf, VFCTRL_GET_EQUALIZER, &data);
+    MP_VERBOSE(d_video, "get video colors %s \n", item);
+    if (d_video->vfilter) {
+        int ret = video_vf_vo_control(d_video, VFCTRL_GET_EQUALIZER, &data);
         if (ret == CONTROL_TRUE) {
             *value = data.value;
             return 1;
@@ -101,55 +115,28 @@ int get_video_colors(sh_video_t *sh_video, const char *item, int *value)
     return 0;
 }
 
-void resync_video_stream(sh_video_t *sh_video)
+void video_uninit(struct dec_video *d_video)
 {
-    vd_control(sh_video, VDCTRL_RESYNC_STREAM, NULL);
-    sh_video->prev_codec_reordered_pts = MP_NOPTS_VALUE;
-    sh_video->prev_sorted_pts = MP_NOPTS_VALUE;
+    mp_image_unrefp(&d_video->waiting_decoded_mpi);
+    if (d_video->vd_driver) {
+        MP_VERBOSE(d_video, "Uninit video.\n");
+        d_video->vd_driver->uninit(d_video);
+    }
+    talloc_free(d_video->priv);
+    vf_destroy(d_video->vfilter);
+    talloc_free(d_video);
 }
 
-void video_reinit_vo(struct sh_video *sh_video)
+static int init_video_codec(struct dec_video *d_video, const char *decoder)
 {
-    vd_control(sh_video, VDCTRL_REINIT_VO, NULL);
-}
-
-int get_current_video_decoder_lag(sh_video_t *sh_video)
-{
-    int ret = -1;
-    vd_control(sh_video, VDCTRL_QUERY_UNSEEN_FRAMES, &ret);
-    return ret;
-}
-
-void uninit_video(sh_video_t *sh_video)
-{
-    if (!sh_video->initialized)
-        return;
-    mp_tmsg(MSGT_DECVIDEO, MSGL_V, "Uninit video.\n");
-    sh_video->vd_driver->uninit(sh_video);
-    vf_uninit_filter_chain(sh_video->vfilter);
-    sh_video->vfilter = NULL;
-    talloc_free(sh_video->gsh->decoder_desc);
-    sh_video->gsh->decoder_desc = NULL;
-    sh_video->initialized = 0;
-}
-
-static int init_video_codec(sh_video_t *sh_video, const char *decoder)
-{
-    assert(!sh_video->initialized);
-
-    if (!sh_video->vd_driver->init(sh_video, decoder)) {
-        mp_tmsg(MSGT_DECVIDEO, MSGL_V, "Video decoder init failed.\n");
-        //uninit_video(sh_video);
+    if (!d_video->vd_driver->init(d_video, decoder)) {
+        MP_VERBOSE(d_video, "Video decoder init failed.\n");
         return 0;
     }
-
-    sh_video->initialized = 1;
-    sh_video->prev_codec_reordered_pts = MP_NOPTS_VALUE;
-    sh_video->prev_sorted_pts = MP_NOPTS_VALUE;
     return 1;
 }
 
-struct mp_decoder_list *mp_video_decoder_list(void)
+struct mp_decoder_list *video_decoder_list(void)
 {
     struct mp_decoder_list *list = talloc_zero(NULL, struct mp_decoder_list);
     for (int i = 0; mpcodecs_vd_drivers[i] != NULL; i++)
@@ -160,7 +147,7 @@ struct mp_decoder_list *mp_video_decoder_list(void)
 static struct mp_decoder_list *mp_select_video_decoders(const char *codec,
                                                         char *selection)
 {
-    struct mp_decoder_list *list = mp_video_decoder_list();
+    struct mp_decoder_list *list = video_decoder_list();
     struct mp_decoder_list *new = mp_select_decoders(list, codec, selection);
     talloc_free(list);
     return new;
@@ -175,86 +162,148 @@ static const struct vd_functions *find_driver(const char *name)
     return NULL;
 }
 
-int init_best_video_codec(sh_video_t *sh_video, char* video_decoders)
+bool video_init_best_codec(struct dec_video *d_video, char* video_decoders)
 {
-    assert(!sh_video->initialized);
+    assert(!d_video->vd_driver);
+    video_reset_decoding(d_video);
+    d_video->has_broken_packet_pts = -10; // needs 10 packets to reach decision
 
     struct mp_decoder_entry *decoder = NULL;
     struct mp_decoder_list *list =
-        mp_select_video_decoders(sh_video->gsh->codec, video_decoders);
+        mp_select_video_decoders(d_video->header->codec, video_decoders);
 
-    mp_print_decoders(MSGT_DECVIDEO, MSGL_V, "Codec list:", list);
+    mp_print_decoders(d_video->log, MSGL_V, "Codec list:", list);
 
     for (int n = 0; n < list->num_entries; n++) {
         struct mp_decoder_entry *sel = &list->entries[n];
         const struct vd_functions *driver = find_driver(sel->family);
         if (!driver)
             continue;
-        mp_tmsg(MSGT_DECVIDEO, MSGL_V, "Opening video decoder %s:%s\n",
-                sel->family, sel->decoder);
-        sh_video->vd_driver = driver;
-        if (init_video_codec(sh_video, sel->decoder)) {
+        MP_VERBOSE(d_video, "Opening video decoder %s:%s\n",
+                   sel->family, sel->decoder);
+        d_video->vd_driver = driver;
+        if (init_video_codec(d_video, sel->decoder)) {
             decoder = sel;
             break;
         }
-        sh_video->vd_driver = NULL;
-        mp_tmsg(MSGT_DECVIDEO, MSGL_WARN, "Video decoder init failed for "
+        d_video->vd_driver = NULL;
+        MP_WARN(d_video, "Video decoder init failed for "
                 "%s:%s\n", sel->family, sel->decoder);
     }
 
-    if (sh_video->initialized) {
-        sh_video->gsh->decoder_desc =
-            talloc_asprintf(NULL, "%s [%s:%s]", decoder->desc, decoder->family,
+    if (d_video->vd_driver) {
+        d_video->decoder_desc =
+            talloc_asprintf(d_video, "%s [%s:%s]", decoder->desc, decoder->family,
                             decoder->decoder);
-        mp_msg(MSGT_DECVIDEO, MSGL_INFO, "Selected video codec: %s\n",
-               sh_video->gsh->decoder_desc);
+        MP_INFO(d_video, "Selected video codec: %s\n",
+                d_video->decoder_desc);
     } else {
-        mp_msg(MSGT_DECVIDEO, MSGL_ERR,
-               "Failed to initialize a video decoder for codec '%s'.\n",
-               sh_video->gsh->codec ? sh_video->gsh->codec : "<unknown>");
+        MP_ERR(d_video, "Failed to initialize a video decoder for codec '%s'.\n",
+               d_video->header->codec ? d_video->header->codec : "<unknown>");
     }
 
     talloc_free(list);
-    return sh_video->initialized;
+    return !!d_video->vd_driver;
 }
 
-void *decode_video(sh_video_t *sh_video, struct demux_packet *packet,
-                   int drop_frame, double pts)
+static void add_pts_to_sort(struct dec_video *d_video, double pts)
 {
-    mp_image_t *mpi = NULL;
-    struct MPOpts *opts = sh_video->opts;
-
-    if (opts->correct_pts && pts != MP_NOPTS_VALUE) {
-        int delay = get_current_video_decoder_lag(sh_video);
-        if (delay >= 0) {
-            if (delay > sh_video->num_buffered_pts)
-#if 0
-                // this is disabled because vd_ffmpeg reports the same lag
-                // after seek even when there are no buffered frames,
-                // leading to incorrect error messages
-                mp_msg(MSGT_DECVIDEO, MSGL_ERR, "Not enough buffered pts\n");
-#else
-                ;
-#endif
-            else
-                sh_video->num_buffered_pts = delay;
-        }
-        if (sh_video->num_buffered_pts ==
-            sizeof(sh_video->buffered_pts) / sizeof(double))
-            mp_msg(MSGT_DECVIDEO, MSGL_ERR, "Too many buffered pts\n");
+    if (pts != MP_NOPTS_VALUE) {
+        int delay = -1;
+        video_vd_control(d_video, VDCTRL_QUERY_UNSEEN_FRAMES, &delay);
+        if (delay >= 0 && delay < d_video->num_buffered_pts)
+            d_video->num_buffered_pts = delay;
+        if (d_video->num_buffered_pts ==
+            sizeof(d_video->buffered_pts) / sizeof(double))
+            MP_ERR(d_video, "Too many buffered pts\n");
         else {
             int i, j;
-            for (i = 0; i < sh_video->num_buffered_pts; i++)
-                if (sh_video->buffered_pts[i] < pts)
+            for (i = 0; i < d_video->num_buffered_pts; i++)
+                if (d_video->buffered_pts[i] < pts)
                     break;
-            for (j = sh_video->num_buffered_pts; j > i; j--)
-                sh_video->buffered_pts[j] = sh_video->buffered_pts[j - 1];
-            sh_video->buffered_pts[i] = pts;
-            sh_video->num_buffered_pts++;
+            for (j = d_video->num_buffered_pts; j > i; j--)
+                d_video->buffered_pts[j] = d_video->buffered_pts[j - 1];
+            d_video->buffered_pts[i] = pts;
+            d_video->num_buffered_pts++;
         }
     }
+}
 
-    mpi = sh_video->vd_driver->decode(sh_video, packet, drop_frame, &pts);
+// Return true if pts1 comes before pts2. pts1 can be MP_NOPTS_VALUE, but pts2
+// always has to be valid. pts1 can't be equal or larger than pts2.
+#define PTS_IS_ORDERED(pts1, pts2) \
+    ((pts2) != MP_NOPTS_VALUE && ((pts1) == MP_NOPTS_VALUE || ((pts1) < (pts2))))
+
+static double retrieve_sorted_pts(struct dec_video *d_video, double codec_pts)
+{
+    struct MPOpts *opts = d_video->opts;
+
+    double sorted_pts;
+    if (d_video->num_buffered_pts) {
+        d_video->num_buffered_pts--;
+        sorted_pts = d_video->buffered_pts[d_video->num_buffered_pts];
+    } else {
+        MP_ERR(d_video, "No pts value from demuxer to use for frame!\n");
+        sorted_pts = MP_NOPTS_VALUE;
+    }
+
+    if (!PTS_IS_ORDERED(d_video->sorted_pts, sorted_pts))
+        d_video->num_sorted_pts_problems++;
+    d_video->sorted_pts = sorted_pts;
+
+    if (!PTS_IS_ORDERED(d_video->unsorted_pts, codec_pts))
+        d_video->num_unsorted_pts_problems++;
+    d_video->unsorted_pts = codec_pts;
+
+    if (d_video->header->video->avi_dts) {
+        // Actually, they don't need to be sorted, we just reuse the buffering.
+        d_video->pts_assoc_mode = 2;
+    } else if (opts->user_pts_assoc_mode) {
+        d_video->pts_assoc_mode = opts->user_pts_assoc_mode;
+    } else if (d_video->pts_assoc_mode == 0) {
+        if (codec_pts != MP_NOPTS_VALUE)
+            d_video->pts_assoc_mode = 1;
+        else
+            d_video->pts_assoc_mode = 2;
+    } else {
+        int probcount1 = d_video->num_unsorted_pts_problems;
+        int probcount2 = d_video->num_sorted_pts_problems;
+        if (d_video->pts_assoc_mode == 2) {
+            int tmp = probcount1;
+            probcount1 = probcount2;
+            probcount2 = tmp;
+        }
+        if (probcount1 >= probcount2 * 1.5 + 2) {
+            d_video->pts_assoc_mode = 3 - d_video->pts_assoc_mode;
+            MP_WARN(d_video, "Switching to pts association mode %d.\n",
+                    d_video->pts_assoc_mode);
+        }
+    }
+    return d_video->pts_assoc_mode == 1 ? codec_pts : sorted_pts;
+}
+
+struct mp_image *video_decode(struct dec_video *d_video,
+                              struct demux_packet *packet,
+                              int drop_frame)
+{
+    struct MPOpts *opts = d_video->opts;
+    bool sort_pts =
+        (opts->user_pts_assoc_mode != 1 || d_video->header->video->avi_dts)
+        && opts->correct_pts;
+    double pkt_pts = packet ? packet->pts : MP_NOPTS_VALUE;
+    double pkt_dts = packet ? packet->dts : MP_NOPTS_VALUE;
+
+    double pkt_pdts = pkt_pts == MP_NOPTS_VALUE ? pkt_dts : pkt_pts;
+    if (pkt_pdts != MP_NOPTS_VALUE)
+        d_video->last_packet_pdts = pkt_pdts;
+
+    if (sort_pts)
+        add_pts_to_sort(d_video, pkt_pdts);
+
+    double prev_codec_pts = d_video->codec_pts;
+    double prev_codec_dts = d_video->codec_dts;
+
+    struct mp_image *mpi = d_video->vd_driver->decode(d_video, packet, drop_frame);
 
     //------------------------ frame decoded. --------------------
 
@@ -268,27 +317,171 @@ void *decode_video(sh_video_t *sh_video, struct demux_packet *packet,
     else if (opts->field_dominance == 1)
         mpi->fields &= ~MP_IMGFIELD_TOP_FIRST;
 
-    double prevpts = sh_video->codec_reordered_pts;
-    sh_video->prev_codec_reordered_pts = prevpts;
-    sh_video->codec_reordered_pts = pts;
-    if (prevpts != MP_NOPTS_VALUE && pts <= prevpts
-        || pts == MP_NOPTS_VALUE)
-        sh_video->num_reordered_pts_problems++;
-    prevpts = sh_video->sorted_pts;
-    if (opts->correct_pts) {
-        if (sh_video->num_buffered_pts) {
-            sh_video->num_buffered_pts--;
-            sh_video->sorted_pts =
-                sh_video->buffered_pts[sh_video->num_buffered_pts];
-        } else {
-            mp_msg(MSGT_CPLAYER, MSGL_ERR,
-                   "No pts value from demuxer to use for frame!\n");
-            sh_video->sorted_pts = MP_NOPTS_VALUE;
-        }
+    // Note: the PTS is reordered, but the DTS is not. Both should be monotonic.
+    double pts = d_video->codec_pts;
+    double dts = d_video->codec_dts;
+
+    if (pts == MP_NOPTS_VALUE) {
+        d_video->codec_pts = prev_codec_pts;
+    } else if (pts <= prev_codec_pts) {
+        d_video->num_codec_pts_problems++;
     }
-    pts = sh_video->sorted_pts;
-    if (prevpts != MP_NOPTS_VALUE && pts <= prevpts
-        || pts == MP_NOPTS_VALUE)
-        sh_video->num_sorted_pts_problems++;
+
+    if (dts == MP_NOPTS_VALUE) {
+        d_video->codec_dts = prev_codec_dts;
+    } else if (dts <= prev_codec_dts) {
+        d_video->num_codec_dts_problems++;
+    }
+
+    // If PTS is unset, or non-monotonic, fall back to DTS.
+    if ((d_video->num_codec_pts_problems > d_video->num_codec_dts_problems ||
+         pts == MP_NOPTS_VALUE) && dts != MP_NOPTS_VALUE)
+        pts = dts;
+
+    // Alternative PTS determination methods
+    if (sort_pts)
+        pts = retrieve_sorted_pts(d_video, pts);
+
+    if (!opts->correct_pts || pts == MP_NOPTS_VALUE) {
+        if (opts->correct_pts)
+            MP_WARN(d_video, "No video PTS! Making something up.\n");
+
+        double frame_time = 1.0f / (d_video->fps > 0 ? d_video->fps : 25);
+        double base = d_video->last_packet_pdts;
+        pts = d_video->decoded_pts;
+        if (pts == MP_NOPTS_VALUE)
+            pts = base == MP_NOPTS_VALUE ? 0 : base;
+
+        pts += frame_time;
+    }
+
+    if (d_video->decoded_pts != MP_NOPTS_VALUE && pts <= d_video->decoded_pts) {
+        MP_WARN(d_video, "Non-monotonic video pts: %f <= %f\n",
+                pts, d_video->decoded_pts);
+    }
+
+    if (d_video->has_broken_packet_pts < 0)
+        d_video->has_broken_packet_pts++;
+    if (d_video->num_codec_pts_problems || pkt_pts == MP_NOPTS_VALUE)
+        d_video->has_broken_packet_pts = 1;
+
+    mpi->pts = pts;
+    d_video->decoded_pts = pts;
     return mpi;
+}
+
+int video_reconfig_filters(struct dec_video *d_video,
+                           const struct mp_image_params *params)
+{
+    struct MPOpts *opts = d_video->opts;
+    struct mp_image_params p = *params;
+    struct sh_video *sh = d_video->header->video;
+
+    MP_VERBOSE(d_video, "VIDEO:  %dx%d  %5.3f fps  %5.1f kbps (%4.1f kB/s)\n",
+               p.w, p.h, sh->fps, sh->i_bps * 0.008,
+               sh->i_bps / 1000.0);
+
+    MP_VERBOSE(d_video, "VDec: vo config request - %d x %d (%s)\n",
+               p.w, p.h, vo_format_name(p.imgfmt));
+
+    float decoder_aspect = p.d_w / (float)p.d_h;
+    if (d_video->initial_decoder_aspect == 0)
+        d_video->initial_decoder_aspect = decoder_aspect;
+
+    // We normally prefer the container aspect, unless the decoder aspect
+    // changes at least once.
+    if (d_video->initial_decoder_aspect == decoder_aspect) {
+        if (sh->aspect > 0)
+            vf_set_dar(&p.d_w, &p.d_h, p.w, p.h, sh->aspect);
+    } else {
+        // Even if the aspect switches back, don't use container aspect again.
+        d_video->initial_decoder_aspect = -1;
+    }
+
+    float force_aspect = opts->movie_aspect;
+    if (force_aspect > -1.0 && d_video->stream_aspect != 0.0)
+        force_aspect = d_video->stream_aspect;
+
+    if (force_aspect > 0)
+        vf_set_dar(&p.d_w, &p.d_h, p.w, p.h, force_aspect);
+
+    if (abs(p.d_w - p.w) >= 4 || abs(p.d_h - p.h) >= 4) {
+        MP_VERBOSE(d_video, "Aspect ratio is %.2f:1 - "
+                   "scaling to correct movie aspect.\n", sh->aspect);
+        MP_SMODE(d_video, "ID_VIDEO_ASPECT=%1.4f\n", sh->aspect);
+    } else {
+        p.d_w = p.w;
+        p.d_h = p.h;
+    }
+
+    // Apply user overrides
+    if (opts->requested_colorspace != MP_CSP_AUTO)
+        p.colorspace = opts->requested_colorspace;
+    if (opts->requested_input_range != MP_CSP_LEVELS_AUTO)
+        p.colorlevels = opts->requested_input_range;
+    p.outputlevels = opts->requested_output_range;
+
+    // Detect colorspace from resolution.
+    // Make sure the user-overrides are consistent (no RGB csp for YUV, etc.).
+    mp_image_params_guess_csp(&p);
+
+    // Time to config libvo!
+    MP_VERBOSE(d_video, "VO Config (%dx%d->%dx%d,0x%X)\n",
+               p.w, p.h, p.d_w, p.d_h, p.imgfmt);
+
+    if (vf_reconfig(d_video->vfilter, &p) < 0) {
+        MP_WARN(d_video, "FATAL: Cannot initialize video driver.\n");
+        return -1;
+    }
+
+    d_video->vf_input = p;
+
+    if (opts->gamma_gamma != 1000)
+        video_set_colors(d_video, "gamma", opts->gamma_gamma);
+    if (opts->gamma_brightness != 1000)
+        video_set_colors(d_video, "brightness", opts->gamma_brightness);
+    if (opts->gamma_contrast != 1000)
+        video_set_colors(d_video, "contrast", opts->gamma_contrast);
+    if (opts->gamma_saturation != 1000)
+        video_set_colors(d_video, "saturation", opts->gamma_saturation);
+    if (opts->gamma_hue != 1000)
+        video_set_colors(d_video, "hue", opts->gamma_hue);
+
+    return 0;
+}
+
+// Send a VCTRL, or if it doesn't work, translate it to a VOCTRL and try the VO.
+int video_vf_vo_control(struct dec_video *d_video, int vf_cmd, void *data)
+{
+    if (d_video->vfilter && d_video->vfilter->initialized > 0) {
+        int r = vf_control_any(d_video->vfilter, vf_cmd, data);
+        if (r != CONTROL_UNKNOWN)
+            return r;
+    }
+
+    switch (vf_cmd) {
+    case VFCTRL_GET_DEINTERLACE:
+        return vo_control(d_video->vo, VOCTRL_GET_DEINTERLACE, data) == VO_TRUE;
+    case VFCTRL_SET_DEINTERLACE:
+        return vo_control(d_video->vo, VOCTRL_SET_DEINTERLACE, data) == VO_TRUE;
+    case VFCTRL_SET_EQUALIZER: {
+        vf_equalizer_t *eq = data;
+        if (!d_video->vo->config_ok)
+            return CONTROL_FALSE;                       // vo not configured?
+        struct voctrl_set_equalizer_args param = {
+            eq->item, eq->value
+        };
+        return vo_control(d_video->vo, VOCTRL_SET_EQUALIZER, &param) == VO_TRUE;
+    }
+    case VFCTRL_GET_EQUALIZER: {
+        vf_equalizer_t *eq = data;
+        if (!d_video->vo->config_ok)
+            return CONTROL_FALSE;                       // vo not configured?
+        struct voctrl_get_equalizer_args param = {
+            eq->item, &eq->value
+        };
+        return vo_control(d_video->vo, VOCTRL_GET_EQUALIZER, &param) == VO_TRUE;
+    }
+    }
+    return CONTROL_UNKNOWN;
 }

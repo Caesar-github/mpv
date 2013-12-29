@@ -19,14 +19,14 @@
 #include <assert.h>
 
 #include "talloc.h"
-#include "mpvcore/options.h"
-#include "demux/stheader.h"
+#include "options/options.h"
+#include "video/mp_image.h"
 #include "sd.h"
-#include "sub.h"
 #include "spudec.h"
 
 struct sd_spu_priv {
     void *spudec;
+    struct mp_image_params video_params;
 };
 
 static bool is_dvd_sub(const char *t)
@@ -42,7 +42,7 @@ static bool supports_format(const char *format)
 
 static int init(struct sd *sd)
 {
-    void *spudec = spudec_new_scaled(sd->sub_video_w, sd->sub_video_h,
+    void *spudec = spudec_new_scaled(sd->log, sd->sub_video_w, sd->sub_video_h,
                                      sd->extradata, sd->extradata_len);
     if (!spudec)
         return -1;
@@ -72,8 +72,22 @@ static void get_bitmaps(struct sd *sd, struct mp_osd_res d, double pts,
     spudec_set_forced_subs_only(priv->spudec, opts->forced_subs_only);
     spudec_heartbeat(priv->spudec, pts * 90000);
 
-    if (spudec_visible(priv->spudec))
-        spudec_get_indexed(priv->spudec, &d, res);
+    if (spudec_visible(priv->spudec)) {
+        double xscale = 1;
+        double yscale = 1;
+        if (opts->stretch_dvd_subs) {
+            // For DVD subs, try to keep the subtitle PAR at display PAR.
+            double video_par =
+                  (priv->video_params.d_w / (double)priv->video_params.d_h)
+                / (priv->video_params.w   / (double)priv->video_params.h);
+            if (video_par > 1.0) {
+                xscale /= video_par;
+            } else {
+                yscale *= video_par;
+            }
+        }
+        spudec_get_indexed(priv->spudec, &d, xscale, yscale, res);
+    }
 }
 
 static void reset(struct sd *sd)
@@ -91,12 +105,25 @@ static void uninit(struct sd *sd)
     talloc_free(priv);
 }
 
+static int control(struct sd *sd, enum sd_ctrl cmd, void *arg)
+{
+    struct sd_spu_priv *priv = sd->priv;
+    switch (cmd) {
+    case SD_CTRL_SET_VIDEO_PARAMS:
+        priv->video_params = *(struct mp_image_params *)arg;
+        return CONTROL_OK;
+    default:
+        return CONTROL_UNKNOWN;
+    }
+}
+
 const struct sd_functions sd_spu = {
     .name = "spu",
     .supports_format = supports_format,
     .init = init,
     .decode = decode,
     .get_bitmaps = get_bitmaps,
+    .control = control,
     .reset = reset,
     .uninit = uninit,
 };

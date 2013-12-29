@@ -1,6 +1,8 @@
 /*
  * This file is part of MPlayer.
  *
+ * Original author: Reimar Doeffinger <Reimar.Doeffinger@gmx.de>
+ *
  * MPlayer is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
@@ -31,12 +33,12 @@
 
 #include "config.h"
 #include "talloc.h"
-#include "mpvcore/mp_msg.h"
-#include "mpvcore/m_option.h"
+#include "common/msg.h"
+#include "options/m_option.h"
 #include "vo.h"
 #include "video/vfcap.h"
 #include "video/mp_image.h"
-#include "sub/sub.h"
+#include "sub/osd.h"
 
 #include "gl_common.h"
 #include "gl_osd.h"
@@ -1033,7 +1035,7 @@ static int loadGPUProgram(struct vo *vo, GL *gl, GLenum target, char *prog)
                gl->GetString(GL_PROGRAM_ERROR_STRING), &prog[err]);
         return 0;
     }
-    if (!gl->GetProgramivARB || !mp_msg_test(MSGT_VO, MSGL_DBG2))
+    if (!gl->GetProgramivARB)
         return 1;
     MP_VERBOSE(vo, "Program statistics:\n");
     for (i = 0; progstats[i].name; i++) {
@@ -1459,8 +1461,7 @@ static void draw_osd(struct vo *vo, struct osd_state *osd)
         res = (struct mp_osd_res) {
             .w = p->image_width,
             .h = p->image_height,
-            .display_par = 1.0 / p->osd_res.video_par,
-            .video_par = p->osd_res.video_par,
+            .display_par = 1.0 / vo->aspdat.par,
         };
         gl->MatrixMode(GL_MODELVIEW);
         gl->PushMatrix();
@@ -2038,7 +2039,7 @@ static int query_format(struct vo *vo, uint32_t format)
     struct mp_imgfmt_desc desc = mp_imgfmt_get_desc(format);
 
     int depth = desc.plane_bits;
-    int caps = VFCAP_CSP_SUPPORTED | VFCAP_CSP_SUPPORTED_BY_HW | VFCAP_FLIP;
+    int caps = VFCAP_CSP_SUPPORTED | VFCAP_CSP_SUPPORTED_BY_HW;
     if (format == IMGFMT_RGB24 || format == IMGFMT_RGBA)
         return caps;
     if (p->use_yuv && (desc.flags & MP_IMGFLAG_YUV_P) &&
@@ -2163,12 +2164,8 @@ static int control(struct vo *vo, uint32_t request, void *data)
 #define OPT_BASE_STRUCT struct gl_priv
 
 const struct vo_driver video_out_opengl_old = {
-    .info = &(const vo_info_t) {
-        "OpenGL",
-        "opengl-old",
-        "Reimar Doeffinger <Reimar.Doeffinger@gmx.de>",
-        ""
-    },
+    .description = "OpenGL (legacy VO, may work better on older GPUs)",
+    .name = "opengl-old",
     .preinit = preinit,
     .query_format = query_format,
     .config = config,

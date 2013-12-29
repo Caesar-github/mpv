@@ -24,6 +24,7 @@ SYNOPSIS
 | **mpv** [options] {group of files and options}
 | **mpv** [bd]://[title][/device] [options]
 | **mpv** dvd://[title|[start\_title]-end\_title][/device] [options]
+| **mpv** dvdnav://[longest|menu|title][/device] [options]
 | **mpv** \vcd://[/device]
 | **mpv** \tv://[channel][/input_id] [options]
 | **mpv** radio://[channel|frequency][/capture] [options]
@@ -32,6 +33,7 @@ SYNOPSIS
 | **mpv** \mf://[filemask|\@listfile] [-mf options] [options]
 | **mpv** cdda://track[-endtrack][:speed][/device] [options]
 | **mpv** [file|mms[t]|http|httpproxy|rt[s]p|ftp|udp|smb]://[user:pass\@]URL[:port] [options]
+| **mpv** edl://[edl specification as in edl-mpv.rst]
 
 
 DESCRIPTION
@@ -283,6 +285,28 @@ It has the following format::
 
     ``mpv --ao=pcm:file=%`expr length "$NAME"`%"$NAME" test.avi``
 
+Paths
+-----
+
+Some care must be taken when passing arbitrary paths and filenames to mpv. For
+example, paths starting with ``-`` will be interpreted as options. Likewise,
+if a path contains the sequence ``://``, the string before that might be
+interpreted as protocol prefix, even though ``://`` can be part of a legal
+UNIX path. To avoid problems with arbitrary paths, you should be sure that
+absolute paths passed to mpv start with ``/``, and relative paths with ``./``.
+
+The name ``-`` itself is interpreted as stdin, and will cause mpv to disable
+console controls. (Which makes it suitable for playing data piped to stdin.)
+
+For paths passed to suboptions, the situation is further complicated by the
+need to escape special characters. To work this around, the path can be
+additionally wrapped in the ``%n%string_of_length_n`` syntax (see above).
+
+Some mpv options interpret paths starting with ``~``. Currently, the prefix
+``~~/`` expands to the mpv configuration directory (usually ``~/.mpv/``).
+``~/`` expands to the user's home directory. (The trailing ``/`` is always
+required.)
+
 Per-File Options
 ----------------
 
@@ -404,7 +428,7 @@ profile name ``default`` to continue with normal options.
 
         [extension.flv]
         profile-desc="profile for .flv files"
-        flip=yes
+        vf=flip
 
         [ao.alsa]
         device=spdif

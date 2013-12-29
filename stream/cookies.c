@@ -33,13 +33,11 @@
 
 #include "osdep/io.h"
 
-#include "mpvcore/options.h"
+#include "options/options.h"
 #include "cookies.h"
-#include "mpvcore/mp_msg.h"
+#include "common/msg.h"
 
 #define MAX_COOKIES 20
-
-char *cookies_file = NULL;
 
 typedef struct cookie_list_type {
     char *name;
@@ -52,24 +50,14 @@ typedef struct cookie_list_type {
     struct cookie_list_type *next;
 } cookie_list_t;
 
-/* Pointer to the linked list of cookies */
-static struct cookie_list_type *cookie_list = NULL;
-
-
 /* Like strdup, but stops at anything <31. */
-static char *col_dup(const char *src)
+static char *col_dup(void *talloc_ctx, const char *src)
 {
-    char *dst;
     int length = 0;
-
     while (src[length] > 31)
 	length++;
 
-    dst = malloc(length + 1);
-    strncpy(dst, src, length);
-    dst[length] = 0;
-
-    return dst;
+    return talloc_strndup(talloc_ctx, src, length);
 }
 
 /* Finds the start of all the columns */
@@ -92,40 +80,40 @@ static int parse_line(char **ptr, char *cols[6])
 }
 
 /* Loads a file into RAM */
-static char *load_file(const char *filename, int64_t * length)
+static char *load_file(struct mp_log *log, const char *filename, int64_t * length)
 {
     int fd;
     char *buffer = NULL;
 
-    mp_msg(MSGT_NETWORK, MSGL_V, "Loading cookie file: %s\n", filename);
+    mp_verbose(log, "Loading cookie file: %s\n", filename);
 
-    fd = open(filename, O_RDONLY);
+    fd = open(filename, O_RDONLY | O_CLOEXEC);
     if (fd < 0) {
-	mp_msg(MSGT_NETWORK, MSGL_V, "Could not open");
+	mp_verbose(log, "Could not open");
 	goto err_out;
     }
 
     *length = lseek(fd, 0, SEEK_END);
 
     if (*length < 0) {
-	mp_msg(MSGT_NETWORK, MSGL_V, "Could not find EOF");
+	mp_verbose(log, "Could not find EOF");
 	goto err_out;
     }
 
     if (*length > SIZE_MAX - 1) {
-	mp_msg(MSGT_NETWORK, MSGL_V, "File too big, could not malloc.");
+	mp_verbose(log, "File too big, could not malloc.");
 	goto err_out;
     }
 
     lseek(fd, 0, SEEK_SET);
 
     if (!(buffer = malloc(*length + 1))) {
-	mp_msg(MSGT_NETWORK, MSGL_V, "Could not malloc.");
+	mp_verbose(log, "Could not malloc.");
 	goto err_out;
     }
 
     if (read(fd, buffer, *length) != *length) {
-	mp_msg(MSGT_NETWORK, MSGL_V, "Read is behaving funny.");
+	mp_verbose(log, "Read is behaving funny.");
 	goto err_out;
     }
     close(fd);
@@ -140,26 +128,27 @@ err_out:
 }
 
 /* Loads a cookies.txt file into a linked list. */
-static struct cookie_list_type *load_cookies_from(const char *filename,
-						  struct cookie_list_type
-						  *list)
+static struct cookie_list_type *load_cookies_from(void *ctx,
+                                                  struct mp_log *log,
+                                                  const char *filename)
 {
     char *ptr, *file;
     int64_t length;
 
-    ptr = file = load_file(filename, &length);
+    ptr = file = load_file(log, filename, &length);
     if (!ptr)
-	return list;
+	return NULL;
 
+    struct cookie_list_type *list = NULL;
     while (*ptr) {
 	char *cols[7];
 	if (parse_line(&ptr, cols)) {
 	    struct cookie_list_type *new;
-	    new = malloc(sizeof(cookie_list_t));
-	    new->name = col_dup(cols[5]);
-	    new->value = col_dup(cols[6]);
-	    new->path = col_dup(cols[2]);
-	    new->domain = col_dup(cols[0]);
+	    new = talloc_zero(ctx, cookie_list_t);
+	    new->name = col_dup(new, cols[5]);
+	    new->value = col_dup(new, cols[6]);
+	    new->path = col_dup(new, cols[2]);
+	    new->domain = col_dup(new, cols[0]);
 	    new->secure = (*(cols[3]) == 't') || (*(cols[3]) == 'T');
 	    new->next = list;
 	    list = new;
@@ -169,25 +158,17 @@ static struct cookie_list_type *load_cookies_from(const char *filename,
     return list;
 }
 
-/* Attempt to load cookies.txt. Returns a pointer to the linked list contain the cookies. */
-static struct cookie_list_type *load_cookies(void)
-{
-    if (cookies_file)
-	return load_cookies_from(cookies_file, NULL);
-
-    return NULL;
-}
-
 // Return a cookies string as expected by lavf (libavformat/http.c). The format
 // is like a Set-Cookie header (http://curl.haxx.se/rfc/cookie_spec.html),
 // separated by newlines.
-char *cookies_lavf(void)
+char *cookies_lavf(void *talloc_ctx, struct mp_log *log, char *file)
 {
-    if (!cookie_list)
-        cookie_list = load_cookies();
+    void *tmp = talloc_new(NULL);
+    struct cookie_list_type *list = NULL;
+    if (file && file[0])
+        list = load_cookies_from(tmp, log, file);
 
-    struct cookie_list_type *list = cookie_list;
-    char *res = talloc_strdup(NULL, "");
+    char *res = talloc_strdup(talloc_ctx, "");
 
     while (list) {
         res = talloc_asprintf_append_buffer(res,
@@ -196,5 +177,6 @@ char *cookies_lavf(void)
         list = list->next;
     }
 
+    talloc_free(tmp);
     return res;
 }

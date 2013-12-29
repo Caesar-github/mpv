@@ -36,40 +36,26 @@ typedef struct af_sweep_s{
 // Initialization and runtime control
 static int control(struct af_instance* af, int cmd, void* arg)
 {
-  af_sweept* s   = (af_sweept*)af->setup;
   struct mp_audio *data= (struct mp_audio*)arg;
 
   switch(cmd){
   case AF_CONTROL_REINIT:
     mp_audio_copy_config(af->data, data);
-    mp_audio_set_format(af->data, AF_FORMAT_S16_NE);
+    mp_audio_set_format(af->data, AF_FORMAT_S16);
 
     return af_test_output(af, data);
-  case AF_CONTROL_COMMAND_LINE:
-    sscanf((char*)arg,"%lf", &s->delta);
-    return AF_OK;
-/*  case AF_CONTROL_RESAMPLE_RATE | AF_CONTROL_SET:
-    af->data->rate = *(int*)arg;
-    return AF_OK;*/
   }
   return AF_UNKNOWN;
 }
 
-// Deallocate memory
-static void uninit(struct af_instance* af)
-{
-    free(af->data);
-    free(af->setup);
-}
-
 // Filter data through filter
-static struct mp_audio* play(struct af_instance* af, struct mp_audio* data)
+static int filter(struct af_instance* af, struct mp_audio* data, int f)
 {
-  af_sweept *s = af->setup;
+  af_sweept *s = af->priv;
   int i, j;
-  int16_t *in = (int16_t*)data->audio;
+  int16_t *in = (int16_t*)data->planes[0];
   int chans   = data->nch;
-  int in_len  = data->len/(2*chans);
+  int in_len  = data->samples;
 
   for(i=0; i<in_len; i++){
       for(j=0; j<chans; j++)
@@ -78,24 +64,23 @@ static struct mp_audio* play(struct af_instance* af, struct mp_audio* data)
       if(2*s->x*s->delta >= 3.141592) s->x=0;
   }
 
-  return data;
+  return 0;
 }
 
 static int af_open(struct af_instance* af){
   af->control=control;
-  af->uninit=uninit;
-  af->play=play;
-  af->mul=1;
-  af->data=calloc(1,sizeof(struct mp_audio));
-  af->setup=calloc(1,sizeof(af_sweept));
+  af->filter=filter;
   return AF_OK;
 }
 
+#define OPT_BASE_STRUCT af_sweept
 struct af_info af_info_sweep = {
-  "sine sweep",
-  "sweep",
-  "Michael Niedermayer",
-  "",
-  AF_FLAGS_REENTRANT,
-  af_open
+    .info = "sine sweep",
+    .name = "sweep",
+    .open = af_open,
+    .priv_size = sizeof(af_sweept),
+    .options = (const struct m_option[]) {
+        OPT_DOUBLE("delta", delta, 0),
+        {0}
+    },
 };

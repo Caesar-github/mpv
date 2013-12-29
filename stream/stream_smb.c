@@ -23,40 +23,19 @@
 #include <libsmbclient.h>
 #include <unistd.h>
 
-#include "mpvcore/mp_msg.h"
+#include "common/msg.h"
 #include "stream.h"
-#include "mpvcore/m_option.h"
+#include "options/m_option.h"
 
 struct priv {
     int fd;
 };
 
-static char smb_password[15];
-static char smb_username[15];
-
 static void smb_auth_fn(const char *server, const char *share,
              char *workgroup, int wgmaxlen, char *username, int unmaxlen,
 	     char *password, int pwmaxlen)
 {
-  char temp[128];
-
-  strcpy(temp, "LAN");
-  if (temp[strlen(temp) - 1] == 0x0a)
-    temp[strlen(temp) - 1] = 0x00;
-
-  if (temp[0]) strncpy(workgroup, temp, wgmaxlen - 1);
-
-  strcpy(temp, smb_username);
-  if (temp[strlen(temp) - 1] == 0x0a)
-    temp[strlen(temp) - 1] = 0x00;
-
-  if (temp[0]) strncpy(username, temp, unmaxlen - 1);
-
-  strcpy(temp, smb_password);
-  if (temp[strlen(temp) - 1] == 0x0a)
-    temp[strlen(temp) - 1] = 0x00;
-
-   if (temp[0]) strncpy(password, temp, pwmaxlen - 1);
+  strncpy(workgroup, "LAN", wgmaxlen - 1);
 }
 
 static int control(stream_t *s, int cmd, void *arg) {
@@ -124,24 +103,24 @@ static int open_f (stream_t *stream, int mode)
   else if (mode == STREAM_WRITE) //who's gonna do that ?
     m = O_RDWR|O_CREAT|O_TRUNC;
   else {
-    mp_msg(MSGT_OPEN, MSGL_ERR, "[smb] Unknown open mode %d\n", mode);
+    MP_ERR(stream, "[smb] Unknown open mode %d\n", mode);
     return STREAM_UNSUPPORTED;
   }
 
   if(!filename) {
-    mp_msg(MSGT_OPEN,MSGL_ERR, "[smb] Bad url\n");
+    MP_ERR(stream, "[smb] Bad url\n");
     return STREAM_ERROR;
   }
 
   err = smbc_init(smb_auth_fn, 1);
   if (err < 0) {
-    mp_tmsg(MSGT_OPEN,MSGL_ERR,"Cannot init the libsmbclient library: %d\n",err);
+    MP_ERR(stream, "Cannot init the libsmbclient library: %d\n",err);
     return STREAM_ERROR;
   }
 
   fd = smbc_open(filename, m,0644);
   if (fd < 0) {
-    mp_tmsg(MSGT_OPEN,MSGL_ERR,"Could not open from LAN: '%s'\n", filename);
+    MP_ERR(stream, "Could not open from LAN: '%s'\n", filename);
     return STREAM_ERROR;
   }
 

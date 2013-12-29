@@ -22,13 +22,12 @@
 #include <libavutil/common.h>
 
 #include "talloc.h"
-#include "mpvcore/mp_msg.h"
-#include "mpvcore/av_common.h"
-#include "mpvcore/options.h"
-#include "demux/stheader.h"
+#include "common/msg.h"
+#include "common/av_common.h"
+#include "options/options.h"
+#include "video/mp_image.h"
 #include "sd.h"
 #include "dec_sub.h"
-#include "sub.h"
 
 struct sd_lavc_priv {
     AVCodecContext *avctx;
@@ -41,6 +40,7 @@ struct sd_lavc_priv {
     bool bitmaps_changed;
     double pts;
     double endpts;
+    struct mp_image_params video_params;
 };
 
 static bool supports_format(const char *format)
@@ -83,6 +83,14 @@ static void guess_resolution(enum AVCodecID type, int *w, int *h)
     }
 }
 
+static void get_resolution(struct sd *sd, int wh[2])
+{
+    struct sd_lavc_priv *priv = sd->priv;
+    wh[0] = priv->avctx->width;
+    wh[1] = priv->avctx->height;
+    guess_resolution(priv->avctx->codec_id, &wh[0], &wh[1]);
+}
+
 static int init(struct sd *sd)
 {
     struct sd_lavc_priv *priv = talloc_zero(NULL, struct sd_lavc_priv);
@@ -103,8 +111,7 @@ static int init(struct sd *sd)
     return 0;
 
  error:
-    mp_msg(MSGT_SUBREADER, MSGL_ERR,
-           "Could not open libavcodec subtitle decoder\n");
+    MP_FATAL(sd, "Could not open libavcodec subtitle decoder\n");
     av_free(ctx);
     talloc_free(priv);
     return -1;
@@ -194,8 +201,7 @@ static void decode(struct sd *sd, struct demux_packet *packet)
             }
             break;
         default:
-            mp_msg(MSGT_SUBREADER, MSGL_ERR, "sd_lavc: unsupported subtitle "
-                   "type from libavcodec\n");
+            MP_ERR(sd, "unsupported subtitle type from libavcodec\n");
             break;
         }
     }
@@ -205,47 +211,36 @@ static void get_bitmaps(struct sd *sd, struct mp_osd_res d, double pts,
                         struct sub_bitmaps *res)
 {
     struct sd_lavc_priv *priv = sd->priv;
+    struct MPOpts *opts = sd->opts;
 
     if (priv->pts != MP_NOPTS_VALUE && pts < priv->pts)
         return;
     if (priv->endpts != MP_NOPTS_VALUE && (pts >= priv->endpts ||
                                            pts < priv->endpts - 300))
         clear(priv);
-    if (priv->bitmaps_changed && priv->count > 0)
-        priv->outbitmaps = talloc_memdup(priv, priv->inbitmaps,
-                                         talloc_get_size(priv->inbitmaps));
-    int inw = priv->avctx->width;
-    int inh = priv->avctx->height;
-    guess_resolution(priv->avctx->codec_id, &inw, &inh);
-    int vidw = d.w - d.ml - d.mr;
-    int vidh = d.h - d.mt - d.mb;
-    double xscale = (double)vidw / inw;
-    double yscale = (double)vidh / inh;
-    if (priv->avctx->codec_id == AV_CODEC_ID_DVD_SUBTITLE) {
-        // For DVD subs, try to keep the subtitle PAR at display PAR.
-        if (d.video_par > 1.0) {
-            xscale /= d.video_par;
-        } else {
-            yscale *= d.video_par;
-        }
-    }
-    int cx = vidw / 2 - (int)(inw * xscale) / 2;
-    int cy = vidh / 2 - (int)(inh * yscale) / 2;
-    for (int i = 0; i < priv->count; i++) {
-        struct sub_bitmap *bi = &priv->inbitmaps[i];
-        struct sub_bitmap *bo = &priv->outbitmaps[i];
-        bo->x = bi->x * xscale + cx + d.ml;
-        bo->y = bi->y * yscale + cy + d.mt;
-        bo->dw = bi->w * xscale;
-        bo->dh = bi->h * yscale;
-    }
+    size_t size = talloc_get_size(priv->inbitmaps);
+    if (!priv->outbitmaps)
+        priv->outbitmaps = talloc_size(priv, size);
+    memcpy(priv->outbitmaps, priv->inbitmaps, size);
+
     res->parts = priv->outbitmaps;
     res->num_parts = priv->count;
     if (priv->bitmaps_changed)
         res->bitmap_id = ++res->bitmap_pos_id;
     priv->bitmaps_changed = false;
     res->format = SUBBITMAP_INDEXED;
-    res->scaled = xscale != 1 || yscale != 1;
+
+    double video_par = -1;
+    if (priv->avctx->codec_id == AV_CODEC_ID_DVD_SUBTITLE &&
+            opts->stretch_dvd_subs) {
+        // For DVD subs, try to keep the subtitle PAR at display PAR.
+        video_par =
+              (priv->video_params.d_w / (double)priv->video_params.d_h)
+            / (priv->video_params.w   / (double)priv->video_params.h);
+    }
+    int insize[2];
+    get_resolution(sd, insize);
+    osd_rescale_bitmaps(res, insize[0], insize[1], d, video_par);
 }
 
 static void reset(struct sd *sd)
@@ -268,12 +263,28 @@ static void uninit(struct sd *sd)
     talloc_free(priv);
 }
 
+static int control(struct sd *sd, enum sd_ctrl cmd, void *arg)
+{
+    struct sd_lavc_priv *priv = sd->priv;
+    switch (cmd) {
+    case SD_CTRL_SET_VIDEO_PARAMS:
+        priv->video_params = *(struct mp_image_params *)arg;
+        return CONTROL_OK;
+    case SD_CTRL_GET_RESOLUTION:
+        get_resolution(sd, arg);
+        return CONTROL_OK;
+    default:
+        return CONTROL_UNKNOWN;
+    }
+}
+
 const struct sd_functions sd_lavc = {
     .name = "lavc",
     .supports_format = supports_format,
     .init = init,
     .decode = decode,
     .get_bitmaps = get_bitmaps,
+    .control = control,
     .reset = reset,
     .uninit = uninit,
 };

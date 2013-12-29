@@ -20,8 +20,8 @@
 #include <libavcodec/version.h>
 #include <libavcodec/vda.h>
 
-#include "mpvcore/av_common.h"
-#include "mpvcore/mp_msg.h"
+#include "common/av_common.h"
+#include "common/msg.h"
 #include "video/mp_image.h"
 #include "video/decode/lavc.h"
 #include "config.h"
@@ -73,21 +73,24 @@ static const struct vda_error vda_errors[] = {
     { 0, NULL },
 };
 
-static void print_vda_error(int lev, char *message, int error_code)
+static void print_vda_error(struct mp_log *log, int lev, char *message,
+                            int error_code)
 {
     for (int n = 0; vda_errors[n].code < 0; n++)
         if (vda_errors[n].code == error_code) {
-            mp_msg(MSGT_DECVIDEO, lev, "%s: %s (%d)\n",
+            mp_msg(log, lev, "%s: %s (%d)\n",
                    message, vda_errors[n].reason, error_code);
             return;
         }
 
-    mp_msg(MSGT_DECVIDEO, lev, "%s: %d\n", message, error_code);
+    mp_msg(log, lev, "%s: %d\n", message, error_code);
 }
 
 static int probe(struct vd_lavc_hwdec *hwdec, struct mp_hwdec_info *info,
                  const char *decoder)
 {
+    hwdec_request_api(info, "vda");
+
     if (!find_codec(mp_codec_to_av_codec_id(decoder), FF_PROFILE_UNKNOWN))
         return HWDEC_ERR_NO_CODEC;
     return 0;
@@ -107,6 +110,7 @@ static int init_vda_decoder(struct lavc_ctx *ctx)
         .width             = ctx->avctx->width,
         .height            = ctx->avctx->height,
         .format            = pe->vda_codec,
+        // equals to k2vuyPixelFormat (= YUY2/UYVY)
         .cv_pix_fmt_type   = kCVPixelFormatType_422YpCbCr8,
 
 #if HAVE_VDA_LIBAVCODEC_REFCOUNTING
@@ -131,7 +135,7 @@ static int init_vda_decoder(struct lavc_ctx *ctx)
         &p->vda_ctx, ctx->avctx->extradata, ctx->avctx->extradata_size);
 
     if (status) {
-        print_vda_error(MSGL_ERR, "[vda] failed to init decoder", status);
+        print_vda_error(ctx->log, MSGL_ERR, "failed to init VDA decoder", status);
         return -1;
     }
 

@@ -33,14 +33,14 @@
 
 #include "config.h"
 
-#include "mpvcore/options.h"
+#include "options/options.h"
 #include "video/out/vo.h"
 #include "video/out/aspect.h"
 
-#include "mpvcore/input/input.h"
+#include "input/input.h"
 #include "talloc.h"
 
-#include "mpvcore/mp_msg.h"
+#include "common/msg.h"
 
 static void vo_cocoa_fullscreen(struct vo *vo);
 static void vo_cocoa_ontop(struct vo *vo);
@@ -136,7 +136,6 @@ static void vo_cocoa_set_cursor_visibility(struct vo *vo, bool *visible)
 
 void vo_cocoa_uninit(struct vo *vo)
 {
-    vo_cocoa_set_current_context(vo, false);
     dispatch_sync(dispatch_get_main_queue(), ^{
         struct vo_cocoa_state *s = vo->cocoa;
         enable_power_management(vo);
@@ -267,7 +266,7 @@ static void create_window(struct vo *vo, uint32_t d_width, uint32_t d_height,
         window_mask = NSTitledWindowMask|NSClosableWindowMask|
                       NSMiniaturizableWindowMask|NSResizableWindowMask;
     } else {
-        window_mask = NSBorderlessWindowMask;
+        window_mask = NSBorderlessWindowMask|NSResizableWindowMask;
     }
 
     s->window =
@@ -349,7 +348,12 @@ static int create_gl_context(struct vo *vo, int gl3profile)
 static void cocoa_set_window_title(struct vo *vo, const char *title)
 {
     struct vo_cocoa_state *s = vo->cocoa;
-    [s->window setTitle: [NSString stringWithUTF8String:title]];
+    void *talloc_ctx   = talloc_new(NULL);
+    struct bstr btitle = bstr_sanitize_utf8_latin1(talloc_ctx, bstr0(title));
+    NSString *nstitle  = [NSString stringWithUTF8String:btitle.start];
+    if (nstitle)
+        [s->window setTitle: nstitle];
+    talloc_free(talloc_ctx);
 }
 
 static void update_window(struct vo *vo, int d_width, int d_height)
@@ -445,10 +449,9 @@ void vo_cocoa_set_current_context(struct vo *vo, bool current)
 
         [s->gl_ctx makeCurrentContext];
     } else {
-        const bool locked = !![NSOpenGLContext currentContext];
         [NSOpenGLContext clearCurrentContext];
 
-        if (!s->inside_sync_section && locked)
+        if (!s->inside_sync_section)
             [s->lock unlock];
     }
 }
@@ -528,6 +531,26 @@ int vo_cocoa_control(struct vo *vo, int *events, int request, void *arg)
     case VOCTRL_UPDATE_SCREENINFO:
         vo_cocoa_update_screen_info(vo);
         return VO_TRUE;
+    case VOCTRL_GET_WINDOW_SIZE: {
+        int *s = arg;
+        vo->cocoa->inside_sync_section = true;
+        dispatch_sync(dispatch_get_main_queue(), ^{
+            NSSize size = [vo->cocoa->view frame].size;
+            s[0] = size.width;
+            s[1] = size.height;
+        });
+        vo->cocoa->inside_sync_section = false;
+        return VO_TRUE;
+    }
+    case VOCTRL_SET_WINDOW_SIZE: {
+        vo->cocoa->inside_sync_section = true;
+        dispatch_sync(dispatch_get_main_queue(), ^{
+            int *s = arg;
+            [vo->cocoa->window queueNewVideoSize:(NSSize){s[0], s[1]}];
+        });
+        vo->cocoa->inside_sync_section = false;
+        return VO_TRUE;
+    }
     case VOCTRL_SET_CURSOR_VISIBILITY:
         vo_cocoa_set_cursor_visibility(vo, arg);
         return VO_TRUE;
@@ -609,6 +632,13 @@ int vo_cocoa_cgl_color_size(struct vo *vo)
 - (void)putAxis:(int)mpkey delta:(float)delta;
 {
     mp_input_put_axis(self.vout->input_ctx, mpkey, delta);
+}
+
+- (void)putCommand:(char*)cmd
+{
+    mp_cmd_t *cmdt = mp_input_parse_cmd(self.vout->input_ctx, bstr0(cmd), "");
+    mp_input_queue_cmd(self.vout->input_ctx, cmdt);
+    ta_free(cmd);
 }
 
 - (void)performAsyncResize:(NSSize)size {

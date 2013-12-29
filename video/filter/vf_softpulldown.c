@@ -21,7 +21,7 @@
 #include <string.h>
 
 #include "config.h"
-#include "mpvcore/mp_msg.h"
+#include "common/msg.h"
 
 #include "video/img_format.h"
 #include "video/mp_image.h"
@@ -71,8 +71,7 @@ static int filter(struct vf_instance *vf, struct mp_image *mpi)
 	     !(flags & MP_IMGFIELD_TOP_FIRST)) ||
 	    (state == 1 &&
 	     flags & MP_IMGFIELD_TOP_FIRST)) {
-		mp_msg(MSGT_VFILTER, MSGL_WARN,
-		       "softpulldown: Unexpected field flags: state=%d top_field_first=%d repeat_first_field=%d\n",
+		MP_WARN(vf, "softpulldown: Unexpected field flags: state=%d top_field_first=%d repeat_first_field=%d\n",
 		       state,
 		       (flags & MP_IMGFIELD_TOP_FIRST) != 0,
 		       (flags & MP_IMGFIELD_REPEAT_FIRST) != 0);
@@ -116,26 +115,19 @@ static int filter(struct vf_instance *vf, struct mp_image *mpi)
         return 0;
 }
 
-static int config(struct vf_instance *vf,
-        int width, int height, int d_width, int d_height,
-	unsigned int flags, unsigned int outfmt)
-{
-	return vf_next_config(vf,width,height,d_width,d_height,flags,outfmt);
-}
-
 static int control(vf_instance_t *vf, int request, void *data)
 {
     switch (request) {
     case VFCTRL_SEEK_RESET:
         vf_detc_init_pts_buf(&vf->priv->ptsbuf);
-        break;
+        return CONTROL_OK;
     }
-    return vf_next_control(vf, request, data);
+    return CONTROL_UNKNOWN;
 }
 
 static void uninit(struct vf_instance *vf)
 {
-	mp_msg(MSGT_VFILTER, MSGL_INFO, "softpulldown: %lld frames in, %lld frames out\n", vf->priv->in, vf->priv->out);
+	MP_INFO(vf, "softpulldown: %lld frames in, %lld frames out\n", vf->priv->in, vf->priv->out);
 	free(vf->priv);
 }
 
@@ -149,9 +141,8 @@ static int query_format(struct vf_instance *vf, unsigned int fmt)
     return vf_next_query_format(vf, fmt);
 }
 
-static int vf_open(vf_instance_t *vf, char *args)
+static int vf_open(vf_instance_t *vf)
 {
-    vf->config = config;
     vf->filter_ext = filter;
     vf->control = control;
     vf->uninit = uninit;
@@ -163,10 +154,7 @@ static int vf_open(vf_instance_t *vf, char *args)
 }
 
 const vf_info_t vf_info_softpulldown = {
-    "mpeg2 soft 3:2 pulldown",
-    "softpulldown",
-    "Tobias Diedrich <ranma+mplayer@tdiedrich.de>",
-    "",
-    vf_open,
-    NULL
+    .description = "mpeg2 soft 3:2 pulldown",
+    .name = "softpulldown",
+    .open = vf_open,
 };

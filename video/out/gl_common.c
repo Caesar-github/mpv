@@ -42,10 +42,8 @@
 #include <assert.h>
 #include "talloc.h"
 #include "gl_common.h"
-#include "mpvcore/options.h"
-#include "mpvcore/m_option.h"
-#include "sub/sub.h"
-#include "bitmap_packer.h"
+#include "options/options.h"
+#include "options/m_option.h"
 
 //! \defgroup glgeneral OpenGL general helper functions
 
@@ -69,8 +67,8 @@ void glCheckError(GL *gl, struct mp_log *log, const char *info)
         GLenum error = gl->GetError();
         if (error == GL_NO_ERROR)
             break;
-        mp_msg_log(log, MSGL_ERR, "%s: OpenGL error %s.\n", info,
-                   gl_error_to_string(error));
+        mp_msg(log, MSGL_ERR, "%s: OpenGL error %s.\n", info,
+               gl_error_to_string(error));
     }
 }
 
@@ -125,9 +123,9 @@ static void list_features(int set, struct mp_log *log, int msgl, bool invert)
 {
     for (const struct feature *f = &features[0]; f->id; f++) {
         if (invert == !(f->id & set))
-            mp_msg_log(log, msgl, " [%s]", f->name);
+            mp_msg(log, msgl, " [%s]", f->name);
     }
-    mp_msg_log(log, msgl, "\n");
+    mp_msg(log, msgl, "\n");
 }
 
 // This guesses if the current GL context is a suspected software renderer.
@@ -142,14 +140,14 @@ static bool is_software_gl(GL *gl)
            strcmp(renderer, "Mesa X11") == 0;
 }
 
-#ifdef HAVE_LIBDL
+#if HAVE_LIBDL
 #include <dlfcn.h>
 #endif
 
 void *mp_getdladdr(const char *s)
 {
     void *ret = NULL;
-#ifdef HAVE_LIBDL
+#if HAVE_LIBDL
     void *handle = dlopen(NULL, RTLD_LAZY);
     if (!handle)
         return NULL;
@@ -447,6 +445,33 @@ struct gl_functions gl_functions[] = {
             {0}
         },
     },
+    // For gl_hwdec_vdpau.c
+    // http://www.opengl.org/registry/specs/NV/vdpau_interop.txt
+    {
+        .extension = "GL_NV_vdpau_interop",
+        .provides = MPGL_CAP_VDPAU,
+        .functions = (struct gl_function[]) {
+            // (only functions needed by us)
+            DEF_FN(VDPAUInitNV),
+            DEF_FN(VDPAUFiniNV),
+            DEF_FN(VDPAURegisterOutputSurfaceNV),
+            DEF_FN(VDPAUUnregisterSurfaceNV),
+            DEF_FN(VDPAUSurfaceAccessNV),
+            DEF_FN(VDPAUMapSurfacesNV),
+            DEF_FN(VDPAUUnmapSurfacesNV),
+            {0}
+        },
+    },
+    // Apple Packed YUV Formats
+    // For gl_hwdec_vda.c
+    // http://www.opengl.org/registry/specs/APPLE/rgb_422.txt
+    {
+        .extension = "GL_APPLE_rgb_422",
+        .provides = MPGL_CAP_APPLE_RGB_422,
+        .functions = (struct gl_function[]) {
+            {0}
+        },
+    },
 };
 
 #undef FN_OFFS
@@ -481,12 +506,12 @@ void mpgl_load_functions(GL *gl, void *(*getProcAddress)(const GLubyte *),
     const char *version = gl->GetString(GL_VERSION);
     sscanf(version, "%d.%d", &major, &minor);
     gl->version = MPGL_VER(major, minor);
-    mp_msg_log(log, MSGL_V, "Detected OpenGL %d.%d.\n", major, minor);
+    mp_msg(log, MSGL_V, "Detected OpenGL %d.%d.\n", major, minor);
 
-    mp_msg_log(log, MSGL_V, "GL_VENDOR='%s'\n",   gl->GetString(GL_VENDOR));
-    mp_msg_log(log, MSGL_V, "GL_RENDERER='%s'\n", gl->GetString(GL_RENDERER));
-    mp_msg_log(log, MSGL_V, "GL_VERSION='%s'\n",  gl->GetString(GL_VERSION));
-    mp_msg_log(log, MSGL_V, "GL_SHADING_LANGUAGE_VERSION='%s'\n",
+    mp_msg(log, MSGL_V, "GL_VENDOR='%s'\n",   gl->GetString(GL_VENDOR));
+    mp_msg(log, MSGL_V, "GL_RENDERER='%s'\n", gl->GetString(GL_RENDERER));
+    mp_msg(log, MSGL_V, "GL_VERSION='%s'\n",  gl->GetString(GL_VERSION));
+    mp_msg(log, MSGL_V, "GL_SHADING_LANGUAGE_VERSION='%s'\n",
                             gl->GetString(GL_SHADING_LANGUAGE_VERSION));
 
     // Note: This code doesn't handle CONTEXT_FORWARD_COMPATIBLE_BIT_ARB
@@ -523,9 +548,9 @@ void mpgl_load_functions(GL *gl, void *(*getProcAddress)(const GLubyte *),
     }
 
     if (has_legacy)
-        mp_msg_log(log, MSGL_V, "OpenGL legacy compat. found.\n");
-    mp_msg_log(log, MSGL_DBG2, "Combined OpenGL extensions string:\n%s\n",
-               gl->extensions);
+        mp_msg(log, MSGL_V, "OpenGL legacy compat. found.\n");
+    mp_msg(log, MSGL_DEBUG, "Combined OpenGL extensions string:\n%s\n",
+           gl->extensions);
 
     for (int n = 0; n < sizeof(gl_functions) / sizeof(gl_functions[0]); n++) {
         struct gl_functions *section = &gl_functions[n];
@@ -569,11 +594,11 @@ void mpgl_load_functions(GL *gl, void *(*getProcAddress)(const GLubyte *),
             if (!ptr) {
                 all_loaded = false;
                 if (!section->partial_ok) {
-                    mp_msg_log(log, MSGL_V, "Required function '%s' not "
-                               "found for %s/%d.%d.\n", fn->funcnames[0],
-                               section->extension ? section->extension : "native",
-                               MPGL_VER_GET_MAJOR(section->ver_core),
-                               MPGL_VER_GET_MINOR(section->ver_core));
+                    mp_msg(log, MSGL_V, "Required function '%s' not "
+                           "found for %s/%d.%d.\n", fn->funcnames[0],
+                           section->extension ? section->extension : "native",
+                           MPGL_VER_GET_MAJOR(section->ver_core),
+                           MPGL_VER_GET_MINOR(section->ver_core));
                     break;
                 }
             }
@@ -607,7 +632,7 @@ void mpgl_load_functions(GL *gl, void *(*getProcAddress)(const GLubyte *),
     if (!is_software_gl(gl))
         gl->mpgl_caps |= MPGL_CAP_NO_SW;
 
-    mp_msg_log(log, MSGL_V, "Detected OpenGL features:");
+    mp_msg(log, MSGL_V, "Detected OpenGL features:");
     list_features(gl->mpgl_caps, log, MSGL_V, false);
 }
 
@@ -644,6 +669,7 @@ int glFmt2bpp(GLenum format, GLenum type)
     case GL_ALPHA:
         return component_size;
     case GL_YCBCR_MESA:
+    case GL_RGB_422_APPLE:
         return 2;
     case GL_RGB:
     case GL_BGR:
@@ -854,18 +880,18 @@ struct backend {
 };
 
 static struct backend backends[] = {
-#ifdef CONFIG_GL_COCOA
+#if HAVE_GL_COCOA
     {"cocoa", mpgl_set_backend_cocoa},
 #endif
-#ifdef CONFIG_GL_WIN32
+#if HAVE_GL_WIN32
     {"win", mpgl_set_backend_w32},
 #endif
 
 //Add the wayland backend before x11, in order to probe for a wayland-server before a x11-server and avoid using xwayland
-#ifdef CONFIG_GL_WAYLAND
+#if HAVE_GL_WAYLAND
     {"wayland", mpgl_set_backend_wayland},
 #endif
-#ifdef CONFIG_GL_X11
+#if HAVE_GL_X11
     {"x11", mpgl_set_backend_x11},
 #endif
     {0}
@@ -882,14 +908,14 @@ int mpgl_find_backend(const char *name)
     return -2;
 }
 
-int mpgl_validate_backend_opt(const struct m_option *opt, struct bstr name,
-                              struct bstr param)
+int mpgl_validate_backend_opt(struct mp_log *log, const struct m_option *opt,
+                              struct bstr name, struct bstr param)
 {
     if (bstr_equals0(param, "help")) {
-        mp_msg(MSGT_VO, MSGL_INFO, "OpenGL windowing backends:\n");
-        mp_msg(MSGT_VO, MSGL_INFO, "    auto (autodetect)\n");
+        mp_info(log, "OpenGL windowing backends:\n");
+        mp_info(log, "    auto (autodetect)\n");
         for (const struct backend *entry = backends; entry->name; entry++)
-            mp_msg(MSGT_VO, MSGL_INFO, "    %s\n", entry->name);
+            mp_info(log, "    %s\n", entry->name);
         return M_OPT_EXIT - 1;
     }
     char s[20];
@@ -1005,8 +1031,25 @@ void mp_log_source(struct mp_log *log, int lev, const char *src)
         const char *next = end + 1;
         if (!end)
             next = end = src + strlen(src);
-        mp_msg_log(log, lev, "[%3d] %.*s\n", line, (int)(end - src), src);
+        mp_msg(log, lev, "[%3d] %.*s\n", line, (int)(end - src), src);
         line++;
         src = next;
     }
 }
+
+extern const struct gl_hwdec_driver gl_hwdec_vaglx;
+extern const struct gl_hwdec_driver gl_hwdec_vda;
+extern const struct gl_hwdec_driver gl_hwdec_vdpau;
+
+const struct gl_hwdec_driver *mpgl_hwdec_drivers[] = {
+#if HAVE_VAAPI_GLX
+    &gl_hwdec_vaglx,
+#endif
+#if HAVE_VDA_GL
+    &gl_hwdec_vda,
+#endif
+#if HAVE_VDPAU_GL_X11
+    &gl_hwdec_vdpau,
+#endif
+    NULL
+};

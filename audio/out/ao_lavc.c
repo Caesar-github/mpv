@@ -22,36 +22,31 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <assert.h>
+#include <limits.h>
 
 #include <libavutil/common.h>
 #include <libavutil/audioconvert.h>
 
 #include "compat/libav.h"
 #include "config.h"
-#include "mpvcore/options.h"
-#include "mpvcore/mp_common.h"
+#include "options/options.h"
+#include "common/common.h"
 #include "audio/format.h"
-#include "audio/reorder_ch.h"
+#include "audio/fmt-conversion.h"
 #include "talloc.h"
 #include "ao.h"
-#include "mpvcore/mp_msg.h"
+#include "common/msg.h"
 
-#include "mpvcore/encode_lavc.h"
-
-static const char *sample_padding_signed = "\x00\x00\x00\x00";
-static const char *sample_padding_u8     = "\x80";
-static const char *sample_padding_float  = "\x00\x00\x00\x00";
+#include "common/encode_lavc.h"
 
 struct priv {
     uint8_t *buffer;
     size_t buffer_size;
     AVStream *stream;
-    bool planarize;
     int pcmhack;
     int aframesize;
     int aframecount;
-    int offset;
-    int offset_left;
     int64_t savepts;
     int framecount;
     int64_t lastpts;
@@ -63,12 +58,43 @@ struct priv {
     int worst_time_base_is_stream;
 };
 
+static void select_format(struct ao *ao, AVCodec *codec)
+{
+    int best_score = INT_MIN;
+    int best_format = 0;
+
+    // Check the encoder's list of supported formats.
+    for (const enum AVSampleFormat *sampleformat = codec->sample_fmts;
+         sampleformat && *sampleformat != AV_SAMPLE_FMT_NONE;
+         ++sampleformat)
+    {
+        int fmt = af_from_avformat(*sampleformat);
+        if (!fmt) {
+            MP_WARN(ao, "unsupported lavc format %s",
+                    av_get_sample_fmt_name(*sampleformat));
+            continue;
+        }
+        int score = af_format_conversion_score(fmt, ao->format);
+        if (score > best_score) {
+            best_score = score;
+            best_format = fmt;
+        }
+    }
+
+    if (best_format) {
+        ao->format = best_format;
+    } else {
+        MP_ERR(ao, "sample format not found\n"); // shouldn't happen
+    }
+}
+
 // open & setup audio device
 static int init(struct ao *ao)
 {
     struct priv *ac = talloc_zero(ao, struct priv);
-    const enum AVSampleFormat *sampleformat;
     AVCodec *codec;
+
+    ao->priv = ac;
 
     if (!encode_lavc_available(ao->encode_lavc_ctx)) {
         MP_ERR(ao, "the option --o (output file) must be specified\n");
@@ -106,141 +132,10 @@ static int init(struct ao *ao)
 
     ac->stream->codec->sample_fmt = AV_SAMPLE_FMT_NONE;
 
-    {
-        // first check if the selected format is somewhere in the list of
-        // supported formats by the codec
-        for (sampleformat = codec->sample_fmts;
-             sampleformat && *sampleformat != AV_SAMPLE_FMT_NONE;
-             ++sampleformat) {
-            switch (*sampleformat) {
-            case AV_SAMPLE_FMT_U8:
-            case AV_SAMPLE_FMT_U8P:
-                if (ao->format == AF_FORMAT_U8)
-                    goto out_search;
-                break;
-            case AV_SAMPLE_FMT_S16:
-            case AV_SAMPLE_FMT_S16P:
-                if (ao->format == AF_FORMAT_S16_BE)
-                    goto out_search;
-                if (ao->format == AF_FORMAT_S16_LE)
-                    goto out_search;
-                break;
-            case AV_SAMPLE_FMT_S32:
-            case AV_SAMPLE_FMT_S32P:
-                if (ao->format == AF_FORMAT_S32_BE)
-                    goto out_search;
-                if (ao->format == AF_FORMAT_S32_LE)
-                    goto out_search;
-                break;
-            case AV_SAMPLE_FMT_FLT:
-            case AV_SAMPLE_FMT_FLTP:
-                if (ao->format == AF_FORMAT_FLOAT_BE)
-                    goto out_search;
-                if (ao->format == AF_FORMAT_FLOAT_LE)
-                    goto out_search;
-                break;
-            // FIXME do we need support for AV_SAMPLE_FORMAT_DBL/DBLP?
-            default:
-                break;
-            }
-        }
-out_search:
-        ;
-    }
+    select_format(ao, codec);
 
-    if (!sampleformat || *sampleformat == AV_SAMPLE_FMT_NONE) {
-        // if the selected format is not supported, we have to pick the first
-        // one we CAN support
-        // note: not needing to select endianness here, as the switch() below
-        // does that anyway for us
-        for (sampleformat = codec->sample_fmts;
-             sampleformat && *sampleformat != AV_SAMPLE_FMT_NONE;
-             ++sampleformat) {
-            switch (*sampleformat) {
-            case AV_SAMPLE_FMT_U8:
-            case AV_SAMPLE_FMT_U8P:
-                ao->format = AF_FORMAT_U8;
-                goto out_takefirst;
-            case AV_SAMPLE_FMT_S16:
-            case AV_SAMPLE_FMT_S16P:
-                ao->format = AF_FORMAT_S16_NE;
-                goto out_takefirst;
-            case AV_SAMPLE_FMT_S32:
-            case AV_SAMPLE_FMT_S32P:
-                ao->format = AF_FORMAT_S32_NE;
-                goto out_takefirst;
-            case AV_SAMPLE_FMT_FLT:
-            case AV_SAMPLE_FMT_FLTP:
-                ao->format = AF_FORMAT_FLOAT_NE;
-                goto out_takefirst;
-            // FIXME do we need support for AV_SAMPLE_FORMAT_DBL/DBLP?
-            default:
-                break;
-            }
-        }
-out_takefirst:
-        ;
-    }
-
-    switch (ao->format) {
-    // now that we have chosen a format, set up the fields for it, boldly
-    // switching endianness if needed (mplayer code will convert for us
-    // anyway, but ffmpeg always expects native endianness)
-    case AF_FORMAT_U8:
-        ac->stream->codec->sample_fmt = AV_SAMPLE_FMT_U8;
-        ac->sample_size = 1;
-        ac->sample_padding = sample_padding_u8;
-        ao->format = AF_FORMAT_U8;
-        break;
-    default:
-    case AF_FORMAT_S16_BE:
-    case AF_FORMAT_S16_LE:
-        ac->stream->codec->sample_fmt = AV_SAMPLE_FMT_S16;
-        ac->sample_size = 2;
-        ac->sample_padding = sample_padding_signed;
-        ao->format = AF_FORMAT_S16_NE;
-        break;
-    case AF_FORMAT_S32_BE:
-    case AF_FORMAT_S32_LE:
-        ac->stream->codec->sample_fmt = AV_SAMPLE_FMT_S32;
-        ac->sample_size = 4;
-        ac->sample_padding = sample_padding_signed;
-        ao->format = AF_FORMAT_S32_NE;
-        break;
-    case AF_FORMAT_FLOAT_BE:
-    case AF_FORMAT_FLOAT_LE:
-        ac->stream->codec->sample_fmt = AV_SAMPLE_FMT_FLT;
-        ac->sample_size = 4;
-        ac->sample_padding = sample_padding_float;
-        ao->format = AF_FORMAT_FLOAT_NE;
-        break;
-    }
-
-    // detect if we have to planarize
-    ac->planarize = false;
-    {
-        bool found_format = false;
-        bool found_planar_format = false;
-        for (sampleformat = codec->sample_fmts;
-             sampleformat && *sampleformat != AV_SAMPLE_FMT_NONE;
-             ++sampleformat) {
-            if (*sampleformat == ac->stream->codec->sample_fmt)
-                found_format = true;
-            if (*sampleformat ==
-                    av_get_planar_sample_fmt(ac->stream->codec->sample_fmt))
-                found_planar_format = true;
-        }
-        if (!found_format && found_planar_format) {
-            ac->stream->codec->sample_fmt =
-                av_get_planar_sample_fmt(ac->stream->codec->sample_fmt);
-            ac->planarize = true;
-        }
-        if (!found_format && !found_planar_format) {
-            // shouldn't happen
-            MP_ERR(ao, "sample format not found\n");
-        }
-    }
-
+    ac->sample_size = af_fmt2bits(ao->format) / 8;
+    ac->stream->codec->sample_fmt = af_to_avformat(ao->format);
     ac->stream->codec->bits_per_raw_sample = ac->sample_size * 8;
 
     if (encode_lavc_open_codec(ao->encode_lavc_ctx, ac->stream) < 0)
@@ -270,33 +165,14 @@ out_takefirst:
 
     ac->savepts = MP_NOPTS_VALUE;
     ac->lastpts = MP_NOPTS_VALUE;
-    ac->offset = ac->stream->codec->sample_rate *
-                 encode_lavc_getoffset(ao->encode_lavc_ctx, ac->stream);
-    ac->offset_left = ac->offset;
 
     ao->untimed = true;
-    ao->priv = ac;
-
-    if (ac->planarize)
-        MP_WARN(ao, "need to planarize audio data\n");
 
     return 0;
 }
 
-static void fill_with_padding(void *buf, int cnt, int sz, const void *padding)
-{
-    int i;
-    if (sz == 1) {
-        memset(buf, cnt, *(char *)padding);
-        return;
-    }
-    for (i = 0; i < cnt; ++i)
-        memcpy((char *) buf + i * sz, padding, sz);
-}
-
 // close audio device
-static int encode(struct ao *ao, double apts, void *data);
-static int play(struct ao *ao, void *data, int len, int flags);
+static int encode(struct ao *ao, double apts, void **data);
 static void uninit(struct ao *ao, bool cut_audio)
 {
     struct priv *ac = ao->priv;
@@ -308,29 +184,10 @@ static void uninit(struct ao *ao, bool cut_audio)
     }
 
     if (ac->buffer) {
-        if (ao->buffer.len > 0) {
-            // TRICK: append aframesize-1 samples to the end, then play() will
-            // encode all it can
-            size_t extralen =
-                (ac->aframesize - 1) * ao->channels.num * ac->sample_size;
-            void *paddingbuf = talloc_size(ao, ao->buffer.len + extralen);
-            memcpy(paddingbuf, ao->buffer.start, ao->buffer.len);
-            fill_with_padding((char *) paddingbuf + ao->buffer.len,
-                              extralen / ac->sample_size,
-                              ac->sample_size, ac->sample_padding);
-            int written = play(ao, paddingbuf, ao->buffer.len + extralen, 0);
-            if (written < ao->buffer.len) {
-                MP_ERR(ao, "did not write enough data at the end\n");
-            }
-            talloc_free(paddingbuf);
-            ao->buffer.len = 0;
-        }
-
         double outpts = ac->expected_next_pts;
         if (!ectx->options->rawts && ectx->options->copyts)
             outpts += ectx->discontinuity_pts_offset;
         outpts += encode_lavc_getoffset(ectx, ac->stream);
-
         while (encode(ao, outpts, NULL) > 0) ;
     }
 
@@ -342,11 +199,11 @@ static int get_space(struct ao *ao)
 {
     struct priv *ac = ao->priv;
 
-    return ac->aframesize * ac->sample_size * ao->channels.num * ac->framecount;
+    return ac->aframesize * ac->framecount;
 }
 
 // must get exactly ac->aframesize amount of data
-static int encode(struct ao *ao, double apts, void *data)
+static int encode(struct ao *ao, double apts, void **data)
 {
     AVFrame *frame;
     AVPacket packet;
@@ -369,22 +226,11 @@ static int encode(struct ao *ao, double apts, void *data)
         frame = avcodec_alloc_frame();
         frame->nb_samples = ac->aframesize;
 
-        if (ac->planarize) {
-            void *data2 = talloc_size(ao, ac->aframesize * ao->channels.num *
-                                      ac->sample_size);
-            reorder_to_planar(data2, data, ac->sample_size, ao->channels.num,
-                              ac->aframesize);
-            data = data2;
-        }
+        assert(ao->channels.num <= AV_NUM_DATA_POINTERS);
+        for (int n = 0; n < ao->channels.num; n++)
+            frame->extended_data[n] = data[n];
 
-        size_t audiolen = ac->aframesize * ao->channels.num * ac->sample_size;
-        if (avcodec_fill_audio_frame(frame, ao->channels.num,
-                                     ac->stream->codec->sample_fmt, data,
-                                     audiolen, 1))
-        {
-            MP_ERR(ao, "error filling\n");
-            return -1;
-        }
+        frame->linesize[0] = frame->nb_samples * ao->sstride;
 
         if (ectx->options->rawts || ectx->options->copyts) {
             // real audio pts
@@ -414,11 +260,6 @@ static int encode(struct ao *ao, double apts, void *data)
         }
 
         avcodec_free_frame(&frame);
-
-        if (ac->planarize) {
-            talloc_free(data);
-            data = NULL;
-        }
     }
     else
     {
@@ -471,26 +312,47 @@ static int encode(struct ao *ao, double apts, void *data)
     return packet.size;
 }
 
-// plays 'len' bytes of 'data'
-// it should round it down to frame sizes
-// return: number of bytes played
-static int play(struct ao *ao, void *data, int len, int flags)
+// this should round samples down to frame sizes
+// return: number of samples played
+static int play(struct ao *ao, void **data, int samples, int flags)
 {
     struct priv *ac = ao->priv;
     struct encode_lavc_context *ectx = ao->encode_lavc_ctx;
     int bufpos = 0;
-    int64_t ptsoffset;
-    void *paddingbuf = NULL;
     double nextpts;
     double pts = ao->pts;
     double outpts;
-
-    len /= ac->sample_size * ao->channels.num;
 
     if (!encode_lavc_start(ectx)) {
         MP_WARN(ao, "not ready yet for encoding audio\n");
         return 0;
     }
+
+    size_t num_planes = af_fmt_is_planar(ao->format) ? ao->channels.num : 1;
+
+    if (flags & AOPLAY_FINAL_CHUNK) {
+        int written = 0;
+        if (samples > 0) {
+            void *tmp = talloc_new(NULL);
+            size_t bytelen = samples * ao->sstride;
+            size_t extralen = (ac->aframesize - 1) * ao->sstride;
+            void *padded[MP_NUM_CHANNELS];
+            for (int n = 0; n < num_planes; n++) {
+                padded[n] = talloc_size(tmp, bytelen + extralen);
+                memcpy(padded[n], data[n], bytelen);
+                af_fill_silence((char *)padded[n] + bytelen, extralen, ao->format);
+            }
+            // No danger of recursion, because AOPLAY_FINAL_CHUNK not set
+            written = play(ao, padded, (bytelen + extralen) / ao->sstride, 0);
+            if (written < samples) {
+                MP_ERR(ao, "did not write enough data at the end\n");
+            }
+            talloc_free(tmp);
+        }
+
+        return FFMIN(written, samples);
+    }
+
     if (pts == MP_NOPTS_VALUE) {
         MP_WARN(ao, "frame without pts, please report; synthesizing pts instead\n");
         // synthesize pts from previous expected next pts
@@ -537,63 +399,10 @@ static int play(struct ao *ao, void *data, int len, int flags)
         // Absurd, as this range MUST contain at least one multiple of B.
     }
 
-    ptsoffset = ac->offset;
-    // this basically just edits ao->apts for syncing purposes
-
-    if (ectx->options->copyts || ectx->options->rawts) {
-        // we do not send time sync data to the video side,
-        // but we always need the exact pts, even if zero
-    } else {
-        // here we must "simulate" the pts editing
-        // 1. if we have to skip stuff, we skip it
-        // 2. if we have to add samples, we add them
-        // 3. we must still adjust ptsoffset appropriately for AV sync!
-        // invariant:
-        // if no partial skipping is done, the first frame gets ao->apts passed as pts!
-
-        if (ac->offset_left < 0) {
-            if (ac->offset_left <= -len) {
-                // skip whole frame
-                ac->offset_left += len;
-                return len * ac->sample_size * ao->channels.num;
-            } else {
-                // skip part of this frame, buffer/encode the rest
-                bufpos -= ac->offset_left;
-                ptsoffset += ac->offset_left;
-                ac->offset_left = 0;
-            }
-        } else if (ac->offset_left > 0) {
-            // make a temporary buffer, filled with zeroes at the start
-            // (don't worry, only happens once)
-
-            paddingbuf = talloc_size(ac, ac->sample_size * ao->channels.num *
-                                         (ac->offset_left + len));
-            fill_with_padding(paddingbuf, ac->offset_left, ac->sample_size,
-                              ac->sample_padding);
-            data = (char *) paddingbuf + ac->sample_size * ao->channels.num *
-                                         ac->offset_left;
-            bufpos -= ac->offset_left; // yes, negative!
-            ptsoffset += ac->offset_left;
-            ac->offset_left = 0;
-
-            // now adjust the bufpos so the final value of bufpos is positive!
-            /*
-              int cnt = (len - bufpos) / ac->aframesize;
-              int finalbufpos = bufpos + cnt * ac->aframesize;
-            */
-            int finalbufpos = len - (len - bufpos) % ac->aframesize;
-            if (finalbufpos < 0) {
-                MP_WARN(ao, "cannot attain the "
-                       "exact requested audio sync; shifting by %d frames\n",
-                       -finalbufpos);
-                bufpos -= finalbufpos;
-            }
-        }
-    }
-
+    // Fix and apply the discontinuity pts offset.
     if (!ectx->options->rawts && ectx->options->copyts) {
         // fix the discontinuity pts offset
-        nextpts = pts + ptsoffset / (double) ao->samplerate;
+        nextpts = pts;
         if (ectx->discontinuity_pts_offset == MP_NOPTS_VALUE) {
             ectx->discontinuity_pts_offset = ectx->next_in_pts - nextpts;
         }
@@ -606,39 +415,38 @@ static int play(struct ao *ao, void *data, int len, int flags)
 
         outpts = pts + ectx->discontinuity_pts_offset;
     }
-    else
+    else {
         outpts = pts;
+    }
 
-    while (len - bufpos >= ac->aframesize) {
-        encode(ao,
-               outpts + (bufpos + ptsoffset) / (double) ao->samplerate + encode_lavc_getoffset(ectx, ac->stream),
-               (char *) data + ac->sample_size * bufpos * ao->channels.num);
+    // Shift pts by the pts offset first.
+    outpts += encode_lavc_getoffset(ectx, ac->stream);
+
+    while (samples - bufpos >= ac->aframesize) {
+        void *start[MP_NUM_CHANNELS];
+        for (int n = 0; n < num_planes; n++)
+            start[n] = (char *)data[n] + bufpos * ao->sstride;
+        encode(ao, outpts + bufpos / (double) ao->samplerate, start);
         bufpos += ac->aframesize;
     }
 
-    talloc_free(paddingbuf);
+    // Calculate expected pts of next audio frame (input side).
+    ac->expected_next_pts = pts + bufpos / (double) ao->samplerate;
 
-    // calculate expected pts of next audio frame
-    ac->expected_next_pts = pts + (bufpos + ptsoffset) / (double) ao->samplerate;
-
+    // Set next allowed input pts value (input side).
     if (!ectx->options->rawts && ectx->options->copyts) {
-        // set next allowed output pts value
         nextpts = ac->expected_next_pts + ectx->discontinuity_pts_offset;
         if (nextpts > ectx->next_in_pts)
             ectx->next_in_pts = nextpts;
     }
 
-    return bufpos * ac->sample_size * ao->channels.num;
+    return bufpos;
 }
 
 const struct ao_driver audio_out_lavc = {
     .encode = true,
-    .info = &(const struct ao_info) {
-        "audio encoding using libavcodec",
-        "lavc",
-        "Rudolf Polzer <divVerent@xonotic.org>",
-        ""
-    },
+    .description = "audio encoding using libavcodec",
+    .name      = "lavc",
     .init      = init,
     .uninit    = uninit,
     .get_space = get_space,

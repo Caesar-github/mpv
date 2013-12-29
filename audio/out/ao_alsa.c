@@ -2,6 +2,7 @@
  * ALSA 0.9.x-1.x audio output driver
  *
  * Copyright (C) 2004 Alex Beregszaszi
+ * Zsolt Barat <joy@streamminister.de>
  *
  * modified for real ALSA 0.9.0 support by Zsolt Barat <joy@streamminister.de>
  * additional AC-3 passthrough support by Andy Lo A Foe <andy@alsaplayer.org>
@@ -35,9 +36,9 @@
 #include <string.h>
 
 #include "config.h"
-#include "mpvcore/options.h"
-#include "mpvcore/m_option.h"
-#include "mpvcore/mp_msg.h"
+#include "options/options.h"
+#include "options/m_option.h"
+#include "common/msg.h"
 
 #define ALSA_PCM_NEW_HW_PARAMS_API
 #define ALSA_PCM_NEW_SW_PARAMS_API
@@ -51,18 +52,18 @@
 struct priv {
     snd_pcm_t *alsa;
     snd_pcm_format_t alsa_fmt;
-    size_t bytes_per_sample;
     int can_pause;
     snd_pcm_sframes_t prepause_frames;
     float delay_before_pause;
-    int buffersize;
-    int outburst;
+    int buffersize; // in frames
+    int outburst; // in frames
 
     int cfg_block;
     char *cfg_device;
     char *cfg_mixer_device;
     char *cfg_mixer_name;
     int cfg_mixer_index;
+    int cfg_resample;
 };
 
 #define BUFFER_TIME 500000  // 0.5 s
@@ -77,27 +78,7 @@ struct priv {
     } while (0)
 
 static float get_delay(struct ao *ao);
-static int play(struct ao *ao, void *data, int len, int flags);
 static void uninit(struct ao *ao, bool immed);
-
-static void alsa_error_handler(const char *file, int line, const char *function,
-                               int err, const char *format, ...)
-{
-    char tmp[0xc00];
-    va_list va;
-
-    va_start(va, format);
-    vsnprintf(tmp, sizeof tmp, format, va);
-    va_end(va);
-
-    if (err) {
-        mp_msg(MSGT_AO, MSGL_ERR, "alsa-lib: %s:%i:(%s) %s: %s\n",
-               file, line, function, tmp, snd_strerror(err));
-    } else {
-        mp_msg(MSGT_AO, MSGL_ERR, "alsa-lib: %s:%i:(%s) %s\n",
-               file, line, function, tmp);
-    }
-}
 
 /* to set/get/query special features/parameters */
 static int control(struct ao *ao, enum aocontrol cmd, void *arg)
@@ -251,6 +232,7 @@ static const int mp_to_alsa_format[][2] = {
 
 static int find_alsa_format(int af_format)
 {
+    af_format = af_fmt_from_planar(af_format);
     for (int n = 0; mp_to_alsa_format[n][0] != AF_FORMAT_UNKNOWN; n++) {
         if (mp_to_alsa_format[n][0] == af_format)
             return mp_to_alsa_format[n][1];
@@ -303,51 +285,59 @@ static const char *select_chmap(struct ao *ao)
     return "default";
 }
 
-static int try_open_device(struct ao *ao, const char *device, int open_mode,
-                           int try_ac3)
+static int map_iec958_srate(int srate)
+{
+    switch (srate) {
+    case 44100:     return IEC958_AES3_CON_FS_44100;
+    case 48000:     return IEC958_AES3_CON_FS_48000;
+    case 32000:     return IEC958_AES3_CON_FS_32000;
+    case 22050:     return IEC958_AES3_CON_FS_22050;
+    case 24000:     return IEC958_AES3_CON_FS_24000;
+    case 88200:     return IEC958_AES3_CON_FS_88200;
+    case 768000:    return IEC958_AES3_CON_FS_768000;
+    case 96000:     return IEC958_AES3_CON_FS_96000;
+    case 176400:    return IEC958_AES3_CON_FS_176400;
+    case 192000:    return IEC958_AES3_CON_FS_192000;
+    default:        return IEC958_AES3_CON_FS_NOTID;
+    }
+}
+
+static int try_open_device(struct ao *ao, const char *device, int open_mode)
 {
     struct priv *p = ao->priv;
-    int err, len;
-    char *ac3_device, *args;
 
-    if (try_ac3) {
+    if (AF_FORMAT_IS_IEC61937(ao->format)) {
+        void *tmp = talloc_new(NULL);
         /* to set the non-audio bit, use AES0=6 */
-        len = strlen(device);
-        ac3_device = malloc(len + 7 + 1);
-        if (!ac3_device)
-            return -ENOMEM;
-        strcpy(ac3_device, device);
-        args = strchr(ac3_device, ':');
-        if (!args) {
+        char *params = talloc_asprintf(tmp,
+                        "AES0=%d,AES1=%d,AES2=0,AES3=%d",
+                        IEC958_AES0_NONAUDIO | IEC958_AES0_PRO_EMPHASIS_NONE,
+                        IEC958_AES1_CON_ORIGINAL | IEC958_AES1_CON_PCM_CODER,
+                        map_iec958_srate(ao->samplerate));
+        const char *ac3_device = device;
+        int len = strlen(device);
+        char *end = strchr(device, ':');
+        if (!end) {
             /* no existing parameters: add it behind device name */
-            strcat(ac3_device, ":AES0=6");
+            ac3_device = talloc_asprintf(tmp, "%s:%s", device, params);
+        } else if (end[1] == '\0') {
+            /* ":" but no parameters */
+            ac3_device = talloc_asprintf(tmp, "%s%s", device, params);
+        } else if (end[1] == '{' && device[len - 1] == '}') {
+            /* parameters in config syntax: add it inside the { } block */
+            ac3_device = talloc_asprintf(tmp, "%.*s %s}", len - 1, device, params);
         } else {
-            do {
-                ++args;
-            } while (isspace(*args));
-            if (*args == '\0') {
-                /* ":" but no parameters */
-                strcat(ac3_device, "AES0=6");
-            } else if (*args != '{') {
-                /* a simple list of parameters: add it at the end of the list */
-                strcat(ac3_device, ",AES0=6");
-            } else {
-                /* parameters in config syntax: add it inside the { } block */
-                do {
-                    --len;
-                } while (len > 0 && isspace(ac3_device[len]));
-                if (ac3_device[len] == '}')
-                    strcpy(ac3_device + len, " AES0=6}");
-            }
+            /* a simple list of parameters: add it at the end of the list */
+            ac3_device = talloc_asprintf(tmp, "%s,%s", device, params);
         }
-        err = snd_pcm_open
-                (&p->alsa, ac3_device, SND_PCM_STREAM_PLAYBACK, open_mode);
-        free(ac3_device);
+        int err = snd_pcm_open
+                    (&p->alsa, ac3_device, SND_PCM_STREAM_PLAYBACK, open_mode);
+        talloc_free(tmp);
         if (!err)
             return 0;
     }
-    return snd_pcm_open
-            (&p->alsa, device, SND_PCM_STREAM_PLAYBACK, open_mode);
+
+    return snd_pcm_open(&p->alsa, device, SND_PCM_STREAM_PLAYBACK, open_mode);
 }
 
 /*
@@ -362,9 +352,6 @@ static int init(struct ao *ao)
     snd_pcm_uframes_t boundary;
 
     struct priv *p = ao->priv;
-
-    MP_VERBOSE(ao, "requested format: %d Hz, %d channels, %x\n",
-               ao->samplerate, ao->channels.num, ao->format);
 
     p->prepause_frames = 0;
     p->delay_before_pause = 0;
@@ -382,8 +369,7 @@ static int init(struct ao *ao)
                    ao->channels.num);
     } else {
         device = select_chmap(ao);
-        if (strcmp(device, "default") != 0 && ao->format == AF_FORMAT_FLOAT_NE)
-        {
+        if (strcmp(device, "default") != 0 && (ao->format & AF_FORMAT_F)) {
             // hack - use the converter plugin (why the heck?)
             device = talloc_asprintf(ao, "plug:%s", device);
         }
@@ -396,17 +382,15 @@ static int init(struct ao *ao)
     p->can_pause = 1;
 
     MP_VERBOSE(ao, "using ALSA version: %s\n", snd_asoundlib_version());
-    snd_lib_error_set_handler(alsa_error_handler);
 
     int open_mode = p->cfg_block ? 0 : SND_PCM_NONBLOCK;
-    int isac3 =  AF_FORMAT_IS_IEC61937(ao->format);
     //modes = 0, SND_PCM_NONBLOCK, SND_PCM_ASYNC
-    err = try_open_device(ao, device, open_mode, isac3);
+    err = try_open_device(ao, device, open_mode);
     if (err < 0) {
         if (err != -EBUSY && !p->cfg_block) {
             MP_WARN(ao, "Open in nonblock-mode "
                     "failed, trying to open in block-mode.\n");
-            err = try_open_device(ao, device, 0, isac3);
+            err = try_open_device(ao, device, 0);
         }
         CHECK_ALSA_ERROR("Playback open error");
     }
@@ -428,20 +412,16 @@ static int init(struct ao *ao)
     err = snd_pcm_hw_params_any(p->alsa, alsa_hwparams);
     CHECK_ALSA_ERROR("Unable to get initial parameters");
 
-    err = snd_pcm_hw_params_set_access
-            (p->alsa, alsa_hwparams, SND_PCM_ACCESS_RW_INTERLEAVED);
-    CHECK_ALSA_ERROR("Unable to set access type");
-
     p->alsa_fmt = find_alsa_format(ao->format);
     if (p->alsa_fmt == SND_PCM_FORMAT_UNKNOWN) {
         p->alsa_fmt = SND_PCM_FORMAT_S16;
-        ao->format = AF_FORMAT_S16_NE;
+        ao->format = AF_FORMAT_S16;
     }
 
     err = snd_pcm_hw_params_test_format(p->alsa, alsa_hwparams, p->alsa_fmt);
     if (err < 0) {
         MP_INFO(ao, "Format %s is not supported by hardware, trying default.\n",
-                af_fmt2str_short(ao->format));
+                af_fmt_to_str(ao->format));
         p->alsa_fmt = SND_PCM_FORMAT_S16_LE;
         if (AF_FORMAT_IS_AC3(ao->format))
             ao->format = AF_FORMAT_AC3_LE;
@@ -454,6 +434,17 @@ static int init(struct ao *ao)
     err = snd_pcm_hw_params_set_format(p->alsa, alsa_hwparams, p->alsa_fmt);
     CHECK_ALSA_ERROR("Unable to set format");
 
+    snd_pcm_access_t access = af_fmt_is_planar(ao->format)
+                                    ? SND_PCM_ACCESS_RW_NONINTERLEAVED
+                                    : SND_PCM_ACCESS_RW_INTERLEAVED;
+    err = snd_pcm_hw_params_set_access(p->alsa, alsa_hwparams, access);
+    if (err < 0 && af_fmt_is_planar(ao->format)) {
+        ao->format = af_fmt_from_planar(ao->format);
+        access = SND_PCM_ACCESS_RW_INTERLEAVED;
+        err = snd_pcm_hw_params_set_access(p->alsa, alsa_hwparams, access);
+    }
+    CHECK_ALSA_ERROR("Unable to set access type");
+
     int num_channels = ao->channels.num;
     err = snd_pcm_hw_params_set_channels_near
             (p->alsa, alsa_hwparams, &num_channels);
@@ -464,18 +455,16 @@ static int init(struct ao *ao)
         mp_chmap_from_channels_alsa(&ao->channels, num_channels);
     }
 
-    /* workaround for buggy rate plugin (should be fixed in ALSA 1.0.11)
-        prefer our own resampler, since that allows users to choose the resampler,
-        even per file if desired */
-    err = snd_pcm_hw_params_set_rate_resample(p->alsa, alsa_hwparams, 0);
-    CHECK_ALSA_ERROR("Unable to disable resampling");
+    // Some ALSA drivers have broken delay reporting, so disable the ALSA
+    // resampling plugin by default.
+    if (!p->cfg_resample) {
+        err = snd_pcm_hw_params_set_rate_resample(p->alsa, alsa_hwparams, 0);
+        CHECK_ALSA_ERROR("Unable to disable resampling");
+    }
 
     err = snd_pcm_hw_params_set_rate_near
             (p->alsa, alsa_hwparams, &ao->samplerate, NULL);
     CHECK_ALSA_ERROR("Unable to set samplerate-2");
-
-    p->bytes_per_sample = af_fmt2bits(ao->format) / 8;
-    p->bytes_per_sample *= ao->channels.num;
 
     err = snd_pcm_hw_params_set_buffer_time_near
             (p->alsa, alsa_hwparams, &(unsigned int){BUFFER_TIME}, NULL);
@@ -495,14 +484,14 @@ static int init(struct ao *ao)
     err = snd_pcm_hw_params_get_buffer_size(alsa_hwparams, &bufsize);
     CHECK_ALSA_ERROR("Unable to get buffersize");
 
-    p->buffersize = bufsize * p->bytes_per_sample;
-    MP_VERBOSE(ao, "got buffersize=%i\n", p->buffersize);
+    p->buffersize = bufsize;
+    MP_VERBOSE(ao, "got buffersize=%i samples\n", p->buffersize);
 
     err = snd_pcm_hw_params_get_period_size(alsa_hwparams, &chunk_size, NULL);
     CHECK_ALSA_ERROR("Unable to get period size");
 
     MP_VERBOSE(ao, "got period size %li\n", chunk_size);
-    p->outburst = chunk_size * p->bytes_per_sample;
+    p->outburst = chunk_size;
 
     /* setting software parameters */
     err = snd_pcm_sw_params_current(p->alsa, alsa_swparams);
@@ -533,8 +522,8 @@ static int init(struct ao *ao)
 
     p->can_pause = snd_pcm_hw_params_can_pause(alsa_hwparams);
 
-    MP_VERBOSE(ao, "opened: %d Hz/%d channels/%d bpf/%d bytes buffer/%s\n",
-               ao->samplerate, ao->channels.num, (int)p->bytes_per_sample,
+    MP_VERBOSE(ao, "opened: %d Hz/%d channels/%d bps/%d samples buffer/%s\n",
+               ao->samplerate, ao->channels.num, af_fmt2bits(ao->format),
                p->buffersize, snd_pcm_format_description(p->alsa_fmt));
 
     return 0;
@@ -564,7 +553,6 @@ static void uninit(struct ao *ao, bool immed)
 
 alsa_error:
     p->alsa = NULL;
-    snd_lib_error_set_handler(NULL);
 }
 
 static void audio_pause(struct ao *ao)
@@ -607,11 +595,8 @@ static void audio_resume(struct ao *ao)
         MP_VERBOSE(ao, "resume not supported by hardware\n");
         err = snd_pcm_prepare(p->alsa);
         CHECK_ALSA_ERROR("pcm prepare error");
-        if (p->prepause_frames) {
-            void *silence = calloc(p->prepause_frames, p->bytes_per_sample);
-            play(ao, silence, p->prepause_frames * p->bytes_per_sample, 0);
-            free(silence);
-        }
+        if (p->prepause_frames)
+            ao_play_silence(ao, p->prepause_frames);
     }
 
 alsa_error: ;
@@ -633,32 +618,22 @@ static void reset(struct ao *ao)
 alsa_error: ;
 }
 
-/*
-    plays 'len' bytes of 'data'
-    returns: number of bytes played
-    modified last at 29.06.02 by jp
-    thanxs for marius <marius@rospot.com> for giving us the light ;)
- */
-
-static int play(struct ao *ao, void *data, int len, int flags)
+static int play(struct ao *ao, void **data, int samples, int flags)
 {
     struct priv *p = ao->priv;
-    int num_frames;
     snd_pcm_sframes_t res = 0;
     if (!(flags & AOPLAY_FINAL_CHUNK))
-        len = len / p->outburst * p->outburst;
-    num_frames = len / p->bytes_per_sample;
+        samples = samples / p->outburst * p->outburst;
 
-    if (!p->alsa) {
-        MP_ERR(ao, "Device configuration error.");
-        return 0;
-    }
-
-    if (num_frames == 0)
+    if (samples == 0)
         return 0;
 
     do {
-        res = snd_pcm_writei(p->alsa, data, num_frames);
+        if (af_fmt_is_planar(ao->format)) {
+            res = snd_pcm_writen(p->alsa, data, samples);
+        } else {
+            res = snd_pcm_writei(p->alsa, data[0], samples);
+        }
 
         if (res == -EINTR) {
             /* nothing to do */
@@ -677,10 +652,10 @@ static int play(struct ao *ao, void *data, int len, int flags)
         }
     } while (res == 0);
 
-    return res < 0 ? 0 : res * p->bytes_per_sample;
+    return res < 0 ? -1 : res;
 
 alsa_error:
-    return 0;
+    return -1;
 }
 
 /* how many byes are free in the buffer */
@@ -695,7 +670,7 @@ static int get_space(struct ao *ao)
     err = snd_pcm_status(p->alsa, status);
     CHECK_ALSA_ERROR("cannot get pcm status");
 
-    unsigned space = snd_pcm_status_get_avail(status) * p->bytes_per_sample;
+    unsigned space = snd_pcm_status_get_avail(status);
     if (space > p->buffersize) // Buffer underrun?
         space = p->buffersize;
     return space;
@@ -708,34 +683,27 @@ alsa_error:
 static float get_delay(struct ao *ao)
 {
     struct priv *p = ao->priv;
-    if (p->alsa) {
-        snd_pcm_sframes_t delay;
+    snd_pcm_sframes_t delay;
 
-        if (snd_pcm_state(p->alsa) == SND_PCM_STATE_PAUSED)
-            return p->delay_before_pause;
+    if (snd_pcm_state(p->alsa) == SND_PCM_STATE_PAUSED)
+        return p->delay_before_pause;
 
-        if (snd_pcm_delay(p->alsa, &delay) < 0)
-            return 0;
-
-        if (delay < 0) {
-            /* underrun - move the application pointer forward to catch up */
-            snd_pcm_forward(p->alsa, -delay);
-            delay = 0;
-        }
-        return (float)delay / (float)ao->samplerate;
-    } else
+    if (snd_pcm_delay(p->alsa, &delay) < 0)
         return 0;
+
+    if (delay < 0) {
+        /* underrun - move the application pointer forward to catch up */
+        snd_pcm_forward(p->alsa, -delay);
+        delay = 0;
+    }
+    return (float)delay / (float)ao->samplerate;
 }
 
 #define OPT_BASE_STRUCT struct priv
 
 const struct ao_driver audio_out_alsa = {
-    .info = &(const struct ao_info) {
-        "ALSA-0.9.x-1.x audio output",
-        "alsa",
-        "Alex Beregszaszi, Zsolt Barat <joy@streamminister.de>",
-        "under development"
-    },
+    .description = "ALSA-0.9.x-1.x audio output",
+    .name      = "alsa",
     .init      = init,
     .uninit    = uninit,
     .control   = control,
@@ -753,6 +721,7 @@ const struct ao_driver audio_out_alsa = {
         .cfg_mixer_index = 0,
     },
     .options = (const struct m_option[]) {
+        OPT_FLAG("resample", cfg_resample, 0),
         OPT_STRING("device", cfg_device, 0),
         OPT_FLAG("block", cfg_block, 0),
         OPT_STRING("mixer-device", cfg_mixer_device, 0),

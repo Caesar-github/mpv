@@ -26,7 +26,7 @@
 #import <Cocoa/Cocoa.h>
 
 #include "talloc.h"
-#include "mpvcore/input/input.h"
+#include "input/input.h"
 // doesn't make much sense, but needed to access keymap functionality
 #include "video/out/vo.h"
 
@@ -174,6 +174,14 @@ void cocoa_put_key_with_modifiers(int keycode, int modifiers)
     HIDRemote *_remote;
 }
 
+- (BOOL)useAltGr
+{
+    if (mpv_shared_app().inputContext)
+        return mp_input_use_alt_gr(mpv_shared_app().inputContext);
+    else
+        return YES;
+}
+
 - (void)startAppleRemote
 {
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -242,7 +250,7 @@ void cocoa_put_key_with_modifiers(int keycode, int modifiers)
 
 - (BOOL)handleMediaKey:(NSEvent *)event
 {
-    NSDictionary *keymap = @{
+    NSDictionary *keymapd = @{
         @(NX_KEYTYPE_PLAY):    @(MP_KEY_PLAY),
         @(NX_KEYTYPE_REWIND):  @(MP_KEY_PREV),
         @(NX_KEYTYPE_FAST):    @(MP_KEY_NEXT),
@@ -250,7 +258,7 @@ void cocoa_put_key_with_modifiers(int keycode, int modifiers)
 
     return [self handleKey:mk_code(event)
                   withMask:[self keyModifierMask:event]
-                andMapping:keymap];
+                andMapping:keymapd];
 }
 
 - (void)hidRemote:(HIDRemote *)remote
@@ -260,7 +268,7 @@ void cocoa_put_key_with_modifiers(int keycode, int modifiers)
 {
     if (!isPressed) return;
 
-    NSDictionary *keymap = @{
+    NSDictionary *keymapd = @{
         @(kHIDRemoteButtonCodePlay):       @(MP_AR_PLAY),
         @(kHIDRemoteButtonCodePlayHold):   @(MP_AR_PLAY_HOLD),
         @(kHIDRemoteButtonCodeCenter):     @(MP_AR_CENTER),
@@ -277,7 +285,7 @@ void cocoa_put_key_with_modifiers(int keycode, int modifiers)
         @(kHIDRemoteButtonCodeDownHold):   @(MP_AR_VDOWN_HOLD),
     };
 
-    [self handleKey:buttonCode withMask:0 andMapping:keymap];
+    [self handleKey:buttonCode withMask:0 andMapping:keymapd];
 }
 
 - (int)mapKeyModifiers:(int)cocoaModifiers
@@ -287,7 +295,8 @@ void cocoa_put_key_with_modifiers(int keycode, int modifiers)
         mask |= MP_KEY_MODIFIER_SHIFT;
     if (cocoaModifiers & NSControlKeyMask)
         mask |= MP_KEY_MODIFIER_CTRL;
-    if (LeftAltPressed(cocoaModifiers))
+    if (LeftAltPressed(cocoaModifiers) ||
+        RightAltPressed(cocoaModifiers) && ![self useAltGr])
         mask |= MP_KEY_MODIFIER_ALT;
     if (cocoaModifiers & NSCommandKeyMask)
         mask |= MP_KEY_MODIFIER_META;
@@ -333,7 +342,7 @@ void cocoa_put_key_with_modifiers(int keycode, int modifiers)
 
     NSString *chars;
 
-    if (RightAltPressed([event modifierFlags]))
+    if ([self useAltGr] && RightAltPressed([event modifierFlags]))
         chars = [event characters];
     else
         chars = [event charactersIgnoringModifiers];

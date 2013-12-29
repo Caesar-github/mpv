@@ -28,29 +28,27 @@
 #include <libavutil/common.h>
 
 #include "config.h"
-#include "mpvcore/mp_msg.h"
-#include "mpvcore/options.h"
+#include "common/msg.h"
+#include "options/options.h"
 
 #include "video/img_format.h"
 #include "video/mp_image.h"
 #include "vf.h"
-#include "sub/sub.h"
+#include "sub/osd.h"
 #include "sub/dec_sub.h"
 
 #include "video/sws_utils.h"
 #include "video/memcpy_pic.h"
 
-#include "mpvcore/m_option.h"
+#include "options/m_option.h"
 
-static const struct vf_priv_s {
+struct vf_priv_s {
     int opt_top_margin, opt_bottom_margin;
 
     int outh, outw;
 
     struct osd_state *osd;
     struct mp_osd_res dim;
-} vf_priv_dflt = {
-    0
 };
 
 static int config(struct vf_instance *vf,
@@ -73,7 +71,6 @@ static int config(struct vf_instance *vf,
         .mt = vf->priv->opt_top_margin,
         .mb = vf->priv->opt_bottom_margin,
         .display_par = sar / dar,
-        .video_par = dar / sar,
     };
 
     return vf_next_config(vf, vf->priv->outw, vf->priv->outh, d_width,
@@ -123,14 +120,14 @@ static int control(vf_instance_t *vf, int request, void *data)
     switch (request) {
     case VFCTRL_SET_OSD_OBJ:
         vf->priv->osd = data;
-        break;
+        return CONTROL_TRUE;
     case VFCTRL_INIT_OSD:
         return CONTROL_TRUE;
     }
-    return vf_next_control(vf, request, data);
+    return CONTROL_UNKNOWN;
 }
 
-static int vf_open(vf_instance_t *vf, char *args)
+static int vf_open(vf_instance_t *vf)
 {
     vf->config = config;
     vf->query_format = query_format;
@@ -147,12 +144,9 @@ static const m_option_t vf_opts_fields[] = {
 };
 
 const vf_info_t vf_info_sub = {
-    "Render subtitles",
-    "sub",
-    "Evgeniy Stepanov",
-    "",
-    vf_open,
+    .description = "Render subtitles",
+    .name = "sub",
+    .open = vf_open,
     .priv_size = sizeof(struct vf_priv_s),
-    .priv_defaults = &vf_priv_dflt,
     .options = vf_opts_fields,
 };

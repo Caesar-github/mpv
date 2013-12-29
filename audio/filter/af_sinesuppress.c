@@ -41,14 +41,12 @@ typedef struct af_sinesuppress_s
     double pos;
 }af_sinesuppress_t;
 
-static struct mp_audio* play_s16(struct af_instance* af, struct mp_audio* data);
+static int play_s16(struct af_instance* af, struct mp_audio* data, int f);
 //static struct mp_audio* play_float(struct af_instance* af, struct mp_audio* data);
 
 // Initialization and runtime control
 static int control(struct af_instance* af, int cmd, void* arg)
 {
-  af_sinesuppress_t* s   = (af_sinesuppress_t*)af->setup;
-
   switch(cmd){
   case AF_CONTROL_REINIT:{
     // Sanity check
@@ -57,45 +55,31 @@ static int control(struct af_instance* af, int cmd, void* arg)
     mp_audio_copy_config(af->data, (struct mp_audio*)arg);
     mp_audio_set_num_channels(af->data, 1);
 #if 0
-    if (((struct mp_audio*)arg)->format == AF_FORMAT_FLOAT_NE)
+    if (((struct mp_audio*)arg)->format == AF_FORMAT_FLOAT)
     {
-	af->data->format = AF_FORMAT_FLOAT_NE;
+	af->data->format = AF_FORMAT_FLOAT;
 	af->data->bps = 4;
 	af->play = play_float;
     }// else
 #endif
     {
-        mp_audio_set_format(af->data, AF_FORMAT_S16_NE);
-	af->play = play_s16;
+        mp_audio_set_format(af->data, AF_FORMAT_S16);
+	af->filter = play_s16;
     }
 
     return af_test_output(af,(struct mp_audio*)arg);
-  }
-  case AF_CONTROL_COMMAND_LINE:{
-    float f1,f2;
-    sscanf((char*)arg,"%f:%f", &f1,&f2);
-    s->freq = f1;
-    s->decay = f2;
-    return AF_OK;
   }
   }
   return AF_UNKNOWN;
 }
 
-// Deallocate memory
-static void uninit(struct af_instance* af)
-{
-    free(af->data);
-    free(af->setup);
-}
-
 // Filter data through filter
-static struct mp_audio* play_s16(struct af_instance* af, struct mp_audio* data)
+static int play_s16(struct af_instance* af, struct mp_audio* data, int f)
 {
-  af_sinesuppress_t *s = af->setup;
+  af_sinesuppress_t *s = af->priv;
   register int i = 0;
-  int16_t *a = (int16_t*)data->audio;	// Audio data
-  int len = data->len/2;		// Number of samples
+  int16_t *a = (int16_t*)data->planes[0];	// Audio data
+  int len = data->samples*data->nch;		// Number of samples
 
   for (i = 0; i < len; i++)
   {
@@ -115,9 +99,9 @@ static struct mp_audio* play_s16(struct af_instance* af, struct mp_audio* data)
     s->pos += 2 * M_PI * s->freq / data->rate;
   }
 
-   mp_msg(MSGT_AFILTER, MSGL_V, "[sinesuppress] f:%8.2f: amp:%8.2f\n", s->freq, sqrt(s->real*s->real + s->imag*s->imag) / s->ref);
+   MP_VERBOSE(af, "[sinesuppress] f:%8.2f: amp:%8.2f\n", s->freq, sqrt(s->real*s->real + s->imag*s->imag) / s->ref);
 
-  return data;
+  return 0;
 }
 
 #if 0
@@ -147,25 +131,19 @@ static struct mp_audio* play_float(struct af_instance* af, struct mp_audio* data
 // Allocate memory and set function pointers
 static int af_open(struct af_instance* af){
   af->control=control;
-  af->uninit=uninit;
-  af->play=play_s16;
-  af->mul=1;
-  af->data=calloc(1,sizeof(struct mp_audio));
-  af->setup=calloc(1,sizeof(af_sinesuppress_t));
-  if(af->data == NULL || af->setup == NULL)
-    return AF_ERROR;
-
-  ((af_sinesuppress_t*)af->setup)->freq = 50.0;
-  ((af_sinesuppress_t*)af->setup)->decay = 0.0001;
+  af->filter=play_s16;
   return AF_OK;
 }
 
-// Description of this filter
+#define OPT_BASE_STRUCT af_sinesuppress_t
 struct af_info af_info_sinesuppress = {
-    "Sine Suppress",
-    "sinesuppress",
-    "Michael Niedermayer",
-    "",
-    0,
-    af_open
+    .info = "Sine Suppress",
+    .name = "sinesuppress",
+    .open = af_open,
+    .priv_size = sizeof(af_sinesuppress_t),
+    .options = (const struct m_option[]) {
+        OPT_DOUBLE("freq", freq, 0, OPTDEF_DOUBLE(50.0)),
+        OPT_DOUBLE("decay", decay, 0, OPTDEF_DOUBLE(0.0001)),
+        {0}
+    },
 };

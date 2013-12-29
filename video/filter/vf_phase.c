@@ -22,13 +22,16 @@
 #include <limits.h>
 
 #include "config.h"
-#include "mpvcore/mp_msg.h"
+#include "common/msg.h"
+#include "options/m_option.h"
 
 #include "video/img_format.h"
 #include "video/mp_image.h"
 #include "vf.h"
 
 #include "video/memcpy_pic.h"
+
+#include "vf_lavfi.h"
 
 enum mode { PROGRESSIVE, TOP_FIRST, BOTTOM_FIRST,
 	    TOP_FIRST_ANALYZE, BOTTOM_FIRST_ANALYZE,
@@ -38,9 +41,10 @@ enum mode { PROGRESSIVE, TOP_FIRST, BOTTOM_FIRST,
 
 struct vf_priv_s
    {
-   enum mode mode;
+   int mode;
    int verbose;
    unsigned char *buf[3];
+   struct vf_lw_opts *lw_opts;
    };
 
 /*
@@ -84,7 +88,8 @@ static void do_plane(unsigned char *to, unsigned char *from,
  * between the fields.
  */
 
-static enum mode analyze_plane(unsigned char *old, unsigned char *new,
+static enum mode analyze_plane(struct vf_instance *vf,
+                               unsigned char *old, unsigned char *new,
 			       int w, int h, int os, int ns, enum mode mode,
 			       int unused, int fields)
    {
@@ -184,14 +189,11 @@ static enum mode analyze_plane(unsigned char *old, unsigned char *new,
 	 mode=PROGRESSIVE;
       }
 
-   if( mp_msg_test(MSGT_VFILTER,MSGL_V) )
-      {
-      mp_msg(MSGT_VFILTER, MSGL_INFO, "%c", mode==BOTTOM_FIRST?'b':mode==TOP_FIRST?'t':'p');
-      if(tdiff==65536.0) mp_msg(MSGT_VFILTER, MSGL_INFO,"     N/A "); else mp_msg(MSGT_VFILTER, MSGL_INFO," %8.2f", tdiff);
-      if(bdiff==65536.0) mp_msg(MSGT_VFILTER, MSGL_INFO,"     N/A "); else mp_msg(MSGT_VFILTER, MSGL_INFO," %8.2f", bdiff);
-      if(pdiff==65536.0) mp_msg(MSGT_VFILTER, MSGL_INFO,"     N/A "); else mp_msg(MSGT_VFILTER, MSGL_INFO," %8.2f", pdiff);
-      mp_msg(MSGT_VFILTER, MSGL_INFO,"        \n");
-      }
+      MP_INFO(vf, "%c", mode==BOTTOM_FIRST?'b':mode==TOP_FIRST?'t':'p');
+      if(tdiff==65536.0) MP_INFO(vf, "     N/A "); else MP_INFO(vf, " %8.2f", tdiff);
+      if(bdiff==65536.0) MP_INFO(vf, "     N/A "); else MP_INFO(vf, " %8.2f", bdiff);
+      if(pdiff==65536.0) MP_INFO(vf, "     N/A "); else MP_INFO(vf, " %8.2f", pdiff);
+      MP_INFO(vf, "        \n");
 
    return mode;
    }
@@ -212,7 +214,7 @@ static struct mp_image *filter(struct vf_instance *vf, struct mp_image *mpi)
    if(!vf->priv->buf[0])
       mode=PROGRESSIVE;
    else
-      mode=analyze_plane(vf->priv->buf[0], mpi->planes[0],
+      mode=analyze_plane(vf, vf->priv->buf[0], mpi->planes[0],
 			 pw[0], dmpi->h, pw[0], mpi->stride[0], mode,
 			 vf->priv->verbose, mpi->fields);
 
@@ -233,7 +235,6 @@ static void uninit(struct vf_instance *vf)
    free(vf->priv->buf[0]);
    free(vf->priv->buf[1]);
    free(vf->priv->buf[2]);
-   free(vf->priv);
    }
 
 static int query_format(struct vf_instance *vf, unsigned int fmt)
@@ -246,54 +247,60 @@ static int query_format(struct vf_instance *vf, unsigned int fmt)
     return vf_next_query_format(vf, fmt);
 }
 
-static int vf_open(vf_instance_t *vf, char *args)
+static const char *get_lavfi_mode(int mode)
+{
+    switch (mode) {
+    case PROGRESSIVE: return "p";
+    case TOP_FIRST: return "t";
+    case BOTTOM_FIRST: return "b";
+    case TOP_FIRST_ANALYZE: return "T";
+    case BOTTOM_FIRST_ANALYZE: return "B";
+    case ANALYZE: return "u";
+    case FULL_ANALYZE: return "U";
+    case AUTO: return "a";
+    case AUTO_ANALYZE: return "A";
+    default: return "?";
+    }
+}
+
+static int vf_open(vf_instance_t *vf)
    {
    vf->filter = filter;
    vf->uninit = uninit;
    vf->query_format = query_format;
 
-   if(!(vf->priv = calloc(1, sizeof(struct vf_priv_s))))
-      {
-      uninit(vf);
-      return 0;
-      }
-
-   vf->priv->mode=AUTO_ANALYZE;
-   vf->priv->verbose=0;
-
-   while(args && *args)
-      {
-      switch(*args)
-	 {
-	 case 't': vf->priv->mode=TOP_FIRST;            break;
-	 case 'a': vf->priv->mode=AUTO;                 break;
-	 case 'b': vf->priv->mode=BOTTOM_FIRST;         break;
-	 case 'u': vf->priv->mode=ANALYZE;              break;
-	 case 'T': vf->priv->mode=TOP_FIRST_ANALYZE;    break;
-	 case 'A': vf->priv->mode=AUTO_ANALYZE;         break;
-	 case 'B': vf->priv->mode=BOTTOM_FIRST_ANALYZE; break;
-	 case 'U': vf->priv->mode=FULL_ANALYZE;         break;
-	 case 'p': vf->priv->mode=PROGRESSIVE;          break;
-	 case 'v': vf->priv->verbose=1;                 break;
-	 case ':': break;
-
-	 default:
-	    uninit(vf);
-	    return 0; /* bad args */
-	 }
-
-      if( (args=strchr(args, ':')) ) args++;
-      }
+    if (vf_lw_set_graph(vf, vf->priv->lw_opts, "phase", "%s",
+                        get_lavfi_mode(vf->priv->mode)) >= 0)
+    {
+        return 1;
+    }
 
    return 1;
    }
 
+#define OPT_BASE_STRUCT struct vf_priv_s
 const vf_info_t vf_info_phase =
-   {
-   "phase shift fields",
-   "phase",
-   "Ville Saari",
-   "",
-   vf_open,
-   NULL
-   };
+{
+   .description = "phase shift fields",
+   .name = "phase",
+   .open = vf_open,
+   .priv_size = sizeof(struct vf_priv_s),
+   .priv_defaults = &(const struct vf_priv_s){
+       .mode = AUTO_ANALYZE,
+   },
+   .options = (const struct m_option[]){
+        OPT_CHOICE("mode", mode, 0,
+                   ({"t", TOP_FIRST},
+                    {"a", AUTO},
+                    {"b", BOTTOM_FIRST},
+                    {"u", ANALYZE},
+                    {"T", TOP_FIRST_ANALYZE},
+                    {"A", AUTO_ANALYZE},
+                    {"B", BOTTOM_FIRST_ANALYZE},
+                    {"U", FULL_ANALYZE},
+                    {"p", PROGRESSIVE})),
+        OPT_FLAG("v", verbose, 0),
+        OPT_SUBSTRUCT("", lw_opts, vf_lw_conf, 0),
+        {0}
+   },
+};

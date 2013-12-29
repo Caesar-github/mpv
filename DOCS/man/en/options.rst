@@ -42,6 +42,12 @@ OPTIONS
     requested number of output channels is set with the ``--channels`` option.
     Useful for playing surround audio on a stereo system.
 
+``--ad-lavc-threads=<0-16>``
+    Number of threads to use for decoding. Whether threading is actually
+    supported depends on codec. As of this writing, it's supported for some
+    lossless codecs only. 0 means autodetect number of cores on the
+    machine and use that, up to the maximum of 16 (default: 1).
+
 ``--ad-lavc-o=<key>=<value>[,<key>=<value>[,...]]``
     Pass AVOptions to libavcodec decoder. Note, a patch to make the o=
     unneeded and pass all unknown options through the AVOption system is
@@ -627,15 +633,11 @@ OPTIONS
 ``--demuxer-lavf-format=<name>``
     Force a specific libavformat demuxer.
 
-``--demuxer-lavf-genpts-mode=<auto|lavf|builtin|no>``
+``--demuxer-lavf-genpts-mode=<no|lavf>``
     Mode for deriving missing packet PTS values from packet DTS. ``lavf``
-    enables libavformat's ``genpts`` option. ``builtin`` enables equivalent
-    code in mpv. ``auto`` will enable either lavf (normal playback) or builtin
-    (DVD playback) in correct-pts mode. The difference between them is that
-    the builtin code will not potentially read until EOF trying to derive the
-    PTS (which is very bad for DVD playback). On the other hand, builtin might
-    give up too early, which is why lavf is preferred normally. ``no`` disables
-    both.
+    enables libavformat's ``genpts`` option. ``no`` disables it. This used
+    to be enabled by default, but then it was deemed as not needed anymore.
+    Enabling this might help with timestamp problems, or make them worse.
 
 ``--demuxer-lavf-o=<key>=<value>[,<key>=<value>[,...]]``
     Pass AVOptions to libavformat demuxer.
@@ -797,9 +799,6 @@ OPTIONS
 ``--no-fixed-vo``, ``--fixed-vo``
     ``--no-fixed-vo`` enforces closing and reopening the video window for
     multiple files (one (un)initialization for each file).
-
-``--flip``
-    Flip image upside-down.
 
 ``--force-rgba-osd-rendering``
     Change how some video outputs render the OSD and text subtitles. This
@@ -1119,11 +1118,10 @@ OPTIONS
 
     :no:        always use software decoding (default)
     :auto:      see below
-    :vdpau:     requires ``--vo=vdpau`` (Linux only)
-    :vaapi:     requires ``--vo=vaapi`` (Linux with Intel GPUs only)
+    :vdpau:     requires ``--vo=vdpau`` or ``--vo=opengl`` (Linux only)
+    :vaapi:     requires ``--vo=opengl`` or ``--vo=vaapi`` (Linux with Intel GPUs only)
     :vaapi-copy: copies video back into system RAM (Linux with Intel GPUs only)
-    :vda:       requires ``--vo=corevideo`` (OSX only)
-    :crystalhd: Broadcom Crystal HD
+    :vda:       requires ``--vo=opengl`` or ``--vo=corevideo`` (OSX only)
 
     ``auto`` tries to automatically enable hardware decoding using the first
     available method. This still depends what VO you are using. For example,
@@ -1134,12 +1132,20 @@ OPTIONS
     The ``vaapi-copy`` function allows you to use vaapi with any VO. Because
     this copies the decoded video back to system RAM, it's quite inefficient.
 
-``--hwdec-codecs=<codec1,codec2,...|all>``
-    Allow hardware decoding for a given list of codecs only. The default is the
-    special value ``all``, which always allows all codecs.
+    .. note::
 
-    This is usually only needed with broken GPUs, where fallback on software
-    decoding does not work properly.
+        When using this switch, hardware decoding is still only done for some
+        codecs. See ``--hwdec-codecs`` to enable hardware decoding for more
+        codecs.
+
+``--hwdec-codecs=<codec1,codec2,...|all>``
+    Allow hardware decoding for a given list of codecs only. The special value
+    ``all`` always allows all codecs.
+
+    By default this is set to ``h264,vc1,wmv3``.
+
+    This is usually only needed with broken GPUs, where a codec is reported
+    as supported, but decoding causes more problems than it solves.
 
     .. admonition:: Example
 
@@ -1216,7 +1222,7 @@ OPTIONS
     like any other binding). See `INPUT.CONF`_.
 
 ``--joystick``, ``--no-joystick``
-    Enable/disable joystick support. Enabled by default.
+    Enable/disable joystick support. Disabled by default.
 
 ``--no-keepaspect``, ``--keepaspect``
     ``--no-keepaspect`` will always stretch the video to window size, and will
@@ -1293,12 +1299,21 @@ OPTIONS
 ``--media-keys``, ``--no-media-keys``
       OSX only: Enabled by default. Enables/disable media keys support.
 
+``--merge-files``
+    Pretend that all files passed to mpv are concatenated into a single, big
+    file. This uses timeline/EDL support internally. Note that this won't work
+    for ordered chapter files or quvi-resolved URLs (such as youtube links).
+
+    This option is interpreted at program start, and doesn't affect for
+    example files or playlists loaded with the ``loadfile`` or ``loadlist``
+    commands.
+
 ``--mf=<option1:option2:...>``
     Used when decoding from multiple PNG or JPEG files with ``mf://``.
 
     Available options are:
 
-    :fps=<value>:  output fps (default: 25)
+    :fps=<value>:  output fps (default: 1)
     :type=<value>: input file type (available: jpeg, png, tga, sgi)
 
 ``--monitoraspect=<ratio>``
@@ -1330,7 +1345,9 @@ OPTIONS
     Control verbosity directly for each module. The ``all`` module changes the
     verbosity of all the modules not explicitly specified on the command line.
 
-    See ``--msglevel=help`` for a list of all modules.
+    Run mpv with ``--msglevel=all=trace`` to see all messages mpv outputs. You
+    can use the module names printed in the output (prefixed to each line in
+    ``[...]``) to limit the output to interesting modules.
 
     .. note::
 
@@ -1341,17 +1358,19 @@ OPTIONS
 
     Available levels:
 
-    :-1: complete silence
-    :0:  fatal messages only
-    :1:  error messages
-    :2:  warning messages
-    :3:  short hints
-    :4:  informational messages
-    :5:  status messages (default)
-    :6:  verbose messages
-    :7:  debug level 2
-    :8:  debug level 3
-    :9:  debug level 4
+    :no:        complete silence
+    :fatal:     fatal messages only
+    :error:     error messages
+    :warn:      warning messages
+    :info:      informational messages
+    :status:    status messages (default)
+    :v:         verbose messages
+    :debug:     debug messages
+    :trace:     very noisy debug messages
+
+    One special case is the ``identify`` module name. This is silenced by
+    default, and can be set to ``trace`` level to enable the remains of the
+    code once enabled with the ``-identify`` option.
 
 ``--msgmodule``
     Prepend module name in front of each console message.
@@ -1420,6 +1439,18 @@ OPTIONS
     Disable support for Matroska ordered chapters. mpv will not load or
     search for video segments from other files, and will also ignore any
     chapter order specified for the main file.
+
+``--ordered-chapters-files=<playlist-file>``
+    Loads the given file as playlist, and tries to use the files contained in
+    it as reference files when opening a Matroska file that uses ordered
+    chapters. This overrides the normal mechanism for loading referenced
+    files by scanning the same directory the main file is located in.
+
+    Useful for loading ordered chapter files that are not located on the local
+    filesystem, or if the referenced files are in different directories.
+
+    Note: a playlist can be as simple as a text file containing filenames
+    separated by newlines.
 
 ``--osc``, ``--no-osc``
     Whether to load the on-screen-controller (default: yes).
@@ -1543,6 +1574,12 @@ OPTIONS
 ``--osd-scale=<factor>``
     OSD font size multiplicator, multiplied with ``--osd-font-size`` value.
 
+``--osd-scale-by-window=yes|no``
+    Whether to scale the OSD with the window size (default: yes). If this is
+    disabled, ``--osd-font-size`` and other OSD options that use scaled pixels
+    are always in actual pixels. The effect is that changing the window size
+    won't change the OSD font size.
+
 ``--osd-shadow-color=<#RRGGBB>, --sub-text-shadow-color=<#RRGGBB>``
     See ``--osd-color``. Color used for OSD/sub text shadow.
 
@@ -1612,12 +1649,6 @@ OPTIONS
 
         FIXME: This needs to be clarified and documented thoroughly.
 
-``--pp=<quality>``
-    See also ``--vf=pp``.
-
-``--pphelp``
-    See also ``--vf=pp``.
-
 ``--priority=<prio>``
     (Windows only.)
     Set process priority for mpv according to the predefined priorities
@@ -1632,16 +1663,19 @@ OPTIONS
     Use the given profile(s), ``--profile=help`` displays a list of the
     defined profiles.
 
-``--pts-association-mode=<auto|decode|sort>``
+``--pts-association-mode=<decode|sort|auto>``
     Select the method used to determine which container packet timestamp
     corresponds to a particular output frame from the video decoder. Normally
     you should not need to change this option.
 
-    :auto:    Try to pick a working mode from the ones below automatically
-              (default)
-    :decoder: Use decoder reordering functionality.
+    :decoder: Use decoder reordering functionality. Unlike in classic MPlayer
+              and mplayer2, this includes a dTS fallback. (Default.)
     :sort:    Maintain a buffer of unused pts values and use the lowest value
               for the frame.
+    :auto:    Try to pick a working mode from the ones above automatically.
+
+    You can also try to use ``--no-correct-pts`` for files with completely
+    broken timestamps.
 
 ``--pvr=<option1:option2:...>``
     This option tunes various encoding properties of the PVR capture module.
@@ -1822,6 +1856,11 @@ OPTIONS
         - ``--reset-on-next-file=""``
           Do not reset pause mode.
 
+``--right-alt-gr``, ``--no-right-alt-gr``
+    (Cocoa and Windows only)
+    Use the right Alt key as Alt Gr to produce special characters. If disabled,
+    count the right Alt as an Alt modifier key. Enabled by default.
+
 ``--rtsp-transport=<lavf|udp|tcp|http>``
     Select RTSP transport method (default: tcp). This selects the underlying
     network transport when playing ``rtsp://...`` URLs. The value ``lavf``
@@ -1978,6 +2017,28 @@ OPTIONS
     Specify the screen width for video output drivers which do not know the
     screen resolution, like ``x11`` and TV-out.
 
+``--secondary-sid=<ID|auto|no>``
+    Select a secondary subtitle stream. This is similar to ``--sid``. If a
+    secondary subtitle is selected, it will be rendered as toptitle (i.e. on
+    the top of the screen) alongside the normal subtitle, and provides a way
+    to render two subtitles at once.
+
+    there are some caveats associated with this feature. For example, secondary
+    subtitles are never shown on the terminal if video is disabled.
+
+    .. note::
+
+        Styling and interpretation of any formatting tags is disabled for the
+        secondary subtitle. Internally, the same mechanism as ``--no-ass`` is
+        used to strip the styling.
+
+    .. note::
+
+        If the main subtitle stream contains formatting tags which display the
+        subtitle at the top of the screen, it will overlap with the secondary
+        subtitle. To prevent this, you could use ``--no-ass`` to disable
+        styling in the main subtitle stream.
+
 ``--show-profile=<profile>``
     Show the description and content of a profile.
 
@@ -2090,6 +2151,19 @@ OPTIONS
             10 seconds, and exits.
         ``--start='#2' --end='#4'``
             Plays chapters 2 and 3, and exits.
+
+``--stretch-dvd-subs=<yes|no>``
+    Stretch DVD subtitles when playing anamorphic videos for better looking
+    fonts on badly mastered DVDs. This switch has no effect when the
+    video is stored with square pixels - which for DVD input cannot be the case
+    though.
+
+    Many studios tend to use bitmap fonts designed for square pixels when
+    authoring DVDs, causing the fonts to look stretched on playback on DVD
+    players. This option fixes them, however at the price of possibly
+    misaligning sume subtitles (e.g. sign translations).
+
+    Disabled by default.
 
 ``--ssf=<mode>``
     Specifies software scaler parameters.
@@ -2528,6 +2602,13 @@ OPTIONS
 
         See ``--vd=help`` for a full list of available decoders.
 
+``--vd-lavc-check-hw-profile=<yes|no>``
+    Check hardware decoder profile (default: yes). If ``no`` is set, the
+    highest profile of the hardware decoder is unconditionally selected, and
+    decoding is forced even if the profile of the video is higher than that.
+    The result is most likely broken decoding, but may also help if the
+    detected or reported profiles are somehow incorrect.
+
 ``--vd-lavc-bitexact``
     Only use bit-exact algorithms in all decoding steps (for codec testing).
 
@@ -2549,6 +2630,11 @@ OPTIONS
     .. admonition:: Example
 
         ``--vd--lavc-o=debug=pict``
+
+``--vd-lavc-show-all=<yes|no>``
+    Show even broken/corrupt frames (default: yes). If this option is set to
+    no, libavcodec won't output frames that were either decoded before an
+    initial keyframe was decoded, or frames that are recognized as corrupted.
 
 ``--vd-lavc-skiploopfilter=<skipvalue> (H.264 only)``
     Skips the loop filter (AKA deblocking) during H.264 decoding. Since
@@ -2624,6 +2710,10 @@ OPTIONS
     ``--video-zoom`` option is set to a value other than ``1``, scaling is
     enabled, but the video isn't automatically scaled to the window size.)
 
+    The video and monitor aspects aspect will be ignored. Aspect correction
+    would require to scale the video in the X or Y direction, but this option
+    disables scaling, disabling all aspect correction.
+
     Note that the scaler algorithm may still be used, even if the video isn't
     scaled. For example, this can influence chroma conversion.
 
@@ -2631,10 +2721,11 @@ OPTIONS
 
 ``--video-zoom=<value>``
     Adjust the video display scale factor by the given value. The unit is in
-    fractions of original video size.
+    fractions of the (scaled) window video size.
 
-    For example, given a 1280x720 video, ``--video-zoom=-0.1`` would make the
-    video by 128 pixels smaller in X direction, and 72 pixels in Y direction.
+    For example, given a 1280x720 video shown in a 1280x720 window,
+    ``--video-zoom=-0.1`` would make the video by 128 pixels smaller in
+    X direction, and 72 pixels in Y direction.
 
     This option is disabled if the ``--no-keepaspect`` option is used.
 

@@ -23,8 +23,8 @@
 #include "audio/format.h"
 #include "talloc.h"
 #include "ao.h"
-#include "mpvcore/mp_msg.h"
-#include "mpvcore/m_option.h"
+#include "common/msg.h"
+#include "options/m_option.h"
 #include "osdep/timer.h"
 
 #include <libavutil/fifo.h>
@@ -144,6 +144,8 @@ static int init(struct ao *ao)
         return -1;
     }
 
+    ao->format = af_fmt_from_planar(ao->format);
+
     SDL_AudioSpec desired, obtained;
 
     switch (ao->format) {
@@ -259,7 +261,7 @@ static int get_space(struct ao *ao)
     SDL_LockMutex(priv->buffer_mutex);
     int space = av_fifo_space(priv->buffer);
     SDL_UnlockMutex(priv->buffer_mutex);
-    return space;
+    return space / ao->sstride;
 }
 
 static void pause(struct ao *ao)
@@ -290,20 +292,21 @@ static void resume(struct ao *ao)
         do_resume(ao);
 }
 
-static int play(struct ao *ao, void *data, int len, int flags)
+static int play(struct ao *ao, void **data, int samples, int flags)
 {
     struct priv *priv = ao->priv;
+    int len = samples * ao->sstride;
     SDL_LockMutex(priv->buffer_mutex);
     int free = av_fifo_space(priv->buffer);
     if (len > free) len = free;
-    av_fifo_generic_write(priv->buffer, data, len, NULL);
+    av_fifo_generic_write(priv->buffer, data[0], len, NULL);
     SDL_CondSignal(priv->underrun_cond);
     SDL_UnlockMutex(priv->buffer_mutex);
     if (priv->unpause) {
         priv->unpause = 0;
         do_resume(ao);
     }
-    return len;
+    return len / ao->sstride;
 }
 
 static float get_delay(struct ao *ao)
@@ -347,12 +350,8 @@ static float get_delay(struct ao *ao)
 #define OPT_BASE_STRUCT struct priv
 
 const struct ao_driver audio_out_sdl = {
-    .info = &(const struct ao_info) {
-        "SDL Audio",
-        "sdl",
-        "Rudolf Polzer <divVerent@xonotic.org>",
-        ""
-    },
+    .description = "SDL Audio",
+    .name      = "sdl",
     .init      = init,
     .uninit    = uninit,
     .get_space = get_space,

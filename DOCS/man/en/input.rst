@@ -31,6 +31,10 @@ General Input Command Syntax
 
 ``[Shift+][Ctrl+][Alt+][Meta+]<key> [{<section>}] [<prefixes>] <command> (<argument>)* [; <command>]``
 
+Note that by default, the right Alt key can be used to create special
+characters, and thus does not register as a modifier. The option
+``--no-right-alt-gr`` changes this behavior.
+
 Newlines always start a new binding. ``#`` starts a comment (outside of quoted
 string arguments). To bind commands to the ``#`` key, ``SHARP`` can be used.
 
@@ -43,8 +47,6 @@ command.
 Arguments are separated by whitespace. This applies even to string arguments.
 For this reason, string arguments should be quoted with ``"``. Inside quotes,
 C-style escaping can be used.
-
-Optional arguments can be skipped with ``-``.
 
 You can bind multiple commands to one key. For example:
 
@@ -86,6 +88,12 @@ List of Input Commands
     keyframes
         Always restart playback at keyframe boundaries (fast).
 
+``revert_seek``
+    Undoes the ``seek`` command, and some other commands that seek (but not
+    necessarily all of them). Calling this command once will jump to the
+    playback position before the seek. Calling it a second time undoes the
+    ``revert_seek`` command itself.
+
 ``frame_step``
     Play one frame, then pause.
 
@@ -112,8 +120,8 @@ List of Input Commands
     overflow, set the property back to the minimum, on underflow set it to the
     maximum. If ``up`` or ``down`` is omitted, assume ``up``.
 
-``speed_mult <value>``
-    Multiply the ``speed`` property by the given value.
+``multiply <property> <factor>``
+    Multiplies the value of a property with the numeric factor.
 
 ``screenshot [subtitles|video|window|- [single|each-frame]]``
     Take a screenshot.
@@ -185,9 +193,11 @@ List of Input Commands
 ``playlist_clear``
     Clear the playlist, except the currently played file.
 
-``playlist_remove <index>``
+``playlist_remove current|<index>``
     Remove the playlist entry at the given index. Index values start counting
-    with 0. You cannot remove the entry for the currently played file.
+    with 0. The special value ``current`` removes the current entry. Note that
+    removing the current entry also stops playback and starts playing the next
+    entry.
 
 ``playlist_move <index1> <index2>``
     Move the playlist entry at index1, so that it takes the place of the
@@ -196,9 +206,28 @@ List of Input Commands
     because index2 refers to the target entry, not the index the entry
     will have after moving.)
 
-``run "<command>"``
-    Run the given command with ``/bin/sh -c``. The string is expanded like in
-    `Property Expansion`_.
+``run "command" "arg1" "arg2" ...``
+    (Unix only)
+    Run the given command. Unlike in MPlayer/mplayer2 and earlier versions of
+    mpv (0.2.x and older), this doesn't call the shell. Instead, the command
+    is run directly, with each argument passed separately. Each argument is
+    expanded like in `Property Expansion`_. Note that there is a static limit
+    of (as of this writing) 10 arguments (this limit could be raised on demand).
+
+    The program is run in a detached way. mpv doesn't wait until the command
+    is completed, but continues playback right after spawning it.
+
+    To get the old behavior, use ``/bin/sh`` and ``-c`` as the first two
+    arguments.
+
+    .. admonition:: Example
+
+        ``run "/bin/sh" "-c" "echo ${title} > /tmp/playing"``
+
+        This is not a particularly good example, because it doesn't handle
+        escaping, and a specially prepared file might allow an attacker to
+        execute arbitrary shell commands. It is recommended to write a small
+        shell script, and call that with ``run``.
 
 ``quit [<code>]``
     Exit the player using the given exit code.
@@ -309,6 +338,24 @@ Input Commands that are Possibly Subject to Change
         - ``b vf set ""`` remove all video filters on ``b``
         - ``c vf toggle lavfi=gradfun`` toggle debanding on ``c``
 
+``cycle_values ["!reverse"] <property> "<value1>" "<value2>" ...``
+    Cycle through a list of values. Each invocation of the command will set the
+    given property to the next value in the list. The command maintains an
+    internal counter which value to pick next, and which is initially 0. It is
+    reset to 0 once the last value is reached.
+
+    The internal counter is associated using the property name and the value
+    list. If multiple commands (bound to different keys) use the same name
+    and value list, they will share the internal counter.
+
+    The special argument ``!reverse`` can be used to cycle the value list in
+    reverse. Compared with a command that just lists the value in reverse, this
+    command will actually share the internal counter with the forward-cycling
+    key binding.
+
+    Note that there is a static limit of (as of this writing) 10 arguments
+    (this limit could be raised on demand).
+
 ``enable_section "<section>" [default|exclusive]``
     Enable all key bindings in the named input section.
 
@@ -398,8 +445,7 @@ Input Commands that are Possibly Subject to Change
 
 Undocumented commands: ``tv_start_scan``, ``tv_step_channel``, ``tv_step_norm``,
 ``tv_step_chanlist``, ``tv_set_channel``, ``tv_last_channel``, ``tv_set_freq``,
-``tv_step_freq``, ``tv_set_norm``, ``dvb_set_channel``, ``radio_step_channel``,
-``radio_set_channel``, ``radio_set_freq``, ``radio_step_freq`` (all of these
+``tv_step_freq``, ``tv_set_norm``, ``dvb_set_channel`` (all of these
 should be replaced by properties), ``stop`` (questionable use), ``get_property``
 (?), ``vo_cmdline`` (experimental).
 
@@ -487,6 +533,7 @@ Name                            W Comment
 ``ratio-pos``                   x position in current file (0.0-1.0)
 ``time-pos``                    x position in current file in seconds
 ``time-remaining``                estimated remaining length of the file in seconds
+``playtime-remaining``            ``time-remaining`` scaled by the the current ``speed``
 ``chapter``                     x current chapter number
 ``edition``                     x current MKV edition number
 ``titles``                        number of DVD titles
@@ -533,6 +580,7 @@ Name                            W Comment
 ``fps``                           container FPS (may contain bogus values)
 ``dwidth``                        video width (after filters and aspect scaling)
 ``dheight``                       video height
+``window-scale``                x window size multiplier (1 means video size)
 ``aspect``                      x video aspect
 ``osd-width``                     last known OSD width (can be 0)
 ``osd-height``                    last known OSD height (can be 0)
@@ -544,8 +592,10 @@ Name                            W Comment
 ``video-pan-x``                 x see ``--video-pan-x``
 ``video-pan-y``                 x see ``--video-pan-y``
 ``video-zoom``                  x see ``--video-zoom``
+``video-unscaled``              x see ``--video-unscaled``
 ``program``                     x switch TS program (write-only)
 ``sid``                         x current subtitle track (similar to ``--sid``)
+``secondary-sid``               x secondary subtitle track (``--secondary-sid``)
 ``sub``                         x alias for ``sid``
 ``sub-delay``                   x see ``--sub-delay``
 ``sub-pos``                     x see ``--sub-pos``

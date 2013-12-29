@@ -29,15 +29,15 @@
 #include <stdbool.h>
 
 #include "config.h"
-#include "mpvcore/mp_msg.h"
-#include "mpvcore/bstr.h"
+#include "common/msg.h"
+#include "bstr/bstr.h"
 
 #include "vo.h"
 #include "video/csputils.h"
 
 #include "video/mp_image.h"
 
-#if defined(CONFIG_GL_COCOA)
+#if HAVE_GL_COCOA
 #ifdef GL_VERSION_3_0
 #include <OpenGL/gl3.h>
 #else
@@ -87,6 +87,8 @@ enum {
     MPGL_CAP_SRGB_FB            = (1 << 8),
     MPGL_CAP_FLOAT_TEX          = (1 << 9),
     MPGL_CAP_TEX_RG             = (1 << 10),    // GL_ARB_texture_rg / GL 3.x
+    MPGL_CAP_VDPAU              = (1 << 11),    // GL_NV_vdpau_interop
+    MPGL_CAP_APPLE_RGB_422      = (1 << 12),    // GL_APPLE_rgb_422
     MPGL_CAP_NO_SW              = (1 << 30),    // used to block sw. renderers
 };
 
@@ -108,7 +110,6 @@ typedef struct MPGLContext {
     int requested_gl_version;
 
     void (*swapGlBuffers)(struct MPGLContext *);
-    int (*check_events)(struct vo *vo);
     int (*vo_init)(struct vo *vo);
     void (*vo_uninit)(struct vo *vo);
     int (*vo_control)(struct vo *vo, int *events, int request, void *arg);
@@ -156,13 +157,58 @@ bool mpgl_config_window(struct MPGLContext *ctx, int gl_caps, uint32_t d_width,
 int mpgl_find_backend(const char *name);
 
 struct m_option;
-int mpgl_validate_backend_opt(const struct m_option *opt, struct bstr name,
-                              struct bstr param);
+int mpgl_validate_backend_opt(struct mp_log *log, const struct m_option *opt,
+                              struct bstr name, struct bstr param);
 
 void mpgl_set_backend_cocoa(MPGLContext *ctx);
 void mpgl_set_backend_w32(MPGLContext *ctx);
 void mpgl_set_backend_x11(MPGLContext *ctx);
 void mpgl_set_backend_wayland(MPGLContext *ctx);
+
+struct mp_hwdec_info;
+
+struct gl_hwdec {
+    const struct gl_hwdec_driver *driver;
+    struct mp_log *log;
+    struct MPGLContext *mpgl;
+    struct mp_hwdec_info *info;
+    // For free use by hwdec driver
+    void *priv;
+    // hwdec backends must set this to an IMGFMT_ that has an equivalent
+    // internal representation in gl_video.c as the hardware texture.
+    // It's used to build the rendering chain, and also as screenshot format.
+    int converted_imgfmt;
+    // Normally this is GL_TEXTURE_2D, but the hwdec driver can set it to
+    // GL_TEXTURE_RECTANGLE.
+    GLenum gl_texture_target;
+};
+
+struct gl_hwdec_driver {
+    // Same name as used by mp_hwdec_info->load_api()
+    const char *api_name;
+    // The hardware surface IMGFMT_ that must be passed to map_image later.
+    int imgfmt;
+    // Create the hwdec device. It must fill in hw->info, if applicable.
+    // This also must set hw->converted_imgfmt.
+    int (*create)(struct gl_hwdec *hw);
+    // Prepare for rendering video. (E.g. create textures.)
+    // Called on initialization, and every time the video size changes.
+    int (*reinit)(struct gl_hwdec *hw, const struct mp_image_params *params);
+    // Return textures that contain the given hw_image.
+    // Note that the caller keeps a reference to hw_image until unmap_image
+    // is called, so the hwdec driver doesn't need to do that.
+    int (*map_image)(struct gl_hwdec *hw, struct mp_image *hw_image,
+                     GLuint *out_textures);
+    // Undo map_image(). The user of map_image() calls this when the textures
+    // are not needed anymore.
+    void (*unmap_image)(struct gl_hwdec *hw);
+    // Return a mp_image downloaded from the GPU (optional)
+    struct mp_image *(*download_image)(struct gl_hwdec *hw,
+                                       struct mp_image *hw_image);
+    void (*destroy)(struct gl_hwdec *hw);
+};
+
+extern const struct gl_hwdec_driver *mpgl_hwdec_drivers[];
 
 void *mp_getdladdr(const char *s);
 
@@ -317,6 +363,15 @@ struct GL {
                                         const GLfloat *);
     void (GLAPIENTRY *UniformMatrix4x3fv)(GLint, GLsizei, GLboolean,
                                           const GLfloat *);
+
+    void (GLAPIENTRY *VDPAUInitNV)(const GLvoid *, const GLvoid *);
+    void (GLAPIENTRY *VDPAUFiniNV)(void);
+    GLvdpauSurfaceNV (GLAPIENTRY *VDPAURegisterOutputSurfaceNV)
+        (GLvoid *, GLenum, GLsizei, const GLuint *);
+    void (GLAPIENTRY *VDPAUUnregisterSurfaceNV)(GLvdpauSurfaceNV);
+    void (GLAPIENTRY *VDPAUSurfaceAccessNV)(GLvdpauSurfaceNV, GLenum);
+    void (GLAPIENTRY *VDPAUMapSurfacesNV)(GLsizei, const GLvdpauSurfaceNV *);
+    void (GLAPIENTRY *VDPAUUnmapSurfacesNV)(GLsizei, const GLvdpauSurfaceNV *);
 };
 
 #endif /* MPLAYER_GL_COMMON_H */

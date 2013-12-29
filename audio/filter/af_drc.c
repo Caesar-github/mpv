@@ -26,6 +26,7 @@
 #include <math.h>
 #include <limits.h>
 
+#include "common/common.h"
 #include "af.h"
 
 // Methods:
@@ -80,46 +81,27 @@ typedef struct af_volume_s
 // Initialization and runtime control
 static int control(struct af_instance* af, int cmd, void* arg)
 {
-  af_drc_t* s   = (af_drc_t*)af->setup;
-
   switch(cmd){
   case AF_CONTROL_REINIT:
     // Sanity check
     if(!arg) return AF_ERROR;
 
+    mp_audio_force_interleaved_format((struct mp_audio*)arg);
     mp_audio_copy_config(af->data, (struct mp_audio*)arg);
 
-    if(((struct mp_audio*)arg)->format != (AF_FORMAT_S16_NE)){
-      mp_audio_set_format(af->data, AF_FORMAT_FLOAT_NE);
+    if(((struct mp_audio*)arg)->format != (AF_FORMAT_S16)){
+      mp_audio_set_format(af->data, AF_FORMAT_FLOAT);
     }
     return af_test_output(af,(struct mp_audio*)arg);
-  case AF_CONTROL_COMMAND_LINE:{
-    int   i = 0;
-    float target = DEFAULT_TARGET;
-    sscanf((char*)arg,"%d:%f", &i, &target);
-    if (i != 1 && i != 2)
-	return AF_ERROR;
-    s->method = i-1;
-    s->mid_s16 = ((float)SHRT_MAX) * target;
-    s->mid_float = target;
-    return AF_OK;
-  }
   }
   return AF_UNKNOWN;
-}
-
-// Deallocate memory
-static void uninit(struct af_instance* af)
-{
-    free(af->data);
-    free(af->setup);
 }
 
 static void method1_int16(af_drc_t *s, struct mp_audio *c)
 {
   register int i = 0;
-  int16_t *data = (int16_t*)c->audio;	// Audio data
-  int len = c->len/2;		// Number of samples
+  int16_t *data = (int16_t*)c->planes[0];	// Audio data
+  int len = c->samples*c->nch;		// Number of samples
   float curavg = 0.0, newavg, neededmul;
   int tmp;
 
@@ -139,14 +121,14 @@ static void method1_int16(af_drc_t *s, struct mp_audio *c)
     s->mul = (1.0 - SMOOTH_MUL) * s->mul + SMOOTH_MUL * neededmul;
 
     // clamp the mul coefficient
-    s->mul = clamp(s->mul, MUL_MIN, MUL_MAX);
+    s->mul = MPCLAMP(s->mul, MUL_MIN, MUL_MAX);
   }
 
   // Scale & clamp the samples
   for (i = 0; i < len; i++)
   {
     tmp = s->mul * data[i];
-    tmp = clamp(tmp, SHRT_MIN, SHRT_MAX);
+    tmp = MPCLAMP(tmp, SHRT_MIN, SHRT_MAX);
     data[i] = tmp;
   }
 
@@ -160,8 +142,8 @@ static void method1_int16(af_drc_t *s, struct mp_audio *c)
 static void method1_float(af_drc_t *s, struct mp_audio *c)
 {
   register int i = 0;
-  float *data = (float*)c->audio;	// Audio data
-  int len = c->len/4;		// Number of samples
+  float *data = (float*)c->planes[0];	// Audio data
+  int len = c->samples*c->nch;		// Number of samples
   float curavg = 0.0, newavg, neededmul, tmp;
 
   for (i = 0; i < len; i++)
@@ -180,7 +162,7 @@ static void method1_float(af_drc_t *s, struct mp_audio *c)
     s->mul = (1.0 - SMOOTH_MUL) * s->mul + SMOOTH_MUL * neededmul;
 
     // clamp the mul coefficient
-    s->mul = clamp(s->mul, MUL_MIN, MUL_MAX);
+    s->mul = MPCLAMP(s->mul, MUL_MIN, MUL_MAX);
   }
 
   // Scale & clamp the samples
@@ -197,8 +179,8 @@ static void method1_float(af_drc_t *s, struct mp_audio *c)
 static void method2_int16(af_drc_t *s, struct mp_audio *c)
 {
   register int i = 0;
-  int16_t *data = (int16_t*)c->audio;	// Audio data
-  int len = c->len/2;		// Number of samples
+  int16_t *data = (int16_t*)c->planes[0];	// Audio data
+  int len = c->samples*c->nch;		// Number of samples
   float curavg = 0.0, newavg, avg = 0.0;
   int tmp, totallen = 0;
 
@@ -223,7 +205,7 @@ static void method2_int16(af_drc_t *s, struct mp_audio *c)
     if (avg >= SIL_S16)
     {
 	s->mul = s->mid_s16 / avg;
-	s->mul = clamp(s->mul, MUL_MIN, MUL_MAX);
+	s->mul = MPCLAMP(s->mul, MUL_MIN, MUL_MAX);
     }
   }
 
@@ -231,7 +213,7 @@ static void method2_int16(af_drc_t *s, struct mp_audio *c)
   for (i = 0; i < len; i++)
   {
     tmp = s->mul * data[i];
-    tmp = clamp(tmp, SHRT_MIN, SHRT_MAX);
+    tmp = MPCLAMP(tmp, SHRT_MIN, SHRT_MAX);
     data[i] = tmp;
   }
 
@@ -247,8 +229,8 @@ static void method2_int16(af_drc_t *s, struct mp_audio *c)
 static void method2_float(af_drc_t *s, struct mp_audio *c)
 {
   register int i = 0;
-  float *data = (float*)c->audio;	// Audio data
-  int len = c->len/4;		// Number of samples
+  float *data = (float*)c->planes[0];	// Audio data
+  int len = c->samples*c->nch;		// Number of samples
   float curavg = 0.0, newavg, avg = 0.0, tmp;
   int totallen = 0;
 
@@ -273,7 +255,7 @@ static void method2_float(af_drc_t *s, struct mp_audio *c)
     if (avg >= SIL_FLOAT)
     {
 	s->mul = s->mid_float / avg;
-	s->mul = clamp(s->mul, MUL_MIN, MUL_MAX);
+	s->mul = MPCLAMP(s->mul, MUL_MIN, MUL_MAX);
     }
   }
 
@@ -290,59 +272,56 @@ static void method2_float(af_drc_t *s, struct mp_audio *c)
   s->idx = (s->idx + 1) % NSAMPLES;
 }
 
-// Filter data through filter
-static struct mp_audio* play(struct af_instance* af, struct mp_audio* data)
+static int filter(struct af_instance* af, struct mp_audio* data, int flags)
 {
-  af_drc_t *s = af->setup;
+  af_drc_t *s = af->priv;
 
-  if(af->data->format == (AF_FORMAT_S16_NE))
+  if(af->data->format == (AF_FORMAT_S16))
   {
-    if (s->method)
+    if (s->method == 2)
 	method2_int16(s, data);
     else
 	method1_int16(s, data);
   }
-  else if(af->data->format == (AF_FORMAT_FLOAT_NE))
+  else if(af->data->format == (AF_FORMAT_FLOAT))
   {
-    if (s->method)
+    if (s->method == 2)
 	method2_float(s, data);
     else
 	method1_float(s, data);
   }
-  return data;
+  return 0;
 }
 
 // Allocate memory and set function pointers
 static int af_open(struct af_instance* af){
   int i = 0;
   af->control=control;
-  af->uninit=uninit;
-  af->play=play;
-  af->mul=1;
-  af->data=calloc(1,sizeof(struct mp_audio));
-  af->setup=calloc(1,sizeof(af_drc_t));
-  if(af->data == NULL || af->setup == NULL)
-    return AF_ERROR;
+  af->filter=filter;
+  af_drc_t *priv = af->priv;
 
-  ((af_drc_t*)af->setup)->mul = MUL_INIT;
-  ((af_drc_t*)af->setup)->lastavg = ((float)SHRT_MAX) * DEFAULT_TARGET;
-  ((af_drc_t*)af->setup)->idx = 0;
-  ((af_drc_t*)af->setup)->mid_s16 = ((float)SHRT_MAX) * DEFAULT_TARGET;
-  ((af_drc_t*)af->setup)->mid_float = DEFAULT_TARGET;
+  priv->mul = MUL_INIT;
+  priv->lastavg = ((float)SHRT_MAX) * DEFAULT_TARGET;
+  priv->idx = 0;
   for (i = 0; i < NSAMPLES; i++)
   {
-     ((af_drc_t*)af->setup)->mem[i].len = 0;
-     ((af_drc_t*)af->setup)->mem[i].avg = 0;
+     priv->mem[i].len = 0;
+     priv->mem[i].avg = 0;
   }
+  priv->mid_s16 = ((float)SHRT_MAX) * priv->mid_float;
   return AF_OK;
 }
 
-// Description of this filter
+#define OPT_BASE_STRUCT af_drc_t
 struct af_info af_info_drc = {
-    "Dynamic range compression filter",
-    "drc",
-    "Alex Beregszaszi & Pierre Lombard",
-    "",
-    AF_FLAGS_NOT_REENTRANT,
-    af_open
+    .info = "Dynamic range compression filter",
+    .name = "drc",
+    .flags = AF_FLAGS_NOT_REENTRANT,
+    .open = af_open,
+    .priv_size = sizeof(af_drc_t),
+    .options = (const struct m_option[]) {
+        OPT_INTRANGE("method", method, 0, 1, 2, OPTDEF_INT(1)),
+        OPT_FLOAT("target", mid_float, 0, OPTDEF_FLOAT(DEFAULT_TARGET)),
+        {0}
+    },
 };

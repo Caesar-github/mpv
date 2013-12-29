@@ -21,15 +21,16 @@
 #include <libavutil/opt.h>
 
 #include "config.h"
-#include "mpvcore/options.h"
-#include "mpvcore/mp_msg.h"
+#include "options/options.h"
+#include "options/path.h"
+#include "common/msg.h"
 #include "stream.h"
-#include "mpvcore/m_option.h"
+#include "options/m_option.h"
 
 #include "cookies.h"
 
-#include "mpvcore/bstr.h"
-#include "mpvcore/mp_talloc.h"
+#include "bstr/bstr.h"
+#include "talloc.h"
 
 static int open_f(stream_t *stream, int mode);
 static char **read_icy(stream_t *stream);
@@ -131,6 +132,7 @@ static const char * const prefix[] = { "lavf://", "ffmpeg://" };
 
 static int open_f(stream_t *stream, int mode)
 {
+    struct MPOpts *opts = stream->opts;
     int flags = 0;
     AVIOContext *avio = NULL;
     int res = STREAM_ERROR;
@@ -142,14 +144,14 @@ static int open_f(stream_t *stream, int mode)
     else if (mode == STREAM_WRITE)
         flags = AVIO_FLAG_WRITE;
     else {
-        mp_msg(MSGT_OPEN, MSGL_ERR, "[ffmpeg] Unknown open mode %d\n", mode);
+        MP_ERR(stream, "[ffmpeg] Unknown open mode %d\n", mode);
         res = STREAM_UNSUPPORTED;
         goto out;
     }
 
     const char *filename = stream->url;
     if (!filename) {
-        mp_msg(MSGT_OPEN, MSGL_ERR, "[ffmpeg] No URL\n");
+        MP_ERR(stream, "[ffmpeg] No URL\n");
         goto out;
     }
     for (int i = 0; i < sizeof(prefix) / sizeof(prefix[0]); i++)
@@ -168,7 +170,7 @@ static int open_f(stream_t *stream, int mode)
         talloc_free(temp);
         return STREAM_OK;
     }
-    mp_msg(MSGT_OPEN, MSGL_V, "[ffmpeg] Opening %s\n", filename);
+    MP_VERBOSE(stream, "[ffmpeg] Opening %s\n", filename);
 
     // Replace "mms://" with "mmsh://", so that most mms:// URLs just work.
     bstr b_filename = bstr0(filename);
@@ -179,22 +181,28 @@ static int open_f(stream_t *stream, int mode)
     }
 
     // HTTP specific options (other protocols ignore them)
-    if (network_useragent)
-        av_dict_set(&dict, "user-agent", network_useragent, 0);
-    if (network_cookies_enabled)
-        av_dict_set(&dict, "cookies", talloc_steal(temp, cookies_lavf()), 0);
-    av_dict_set(&dict, "tls_verify", network_tls_verify ? "1" : "0", 0);
-    if (network_tls_ca_file)
-        av_dict_set(&dict, "ca_file", network_tls_ca_file, 0);
-    char *cust_headers = talloc_strdup(temp, "");
-    if (network_referrer) {
-        cust_headers = talloc_asprintf_append(cust_headers, "Referer: %s\r\n",
-                                              network_referrer);
+    if (opts->network_useragent)
+        av_dict_set(&dict, "user-agent", opts->network_useragent, 0);
+    if (opts->network_cookies_enabled) {
+        char *file = opts->network_cookies_file;
+        if (file && file[0])
+            file = mp_get_user_path(temp, stream->global, file);
+        char *cookies = cookies_lavf(temp, stream->log, file);
+        if (cookies && cookies[0])
+            av_dict_set(&dict, "cookies", cookies, 0);
     }
-    if (network_http_header_fields) {
-        for (int n = 0; network_http_header_fields[n]; n++) {
+    av_dict_set(&dict, "tls_verify", opts->network_tls_verify ? "1" : "0", 0);
+    if (opts->network_tls_ca_file)
+        av_dict_set(&dict, "ca_file", opts->network_tls_ca_file, 0);
+    char *cust_headers = talloc_strdup(temp, "");
+    if (opts->network_referrer) {
+        cust_headers = talloc_asprintf_append(cust_headers, "Referer: %s\r\n",
+                                              opts->network_referrer);
+    }
+    if (opts->network_http_header_fields) {
+        for (int n = 0; opts->network_http_header_fields[n]; n++) {
             cust_headers = talloc_asprintf_append(cust_headers, "%s\r\n",
-                                                  network_http_header_fields[n]);
+                                                  opts->network_http_header_fields[n]);
         }
     }
     if (strlen(cust_headers))
@@ -204,14 +212,14 @@ static int open_f(stream_t *stream, int mode)
     int err = avio_open2(&avio, filename, flags, NULL, &dict);
     if (err < 0) {
         if (err == AVERROR_PROTOCOL_NOT_FOUND)
-            mp_msg(MSGT_OPEN, MSGL_ERR, "[ffmpeg] Protocol not found. Make sure"
+            MP_ERR(stream, "[ffmpeg] Protocol not found. Make sure"
                    " ffmpeg/Libav is compiled with networking support.\n");
         goto out;
     }
 
     AVDictionaryEntry *t = NULL;
     while ((t = av_dict_get(dict, "", t, AV_DICT_IGNORE_SUFFIX))) {
-        mp_msg(MSGT_OPEN, MSGL_V, "[ffmpeg] Could not set stream option %s=%s\n",
+        MP_VERBOSE(stream, "[ffmpeg] Could not set stream option %s=%s\n",
                t->key, t->value);
     }
 
@@ -223,12 +231,10 @@ static int open_f(stream_t *stream, int mode)
         }
     }
 
-    char *rtmp[] = {"rtmp:", "rtmpt:", "rtmpe:", "rtmpte:", "rtmps:"};
-    for (int i = 0; i < FF_ARRAY_ELEMS(rtmp); i++)
-        if (!strncmp(filename, rtmp[i], strlen(rtmp[i]))) {
-            stream->demuxer = "lavf";
-            stream->lavf_type = "flv";
-        }
+    if (strncmp(filename, "rtmp", 4) == 0) {
+        stream->demuxer = "lavf";
+        stream->lavf_type = "flv";
+    }
     stream->priv = avio;
     int64_t size = avio_size(avio);
     if (size >= 0)

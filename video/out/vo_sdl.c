@@ -30,15 +30,15 @@
 
 #include <SDL.h>
 
-#include "mpvcore/input/input.h"
-#include "mpvcore/input/keycodes.h"
-#include "mpvcore/input/input.h"
-#include "mpvcore/mp_msg.h"
-#include "mpvcore/options.h"
+#include "input/input.h"
+#include "input/keycodes.h"
+#include "input/input.h"
+#include "common/msg.h"
+#include "options/options.h"
 
 #include "osdep/timer.h"
 
-#include "sub/sub.h"
+#include "sub/osd.h"
 
 #include "video/mp_image.h"
 #include "video/vfcap.h"
@@ -495,11 +495,13 @@ static void check_events(struct vo *vo)
         case SDL_TEXTINPUT: {
             int sdl_mod = SDL_GetModState();
             int mpv_mod = 0;
-            // we ignore KMOD_LSHIFT, KMOD_RSHIFT and KMOD_RALT because
-            // these are already factored into ev.text.text
+            // we ignore KMOD_LSHIFT, KMOD_RSHIFT and KMOD_RALT (if
+            // mp_input_use_alt_gr() is true) because these are already
+            // factored into ev.text.text
             if (sdl_mod & (KMOD_LCTRL | KMOD_RCTRL))
                 mpv_mod |= MP_KEY_MODIFIER_CTRL;
-            if (sdl_mod & KMOD_LALT)
+            if ((sdl_mod & KMOD_LALT) ||
+                (sdl_mod & KMOD_RALT) && !mp_input_use_alt_gr(vo->input_ctx))
                 mpv_mod |= MP_KEY_MODIFIER_ALT;
             if (sdl_mod & (KMOD_LGUI | KMOD_RGUI))
                 mpv_mod |= MP_KEY_MODIFIER_META;
@@ -770,7 +772,7 @@ static int query_format(struct vo *vo, uint32_t format)
 {
     struct priv *vc = vo->priv;
     int i, j;
-    int cap = VFCAP_CSP_SUPPORTED | VFCAP_FLIP;
+    int cap = VFCAP_CSP_SUPPORTED;
     for (i = 0; i < vc->renderer_info.num_texture_formats; ++i)
         for (j = 0; j < sizeof(formats) / sizeof(formats[0]); ++j)
             if (vc->renderer_info.texture_formats[i] == formats[j].sdl)
@@ -995,12 +997,8 @@ static int control(struct vo *vo, uint32_t request, void *data)
 #define OPT_BASE_STRUCT struct priv
 
 const struct vo_driver video_out_sdl = {
-    .info = &(const vo_info_t) {
-        "SDL 2.0 Renderer",
-        "sdl",
-        "Rudolf Polzer <divVerent@xonotic.org>",
-        ""
-    },
+    .description = "SDL 2.0 Renderer",
+    .name = "sdl",
     .priv_size = sizeof(struct priv),
     .priv_defaults = &(const struct priv) {
         .renderer_index = -1,

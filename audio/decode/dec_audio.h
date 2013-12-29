@@ -20,20 +20,42 @@
 #define MPLAYER_DEC_AUDIO_H
 
 #include "audio/chmap.h"
+#include "audio/audio.h"
 #include "demux/stheader.h"
 
-struct bstr;
+struct mp_audio_buffer;
 struct mp_decoder_list;
 
-struct mp_decoder_list *mp_audio_decoder_list(void);
-int init_best_audio_codec(sh_audio_t *sh_audio, char *audio_decoders);
-int decode_audio(sh_audio_t *sh_audio, struct bstr *outbuf, int minlen);
-void decode_audio_prepend_bytes(struct bstr *outbuf, int count, int byte);
-void resync_audio_stream(sh_audio_t *sh_audio);
-void skip_audio_frame(sh_audio_t *sh_audio);
-void uninit_audio(sh_audio_t *sh_audio);
+struct dec_audio {
+    struct mp_log *log;
+    struct MPOpts *opts;
+    struct mpv_global *global;
+    const struct ad_functions *ad_driver;
+    struct sh_stream *header;
+    struct mp_audio_buffer *decode_buffer;
+    struct af_stream *afilter;
+    char *decoder_desc;
+    // set by decoder
+    struct mp_audio decoded;    // format of decoded audio (no data, temporarily
+                                // different from decode_buffer during format
+                                // changes)
+    int i_bps;                  // input bitrate, can change with VBR sources
+    // last known pts value in output from decoder
+    double pts;
+    // number of samples output by decoder after last known pts
+    int pts_offset;
+    // For free use by the ad_driver
+    void *priv;
+};
 
-int init_audio_filters(sh_audio_t *sh_audio, int in_samplerate,
+struct mp_decoder_list *audio_decoder_list(void);
+int audio_init_best_codec(struct dec_audio *d_audio, char *audio_decoders);
+int audio_decode(struct dec_audio *d_audio, struct mp_audio_buffer *outbuf,
+                 int minsamples);
+void audio_reset_decoding(struct dec_audio *d_audio);
+void audio_uninit(struct dec_audio *d_audio);
+
+int audio_init_filters(struct dec_audio *d_audio, int in_samplerate,
                        int *out_samplerate, struct mp_chmap *out_channels,
                        int *out_format);
 

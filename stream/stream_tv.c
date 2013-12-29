@@ -27,7 +27,7 @@
 #include <string.h>
 
 #include "stream.h"
-#include "mpvcore/m_option.h"
+#include "options/m_option.h"
 #include "tv.h"
 
 #include <stdio.h>
@@ -92,6 +92,7 @@ tv_stream_open (stream_t *stream, int mode)
   stream->type = STREAMTYPE_TV;
   stream->close=tv_stream_close;
   stream->demuxer = "tv";
+  stream->allow_caching = false;
 
   return STREAM_OK;
 }

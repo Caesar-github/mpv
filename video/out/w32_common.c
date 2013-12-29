@@ -22,15 +22,15 @@
 #include <windows.h>
 #include <windowsx.h>
 
-#include "mpvcore/options.h"
-#include "mpvcore/input/keycodes.h"
-#include "mpvcore/input/input.h"
-#include "mpvcore/mp_msg.h"
-#include "mpvcore/mp_common.h"
+#include "options/options.h"
+#include "input/keycodes.h"
+#include "input/input.h"
+#include "common/msg.h"
+#include "common/common.h"
 #include "vo.h"
 #include "aspect.h"
 #include "w32_common.h"
-#include "mpvcore/input/input.h"
+#include "input/input.h"
 #include "osdep/io.h"
 #include "talloc.h"
 
@@ -176,6 +176,42 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam,
         case WM_CLOSE:
             mp_input_put_key(vo->input_ctx, MP_KEY_CLOSE_WIN);
             break;
+        case WM_DROPFILES: {
+            HDROP hDrop = (HDROP)wParam;
+            UINT nfiles = DragQueryFileW(hDrop, 0xFFFFFFFF, NULL, 0);
+
+            for (UINT i; i < nfiles; i++) {
+                UINT len = DragQueryFileW(hDrop, i, NULL, 0);
+                wchar_t *buf = talloc_array(NULL, wchar_t, len + 1);
+
+                if (DragQueryFileW(hDrop, i, buf, len + 1) == len) {
+                    char *fname = mp_to_utf8(NULL, buf);
+
+                    const char *cmd[] = {
+                        "raw",
+                        "loadfile",
+                        fname,
+                        /* Start playing the dropped files right away */
+                        (i == 0) ? "replace" : "append"
+                    };
+
+                    MP_VERBOSE(vo, "win32: received dropped file: %s\n", fname);
+                    mp_cmd_t *cmdt = mp_input_parse_cmd_strv(vo->log,
+                                                             MP_ON_OSD_AUTO,
+                                                             cmd, "<win32>");
+                    mp_input_queue_cmd(vo->input_ctx, cmdt);
+
+                    talloc_free(fname);
+                } else {
+                    MP_ERR(vo, "win32: error getting dropped file name\n");
+                }
+
+                talloc_free(buf);
+            }
+
+            DragFinish(hDrop);
+            return 0;
+        }
         case WM_SYSCOMMAND:
             switch (wParam) {
             case SC_SCREENSAVE:
@@ -203,7 +239,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam,
             // Windows enables Ctrl+Alt when AltGr (VK_RMENU) is pressed.
             // E.g. AltGr+9 on a German keyboard would yield Ctrl+Alt+[
             // Warning: wine handles this differently. Don't test this on wine!
-            if (key_state(vo, VK_RMENU))
+            if (key_state(vo, VK_RMENU) && mp_input_use_alt_gr(vo->input_ctx))
                 mods &= ~(MP_KEY_MODIFIER_CTRL | MP_KEY_MODIFIER_ALT);
             // Apparently Ctrl+A to Ctrl+Z is special cased, and produces
             // character codes from 1-26. Work it around.
@@ -279,19 +315,24 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam,
             break;
     }
 
-    if (mouse_button && vo->opts->enable_mouse_movements) {
-        int x = GET_X_LPARAM(lParam);
-        int y = GET_Y_LPARAM(lParam);
+    if (mouse_button) {
         mouse_button |= mod_state(vo);
-        if (mouse_button == (MP_MOUSE_BTN0 | MP_KEY_STATE_DOWN) &&
-            !vo->opts->fullscreen && !mp_input_test_dragging(vo->input_ctx, x, y))
-        {
-            // Window dragging hack
-            ReleaseCapture();
-            SendMessage(hWnd, WM_NCLBUTTONDOWN, HTCAPTION, 0);
-            return 0;
-        }
         mp_input_put_key(vo->input_ctx, mouse_button);
+
+        if (vo->opts->enable_mouse_movements) {
+            int x = GET_X_LPARAM(lParam);
+            int y = GET_Y_LPARAM(lParam);
+
+            if (mouse_button == (MP_MOUSE_BTN0 | MP_KEY_STATE_DOWN) &&
+                !vo->opts->fullscreen &&
+                !mp_input_test_dragging(vo->input_ctx, x, y))
+            {
+                // Window dragging hack
+                ReleaseCapture();
+                SendMessage(hWnd, WM_NCLBUTTONDOWN, HTCAPTION, 0);
+                return 0;
+            }
+        }
     }
 
     return DefWindowProcW(hWnd, message, wParam, lParam);
@@ -609,7 +650,7 @@ int vo_w32_init(struct vo *vo)
 
     WNDCLASSEXW wcex = {
         .cbSize = sizeof wcex,
-        .style = CS_OWNDC | CS_DBLCLKS | CS_HREDRAW | CS_VREDRAW,
+        .style = CS_OWNDC | CS_HREDRAW | CS_VREDRAW,
         .lpfnWndProc = WndProc,
         .hInstance = hInstance,
         .hIcon = mplayerIcon,
@@ -645,6 +686,8 @@ int vo_w32_init(struct vo *vo)
         MP_ERR(vo, "win32: unable to create window!\n");
         return 0;
     }
+
+    DragAcceptFiles(w32->window, TRUE);
 
     w32->tracking   = FALSE;
     w32->trackEvent = (TRACKMOUSEEVENT){
@@ -733,6 +776,29 @@ int vo_w32_control(struct vo *vo, int *events, int request, void *arg)
     case VOCTRL_UPDATE_SCREENINFO:
         w32_update_xinerama_info(vo);
         return VO_TRUE;
+    case VOCTRL_GET_WINDOW_SIZE: {
+        int *s = arg;
+        if (!w32->window_bounds_initialized)
+            return VO_FALSE;
+        s[0] = w32->current_fs ? w32->prev_width : vo->dwidth;
+        s[1] = w32->current_fs ? w32->prev_height : vo->dheight;
+        return VO_TRUE;
+    }
+    case VOCTRL_SET_WINDOW_SIZE: {
+        int *s = arg;
+        if (!w32->window_bounds_initialized)
+            return VO_FALSE;
+        if (w32->current_fs) {
+            w32->prev_width = s[0];
+            w32->prev_height = s[1];
+        } else {
+            vo->dwidth = s[0];
+            vo->dheight = s[1];
+        }
+        reinit_window_state(vo);
+        *events |= VO_EVENT_RESIZE;
+        return VO_TRUE;
+    }
     case VOCTRL_SET_CURSOR_VISIBILITY:
         w32->cursor_visible = *(bool *)arg;
 

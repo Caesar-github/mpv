@@ -18,22 +18,6 @@
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
-/* This audio filter changes the volume of the sound, and can be used
-   when the mixer doesn't support the PCM channel. It can handle
-   between 1 and AF_NCH channels. The volume can be adjusted between -60dB
-   to +20dB and is set on a per channels basis. The is accessed through
-   AF_CONTROL_VOLUME_LEVEL.
-
-   The filter has support for soft-clipping, it is enabled by
-   AF_CONTROL_VOLUME_SOFTCLIPP. It has also a probing feature which
-   can be used to measure the power in the audio stream, both an
-   instantaneous value and the maximum value can be probed. The
-   probing is enable by AF_CONTROL_VOLUME_PROBE_ON_OFF and is done on a
-   per channel basis. The result from the probing is obtained using
-   AF_CONTROL_VOLUME_PROBE_GET and AF_CONTROL_VOLUME_PROBE_GET_MAX. The
-   probed values are calculated in dB.
-*/
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -42,167 +26,101 @@
 #include <math.h>
 #include <limits.h>
 
+#include "common/common.h"
 #include "af.h"
 
-// Data for specific instances of this filter
-typedef struct af_volume_s
+struct priv {
+    float level;                // Gain level for each channel
+    int soft;                   // Enable/disable soft clipping
+    int fast;                   // Use fix-point volume control
+    float cfg_volume;
+};
+
+static int control(struct af_instance *af, int cmd, void *arg)
 {
-  int   enable[AF_NCH];		// Enable/disable / channel
-  float	pow[AF_NCH];		// Estimated power level [dB]
-  float	max[AF_NCH];		// Max Power level [dB]
-  float level[AF_NCH];		// Gain level for each channel
-  float time;			// Forgetting factor for power estimate
-  int soft;			// Enable/disable soft clipping
-  int fast;			// Use fix-point volume control
-}af_volume_t;
+    struct priv *s = af->priv;
 
-// Initialization and runtime control
-static int control(struct af_instance* af, int cmd, void* arg)
+    switch (cmd) {
+    case AF_CONTROL_REINIT: {
+        struct mp_audio *in = arg;
+
+        mp_audio_copy_config(af->data, in);
+        mp_audio_force_interleaved_format(af->data);
+
+        if (s->fast && af_fmt_from_planar(in->format) != AF_FORMAT_FLOAT) {
+            mp_audio_set_format(af->data, AF_FORMAT_S16);
+        } else {
+            mp_audio_set_format(af->data, AF_FORMAT_FLOAT);
+        }
+        if (af_fmt_is_planar(in->format))
+            mp_audio_set_format(af->data, af_fmt_to_planar(af->data->format));
+        return af_test_output(af, in);
+    }
+    case AF_CONTROL_SET_VOLUME:
+        s->level = *(float *)arg;
+        return AF_OK;
+    case AF_CONTROL_GET_VOLUME:
+        *(float *)arg = s->level;
+        return AF_OK;
+    }
+    return AF_UNKNOWN;
+}
+
+static void filter_plane(struct af_instance *af, void *ptr, int num_samples)
 {
-  af_volume_t* s   = (af_volume_t*)af->setup;
+    struct priv *s = af->priv;
 
-  switch(cmd){
-  case AF_CONTROL_REINIT:
-    // Sanity check
-    if(!arg) return AF_ERROR;
+    if (af_fmt_from_planar(af->data->format) == AF_FORMAT_S16) {
+        int16_t *a = ptr;
+        int vol = 256.0 * s->level;
+        if (vol != 256) {
+            for (int i = 0; i < num_samples; i++) {
+                int x = (a[i] * vol) >> 8;
+                a[i] = MPCLAMP(x, SHRT_MIN, SHRT_MAX);
+            }
+        }
+    } else if (af_fmt_from_planar(af->data->format) == AF_FORMAT_FLOAT) {
+        float *a = ptr;
+        float vol = s->level;
+        if (vol != 1.0) {
+            for (int i = 0; i < num_samples; i++) {
+                float x = a[i] * vol;
+                a[i] = s->soft ? af_softclip(x) : MPCLAMP(x, -1.0, 1.0);
+            }
+        }
+    }
+}
 
-    mp_audio_copy_config(af->data, (struct mp_audio*)arg);
+static int filter(struct af_instance *af, struct mp_audio *data, int f)
+{
+    for (int n = 0; n < data->num_planes; n++)
+        filter_plane(af, data->planes[n], data->samples * data->spf);
 
-    if(s->fast && (((struct mp_audio*)arg)->format != (AF_FORMAT_FLOAT_NE))){
-      mp_audio_set_format(af->data, AF_FORMAT_S16_NE);
-    }
-    else{
-      // Cutoff set to 10Hz for forgetting factor
-      float x = 2.0*M_PI*15.0/(float)af->data->rate;
-      float t = 2.0-cos(x);
-      s->time = 1.0 - (t - sqrt(t*t - 1));
-      mp_msg(MSGT_AFILTER, MSGL_DBG2, "[volume] Forgetting factor = %0.5f\n",s->time);
-      mp_audio_set_format(af->data, AF_FORMAT_FLOAT_NE);
-    }
-    return af_test_output(af,(struct mp_audio*)arg);
-  case AF_CONTROL_COMMAND_LINE:{
-    float v=1000.0;
-    float vol[AF_NCH];
-    int   i;
-    sscanf((char*)arg,"%f:%i:%i", &v, &s->soft, &s->fast);
-    float dest = 0.0;
-    if (v < 1000)
-      af_from_dB(1,&v,&dest,20.0,-200.0,60.0);
-    for(i=0;i<AF_NCH;i++) vol[i]=dest;
-    return control(af,AF_CONTROL_VOLUME_LEVEL | AF_CONTROL_SET, vol);
-  }
-  case AF_CONTROL_VOLUME_LEVEL | AF_CONTROL_SET:
-      memcpy(s->level, arg, sizeof(float) * AF_NCH);
-      return AF_OK;
-  case AF_CONTROL_VOLUME_LEVEL | AF_CONTROL_GET:
-      memcpy(arg, s->level, sizeof(float) * AF_NCH);
-      return AF_OK;
-  case AF_CONTROL_PRE_DESTROY:{
-    float m = 0.0;
-    int i;
-    if(!s->fast){
-      for(i=0;i<AF_NCH;i++)
-	m=max(m,s->max[i]);
-	af_to_dB(1, &m, &m, 10.0);
-	mp_msg(MSGT_AFILTER, MSGL_V, "[volume] The maximum volume was %0.2fdB \n", m);
-    }
+    return 0;
+}
+
+static int af_open(struct af_instance *af)
+{
+    struct priv *s = af->priv;
+    af->control = control;
+    af->filter = filter;
+    af_from_dB(1, &s->cfg_volume, &s->level, 20.0, -200.0, 60.0);
     return AF_OK;
-  }
-  }
-  return AF_UNKNOWN;
 }
 
-// Deallocate memory
-static void uninit(struct af_instance* af)
-{
-    free(af->data);
-    free(af->setup);
-}
-
-// Filter data through filter
-static struct mp_audio* play(struct af_instance* af, struct mp_audio* data)
-{
-  struct mp_audio*    c   = data;			// Current working data
-  af_volume_t*  s   = (af_volume_t*)af->setup; 	// Setup for this instance
-  register int	nch = c->nch;			// Number of channels
-  register int  i   = 0;
-
-  // Basic operation volume control only (used on slow machines)
-  if(af->data->format == (AF_FORMAT_S16_NE)){
-    int16_t*    a   = (int16_t*)c->audio;	// Audio data
-    int         len = c->len/2;			// Number of samples
-    for (int ch = 0; ch < nch; ch++) {
-      int vol = 256.0 * s->level[ch];
-      if (s->enable[ch] && vol != 256) {
-	for(i=ch;i<len;i+=nch){
-	  register int x = (a[i] * vol) >> 8;
-	  a[i]=clamp(x,SHRT_MIN,SHRT_MAX);
-	}
-      }
-    }
-  }
-  // Machine is fast and data is floating point
-  else if(af->data->format == (AF_FORMAT_FLOAT_NE)){
-    float*   	a   	= (float*)c->audio;	// Audio data
-    int       	len 	= c->len/4;		// Number of samples
-    for (int ch = 0; ch < nch; ch++) {
-      // Volume control (fader)
-      if(s->enable[ch]){
-	float	t   = 1.0 - s->time;
-	for(i=ch;i<len;i+=nch){
-	  register float x 	= a[i];
-	  register float pow 	= x*x;
-	  // Check maximum power value
-	  if(pow > s->max[ch])
-	    s->max[ch] = pow;
-	  // Set volume
-	  x *= s->level[ch];
-	  // Peak meter
-	  pow 	= x*x;
-	  if(pow > s->pow[ch])
-	    s->pow[ch] = pow;
-	  else
-	    s->pow[ch] = t*s->pow[ch] + pow*s->time; // LP filter
-	  /* Soft clipping, the sound of a dream, thanks to Jon Wattes
-	     post to Musicdsp.org */
-	  if(s->soft)
-	    x=af_softclip(x);
-	  // Hard clipping
-	  else
-	    x=clamp(x,-1.0,1.0);
-	  a[i] = x;
-	}
-      }
-    }
-  }
-  return c;
-}
-
-// Allocate memory and set function pointers
-static int af_open(struct af_instance* af){
-  int i = 0;
-  af->control=control;
-  af->uninit=uninit;
-  af->play=play;
-  af->mul=1;
-  af->data=calloc(1,sizeof(struct mp_audio));
-  af->setup=calloc(1,sizeof(af_volume_t));
-  if(af->data == NULL || af->setup == NULL)
-    return AF_ERROR;
-  // Enable volume control and set initial volume to 0dB.
-  for(i=0;i<AF_NCH;i++){
-    ((af_volume_t*)af->setup)->enable[i] = 1;
-    ((af_volume_t*)af->setup)->level[i]  = 1.0;
-  }
-  return AF_OK;
-}
+#define OPT_BASE_STRUCT struct priv
 
 // Description of this filter
 struct af_info af_info_volume = {
-    "Volume control audio filter",
-    "volume",
-    "Anders",
-    "",
-    AF_FLAGS_NOT_REENTRANT,
-    af_open
+    .info = "Volume control audio filter",
+    .name = "volume",
+    .flags = AF_FLAGS_NOT_REENTRANT,
+    .open = af_open,
+    .priv_size = sizeof(struct priv),
+    .options = (const struct m_option[]) {
+        OPT_FLOATRANGE("volumedb", cfg_volume, 0, -200, 60),
+        OPT_FLAG("softclip", soft, 0),
+        OPT_FLAG("s16", fast, 0),
+        {0}
+    },
 };

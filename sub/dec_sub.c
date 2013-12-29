@@ -25,11 +25,11 @@
 #include "config.h"
 #include "demux/demux.h"
 #include "sd.h"
-#include "sub.h"
 #include "dec_sub.h"
-#include "mpvcore/options.h"
-#include "mpvcore/mp_msg.h"
-#include "mpvcore/charset_conv.h"
+#include "options/options.h"
+#include "common/global.h"
+#include "common/msg.h"
+#include "misc/charset_conv.h"
 
 extern const struct sd_functions sd_ass;
 extern const struct sd_functions sd_lavc;
@@ -41,7 +41,7 @@ extern const struct sd_functions sd_lavf_srt;
 extern const struct sd_functions sd_lavc_conv;
 
 static const struct sd_functions *sd_list[] = {
-#ifdef CONFIG_ASS
+#if HAVE_LIBASS
     &sd_ass,
 #endif
     &sd_lavc,
@@ -57,6 +57,7 @@ static const struct sd_functions *sd_list[] = {
 #define MAX_NUM_SD 3
 
 struct dec_sub {
+    struct mp_log *log;
     struct MPOpts *opts;
     struct sd init_sd;
 
@@ -72,10 +73,11 @@ struct packet_list {
     int num_packets;
 };
 
-struct dec_sub *sub_create(struct MPOpts *opts)
+struct dec_sub *sub_create(struct mpv_global *global)
 {
     struct dec_sub *sub = talloc_zero(NULL, struct dec_sub);
-    sub->opts = opts;
+    sub->log = mp_log_new(sub, global->log, "sub");
+    sub->opts = global->opts;
     return sub;
 }
 
@@ -134,13 +136,13 @@ void sub_set_ass_renderer(struct dec_sub *sub, struct ass_library *ass_library,
 
 static void print_chain(struct dec_sub *sub)
 {
-    mp_msg(MSGT_OSD, MSGL_V, "Subtitle filter chain: ");
+    MP_VERBOSE(sub, "Subtitle filter chain: ");
     for (int n = 0; n < sub->num_sd; n++) {
         struct sd *sd = sub->sd[n];
-        mp_msg(MSGT_OSD, MSGL_V, "%s%s (%s)", n > 0 ? " -> " : "",
+        MP_VERBOSE(sub, "%s%s (%s)", n > 0 ? " -> " : "",
                sd->driver->name, sd->codec);
     }
-    mp_msg(MSGT_OSD, MSGL_V, "\n");
+    MP_VERBOSE(sub, "\n");
 }
 
 static int sub_init_decoder(struct dec_sub *sub, struct sd *sd)
@@ -156,21 +158,23 @@ static int sub_init_decoder(struct dec_sub *sub, struct sd *sd)
     if (!sd->driver)
         return -1;
 
+    sd->log = mp_log_new(sd, sub->log, sd->driver->name);
     if (sd->driver->init(sd) < 0)
         return -1;
 
     return 0;
 }
 
-void sub_init_from_sh(struct dec_sub *sub, struct sh_sub *sh)
+void sub_init_from_sh(struct dec_sub *sub, struct sh_stream *sh)
 {
     assert(!sub->num_sd);
+    assert(sh && sh->sub);
 
-    if (sh->extradata && !sub->init_sd.extradata)
-        sub_set_extradata(sub, sh->extradata, sh->extradata_len);
+    if (sh->sub->extradata && !sub->init_sd.extradata)
+        sub_set_extradata(sub, sh->sub->extradata, sh->sub->extradata_len);
     struct sd init_sd = sub->init_sd;
-    init_sd.codec = sh->gsh->codec;
-    init_sd.ass_track = sh->track;
+    init_sd.codec = sh->codec;
+    init_sd.ass_track = sh->sub->track;
 
     while (sub->num_sd < MAX_NUM_SD) {
         struct sd *sd = talloc(NULL, struct sd);
@@ -198,8 +202,8 @@ void sub_init_from_sh(struct dec_sub *sub, struct sh_sub *sh)
     }
 
     sub_uninit(sub);
-    mp_msg(MSGT_OSD, MSGL_ERR, "Could not find subtitle decoder for format '%s'.\n",
-           sh->gsh->codec ? sh->gsh->codec : "<unknown>");
+    MP_ERR(sub, "Could not find subtitle decoder for format '%s'.\n",
+           sh->codec ? sh->codec : "<unknown>");
 }
 
 static struct demux_packet *get_decoded_packet(struct sd *sd)
@@ -223,12 +227,13 @@ static void decode_chain(struct sd **sd, int num_sd, struct demux_packet *packet
     }
 }
 
-static struct demux_packet *recode_packet(struct demux_packet *in,
+static struct demux_packet *recode_packet(struct mp_log *log,
+                                          struct demux_packet *in,
                                           const char *charset)
 {
     struct demux_packet *pkt = NULL;
     bstr in_buf = {in->buffer, in->len};
-    bstr conv = mp_iconv_to_utf8(in_buf, charset, MP_ICONV_VERBOSE);
+    bstr conv = mp_iconv_to_utf8(log, in_buf, charset, MP_ICONV_VERBOSE);
     if (conv.start && conv.start != in_buf.start) {
         pkt = talloc_ptrtype(NULL, pkt);
         talloc_steal(pkt, conv.start);
@@ -249,7 +254,7 @@ static void decode_chain_recode(struct dec_sub *sub, struct sd **sd, int num_sd,
     if (num_sd > 0) {
         struct demux_packet *recoded = NULL;
         if (sub->charset)
-            recoded = recode_packet(packet, sub->charset);
+            recoded = recode_packet(sub->log, packet, sub->charset);
         decode_chain(sd, num_sd, recoded ? recoded : packet);
         talloc_free(recoded);
     }
@@ -260,7 +265,8 @@ void sub_decode(struct dec_sub *sub, struct demux_packet *packet)
     decode_chain_recode(sub, sub->sd, sub->num_sd, packet);
 }
 
-static const char *guess_sub_cp(struct packet_list *subs, const char *usercp)
+static const char *guess_sub_cp(struct mp_log *log, struct packet_list *subs,
+                                const char *usercp)
 {
     if (!mp_charset_requires_guess(usercp))
         return usercp;
@@ -286,7 +292,7 @@ static const char *guess_sub_cp(struct packet_list *subs, const char *usercp)
         memcpy(text.start + text.len + pkt->len, sep, sep_len);
         text.len += pkt->len + sep_len;
     }
-    const char *guess = mp_charset_guess(text, usercp, 0);
+    const char *guess = mp_charset_guess(log, text, usercp, 0);
     talloc_free(text.start);
     return guess;
 }
@@ -362,11 +368,12 @@ static void add_packet(struct packet_list *subs, struct demux_packet *pkt)
 
 // Read all packets from the demuxer and decode/add them. Returns false if
 // there are circumstances which makes this not possible.
-bool sub_read_all_packets(struct dec_sub *sub, struct sh_sub *sh)
+bool sub_read_all_packets(struct dec_sub *sub, struct sh_stream *sh)
 {
+    assert(sh && sh->sub);
     struct MPOpts *opts = sub->opts;
 
-    if (!sub_accept_packets_in_advance(sub) || sh->track || sub->num_sd < 1)
+    if (!sub_accept_packets_in_advance(sub) || sh->sub->track || sub->num_sd < 1)
         return false;
 
     struct packet_list *subs = talloc_zero(NULL, struct packet_list);
@@ -385,7 +392,7 @@ bool sub_read_all_packets(struct dec_sub *sub, struct sh_sub *sh)
         preprocess = 1;
 
     for (;;) {
-        struct demux_packet *pkt = demux_read_packet(sh->gsh);
+        struct demux_packet *pkt = demux_read_packet(sh);
         if (!pkt)
             break;
         if (preprocess) {
@@ -403,16 +410,16 @@ bool sub_read_all_packets(struct dec_sub *sub, struct sh_sub *sh)
         }
     }
 
-    if (opts->sub_cp && !sh->is_utf8)
-        sub->charset = guess_sub_cp(subs, opts->sub_cp);
+    if (opts->sub_cp && !sh->sub->is_utf8)
+        sub->charset = guess_sub_cp(sub->log, subs, opts->sub_cp);
 
     if (sub->charset && sub->charset[0] && !mp_charset_is_utf8(sub->charset))
-        mp_msg(MSGT_OSD, MSGL_INFO, "Using subtitle charset: %s\n", sub->charset);
+        MP_INFO(sub, "Using subtitle charset: %s\n", sub->charset);
 
     double sub_speed = 1.0;
 
     // 23.976 FPS is used as default timebase for frame based formats
-    if (sub->video_fps && sh->frame_based)
+    if (sub->video_fps && sh->sub->frame_based)
         sub_speed *= sub->video_fps / 23.976;
 
     if (opts->sub_fps && sub->video_fps)
@@ -426,7 +433,7 @@ bool sub_read_all_packets(struct dec_sub *sub, struct sh_sub *sh)
     if (!opts->suboverlap_enabled)
         fix_overlaps_and_gaps(subs);
 
-    if (sh->gsh->codec && strcmp(sh->gsh->codec, "microdvd") == 0) {
+    if (sh->codec && strcmp(sh->codec, "microdvd") == 0) {
         // The last subtitle event in MicroDVD subs can have duration unset,
         // which means show the subtitle until end of video.
         // See FFmpeg FATE MicroDVD_capability_tester.sub
@@ -536,7 +543,7 @@ void sd_conv_add_packet(struct sd *sd, void *data, int data_len, double pts,
     return;
 
 out_of_space:
-    mp_msg(MSGT_OSD, MSGL_ERR, "Subtitle too big.\n");
+    MP_ERR(sd, "Subtitle too big.\n");
 }
 
 struct demux_packet *sd_conv_def_get_converted(struct sd *sd)

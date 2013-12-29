@@ -4,6 +4,9 @@
  * original copyright (C) Timothy J. Wood - Aug 2000
  * ported to MPlayer libao2 by Dan Christiansen
  *
+ * Chris Roccati
+ * Stefano Pigozzi
+ *
  * The S/PDIF part of the code is based on the auhal audio output
  * module from VideoLAN:
  * Copyright (c) 2006 Derk-Jan Hartman <hartman at videolan dot org>
@@ -36,9 +39,9 @@
 #include "ao.h"
 #include "audio/format.h"
 #include "osdep/timer.h"
-#include "mpvcore/m_option.h"
-#include "mpvcore/mp_ring.h"
-#include "mpvcore/mp_msg.h"
+#include "options/m_option.h"
+#include "misc/ring.h"
+#include "common/msg.h"
 #include "audio/out/ao_coreaudio_properties.h"
 #include "audio/out/ao_coreaudio_utils.h"
 
@@ -151,9 +154,9 @@ static int control(struct ao *ao, enum aocontrol cmd, void *arg)
         if (p->is_digital) {
             struct priv_d *d = p->digital;
             // Digital output has no volume adjust.
-            int vol = d->muted ? 0 : 100;
+            int digitalvol = d->muted ? 0 : 100;
             *control_vol = (ao_control_vol_t) {
-                .left = vol, .right = vol,
+                .left = digitalvol, .right = digitalvol,
             };
             return CONTROL_TRUE;
         }
@@ -213,7 +216,7 @@ static void print_list(struct ao *ao)
 
     for (int i = 0; i < n_devs; i++) {
         char *name;
-        OSStatus err = CA_GET_STR(devs[i], kAudioObjectPropertyName, &name);
+        err = CA_GET_STR(devs[i], kAudioObjectPropertyName, &name);
 
         if (err == noErr)
             talloc_steal(devs, name);
@@ -268,7 +271,7 @@ static int init(struct ao *ao)
         selected_device = p->opt_device_id;
     }
 
-    if (mp_msg_test_log(ao->log, MSGL_V)) {
+    if (mp_msg_test(ao->log, MSGL_V)) {
         char *name;
         err = CA_GET_STR(selected_device, kAudioObjectPropertyName, &name);
         CHECK_CA_ERROR("could not get selected audio device name");
@@ -281,6 +284,8 @@ static int init(struct ao *ao)
 
     // Save selected device id
     p->device = selected_device;
+
+    ao->format = af_fmt_from_planar(ao->format);
 
     bool supports_digital = false;
     /* Probe whether device support S/PDIF stream output if input is AC3 stream. */
@@ -573,10 +578,12 @@ coreaudio_error:
     return CONTROL_ERROR;
 }
 
-static int play(struct ao *ao, void *output_samples, int num_bytes, int flags)
+static int play(struct ao *ao, void **data, int samples, int flags)
 {
     struct priv *p   = ao->priv;
     struct priv_d *d = p->digital;
+    void *output_samples = data[0];
+    int num_bytes = samples * ao->sstride;
 
     // Check whether we need to reset the digital output stream.
     if (p->is_digital && d->stream_asbd_changed) {
@@ -594,7 +601,7 @@ static int play(struct ao *ao, void *output_samples, int num_bytes, int flags)
     int wrote = mp_ring_write(p->buffer, output_samples, num_bytes);
     audio_resume(ao);
 
-    return wrote;
+    return wrote / ao->sstride;
 }
 
 static void reset(struct ao *ao)
@@ -607,7 +614,7 @@ static void reset(struct ao *ao)
 static int get_space(struct ao *ao)
 {
     struct priv *p = ao->priv;
-    return mp_ring_available(p->buffer);
+    return mp_ring_available(p->buffer) / ao->sstride;
 }
 
 static float get_delay(struct ao *ao)
@@ -697,12 +704,8 @@ static void audio_resume(struct ao *ao)
 #define OPT_BASE_STRUCT struct priv
 
 const struct ao_driver audio_out_coreaudio = {
-    .info = &(const struct ao_info) {
-        "CoreAudio (OS X Audio Output)",
-        "coreaudio",
-        "Timothy J. Wood, Dan Christiansen, Chris Roccati & Stefano Pigozzi",
-        "",
-    },
+    .description = "CoreAudio (OS X Audio Output)",
+    .name      = "coreaudio",
     .uninit    = uninit,
     .init      = init,
     .play      = play,

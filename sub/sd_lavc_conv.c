@@ -25,9 +25,9 @@
 #include "config.h"
 
 #include "talloc.h"
-#include "mpvcore/mp_msg.h"
-#include "mpvcore/av_common.h"
-#include "mpvcore/bstr.h"
+#include "common/msg.h"
+#include "common/av_common.h"
+#include "bstr/bstr.h"
 #include "sd.h"
 
 #if LIBAVCODEC_VERSION_MICRO >= 100
@@ -110,8 +110,7 @@ static int init(struct sd *sd)
     return 0;
 
  error:
-    mp_msg(MSGT_SUBREADER, MSGL_ERR,
-           "Could not open libavcodec subtitle converter\n");
+    MP_FATAL(sd, "Could not open libavcodec subtitle converter\n");
     av_free(avctx);
     talloc_free(priv);
     return -1;
@@ -234,19 +233,16 @@ static void decode(struct sd *sd, struct demux_packet *packet)
 {
     struct sd_lavc_priv *priv = sd->priv;
     AVCodecContext *avctx = priv->avctx;
-    double ts = av_q2d(av_inv_q(avctx->time_base));
     AVSubtitle sub = {0};
     AVPacket pkt;
     AVPacket parsed_pkt = {0};
     int ret, got_sub;
 
-    mp_set_av_packet(&pkt, packet);
-    pkt.pts = packet->pts == MP_NOPTS_VALUE ? AV_NOPTS_VALUE : packet->pts * ts;
-    pkt.duration = packet->duration * ts;
+    mp_set_av_packet(&pkt, packet, &avctx->time_base);
 
     if (sd->codec && strcmp(sd->codec, "webvtt-webm") == 0) {
         if (parse_webvtt(&pkt, &parsed_pkt) < 0) {
-            mp_msg(MSGT_OSD, MSGL_ERR, "Error parsing subtitle\n");
+            MP_ERR(sd, "Error parsing subtitle\n");
             goto done;
         }
         pkt = parsed_pkt;
@@ -254,7 +250,7 @@ static void decode(struct sd *sd, struct demux_packet *packet)
 
     ret = avcodec_decode_subtitle2(avctx, &sub, &got_sub, &pkt);
     if (ret < 0) {
-        mp_msg(MSGT_OSD, MSGL_ERR, "Error decoding subtitle\n");
+        MP_ERR(sd, "Error decoding subtitle\n");
     } else if (got_sub) {
         for (int i = 0; i < sub.num_rects; i++) {
             char *ass_line = sub.rects[i]->ass;

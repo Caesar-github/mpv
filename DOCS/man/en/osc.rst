@@ -6,7 +6,7 @@ offer basic mouse-controllability. It is intended to make interaction easier
 for new users and to enable precise and direct seeking.
 
 The OSC is enabled by default if mpv was compiled with lua support. It can be
-disabled using ``--osc=no``.
+disabled entirely using the ``--osc=no`` option.
 
 Using the OSC
 -------------
@@ -113,7 +113,7 @@ time passed
     =============   ================================================
 
 cache status
-    | Shows current cache fill status (only visible when below 48%)
+    | Shows current cache fill status (only visible when below 45%)
 
 time remaining
     | Shows remaining playback time timestamp
@@ -175,6 +175,10 @@ Configurable parameters
 ``halign``
     | Default: 0
     | Horizontal alignment, -1 (left) to 1 (right)
+
+``boxalpha``
+    | Default: 80
+    | Alpha of the background box, 0 (opaque) to 255 (fully transparent)
 
 ``hidetimeout``
     | Default: 500

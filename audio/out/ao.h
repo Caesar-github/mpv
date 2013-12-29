@@ -21,8 +21,8 @@
 
 #include <stdbool.h>
 
-#include "mpvcore/bstr.h"
-#include "mpvcore/mp_common.h"
+#include "bstr/bstr.h"
+#include "common/common.h"
 #include "audio/chmap.h"
 #include "audio/chmap_sel.h"
 
@@ -34,6 +34,8 @@ enum aocontrol {
     // _MUTE commands take a pointer to bool
     AOCONTROL_GET_MUTE,
     AOCONTROL_SET_MUTE,
+    // Has char* as argument, which contains the desired stream title.
+    AOCONTROL_UPDATE_STREAM_TITLE,
 };
 
 #define AOPLAY_FINAL_CHUNK 1
@@ -43,28 +45,18 @@ typedef struct ao_control_vol {
     float right;
 } ao_control_vol_t;
 
-typedef struct ao_info {
-    /* driver name ("Matrox Millennium G200/G400" */
-    const char *name;
-    /* short name (for config strings) ("mga") */
-    const char *short_name;
-    /* author ("Aaron Holtzman <aholtzma@ess.engr.uvic.ca>") */
-    const char *author;
-    /* any additional comments */
-    const char *comment;
-} ao_info_t;
-
 struct ao;
 
 struct ao_driver {
     bool encode;
-    const struct ao_info *info;
+    const char *name;
+    const char *description;
     int (*control)(struct ao *ao, enum aocontrol cmd, void *arg);
     int (*init)(struct ao *ao);
     void (*uninit)(struct ao *ao, bool cut_audio);
     void (*reset)(struct ao*ao);
     int (*get_space)(struct ao *ao);
-    int (*play)(struct ao *ao, void *data, int len, int flags);
+    int (*play)(struct ao *ao, void **data, int samples, int flags);
     float (*get_delay)(struct ao *ao);
     void (*pause)(struct ao *ao);
     void (*resume)(struct ao *ao);
@@ -81,9 +73,12 @@ struct ao {
     struct mp_chmap channels;
     int format;
     int bps;                    // bytes per second
+    int sstride;                // size of a sample on each plane
+                                // (format_size*num_channels/num_planes)
     double pts;                 // some mplayer.c state (why is this here?)
-    struct bstr buffer;
-    int buffer_playable_size;
+    struct mp_audio_buffer *buffer; // queued audio; passed to play() later
+    int buffer_playable_samples;// part of the part of the buffer the AO hasn't
+                                // accepted yet with play()
     bool probing;               // if true, don't fail loudly on init
     bool untimed;
     bool no_persistent_volume;  // the AO does the equivalent of af_volume
@@ -102,13 +97,15 @@ struct ao *ao_init_best(struct mpv_global *global,
                         struct encode_lavc_context *encode_lavc_ctx,
                         int samplerate, int format, struct mp_chmap channels);
 void ao_uninit(struct ao *ao, bool cut_audio);
-int ao_play(struct ao *ao, void *data, int len, int flags);
+int ao_play(struct ao *ao, void **data, int samples, int flags);
 int ao_control(struct ao *ao, enum aocontrol cmd, void *arg);
 double ao_get_delay(struct ao *ao);
 int ao_get_space(struct ao *ao);
 void ao_reset(struct ao *ao);
 void ao_pause(struct ao *ao);
 void ao_resume(struct ao *ao);
+
+int ao_play_silence(struct ao *ao, int samples);
 
 bool ao_chmap_sel_adjust(struct ao *ao, const struct mp_chmap_sel *s,
                          struct mp_chmap *map);

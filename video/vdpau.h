@@ -7,22 +7,20 @@
 #include <vdpau/vdpau.h>
 #include <vdpau/vdpau_x11.h>
 
-#include "mpvcore/mp_msg.h"
+#include "common/msg.h"
 
-#define CHECK_ST_ERROR(message) \
+#define CHECK_VDP_ERROR(ctx, message) \
     do { \
         if (vdp_st != VDP_STATUS_OK) { \
-            mp_msg(MSGT_VO, MSGL_ERR, "[vdpau] %s: %s\n", \
-                   message, vdp->get_error_string(vdp_st)); \
+            MP_ERR(ctx, "%s: %s\n", message, vdp->get_error_string(vdp_st)); \
             return -1; \
         } \
     } while (0)
 
-#define CHECK_ST_WARNING(message) \
+#define CHECK_VDP_WARNING(ctx, message) \
     do { \
         if (vdp_st != VDP_STATUS_OK) \
-            mp_msg(MSGT_VO, MSGL_WARN, "[vdpau] %s: %s\n", \
-                   message, vdp->get_error_string(vdp_st)); \
+            MP_WARN(ctx, "%s: %s\n", message, vdp->get_error_string(vdp_st)); \
     } while (0)
 
 struct vdp_functions {
@@ -31,18 +29,37 @@ struct vdp_functions {
 #undef VDP_FUNCTION
 };
 
+
+#define MAX_VIDEO_SURFACES 50
+
 // Shared state. Objects created from different VdpDevices are often (always?)
 // incompatible to each other, so all code must use a shared VdpDevice.
 struct mp_vdpau_ctx {
     struct vdp_functions *vdp;
+    VdpGetProcAddress *get_proc_address;
     VdpDevice vdp_device;
     bool is_preempted;                  // set to true during unavailability
     uint64_t preemption_counter;        // incremented after _restoring_
-    bool (*status_ok)(struct mp_vdpau_ctx *ctx);
-    struct mp_image *(*get_video_surface)(struct mp_vdpau_ctx *ctx, int fmt,
-                                          VdpChromaType chroma, int w, int h);
-    void *priv; // for VO
+
+    bool preemption_user_notified;
+    double last_preemption_retry_fail;
+
+    struct vo_x11_state *x11;
+
+    // Surface pool
+    struct surface_entry {
+        VdpVideoSurface surface;
+        int fmt, w, h;
+        VdpChromaType chroma;
+        bool in_use;
+    } video_surfaces[MAX_VIDEO_SURFACES];
+
+    struct mp_log *log;
 };
+
+struct mp_vdpau_ctx *mp_vdpau_create_device_x11(struct mp_log *log,
+                                                struct vo_x11_state *x11);
+void mp_vdpau_destroy(struct mp_vdpau_ctx *ctx);
 
 bool mp_vdpau_status_ok(struct mp_vdpau_ctx *ctx);
 

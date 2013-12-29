@@ -19,11 +19,13 @@
 #ifndef MPLAYER_AD_H
 #define MPLAYER_AD_H
 
-#include "mpvcore/codecs.h"
+#include "common/codecs.h"
 #include "demux/stheader.h"
 #include "demux/demux.h"
 
 #include "audio/format.h"
+#include "audio/audio.h"
+#include "dec_audio.h"
 
 struct mp_decoder_list;
 
@@ -31,16 +33,14 @@ struct mp_decoder_list;
 struct ad_functions {
     const char *name;
     void (*add_decoders)(struct mp_decoder_list *list);
-    int (*preinit)(sh_audio_t *sh);
-    int (*init)(sh_audio_t *sh, const char *decoder);
-    void (*uninit)(sh_audio_t *sh);
-    int (*control)(sh_audio_t *sh, int cmd, void *arg);
-    int (*decode_audio)(sh_audio_t *sh, unsigned char *buffer, int minlen,
-                        int maxlen);
+    int (*init)(struct dec_audio *da, const char *decoder);
+    void (*uninit)(struct dec_audio *da);
+    int (*control)(struct dec_audio *da, int cmd, void *arg);
+    int (*decode_audio)(struct dec_audio *da, struct mp_audio *buffer, int maxlen);
 };
 
 enum ad_ctrl {
-    ADCTRL_RESYNC_STREAM = 1,   // resync, called after seeking
+    ADCTRL_RESET = 1,   // flush and reset state, e.g. after seeking
 };
 
 #endif /* MPLAYER_AD_H */

@@ -7,10 +7,11 @@ syntax is:
 ``--vf=<filter1[=parameter1:parameter2:...],filter2,...>``
     Setup a chain of video filters.
 
-Many parameters are optional and set to default values if omitted. To
-explicitly use a default value, set a parameter to '-1'. Parameters ``w:h``
-means width x height in pixels, ``x:y`` means x;y position counted from the
-upper left corner of the bigger image.
+You can also set defaults for each filter. The defaults are applied before the
+normal filter parameters.
+
+``--vf-defaults=<filter1[=parameter1:parameter2:...],filter2,...>``
+    Set defaults for each filter.
 
 .. note::
 
@@ -74,7 +75,7 @@ Available filters are:
 
         .. admonition:: Example
 
-            ``expand=800:::::4/3``
+            ``expand=800::::4/3``
                 Expands to 800x600, unless the source is higher resolution, in
                 which case it expands to fill a 4/3 aspect.
 
@@ -82,7 +83,7 @@ Available filters are:
         Rounds up to make both width and height divisible by <r> (default: 1).
 
 ``flip``
-    Flips the image upside down. See also ``--flip``.
+    Flips the image upside down.
 
 ``mirror``
     Mirrors the image on the Y axis.
@@ -150,7 +151,7 @@ Available filters are:
         :0: Disable accurate rounding (default).
         :1: Enable accurate rounding.
 
-``dsize[=aspect|w:h:aspect-method:r]``
+``dsize[=w:h:aspect-method:r:aspect]``
     Changes the intended display size/aspect at an arbitrary point in the
     filter chain. Aspect can be given as a fraction (4/3) or floating point
     number (1.33). Alternatively, you may specify the exact display width and
@@ -199,6 +200,9 @@ Available filters are:
         Rounds up to make both width and height divisible by ``<r>``
         (default: 1).
 
+    ``<aspect>``
+        Force an aspect ratio.
+
 ``format[=fmt[:outfmt]]``
     Restricts the color space for the next filter without doing any conversion.
     Use together with the scale filter for a real conversion.
@@ -232,7 +236,7 @@ Available filters are:
     ``<fmt>``
         Format name, e.g. rgb15, bgr24, 420p, etc. (default: 420p).
 
-``pp[=filter1[:option1[:option2...]]/[-]filter2...]``
+``pp[=[filter1[:option1[:option2...]]/[-]filter2...]]``
     Enables the specified chain of postprocessing subfilters. Subfilters must
     be separated by '/' and can be disabled by prepending a '-'. Each
     subfilter and some options have a short and a long name that can be used
@@ -250,7 +254,12 @@ Available filters are:
 
     .. note::
 
-        ``--pphelp`` shows a list of available subfilters.
+        ``--vf=pp:help`` shows a list of available subfilters.
+
+    .. note::
+
+        Unlike in MPlayer or in earlier versions, you must quote the pp string
+        if it contains ``:`` characters, e.g. ``'--vf=pp=[...]'``.
 
     Available subfilters are:
 
@@ -364,14 +373,14 @@ Available filters are:
         ``--vf=pp=de/-al``
             default filters without brightness/contrast correction
 
-        ``--vf=pp=default/tmpnoise:1:2:3``
+        ``--vf=pp=[default/tmpnoise:1:2:3]``
             Enable default filters & temporal denoiser.
 
-        ``--vf=pp=hb:y/vb:a``
+        ``--vf=pp=[hb:y/vb:a]``
             Horizontal deblocking on luminance only, and switch vertical
             deblocking on or off automatically depending on available CPU time.
 
-``lavfi=graph[:sws_flags[:o=opts]]``
+``lavfi=graph[:sws-flags[:o=opts]]``
     Filter video using FFmpeg's libavfilter.
 
     ``<graph>``
@@ -405,7 +414,7 @@ Available filters are:
             ``'--vf=lavfi=graph="gradfun=radius=30:strength=20,vflip"'``
                 Same as before, but uses named parameters for everything.
 
-    ``<sws_flags>``
+    ``<sws-flags>``
         If libavfilter inserts filters for pixel format conversion, this
         option gives the flags which should be passed to libswscale. This
         option is numeric and takes a bit-wise combination of ``SWS_`` flags.
@@ -420,21 +429,30 @@ Available filters are:
             ``'--vf=lavfi=yadif:o="threads=2,thread_type=slice"'``
                 forces a specific threading configuration.
 
-``noise[=luma[u][t|a][h][p]:chroma[u][t|a][h][p]]``
+``noise[=<strength>[:average][:pattern][:temporal][:uniform][:hq]``
     Adds noise.
 
-    :<0-100>: luma noise
-    :<0-100>: chroma noise
-    :u:       uniform noise (gaussian otherwise)
-    :t:       temporal noise (noise pattern changes between frames)
-    :a:       averaged temporal noise (smoother, but a lot slower)
-    :h:       high quality (slightly better looking, slightly slower)
-    :p:       mix random noise with a (semi)regular pattern
+    ``strength``
+        Set the noise for all components. If you want different strength
+        values for luma and chroma, use libavfilter's noise filter directly
+        (using ``--vf=lavfi=[noise=...]``), or tell the libavfilter developers
+        to stop being stupid.
 
-    .. note::
+    ``average``
+        averaged temporal noise (smoother, but a lot slower)
 
-        Deprecated. Use libavfilter's ``noise`` filter through ``--vf=lavfi``
-        instead.
+    ``pattern``
+        mix random noise with a (semi)regular pattern
+
+    ``temporal``
+        temporal noise (noise pattern changes between frames)
+
+    ``uniform``
+        uniform noise (gaussian otherwise)
+
+    ``hq``
+        high quality (slightly better looking, slightly slower) - not available
+        when using libavfilter
 
 ``hqdn3d[=luma_spatial:chroma_spatial:luma_tmp:chroma_tmp]``
     This filter aims to reduce image noise producing smooth images and making
@@ -449,11 +467,6 @@ Available filters are:
     ``<chroma_tmp>``
         chroma temporal strength (default:
         ``luma_tmp*chroma_spatial/luma_spatial``)
-
-    .. note::
-
-        Deprecated. Use libavfilter's ``hqdn3d`` filter through ``--vf=lavfi``
-        instead.
 
 ``eq[=gamma:contrast:brightness:saturation:rg:gg:bg:weight]``
     Software equalizer that uses lookup tables (slow), allowing gamma correction
@@ -494,38 +507,25 @@ Available filters are:
         :0: nearest-neighbor sampling, fast but incorrect
         :1: linear interpolation (default)
 
-``unsharp[=l|cWxH:amount[:l|cWxH:amount]]``
+``unsharp[=lx:ly:la:cx:cy:ca]``
     unsharp mask / gaussian blur
 
-    ``l``
-        Apply effect on luma component.
+    ``l`` is for the luma component, ``c`` for the chroma component. ``x``/``y``
+    is the filter size. ``a`` is the amount.
 
-    ``c``
-        Apply effect on chroma components.
-
-    ``<width>x<height>``
+    ``lx``, ``ly``, ``cx``, ``cy``
         width and height of the matrix, odd sized in both directions (min =
-        3x3, max = 13x11 or 11x13, usually something between 3x3 and 7x7)
+        3:3, max = 13:11 or 11:13, usually something between 3:3 and 7:7)
 
-    ``amount``
+    ``la``, ``ca``
         Relative amount of sharpness/blur to add to the image (a sane range
         should be -1.5-1.5).
 
         :<0: blur
         :>0: sharpen
 
-    .. note::
-
-        Deprecated. Use libavfilter's ``unsharp`` filter through ``--vf=lavfi``
-        instead.
-
 ``swapuv``
     Swap U & V plane.
-
-    .. note::
-
-        Deprecated. Use libavfilter's ``swapuv`` filter through ``--vf=lavfi``
-        instead.
 
 ``pullup[=jl:jr:jt:jb:sb:mp]``
     Pulldown reversal (inverse telecine) filter, capable of handling mixed
@@ -551,7 +551,7 @@ Available filters are:
         frames in the output.
 
     ``mp`` (metric plane)
-        This option may be set to 1 or 2 to use a chroma plane instead of the
+        This option may be set to ``u`` or ``v`` to use a chroma plane instead of the
         luma plane for doing ``pullup``'s computations. This may improve accuracy
         on very clean source material, but more likely will decrease accuracy,
         especially if there is chroma noise (rainbow effect) or any grayscale
@@ -670,41 +670,36 @@ Available filters are:
     ``v``
         Verbose operation. Prints the selected mode for each frame and the
         average squared difference between fields for ``t``, ``b``, and ``p``
-        alternatives.
+        alternatives. (Ignored when libavfilter is used.)
 
 ``yadif=[mode[:enabled=yes|no]]``
     Yet another deinterlacing filter
 
     ``<mode>``
-        :0: Output 1 frame for each frame.
-        :1: Output 1 frame for each field.
-        :2: Like 0 but skips spatial interlacing check.
-        :3: Like 1 but skips spatial interlacing check.
+        :frame: Output 1 frame for each frame.
+        :field: Output 1 frame for each field.
+        :frame-nospatial: Like ``frame`` but skips spatial interlacing check.
+        :field-nospatial: Like ``field`` but skips spatial interlacing check.
 
     ``<enabled>``
         :yes: Filter is active (default).
         :no:  Filter is not active, but can be activated with the ``D`` key
               (or any other key that toggles the ``deinterlace`` property).
 
-    .. note::
-
-        Deprecated. Use libavfilter's ``yadif`` filter through ``--vf=lavfi``
-        instead.
-
-    This filter, or libavfilter's implementation if available, is automatically
-    inserted when using the ``D`` key (or any other key that toggles the
-    ``deinterlace`` property), assuming the video output does not have native
+    This filter, is automatically inserted when using the ``D`` key (or any
+    other key that toggles the ``deinterlace`` property or when using the
+    ``--deinterlace`` switch), assuming the video output does not have native
     deinterlacing support.
 
-``down3dright[=lines]``
-    Reposition and resize stereoscopic images. Extracts both stereo fields and
-    places them side by side, resizing them to maintain the original movie
-    aspect.
+    If you just want to set the default mode, put this filter and its options
+    into ``--vf-defaults`` instead, and enable deinterlacing with ``D`` or
+    ``--deinterlace``.
 
-    ``<lines>``
-        number of lines to select from the middle of the image (default: 12)
+    Also note that the ``D`` key is stupid enough to insert an interlacer twice
+    when inserting yadif with ``--vf``, so using the above methods is
+    recommended.
 
-``delogo[=x:y:w:h:t]``
+``delogo[=x:y:w:h:t:show]``
     Suppresses a TV station logo by a simple interpolation of the surrounding
     pixels. Just set a rectangle covering the logo and watch it disappear (and
     sometimes something even uglier appear - your mileage may vary).
@@ -721,11 +716,9 @@ Available filters are:
         You can specify a text file to load the coordinates from.  Each line
         must have a timestamp (in seconds, and in ascending order) and the
         ``x:y:w:h:t`` coordinates (``t`` can be omitted).
-
-    .. note::
-
-        Deprecated. Use libavfilter's ``delogo`` or ``removelogo`` filters
-        through ``--vf=lavfi`` instead.
+        (Not supported when using libavfilter.)
+    ``show``
+        Draw a rectangle showing the area defined by x/y/w/h.
 
 ``screenshot``
     Optional filter for screenshot support. This is only needed if the video
@@ -818,29 +811,24 @@ Available filters are:
         ``mr`` or ``mono_right``
             mono output (right eye only)
 
-    .. note::
-
-        Deprecated. Use libavfilter's ``stereo3d`` filter through ``--vf=lavfi``
-        instead.
-
-``gradfun[=strength[:radius]]``
+``gradfun[=strength[:radius|:size=<size>]]``
     Fix the banding artifacts that are sometimes introduced into nearly flat
     regions by truncation to 8bit color depth. Interpolates the gradients that
     should go where the bands are, and dithers them.
 
     ``<strength>``
         Maximum amount by which the filter will change any one pixel. Also the
-        threshold for detecting nearly flat regions (default: 1.2).
+        threshold for detecting nearly flat regions (default: 1.5).
 
     ``<radius>``
         Neighborhood to fit the gradient to. Larger radius makes for smoother
         gradients, but also prevents the filter from modifying pixels near
-        detailed regions (default: 16).
+        detailed regions (default: disabled).
 
-    .. note::
+    ``<size>``
+        size of the filter in percent of the image diagonal size. This is
+        used to calculate the final radius size (default: 1).
 
-        Deprecated. Use libavfilter's ``gradfun`` filter through ``--vf=lavfi``
-        instead.
 
 ``dlopen=dll[:a0[:a1[:a2[:a3]]]]``
     Loads an external library to filter the image. The library interface

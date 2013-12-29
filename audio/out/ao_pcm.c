@@ -3,6 +3,8 @@
  *
  * This file is part of MPlayer.
  *
+ * Original author: Atmosfear
+ *
  * MPlayer is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
@@ -28,11 +30,11 @@
 
 #include "talloc.h"
 
-#include "mpvcore/m_option.h"
+#include "options/m_option.h"
 #include "audio/format.h"
 #include "audio/reorder_ch.h"
 #include "ao.h"
-#include "mpvcore/mp_msg.h"
+#include "common/msg.h"
 
 #ifdef __MINGW32__
 // for GetFileType to detect pipes
@@ -116,6 +118,9 @@ static int init(struct ao *ao)
     if (!priv->outputfilename)
         priv->outputfilename =
             talloc_strdup(priv, priv->waveheader ? "audiodump.wav" : "audiodump.pcm");
+
+    ao->format = af_fmt_from_planar(ao->format);
+
     if (priv->waveheader) {
         // WAV files must have one of the following formats
 
@@ -143,7 +148,7 @@ static int init(struct ao *ao)
     MP_INFO(ao, "File: %s (%s)\nPCM: Samplerate: %d Hz Channels: %d Format: %s\n",
             priv->outputfilename,
             priv->waveheader ? "WAVE" : "RAW PCM", ao->samplerate,
-            ao->channels.num, af_fmt2str_short(ao->format));
+            ao->channels.num, af_fmt_to_str(ao->format));
     MP_INFO(ao, "Info: Faster dumping is achieved with -no-video\n");
     MP_INFO(ao, "Info: To write WAVE files use -ao pcm:waveheader (default).\n");
 
@@ -191,24 +196,21 @@ static int get_space(struct ao *ao)
     return 65536;
 }
 
-static int play(struct ao *ao, void *data, int len, int flags)
+static int play(struct ao *ao, void **data, int samples, int flags)
 {
     struct priv *priv = ao->priv;
+    int len = samples * ao->sstride;
 
-    fwrite(data, len, 1, priv->fp);
+    fwrite(data[0], len, 1, priv->fp);
     priv->data_length += len;
-    return len;
+    return len / ao->sstride;
 }
 
 #define OPT_BASE_STRUCT struct priv
 
 const struct ao_driver audio_out_pcm = {
-    .info = &(const struct ao_info) {
-        "RAW PCM/WAVE file writer audio output",
-        "pcm",
-        "Atmosfear",
-        "",
-    },
+    .description = "RAW PCM/WAVE file writer audio output",
+    .name      = "pcm",
     .init      = init,
     .uninit    = uninit,
     .get_space = get_space,

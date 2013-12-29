@@ -25,10 +25,9 @@
 #include <libswscale/swscale.h>
 #include <libavutil/common.h>
 
-#include "mpvcore/mp_common.h"
-#include "sub/draw_bmp.h"
-#include "sub/sub.h"
-#include "sub/img_convert.h"
+#include "common/common.h"
+#include "draw_bmp.h"
+#include "img_convert.h"
 #include "video/mp_image.h"
 #include "video/sws_utils.h"
 #include "video/img_format.h"

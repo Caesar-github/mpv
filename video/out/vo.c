@@ -32,17 +32,17 @@
 
 #include "config.h"
 #include "osdep/timer.h"
-#include "mpvcore/options.h"
-#include "mpvcore/bstr.h"
+#include "options/options.h"
+#include "bstr/bstr.h"
 #include "vo.h"
 #include "aspect.h"
-#include "mpvcore/input/input.h"
-#include "mpvcore/m_config.h"
-#include "mpvcore/mp_msg.h"
-#include "mpvcore/mpv_global.h"
+#include "input/input.h"
+#include "options/m_config.h"
+#include "common/msg.h"
+#include "common/global.h"
 #include "video/mp_image.h"
 #include "video/vfcap.h"
-#include "sub/sub.h"
+#include "sub/osd.h"
 
 //
 // Externally visible list of all vo drivers
@@ -66,47 +66,47 @@ extern struct vo_driver video_out_wayland;
 
 const struct vo_driver *video_out_drivers[] =
 {
-#if CONFIG_VDPAU
+#if HAVE_VDPAU
         &video_out_vdpau,
 #endif
-#ifdef CONFIG_GL
+#if HAVE_GL
         &video_out_opengl,
 #endif
-#ifdef CONFIG_DIRECT3D
+#if HAVE_DIRECT3D
         &video_out_direct3d_shaders,
         &video_out_direct3d,
 #endif
-#ifdef CONFIG_COREVIDEO
+#if HAVE_COREVIDEO
         &video_out_corevideo,
 #endif
-#ifdef CONFIG_XV
+#if HAVE_XV
         &video_out_xv,
 #endif
-#ifdef CONFIG_SDL2
+#if HAVE_SDL2
         &video_out_sdl,
 #endif
-#ifdef CONFIG_GL
+#if HAVE_GL
         &video_out_opengl_old,
 #endif
-#if CONFIG_VAAPI
+#if HAVE_VAAPI
         &video_out_vaapi,
 #endif
-#ifdef CONFIG_X11
+#if HAVE_X11
         &video_out_x11,
 #endif
         &video_out_null,
         // should not be auto-selected
         &video_out_image,
-#ifdef CONFIG_CACA
+#if HAVE_CACA
         &video_out_caca,
 #endif
-#ifdef CONFIG_ENCODING
+#if HAVE_ENCODING
         &video_out_lavc,
 #endif
-#ifdef CONFIG_GL
+#if HAVE_GL
         &video_out_opengl_hq,
 #endif
-#ifdef CONFIG_WAYLAND
+#if HAVE_WAYLAND
         &video_out_wayland,
 #endif
         NULL
@@ -118,12 +118,11 @@ static bool get_desc(struct m_obj_desc *dst, int index)
         return false;
     const struct vo_driver *vo = video_out_drivers[index];
     *dst = (struct m_obj_desc) {
-        .name = vo->info->short_name,
-        .description = vo->info->name,
+        .name = vo->name,
+        .description = vo->description,
         .priv_size = vo->priv_size,
         .priv_defaults = vo->priv_defaults,
         .options = vo->options,
-        .init_options = vo->init_option_string,
         .hidden = vo->encode,
         .p = vo,
     };
@@ -151,7 +150,7 @@ static struct vo *vo_create(struct mpv_global *global,
     struct mp_log *log = mp_log_new(NULL, global->log, "vo");
     struct m_obj_desc desc;
     if (!m_obj_list_find(&desc, &vo_obj_list, bstr0(name))) {
-        mp_tmsg_log(log, MSGL_ERR, "Video output %s not found!\n", name);
+        mp_msg(log, MSGL_ERR, "Video output %s not found!\n", name);
         talloc_free(log);
         return NULL;
     };
@@ -161,15 +160,20 @@ static struct vo *vo_create(struct mpv_global *global,
         .log = mp_log_new(vo, log, name),
         .driver = desc.p,
         .opts = &global->opts->vo,
+        .global = global,
         .encode_lavc_ctx = encode_lavc_ctx,
         .input_ctx = input_ctx,
         .event_fd = -1,
         .registered_fd = -1,
         .aspdat = { .monitor_par = 1 },
+        .next_pts = MP_NOPTS_VALUE,
+        .next_pts2 = MP_NOPTS_VALUE,
     };
     if (vo->driver->encode != !!vo->encode_lavc_ctx)
         goto error;
-    struct m_config *config = m_config_from_obj_desc(vo, &desc);
+    struct m_config *config = m_config_from_obj_desc(vo, vo->log, &desc);
+    if (m_config_apply_defaults(config, name, vo->opts->vo_defs) < 0)
+        goto error;
     if (m_config_set_obj_params(config, args) < 0)
         goto error;
     vo->priv = config->optstruct;
@@ -196,6 +200,7 @@ void vo_queue_image(struct vo *vo, struct mp_image *mpi)
     }
     vo->frame_loaded = true;
     vo->next_pts = mpi->pts;
+    vo->next_pts2 = MP_NOPTS_VALUE;
     assert(!vo->waiting_mpi);
     vo->waiting_mpi = mp_image_new_ref(mpi);
 }
@@ -257,13 +262,14 @@ void vo_draw_osd(struct vo *vo, struct osd_state *osd)
         vo->driver->draw_osd(vo, osd);
 }
 
-void vo_flip_page(struct vo *vo, unsigned int pts_us, int duration)
+void vo_flip_page(struct vo *vo, int64_t pts_us, int duration)
 {
     if (!vo->config_ok)
         return;
     if (!vo->redrawing) {
         vo->frame_loaded = false;
         vo->next_pts = MP_NOPTS_VALUE;
+        vo->next_pts2 = MP_NOPTS_VALUE;
     }
     vo->want_redraw = false;
     vo->redrawing = false;
@@ -289,6 +295,8 @@ void vo_seek_reset(struct vo *vo)
 {
     vo_control(vo, VOCTRL_RESET, NULL);
     vo->frame_loaded = false;
+    vo->next_pts = MP_NOPTS_VALUE;
+    vo->next_pts2 = MP_NOPTS_VALUE;
     vo->hasframe = false;
     mp_image_unrefp(&vo->waiting_mpi);
 }
@@ -324,7 +332,7 @@ autoprobe:
     // now try the rest...
     for (int i = 0; video_out_drivers[i]; i++) {
         struct vo *vo = vo_create(global, input_ctx, encode_lavc_ctx,
-                          (char *)video_out_drivers[i]->info->short_name, NULL);
+                                  (char *)video_out_drivers[i]->name, NULL);
         if (vo)
             return vo;
     }
@@ -426,8 +434,8 @@ int vo_reconfig(struct vo *vo, struct mp_image_params *params, int flags)
     if (vo->config_ok)
         vo->params = talloc_memdup(vo, &p2, sizeof(p2));
     if (vo->registered_fd == -1 && vo->event_fd != -1 && vo->config_ok) {
-        mp_input_add_key_fd(vo->input_ctx, vo->event_fd, 1, event_fd_callback,
-                            NULL, vo);
+        mp_input_add_fd(vo->input_ctx, vo->event_fd, 1, NULL, event_fd_callback,
+                        NULL, vo);
         vo->registered_fd = vo->event_fd;
     }
     vo->frame_loaded = false;
@@ -501,10 +509,12 @@ static void src_dst_split_scaling(int src_size, int dst_size,
                                   int *dst_start, int *dst_end,
                                   int *osd_margin_a, int *osd_margin_b)
 {
-    if (unscaled)
+    if (unscaled) {
         scaled_src_size = src_size;
+        zoom = 0.0;
+    }
 
-    scaled_src_size += zoom * src_size;
+    scaled_src_size += zoom * scaled_src_size;
     align = (align + 1) / 2;
 
     *src_start = 0;
@@ -530,7 +540,7 @@ static void src_dst_split_scaling(int src_size, int dst_size,
         *dst_end = dst_size;
     }
 
-    if (unscaled && zoom == 1.0) {
+    if (unscaled) {
         // Force unscaled by reducing the range for src or dst
         int src_s = *src_end - *src_start;
         int dst_s = *dst_end - *dst_start;
@@ -563,7 +573,6 @@ void vo_get_src_dst_rects(struct vo *vo, struct mp_rect *out_src,
         .w = vo->dwidth,
         .h = vo->dheight,
         .display_par = vo->aspdat.monitor_par,
-        .video_par = vo->aspdat.par,
     };
     if (opts->keepaspect) {
         int scaled_width, scaled_height;

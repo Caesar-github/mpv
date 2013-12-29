@@ -25,9 +25,9 @@
 #include <string.h>
 #include <stdbool.h>
 
-#include "mpvcore/bstr.h"
-#include "mpvcore/mp_common.h"
-#include "demux_packet.h"
+#include "bstr/bstr.h"
+#include "common/common.h"
+#include "packet.h"
 #include "stheader.h"
 
 struct MPOpts;
@@ -43,12 +43,6 @@ enum demuxer_type {
     DEMUXER_TYPE_CUE,
 };
 
-enum timestamp_type {
-    TIMESTAMP_TYPE_PTS,
-    TIMESTAMP_TYPE_SORT,
-};
-
-
 // DEMUXER control commands/answers
 #define DEMUXER_CTRL_NOTIMPL -1
 #define DEMUXER_CTRL_DONTKNOW 0
@@ -60,9 +54,7 @@ enum demux_ctrl {
     DEMUXER_CTRL_SWITCHED_TRACKS,
     DEMUXER_CTRL_GET_TIME_LENGTH,
     DEMUXER_CTRL_GET_START_TIME,
-    DEMUXER_CTRL_SWITCH_AUDIO,
     DEMUXER_CTRL_RESYNC,
-    DEMUXER_CTRL_SWITCH_VIDEO,
     DEMUXER_CTRL_IDENTIFY_PROGRAM,
 };
 
@@ -128,14 +120,19 @@ typedef struct demux_chapter
     uint64_t demuxer_id; // for mapping to internal demuxer data structures
 } demux_chapter_t;
 
+struct matroska_segment_uid {
+    unsigned char segment[16];
+    uint64_t edition;
+};
+
 struct matroska_data {
-    unsigned char segment_uid[16];
+    struct matroska_segment_uid uid;
     // Ordered chapter information if any
     struct matroska_chapter {
         uint64_t start;
         uint64_t end;
         bool has_segment_uid;
-        unsigned char segment_uid[16];
+        struct matroska_segment_uid uid;
         char *name;
     } *ordered_chapters;
     int num_ordered_chapters;
@@ -151,7 +148,7 @@ typedef struct demux_attachment
 
 struct demuxer_params {
     int matroska_num_wanted_uids;
-    unsigned char (*matroska_wanted_uids)[16];
+    struct matroska_segment_uid *matroska_wanted_uids;
     int matroska_wanted_segment;
     bool *matroska_was_valid;
     struct ass_library *ass_library;
@@ -161,8 +158,6 @@ typedef struct demuxer {
     const demuxer_desc_t *desc; ///< Demuxer description structure
     const char *filetype; // format name when not identified by demuxer (libavformat)
     int64_t filepos;  // input stream current pos.
-    int64_t movi_start;
-    int64_t movi_end;
     struct stream *stream;
     double stream_pts;     // current stream pts, if applicable (e.g. dvd)
     char *filename;  // same as stream->url
@@ -173,7 +168,6 @@ typedef struct demuxer {
     bool accurate_seek;
     // File format allows PTS resets (even if the current file is without)
     bool ts_resets_possible;
-    enum timestamp_type timestamp_type;
     bool warned_queue_overflow;
 
     struct sh_stream **streams;
@@ -200,6 +194,8 @@ typedef struct demuxer {
 
     void *priv;   // demuxer-specific internal data
     struct MPOpts *opts;
+    struct mpv_global *global;
+    struct mp_log *log, *glog;
     struct demuxer_params *params;
 } demuxer_t;
 
@@ -233,7 +229,8 @@ bool demux_stream_eof(struct sh_stream *sh);
 struct sh_stream *new_sh_stream(struct demuxer *demuxer, enum stream_type type);
 
 struct demuxer *demux_open(struct stream *stream, char *force_format,
-                           struct demuxer_params *params, struct MPOpts *opts);
+                           struct demuxer_params *params,
+                           struct mpv_global *global);
 
 void demux_flush(struct demuxer *demuxer);
 int demux_seek(struct demuxer *demuxer, float rel_seek_secs, int flags);
@@ -253,7 +250,7 @@ void demuxer_select_track(struct demuxer *demuxer, struct sh_stream *stream,
                           bool selected);
 void demuxer_enable_autoselect(struct demuxer *demuxer);
 
-void demuxer_help(void);
+void demuxer_help(struct mp_log *log);
 
 int demuxer_add_attachment(struct demuxer *demuxer, struct bstr name,
                            struct bstr type, struct bstr data);
@@ -300,5 +297,8 @@ void mp_tags_set_str(struct mp_tags *tags, const char *key, const char *value);
 void mp_tags_set_bstr(struct mp_tags *tags, bstr key, bstr value);
 char *mp_tags_get_str(struct mp_tags *tags, const char *key);
 char *mp_tags_get_bstr(struct mp_tags *tags, bstr key);
+
+bool demux_matroska_uid_cmp(struct matroska_segment_uid *a,
+                            struct matroska_segment_uid *b);
 
 #endif /* MPLAYER_DEMUXER_H */

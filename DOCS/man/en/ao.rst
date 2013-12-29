@@ -10,6 +10,12 @@ syntax is:
 If the list has a trailing ',', mpv will fall back on drivers not contained
 in the list. Suboptions are optional and can mostly be omitted.
 
+You can also set defaults for each driver. The defaults are applied before the
+normal driver parameters.
+
+``--ao-defaults=<driver1[:parameter1:parameter2:...],driver2,...>``
+    Set defaults for each driver.
+
 .. note::
 
     See ``--ao=help`` for a list of compiled-in audio output drivers.
@@ -23,10 +29,13 @@ in the list. Suboptions are optional and can mostly be omitted.
 Available audio output drivers are:
 
 ``alsa`` (Linux only)
-    ALSA 0.9/1.x audio output driver
+    ALSA audio output driver
 
     ``no-block``
         Sets noblock-mode.
+    ``resample=yes``
+        Enable ALSA resampling plugin. (This is disabled by default, because
+        some drivers report incorrect audio delay in some cases.)
     ``device=<device>``
         Sets the device name. For ac3 output via S/PDIF, use an "iec958" or
         "spdif" device, unless you really know how to set it correctly.
@@ -150,7 +159,18 @@ Available audio output drivers are:
 
 ``null``
     Produces no audio output but maintains video playback speed. Use
-    ``--no-audio`` for benchmarking.
+    ``--ao=null:untimed`` for benchmarking.
+
+    ``untimed``
+        Do not simulate timing of a perfect audio device. This means audio
+        decoding will go as fast as possible, instead of timing it to the
+        system clock.
+
+    ``buffer``
+        Simulated buffer length in seconds.
+
+    ``outburst``
+        Simulated chunk size in samples.
 
 ``pcm``
     Raw PCM/WAVE file writer audio output

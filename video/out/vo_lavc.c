@@ -23,18 +23,17 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "compat/libav.h"
-#include "mpvcore/mp_common.h"
-#include "mpvcore/options.h"
+#include "common/common.h"
+#include "options/options.h"
 #include "video/fmt-conversion.h"
 #include "video/mp_image.h"
 #include "video/vfcap.h"
 #include "talloc.h"
 #include "vo.h"
 
-#include "mpvcore/encode_lavc.h"
+#include "common/encode_lavc.h"
 
-#include "sub/sub.h"
-#include "sub/dec_sub.h"
+#include "sub/osd.h"
 
 struct priv {
     uint8_t *buffer;
@@ -95,7 +94,7 @@ static int config(struct vo *vo, uint32_t width, uint32_t height,
                   uint32_t format)
 {
     struct priv *vc = vo->priv;
-    enum PixelFormat pix_fmt = imgfmt2pixfmt(format);
+    enum AVPixelFormat pix_fmt = imgfmt2pixfmt(format);
     AVRational display_aspect_ratio, image_aspect_ratio;
     AVRational aspect;
 
@@ -136,8 +135,11 @@ static int config(struct vo *vo, uint32_t width, uint32_t height,
     vc->lastframeipts = MP_NOPTS_VALUE;
     vc->lastencodedipts = MP_NOPTS_VALUE;
 
-    if (pix_fmt == PIX_FMT_NONE)
-        goto error;  /* imgfmt2pixfmt already prints something */
+    if (pix_fmt == AV_PIX_FMT_NONE) {
+        MP_FATAL(vo, "Format %s not supported by lavc.\n",
+                 mp_imgfmt_to_name(format));
+        goto error;
+    }
 
     vc->stream = encode_lavc_alloc_stream(vo->encode_lavc_ctx,
                                           AVMEDIA_TYPE_VIDEO);
@@ -175,7 +177,7 @@ error:
 
 static int query_format(struct vo *vo, uint32_t format)
 {
-    enum PixelFormat pix_fmt = imgfmt2pixfmt(format);
+    enum AVPixelFormat pix_fmt = imgfmt2pixfmt(format);
 
     if (!vo->encode_lavc_ctx)
         return 0;
@@ -494,7 +496,6 @@ static void draw_osd(struct vo *vo, struct osd_state *osd)
             .w = asp.orgw,
             .h = asp.orgh,
             .display_par = sar / dar,
-            .video_par = dar / sar,
         };
 
         mp_image_set_colorspace_details(vc->lastimg, &vc->colorspace);
@@ -526,12 +527,8 @@ static int control(struct vo *vo, uint32_t request, void *data)
 const struct vo_driver video_out_lavc = {
     .buffer_frames = false,
     .encode = true,
-    .info = &(const struct vo_info_s){
-        "video encoding using libavcodec",
-        "lavc",
-        "Nicolas George <george@nsup.org>, Rudolf Polzer <divVerent@xonotic.org>",
-        ""
-    },
+    .description = "video encoding using libavcodec",
+    .name = "lavc",
     .preinit = preinit,
     .query_format = query_format,
     .config = config,

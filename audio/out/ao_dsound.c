@@ -39,9 +39,9 @@
 #include "audio/format.h"
 #include "ao.h"
 #include "audio/reorder_ch.h"
-#include "mpvcore/mp_msg.h"
+#include "common/msg.h"
 #include "osdep/timer.h"
-#include "mpvcore/m_option.h"
+#include "options/m_option.h"
 
 /**
 \todo use the definitions from the win32 api headers when they define these
@@ -388,11 +388,11 @@ static int init(struct ao *ao)
     WAVEFORMATEXTENSIBLE wformat;
     DSBUFFERDESC dsbpridesc;
     DSBUFFERDESC dsbdesc;
-    int format = ao->format;
+    int format = af_fmt_from_planar(ao->format);
     int rate = ao->samplerate;
 
     if (AF_FORMAT_IS_AC3(format))
-        format = AF_FORMAT_AC3_NE;
+        format = AF_FORMAT_AC3;
     else {
         struct mp_chmap_sel sel = {0};
         mp_chmap_sel_add_waveext(&sel);
@@ -400,14 +400,14 @@ static int init(struct ao *ao)
             return -1;
     }
     switch (format) {
-    case AF_FORMAT_AC3_NE:
+    case AF_FORMAT_AC3:
     case AF_FORMAT_S24_LE:
     case AF_FORMAT_S16_LE:
     case AF_FORMAT_U8:
         break;
     default:
         MP_VERBOSE(ao, "format %s not supported defaulting to Signed 16-bit Little-Endian\n",
-                   af_fmt2str_short(format));
+                   af_fmt_to_str(format));
         format = AF_FORMAT_S16_LE;
     }
     //set our audio parameters
@@ -416,7 +416,7 @@ static int init(struct ao *ao)
     ao->bps = ao->channels.num * rate * (af_fmt2bits(format) >> 3);
     int buffersize = ao->bps; // space for 1 sec
     MP_VERBOSE(ao, "Samplerate:%iHz Channels:%i Format:%s\n", rate,
-               ao->channels.num, af_fmt2str_short(format));
+               ao->channels.num, af_fmt_to_str(format));
     MP_VERBOSE(ao, "Buffersize:%d bytes (%d msec)\n",
                buffersize, buffersize / ao->bps * 1000);
 
@@ -596,7 +596,7 @@ static int get_space(struct ao *ao)
     int space = check_free_buffer_size(ao);
     if (space < p->min_free_space)
         return 0;
-    return space - p->min_free_space;
+    return (space - p->min_free_space) / ao->sstride;
 }
 
 /**
@@ -606,9 +606,10 @@ static int get_space(struct ao *ao)
 \param flags currently unused
 \return number of played bytes
 */
-static int play(struct ao *ao, void *data, int len, int flags)
+static int play(struct ao *ao, void **data, int samples, int flags)
 {
     struct priv *p = ao->priv;
+    int len = samples * ao->sstride;
 
     int space = check_free_buffer_size(ao);
     if (space < len)
@@ -616,7 +617,7 @@ static int play(struct ao *ao, void *data, int len, int flags)
 
     if (!(flags & AOPLAY_FINAL_CHUNK))
         len = (len / p->outburst) * p->outburst;
-    return write_buffer(ao, data, len);
+    return write_buffer(ao, data[0], len) / ao->sstride;
 }
 
 /**
@@ -634,12 +635,8 @@ static float get_delay(struct ao *ao)
 #define OPT_BASE_STRUCT struct priv
 
 const struct ao_driver audio_out_dsound = {
-    .info = &(const struct ao_info) {
-        "Windows DirectSound audio output",
-        "dsound",
-        "Gabor Szecsi <deje@miki.hu>",
-        ""
-    },
+    .description = "Windows DirectSound audio output",
+    .name      = "dsound",
     .init      = init,
     .uninit    = uninit,
     .control   = control,

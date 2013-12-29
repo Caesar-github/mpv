@@ -23,8 +23,9 @@
 #include <math.h>
 
 #include "config.h"
-#include "mpvcore/mp_msg.h"
-#include "mpvcore/cpudetect.h"
+#include "common/msg.h"
+#include "common/cpudetect.h"
+#include "options/m_option.h"
 #include "libavutil/common.h"
 #include "compat/mpbswap.h"
 
@@ -41,6 +42,7 @@ struct vf_priv_s
    int deghost, pass, phase, window, fcount, bcount, frameno, misscount,
       ocount, sum[5];
    double threshold;
+   char *filename;
    FILE *file;
    int8_t *bdata;
    unsigned int *csdata;
@@ -284,8 +286,7 @@ static struct mp_image *filter(struct vf_instance *vf, struct mp_image *mpi)
       case 2:
 	 if(p->frameno/5>p->bcount)
 	    {
-	    mp_msg(MSGT_VFILTER, MSGL_ERR,
-		   "\n%s: Log file ends prematurely! "
+	    MP_ERR(vf, "\n%s: Log file ends prematurely! "
 		   "Switching to one pass mode.\n", vf->info->name);
 	    p->pass=0;
 	    break;
@@ -306,8 +307,7 @@ static struct mp_image *filter(struct vf_instance *vf, struct mp_image *mpi)
 
 	    if(f<100)
 	       {
-	       mp_msg(MSGT_VFILTER, MSGL_INFO,
-		      "\n%s: Mismatch with pass-1: %+d frame(s).\n",
+	       MP_INFO(vf, "\n%s: Mismatch with pass-1: %+d frame(s).\n",
 		      vf->info->name, f);
 
 	       p->frameno+=f;
@@ -315,8 +315,7 @@ static struct mp_image *filter(struct vf_instance *vf, struct mp_image *mpi)
 	       }
 	    else if(p->misscount++>=30)
 	       {
-	       mp_msg(MSGT_VFILTER, MSGL_ERR,
-		      "\n%s: Sync with pass-1 lost! "
+	       MP_ERR(vf, "\n%s: Sync with pass-1 lost! "
 		      "Switching to one pass mode.\n", vf->info->name);
 	       p->pass=0;
 	       break;
@@ -350,8 +349,7 @@ static struct mp_image *filter(struct vf_instance *vf, struct mp_image *mpi)
    if(newphase!=p->phase && ((p->phase+4)%5<n)==((newphase+4)%5<n))
       {
       p->phase=newphase;
-      mp_msg(MSGT_VFILTER, MSGL_STATUS,
-	     "\n%s: Telecine phase %d.\n", vf->info->name, p->phase);
+      MP_INFO(vf, "\n%s: Telecine phase %d.\n", vf->info->name, p->phase);
       }
 
    switch((p->frameno++-p->phase+10)%5)
@@ -379,8 +377,9 @@ static struct mp_image *filter(struct vf_instance *vf, struct mp_image *mpi)
    return mpi;
    }
 
-static int analyze(struct vf_priv_s *p)
+static int analyze(struct vf_instance *vf)
    {
+   struct vf_priv_s *p = vf->priv;
    int *buf=0, *bp, bufsize=0, n, b, f, i, j, m, s;
    unsigned int *cbuf=0, *cp;
    int8_t *pbuf;
@@ -401,7 +400,7 @@ static int analyze(struct vf_priv_s *p)
 
 	 if(!bp || !cp)
 	    {
-	    mp_msg(MSGT_VFILTER, MSGL_FATAL, "%s: Not enough memory.\n",
+	    MP_FATAL(vf, "%s: Not enough memory.\n",
 		   vf_info_divtc.name);
 	    free(buf);
 	    free(cbuf);
@@ -414,7 +413,7 @@ static int analyze(struct vf_priv_s *p)
 
    if(n <= 15)
       {
-      mp_msg(MSGT_VFILTER, MSGL_FATAL, "%s: Empty 2-pass log file.\n",
+      MP_FATAL(vf, "%s: Empty 2-pass log file.\n",
 	     vf_info_divtc.name);
       free(buf);
       free(cbuf);
@@ -458,8 +457,7 @@ static int analyze(struct vf_priv_s *p)
 
       p->deghost=s1>s0?deghost:0;
 
-      mp_msg(MSGT_VFILTER, MSGL_INFO,
-	     "%s: Deghosting %-3s (relative pattern strength %+.2fdB).\n",
+      MP_INFO(vf, "%s: Deghosting %-3s (relative pattern strength %+.2fdB).\n",
 	     vf_info_divtc.name,
 	     p->deghost?"ON":"OFF",
 	     10.0*log10(s1/s0));
@@ -491,7 +489,7 @@ static int analyze(struct vf_priv_s *p)
    if(f==b)
       {
       free(buf-15);
-      mp_msg(MSGT_VFILTER, MSGL_FATAL, "%s: No telecine pattern found!\n",
+      MP_FATAL(vf, "%s: No telecine pattern found!\n",
 	     vf_info_divtc.name);
       return 0;
       }
@@ -589,7 +587,6 @@ static void uninit(struct vf_instance *vf)
       if(vf->priv->csdata) free(vf->priv->csdata-15);
       free(vf->priv->bdata);
       free(vf->priv->history);
-      free(vf->priv);
       }
    }
 
@@ -598,105 +595,44 @@ static int control(vf_instance_t *vf, int request, void *data)
     switch (request) {
     case VFCTRL_SEEK_RESET:
         vf_detc_init_pts_buf(&vf->priv->ptsbuf);
-        break;
+        return CONTROL_OK;
     }
-    return vf_next_control(vf, request, data);
+    return CONTROL_UNKNOWN;
 }
 
-static int vf_open(vf_instance_t *vf, char *args)
+static int vf_open(vf_instance_t *vf)
    {
-   struct vf_priv_s *p;
-   char *filename="framediff.log", *ap, *q, *a;
-
-   if(args && !(args=strdup(args)))
-      {
-   nomem:
-      mp_msg(MSGT_VFILTER, MSGL_FATAL,
-	     "%s: Not enough memory.\n", vf->info->name);
-   fail:
-      uninit(vf);
-      free(args);
-      return 0;
-      }
+   struct vf_priv_s *p = vf->priv;
 
    vf->filter=filter;
    vf->uninit=uninit;
    vf->query_format=query_format;
    vf->control=control;
-   if(!(vf->priv=p=calloc(1, sizeof(struct vf_priv_s))))
-      goto nomem;
 
-   p->phase=5;
-   p->threshold=0.5;
-   p->window=30;
+   p->window=5*(p->window+4)/5;
 
-   if((ap=args))
-      while(*ap)
-	 {
-	 q=ap;
-	 if((ap=strchr(q, ':'))) *ap++=0; else ap=q+strlen(q);
-	 if((a=strchr(q, '='))) *a++=0; else a=q+strlen(q);
+   if (!p->filename)
+       p->pass = 0;
 
-	 switch(*q)
-	    {
-	    case 0:                              break;
-	    case 'f': filename=a;                break;
-	    case 't': p->threshold=atof(a);      break;
-	    case 'w': p->window=5*(atoi(a)+4)/5; break;
-	    case 'd': p->deghost=atoi(a);        break;
-	    case 'p':
-	       if(q[1]=='h') p->phase=atoi(a);
-	       else p->pass=atoi(a);
-	       break;
-
-	    case 'h':
-	       mp_msg(MSGT_VFILTER, MSGL_INFO,
-		      "\n%s options:\n\n"
-		      "pass=1|2         - Use 2-pass mode.\n"
-		      "file=filename    - Set the 2-pass log file name "
-		      "(default %s).\n"
-		      "threshold=value  - Set the pattern recognition "
-		      "sensitivity (default %g).\n"
-		      "deghost=value    - Select deghosting threshold "
-		      "(default %d).\n"
-		      "window=numframes - Set the statistics window "
-		      "for 1-pass mode (default %d).\n"
-		      "phase=0|1|2|3|4  - Set the initial phase "
-		      "for 1-pass mode (default %d).\n\n"
-		      "The option names can be abbreviated to the shortest "
-		      "unique prefix.\n\n",
-		      vf->info->name, filename, p->threshold, p->deghost,
-		      p->window, p->phase%5);
-	       break;
-
-	    default:
-	       mp_msg(MSGT_VFILTER, MSGL_FATAL,
-		      "%s: Unknown argument %s.\n", vf->info->name, q);
-	       goto fail;
-	    }
-	 }
-
-   switch(p->pass)
+      switch(p->pass)
       {
       case 1:
-	 if(!(p->file=fopen(filename, "w")))
+	 if(!(p->file=fopen(p->filename, "w")))
 	    {
-	    mp_msg(MSGT_VFILTER, MSGL_FATAL,
-		   "%s: Can't create file %s.\n", vf->info->name, filename);
+	    MP_FATAL(vf, "%s: Can't create file %s.\n", vf->info->name, p->filename);
 	    goto fail;
 	    }
 
 	 break;
 
       case 2:
-	 if(!(p->file=fopen(filename, "r")))
+	 if(!(p->file=fopen(p->filename, "r")))
 	    {
-	    mp_msg(MSGT_VFILTER, MSGL_FATAL,
-		   "%s: Can't open file %s.\n", vf->info->name, filename);
+	    MP_FATAL(vf, "%s: Can't open file %s.\n", vf->info->name, p->filename);
 	    goto fail;
 	    }
 
-	 if(!analyze(p))
+	 if(!analyze(vf))
 	    goto fail;
 
 	 fclose(p->file);
@@ -704,26 +640,39 @@ static int vf_open(vf_instance_t *vf, char *args)
 	 break;
       }
 
-   if(p->window<5) p->window=5;
    if(!(p->history=calloc(sizeof *p->history, p->window)))
-      goto nomem;
+      abort();
 
    diff = diff_C;
 #if HAVE_MMX && HAVE_EBX_AVAILABLE
    if(gCpuCaps.hasMMX) diff = diff_MMX;
 #endif
 
-   free(args);
    vf_detc_init_pts_buf(&p->ptsbuf);
    return 1;
+   fail:
+   uninit(vf);
+   return 0;
    }
 
-const vf_info_t vf_info_divtc =
-   {
-   "inverse telecine for deinterlaced video",
-   "divtc",
-   "Ville Saari",
-   "",
-   vf_open,
-   NULL
-   };
+#define OPT_BASE_STRUCT struct vf_priv_s
+const vf_info_t vf_info_divtc = {
+    .description = "inverse telecine for deinterlaced video",
+    .name = "divtc",
+    .open = vf_open,
+    .priv_size = sizeof(struct vf_priv_s),
+    .priv_defaults = &(const struct vf_priv_s){
+        .phase = 5,
+        .threshold = 0.5,
+        .window = 30,
+    },
+    .options = (const struct m_option[]){
+        OPT_INTRANGE("phase", phase, 0, 0, 4),
+        OPT_INTRANGE("pass", pass, 0, 0, 2),
+        OPT_DOUBLE("threshold", threshold, 0),
+        OPT_INTRANGE("window", window, 0, 5, 9999),
+        OPT_INT("deghost", deghost, 0),
+        OPT_STRING("file", filename, 0),
+        {0}
+    },
+};

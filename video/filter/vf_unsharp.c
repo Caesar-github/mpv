@@ -25,14 +25,17 @@
 #include <math.h>
 
 #include "config.h"
-#include "mpvcore/mp_msg.h"
-#include "mpvcore/cpudetect.h"
+#include "common/msg.h"
+#include "common/cpudetect.h"
+#include "options/m_option.h"
 
 #include "video/img_format.h"
 #include "video/mp_image.h"
 #include "vf.h"
 #include "video/memcpy_pic.h"
 #include "libavutil/common.h"
+
+#include "vf_lavfi.h"
 
 //===========================================================================//
 
@@ -48,7 +51,7 @@ typedef struct FilterParam {
 struct vf_priv_s {
     FilterParam lumaParam;
     FilterParam chromaParam;
-    unsigned int outfmt;
+    struct vf_lw_opts *lw_opts;
 };
 
 
@@ -128,13 +131,10 @@ static int config( struct vf_instance *vf,
 
     int z, stepsX, stepsY;
     FilterParam *fp;
-    char *effect;
 
     // allocate buffers
 
     fp = &vf->priv->lumaParam;
-    effect = fp->amount == 0 ? "don't touch" : fp->amount < 0 ? "blur" : "sharpen";
-    mp_msg( MSGT_VFILTER, MSGL_INFO, "unsharp: %dx%d:%0.2f (%s luma) \n", fp->msizeX, fp->msizeY, fp->amount, effect );
     memset( fp->SC, 0, sizeof( fp->SC ) );
     stepsX = fp->msizeX/2;
     stepsY = fp->msizeY/2;
@@ -142,8 +142,6 @@ static int config( struct vf_instance *vf,
 	fp->SC[z] = av_malloc(sizeof(*(fp->SC[z])) * (width+2*stepsX));
 
     fp = &vf->priv->chromaParam;
-    effect = fp->amount == 0 ? "don't touch" : fp->amount < 0 ? "blur" : "sharpen";
-    mp_msg( MSGT_VFILTER, MSGL_INFO, "unsharp: %dx%d:%0.2f (%s chroma)\n", fp->msizeX, fp->msizeY, fp->amount, effect );
     memset( fp->SC, 0, sizeof( fp->SC ) );
     stepsX = fp->msizeX/2;
     stepsY = fp->msizeY/2;
@@ -197,9 +195,6 @@ static void uninit( struct vf_instance *vf ) {
 	av_free( fp->SC[z] );
 	fp->SC[z] = NULL;
     }
-
-    free( vf->priv );
-    vf->priv = NULL;
 }
 
 //===========================================================================//
@@ -207,90 +202,58 @@ static void uninit( struct vf_instance *vf ) {
 static int query_format( struct vf_instance *vf, unsigned int fmt ) {
     switch(fmt) {
     case IMGFMT_420P:
-	return vf_next_query_format( vf, vf->priv->outfmt );
+	return vf_next_query_format( vf, IMGFMT_420P );
     }
     return 0;
 }
 
-//===========================================================================//
-
-static void parse( FilterParam *fp, char* args ) {
-
-    // l7x5:0.8:c3x3:-0.2
-
-    char *z;
-    char *pos = args;
-    char *max = args + strlen(args);
-
-    // parse matrix sizes
-    fp->msizeX = ( pos && pos+1<max ) ? atoi( pos+1 ) : 0;
-    z = strchr( pos+1, 'x' );
-    fp->msizeY = ( z && z+1<max ) ? atoi( pos=z+1 ) : fp->msizeX;
-
-    // min/max & odd
-    fp->msizeX = 1 | av_clip(fp->msizeX, MIN_MATRIX_SIZE, MAX_MATRIX_SIZE);
-    fp->msizeY = 1 | av_clip(fp->msizeY, MIN_MATRIX_SIZE, MAX_MATRIX_SIZE);
-
-    // parse amount
-    pos = strchr( pos+1, ':' );
-    fp->amount = ( pos && pos+1<max ) ? atof( pos+1 ) : 0;
-}
-
-//===========================================================================//
-
-static const unsigned int fmt_list[] = {
-    IMGFMT_420P,
-    0
-};
-
-static int vf_open( vf_instance_t *vf, char *args ) {
+static int vf_open( vf_instance_t *vf) {
     vf->config       = config;
     vf->filter       = filter;
     vf->query_format = query_format;
     vf->uninit       = uninit;
-    vf->priv         = malloc( sizeof(struct vf_priv_s) );
-    memset( vf->priv, 0, sizeof(struct vf_priv_s) );
+    struct vf_priv_s *p = vf->priv;
 
-    if( args ) {
-	char *args2 = strchr( args, 'l' );
-	if( args2 )
-	    parse( &vf->priv->lumaParam, args2 );
-	else {
-	    vf->priv->lumaParam.amount =
-	    vf->priv->lumaParam.msizeX =
-	    vf->priv->lumaParam.msizeY = 0;
-	}
+    p->lumaParam.msizeX |= 1;
+    p->lumaParam.msizeY |= 1;
+    p->chromaParam.msizeX |= 1;
+    p->chromaParam.msizeY |= 1;
 
-	args2 = strchr( args, 'c' );
-	if( args2 )
-	    parse( &vf->priv->chromaParam, args2 );
-	else {
-	    vf->priv->chromaParam.amount =
-	    vf->priv->chromaParam.msizeX =
-	    vf->priv->chromaParam.msizeY = 0;
-	}
-
-	if( !vf->priv->lumaParam.msizeX && !vf->priv->chromaParam.msizeX )
-	    return 0; // nothing to do
-    }
-
-    // check csp:
-    vf->priv->outfmt = vf_match_csp( &vf->next, fmt_list, IMGFMT_420P );
-    if( !vf->priv->outfmt ) {
-	uninit( vf );
-        return 0; // no csp match :(
+    if (vf_lw_set_graph(vf, p->lw_opts, "unsharp", "%d:%d:%f:%d:%d:%f",
+                        p->lumaParam.msizeX, p->lumaParam.msizeY, p->lumaParam.amount,
+                        p->chromaParam.msizeX, p->chromaParam.msizeY, p->chromaParam.amount)
+                       >= 0)
+    {
+        return 1;
     }
 
     return 1;
 }
 
+// same as MIN_/MAX_MATRIX_SIZE
+#define MIN_SIZE 3
+#define MAX_SIZE 63
+
+#define OPT_BASE_STRUCT struct vf_priv_s
 const vf_info_t vf_info_unsharp = {
-    "unsharp mask & gaussian blur",
-    "unsharp",
-    "Remi Guyomarch",
-    "",
-    vf_open,
-    NULL
+    .description = "unsharp mask & gaussian blur",
+    .name = "unsharp",
+    .open = vf_open,
+    .priv_size = sizeof(struct vf_priv_s),
+    .priv_defaults = &(const struct vf_priv_s){
+        .lumaParam = {5, 5, 1.0},
+        .chromaParam = {5, 5, 0.0},
+    },
+    .options = (const struct m_option[]){
+        OPT_INTRANGE("lx", lumaParam.msizeX, 0, MIN_SIZE, MAX_SIZE),
+        OPT_INTRANGE("ly", lumaParam.msizeY, 0, MIN_SIZE, MAX_SIZE),
+        OPT_DOUBLE("la", lumaParam.amount, CONF_RANGE, .min = -2, .max = 6),
+        OPT_INTRANGE("cx", chromaParam.msizeX, 0, MIN_SIZE, MAX_SIZE),
+        OPT_INTRANGE("cy", chromaParam.msizeY, 0, MIN_SIZE, MAX_SIZE),
+        OPT_DOUBLE("ca", chromaParam.amount, CONF_RANGE, .min = -2, .max = 6),
+        OPT_SUBSTRUCT("", lw_opts, vf_lw_conf, 0),
+        {0}
+    },
 };
 
 //===========================================================================//

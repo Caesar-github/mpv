@@ -16,7 +16,6 @@
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */ 
 
-#include "mpvcore/mp_msg.h"
 #include <libavutil/avutil.h>
 #include <libavutil/samplefmt.h>
 #include "format.h"
@@ -27,39 +26,34 @@ static const struct {
     int fmt;
 } audio_conversion_map[] = {
     {AV_SAMPLE_FMT_U8,    AF_FORMAT_U8},
-    {AV_SAMPLE_FMT_S16,   AF_FORMAT_S16_NE},
-    {AV_SAMPLE_FMT_S32,   AF_FORMAT_S32_NE},
-    {AV_SAMPLE_FMT_FLT,   AF_FORMAT_FLOAT_NE},
-    {AV_SAMPLE_FMT_DBL,   AF_FORMAT_DOUBLE_NE},
+    {AV_SAMPLE_FMT_S16,   AF_FORMAT_S16},
+    {AV_SAMPLE_FMT_S32,   AF_FORMAT_S32},
+    {AV_SAMPLE_FMT_FLT,   AF_FORMAT_FLOAT},
+    {AV_SAMPLE_FMT_DBL,   AF_FORMAT_DOUBLE},
+
+    {AV_SAMPLE_FMT_U8P,   AF_FORMAT_U8P},
+    {AV_SAMPLE_FMT_S16P,  AF_FORMAT_S16P},
+    {AV_SAMPLE_FMT_S32P,  AF_FORMAT_S32P},
+    {AV_SAMPLE_FMT_FLTP,  AF_FORMAT_FLOATP},
+    {AV_SAMPLE_FMT_DBLP,  AF_FORMAT_DOUBLEP},
 
     {AV_SAMPLE_FMT_NONE,  0},
 };
 
 enum AVSampleFormat af_to_avformat(int fmt)
 {
-    int i;
-    enum AVSampleFormat sample_fmt;
-    for (i = 0; audio_conversion_map[i].fmt; i++)
+    for (int i = 0; audio_conversion_map[i].fmt; i++) {
         if (audio_conversion_map[i].fmt == fmt)
-            break;
-    sample_fmt = audio_conversion_map[i].sample_fmt;
-    if (sample_fmt == AV_SAMPLE_FMT_NONE)
-        mp_msg(MSGT_GLOBAL, MSGL_V, "Unsupported sample format: %s\n",
-                af_fmt2str_short(fmt));
-    return sample_fmt;
+            return audio_conversion_map[i].sample_fmt;
+    }
+    return AV_SAMPLE_FMT_NONE;
 }
 
 int af_from_avformat(enum AVSampleFormat sample_fmt)
 {
-    int i;
-    for (i = 0; audio_conversion_map[i].fmt; i++)
+    for (int i = 0; audio_conversion_map[i].fmt; i++) {
         if (audio_conversion_map[i].sample_fmt == sample_fmt)
-            break;
-    int fmt = audio_conversion_map[i].fmt;
-    if (!fmt) {
-        const char *fmtname = av_get_sample_fmt_name(sample_fmt);
-        mp_msg(MSGT_GLOBAL, MSGL_ERR, "Unsupported AVSampleFormat %s (%d)\n",
-               fmtname ? fmtname : "INVALID", sample_fmt);
+            return audio_conversion_map[i].fmt;
     }
-    return fmt;
+    return 0;
 }

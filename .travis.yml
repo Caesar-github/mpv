@@ -13,17 +13,17 @@ branches:
     - ci
 
 before_install: ./travis-deps libass-stable $LIBAV
-script: ./configure && make
+script:
+  - ./bootstrap.py
+  - ./waf configure
+  - ./waf build
 
 notifications-policy: &notifications-policy
   on_success: change
   on_failure: always
 
 notifications:
-  email:
-    recipients:
-      - mpv-team@googlegroups.com
-    <<: *notifications-policy
+  email: false
   irc:
     channels:
       - "irc.freenode.org#mpv-player-dev"

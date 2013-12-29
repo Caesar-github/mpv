@@ -24,8 +24,8 @@
 #include <libavutil/common.h>
 
 #include "config.h"
-#include "mpvcore/mp_msg.h"
-#include "mpvcore/options.h"
+#include "common/msg.h"
+#include "options/options.h"
 
 #include "video/img_format.h"
 #include "video/mp_image.h"
@@ -33,7 +33,7 @@
 
 #include "video/memcpy_pic.h"
 
-#include "mpvcore/m_option.h"
+#include "options/m_option.h"
 
 static struct vf_priv_s {
     // These four values are a backup of the values parsed from the command line.
@@ -137,10 +137,6 @@ static struct mp_image *filter(struct vf_instance *vf, struct mp_image *mpi)
     return dmpi;
 }
 
-static int control(struct vf_instance *vf, int request, void* data){
-    return vf_next_control(vf,request,data);
-}
-
 static int query_format(struct vf_instance *vf, unsigned int fmt)
 {
     if (!IMGFMT_IS_HWACCEL(fmt))
@@ -148,12 +144,11 @@ static int query_format(struct vf_instance *vf, unsigned int fmt)
     return 0;
 }
 
-static int vf_open(vf_instance_t *vf, char *args){
+static int vf_open(vf_instance_t *vf){
     vf->config=config;
-    vf->control=control;
     vf->query_format=query_format;
     vf->filter=filter;
-    mp_msg(MSGT_VFILTER, MSGL_INFO, "Expand: %d x %d, %d ; %d, aspect: %f, round: %d\n",
+    MP_INFO(vf, "Expand: %d x %d, %d ; %d, aspect: %f, round: %d\n",
     vf->priv->cfg_exp_w,
     vf->priv->cfg_exp_h,
     vf->priv->cfg_exp_x,
@@ -175,11 +170,9 @@ static const m_option_t vf_opts_fields[] = {
 };
 
 const vf_info_t vf_info_expand = {
-    "expanding",
-    "expand",
-    "A'rpi",
-    "",
-    vf_open,
+    .description = "expanding",
+    .name = "expand",
+    .open = vf_open,
     .priv_size = sizeof(struct vf_priv_s),
     .priv_defaults = &vf_priv_dflt,
     .options = vf_opts_fields,

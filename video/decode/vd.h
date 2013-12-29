@@ -21,6 +21,7 @@
 
 #include "video/mp_image.h"
 #include "demux/stheader.h"
+#include "dec_video.h"
 
 struct demux_packet;
 struct mp_decoder_list;
@@ -30,23 +31,20 @@ typedef struct vd_functions
 {
     const char *name;
     void (*add_decoders)(struct mp_decoder_list *list);
-    int (*init)(sh_video_t *sh, const char *decoder);
-    void (*uninit)(sh_video_t *sh);
-    int (*control)(sh_video_t *sh, int cmd, void *arg);
-    struct mp_image *(*decode)(struct sh_video *sh, struct demux_packet *pkt,
-                               int flags, double *reordered_pts);
+    int (*init)(struct dec_video *vd, const char *decoder);
+    void (*uninit)(struct dec_video *vd);
+    int (*control)(struct dec_video *vd, int cmd, void *arg);
+    struct mp_image *(*decode)(struct dec_video *vd, struct demux_packet *pkt,
+                               int flags);
 } vd_functions_t;
 
 // NULL terminated array of all drivers
 extern const vd_functions_t *const mpcodecs_vd_drivers[];
 
 enum vd_ctrl {
-    VDCTRL_GET_PARAMS = 1, // retrieve struct mp_image_params
-    VDCTRL_RESYNC_STREAM, // reset decode state after seeking
+    VDCTRL_RESET = 1, // reset decode state after seeking
     VDCTRL_QUERY_UNSEEN_FRAMES, // current decoder lag
-    VDCTRL_REINIT_VO, // reinit filter/VO chain
+    VDCTRL_FORCE_HWDEC_FALLBACK, // force software decoding fallback
 };
-
-int mpcodecs_reconfig_vo(sh_video_t *sh, const struct mp_image_params *params);
 
 #endif /* MPLAYER_VD_H */

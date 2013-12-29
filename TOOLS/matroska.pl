@@ -56,7 +56,7 @@ sub generate_c_header {
         my $l = max(map { length $_->{valname} } values %{$el->{subelements}});
 
         # Output each variable, with pointers for array (multiple) elements
-        for my $subel (values %{$el->{subelements}}) {
+        for my $subel (sort { $a->{definename} cmp $b->{definename} } values %{$el->{subelements}}) {
             printf "    %-${l}s %s%s;\n",
                 $subel->{valname}, $subel->{multiple}?'*':' ', $subel->{fieldname};
         }
@@ -101,7 +101,7 @@ sub generate_c_definitions {
 
             # define a field for each subelement
             # also does lots of macro magic, but doesn't open a scope
-            for my $subel (values %{$el->{subelements}}) {
+            for my $subel (sort { $a->{definename} cmp $b->{definename} } values %{$el->{subelements}}) {
                 print "F($subel->{definename}, $subel->{fieldname}, ".
                     ($subel->{multiple}?'1':'0').")\n";
             }

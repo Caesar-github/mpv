@@ -24,8 +24,9 @@
 #include <assert.h>
 
 #include "config.h"
-#include "mpvcore/mp_msg.h"
-#include "mpvcore/cpudetect.h"
+#include "common/msg.h"
+#include "common/cpudetect.h"
+#include "options/m_option.h"
 
 #include "video/img_format.h"
 #include "video/mp_image.h"
@@ -36,7 +37,7 @@ struct vf_priv_s {
     int pp;
     pp_mode *ppMode[PP_QUALITY_MAX+1];
     void *context;
-    unsigned int outfmt;
+    char *arg;
 };
 
 //===========================================================================//
@@ -76,23 +77,9 @@ static int query_format(struct vf_instance *vf, unsigned int fmt){
     case IMGFMT_422P:
     case IMGFMT_420P:
     case IMGFMT_411P: ;
-	int caps = vf_next_query_format(vf,fmt);
-        if (caps)
-            caps |= VFCAP_POSTPROC;
-        return caps;
+	return vf_next_query_format(vf,fmt);
     }
     return 0;
-}
-
-static int control(struct vf_instance *vf, int request, void* data){
-    switch(request){
-    case VFCTRL_QUERY_MAX_PP_LEVEL:
-	return PP_QUALITY_MAX;
-    case VFCTRL_SET_PP_LEVEL:
-	vf->priv->pp= *((unsigned int*)data);
-	return CONTROL_TRUE;
-    }
-    return vf_next_control(vf,request,data);
 }
 
 static struct mp_image *filter(struct vf_instance *vf, struct mp_image *mpi)
@@ -129,35 +116,16 @@ static struct mp_image *filter(struct vf_instance *vf, struct mp_image *mpi)
     return dmpi;
 }
 
-//===========================================================================//
-
-static const unsigned int fmt_list[]={
-    IMGFMT_420P,
-    IMGFMT_444P,
-    IMGFMT_422P,
-    IMGFMT_411P,
-    0
-};
-
-static int vf_open(vf_instance_t *vf, char *args){
+static int vf_open(vf_instance_t *vf){
     int i;
 
     vf->query_format=query_format;
-    vf->control=control;
     vf->config=config;
     vf->filter=filter;
     vf->uninit=uninit;
-    vf->priv=malloc(sizeof(struct vf_priv_s));
-    vf->priv->context=NULL;
-
-    // check csp:
-    vf->priv->outfmt=vf_match_csp(&vf->next,fmt_list,IMGFMT_420P);
-    if(!vf->priv->outfmt) return 0; // no csp match :(
-
-    char *name = args ? args : "de";
 
 	for(i=0; i<=PP_QUALITY_MAX; i++){
-            vf->priv->ppMode[i]= pp_get_mode_by_name_and_quality(name, i);
+            vf->priv->ppMode[i]= pp_get_mode_by_name_and_quality(vf->priv->arg, i);
             if(vf->priv->ppMode[i]==NULL) return -1;
         }
 
@@ -165,13 +133,27 @@ static int vf_open(vf_instance_t *vf, char *args){
     return 1;
 }
 
+static void print_help(struct mp_log *log)
+{
+    mp_info(log, "%s", pp_help);
+    mp_info(log,
+           "Don't forget to quote the filter list, e.g.: '--vf=pp=[tn:64:128:256]'\n\n");
+}
+
+#define OPT_BASE_STRUCT struct vf_priv_s
 const vf_info_t vf_info_pp = {
-    "postprocessing",
-    "pp",
-    "A'rpi",
-    "",
-    vf_open,
-    NULL
+    .description = "postprocessing",
+    .name = "pp",
+    .open = vf_open,
+    .print_help = print_help,
+    .priv_size = sizeof(struct vf_priv_s),
+    .priv_defaults = &(const struct vf_priv_s){
+        .arg = "de",
+    },
+    .options = (const struct m_option[]){
+        OPT_STRING("filters", arg, 0),
+        {0}
+    },
 };
 
 //===========================================================================//

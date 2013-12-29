@@ -25,6 +25,7 @@
 #include <math.h>
 #include <limits.h>
 
+#include "common/common.h"
 #include "af.h"
 
 // Data for specific instances of this filter
@@ -32,6 +33,7 @@ typedef struct af_pan_s
 {
   int nch; // Number of output channels; zero means same as input
   float level[AF_NCH][AF_NCH];	// Gain level for each channel
+  char *matrixstr;
 }af_pan_t;
 
 static void set_channels(struct mp_audio *mpa, int num)
@@ -46,7 +48,7 @@ static void set_channels(struct mp_audio *mpa, int num)
 // Initialization and runtime control
 static int control(struct af_instance* af, int cmd, void* arg)
 {
-  af_pan_t* s = af->setup;
+  af_pan_t* s = af->priv;
 
   switch(cmd){
   case AF_CONTROL_REINIT:
@@ -54,9 +56,8 @@ static int control(struct af_instance* af, int cmd, void* arg)
     if(!arg) return AF_ERROR;
 
     af->data->rate   = ((struct mp_audio*)arg)->rate;
-    mp_audio_set_format(af->data, AF_FORMAT_FLOAT_NE);
+    mp_audio_set_format(af->data, AF_FORMAT_FLOAT);
     set_channels(af->data, s->nch ? s->nch: ((struct mp_audio*)arg)->nch);
-    af->mul          = (double)af->data->nch / ((struct mp_audio*)arg)->nch;
 
     if((af->data->format != ((struct mp_audio*)arg)->format) ||
        (af->data->bps != ((struct mp_audio*)arg)->bps)){
@@ -64,33 +65,7 @@ static int control(struct af_instance* af, int cmd, void* arg)
       return AF_FALSE;
     }
     return AF_OK;
-  case AF_CONTROL_COMMAND_LINE:{
-    int   nch = 0;
-    int   n = 0;
-    char* cp = NULL;
-    int   j,k;
-    // Read number of outputs
-    sscanf((char*)arg,"%i%n", &nch,&n);
-    if(AF_OK != control(af,AF_CONTROL_PAN_NOUT | AF_CONTROL_SET, &nch))
-      return AF_ERROR;
-
-    // Read pan values
-    cp = &((char*)arg)[n];
-    j = 0; k = 0;
-    while((*cp == ':') && (k < AF_NCH)){
-      sscanf(cp, ":%f%n" , &s->level[j][k], &n);
-      mp_msg(MSGT_AFILTER, MSGL_V, "[pan] Pan level from channel %i to"
-	     " channel %i = %f\n",k,j,s->level[j][k]);
-      cp =&cp[n];
-      j++;
-      if(j>=nch){
-	j = 0;
-	k++;
-      }
-    }
-    return AF_OK;
-  }
-  case AF_CONTROL_PAN_LEVEL | AF_CONTROL_SET:{
+  case AF_CONTROL_SET_PAN_LEVEL:{
     int    i;
     int    ch = ((af_control_ext_t*)arg)->ch;
     float* level = ((af_control_ext_t*)arg)->arg;
@@ -100,40 +75,30 @@ static int control(struct af_instance* af, int cmd, void* arg)
       s->level[ch][i] = level[i];
     return AF_OK;
   }
-  case AF_CONTROL_PAN_LEVEL | AF_CONTROL_GET:{
-    int    i;
-    int ch = ((af_control_ext_t*)arg)->ch;
-    float* level = ((af_control_ext_t*)arg)->arg;
-    if (ch >= AF_NCH)
-      return AF_FALSE;
-    for(i=0;i<AF_NCH;i++)
-      level[i] = s->level[ch][i];
-    return AF_OK;
-  }
-  case AF_CONTROL_PAN_NOUT | AF_CONTROL_SET:
+  case AF_CONTROL_SET_PAN_NOUT:
     // Reinit must be called after this function has been called
 
     // Sanity check
     if(((int*)arg)[0] <= 0 || ((int*)arg)[0] > AF_NCH){
-      mp_msg(MSGT_AFILTER, MSGL_ERR, "[pan] The number of output channels must be"
+      MP_ERR(af, "[pan] The number of output channels must be"
             " between 1 and %i. Current value is %i\n",AF_NCH,((int*)arg)[0]);
       return AF_ERROR;
     }
     s->nch=((int*)arg)[0];
     return AF_OK;
-  case AF_CONTROL_PAN_BALANCE | AF_CONTROL_SET:{
+  case AF_CONTROL_SET_PAN_BALANCE:{
     float val = *(float*)arg;
     if (s->nch)
       return AF_ERROR;
     if (af->data->nch >= 2) {
-      s->level[0][0] = min(1.f, 1.f - val);
-      s->level[0][1] = max(0.f, val);
-      s->level[1][0] = max(0.f, -val);
-      s->level[1][1] = min(1.f, 1.f + val);
+      s->level[0][0] = MPMIN(1.f, 1.f - val);
+      s->level[0][1] = MPMAX(0.f, val);
+      s->level[1][0] = MPMAX(0.f, -val);
+      s->level[1][1] = MPMIN(1.f, 1.f + val);
     }
     return AF_OK;
   }
-  case AF_CONTROL_PAN_BALANCE | AF_CONTROL_GET:
+  case AF_CONTROL_GET_PAN_BALANCE:
     if (s->nch)
       return AF_ERROR;
     *(float*)arg = s->level[0][1] - s->level[1][0];
@@ -142,32 +107,22 @@ static int control(struct af_instance* af, int cmd, void* arg)
   return AF_UNKNOWN;
 }
 
-// Deallocate memory
-static void uninit(struct af_instance* af)
-{
-  if(af->data)
-    free(af->data->audio);
-  free(af->data);
-  free(af->setup);
-}
-
 // Filter data through filter
-static struct mp_audio* play(struct af_instance* af, struct mp_audio* data)
+static int filter(struct af_instance* af, struct mp_audio* data, int flags)
 {
   struct mp_audio*    c    = data;		// Current working data
   struct mp_audio*	l    = af->data;	// Local data
-  af_pan_t*  	s    = af->setup; 	// Setup for this instance
-  float*   	in   = c->audio;	// Input audio data
+  af_pan_t*  	s    = af->priv; 	// Setup for this instance
+  float*   	in   = c->planes[0];	// Input audio data
   float*   	out  = NULL;		// Output audio data
-  float*	end  = in+c->len/4; 	// End of loop
+  float*	end  = in+c->samples*c->nch; 	// End of loop
   int		nchi = c->nch;		// Number of input channels
   int		ncho = l->nch;		// Number of output channels
   register int  j,k;
 
-  if(AF_OK != RESIZE_LOCAL_BUFFER(af,data))
-    return NULL;
+  mp_audio_realloc_min(af->data, data->samples);
 
-  out = l->audio;
+  out = l->planes[0];
   // Execute panning
   // FIXME: Too slow
   while(in < end){
@@ -183,32 +138,53 @@ static struct mp_audio* play(struct af_instance* af, struct mp_audio* data)
   }
 
   // Set output data
-  c->audio = l->audio;
-  c->len   = c->len / c->nch * l->nch;
+  c->planes[0] = l->planes[0];
   set_channels(c, l->nch);
 
-  return c;
+  return 0;
 }
 
 // Allocate memory and set function pointers
 static int af_open(struct af_instance* af){
-  af->control=control;
-  af->uninit=uninit;
-  af->play=play;
-  af->mul=1;
-  af->data=calloc(1,sizeof(struct mp_audio));
-  af->setup=calloc(1,sizeof(af_pan_t));
-  if(af->data == NULL || af->setup == NULL)
-    return AF_ERROR;
-  return AF_OK;
+    af->control=control;
+    af->filter=filter;
+    af_pan_t *s = af->priv;
+    int   n = 0;
+    int   j,k;
+
+    int nch = s->nch;
+    if(AF_OK != control(af,AF_CONTROL_SET_PAN_NOUT, &nch))
+        return AF_ERROR;
+
+    // Read pan values
+    char *cp = s->matrixstr;
+    j = 0; k = 0;
+    while(k < AF_NCH){
+        sscanf(cp, "%f%n" , &s->level[j][k], &n);
+        MP_VERBOSE(af, "[pan] Pan level from channel %i to"
+                " channel %i = %f\n",k,j,s->level[j][k]);
+        cp =&cp[n];
+        j++;
+        if(j>=nch){
+            j = 0;
+            k++;
+        }
+        if (*cp != ',')
+            break;
+        cp++;
+    }
+    return AF_OK;
 }
 
-// Description of this filter
+#define OPT_BASE_STRUCT af_pan_t
 struct af_info af_info_pan = {
-    "Panning audio filter",
-    "pan",
-    "Anders",
-    "",
-    AF_FLAGS_REENTRANT,
-    af_open
+    .info = "Panning audio filter",
+    .name = "pan",
+    .open = af_open,
+    .priv_size = sizeof(af_pan_t),
+    .options = (const struct m_option[]) {
+        OPT_INTRANGE("channels", nch, 0, 0, AF_NCH),
+        OPT_STRING("matrix", matrixstr, 0),
+        {0}
+    },
 };
