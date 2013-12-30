@@ -4,16 +4,16 @@ Description: Use __atomic* GCC built-ins when available
  available (GCC >= 4.8) and resolves to a function in GCC's libatomic when the
  equivalent __sync is not available.
 Origin: vendor
-Bug: *** FIXME ***
-Forwarded: *** FIXME ***
+Bug-Debian: http://bugs.debian.org/733632
+Forwarded: https://github.com/mpv-player/mpv/pull/434
 Author: Alessandro Ghedini <ghedo@debian.org>
 Reviewed-by: Alessandro Ghedini <ghedo@debian.org>
 Last-Update: 2013-12-30
-Applied-Upstream: *** FIXME ***
+Applied-Upstream: 0.3.1
 
 --- a/compat/atomics.h
 +++ b/compat/atomics.h
-@@ -19,5 +19,16 @@
+@@ -19,5 +19,12 @@
  // At this point both gcc and clang had __sync_synchronize support for some
  // time. We only support a full memory barrier.
  
@@ -21,34 +21,22 @@ Applied-Upstream: *** FIXME ***
 -#define mp_atomic_add_and_fetch(a, b) __sync_add_and_fetch(a, b)
 +#include "config.h"
 +
-+#if HAVE_ATOMIC_THREAD_FENCE
++#if HAVE_ATOMIC_BUILTINS
 +# define mp_memory_barrier()           __atomic_thread_fence(__ATOMIC_SEQ_CST)
-+#else
-+# define mp_memory_barrier()           __sync_synchronize()
-+#endif
-+
-+#if HAVE_ATOMIC_ADD_FETCH
 +# define mp_atomic_add_and_fetch(a, b) __atomic_add_fetch(a, b,__ATOMIC_SEQ_CST)
 +#else
++# define mp_memory_barrier()           __sync_synchronize()
 +# define mp_atomic_add_and_fetch(a, b) __sync_add_and_fetch(a, b)
 +#endif
 --- a/wscript
 +++ b/wscript
-@@ -99,6 +99,18 @@
+@@ -99,6 +99,10 @@
          'req': True,
          'fmsg': 'Unable to find pthreads support.'
      }, {
-+        'name': 'libatomic',
-+        'desc': '-latomic',
-+        'func': check_cc(lib='atomic')
-+    }, {
-+        'name': 'atomic_thread_fence',
-+        'desc': '__atomic_thread_fence',
-+        'func': check_statement('stdio.h', '__atomic_thread_fence()')
-+    }, {
-+        'name': 'atomic_add_fetch',
-+        'desc': '__atomic_add_fetch',
-+        'func': check_statement('stdio.h', 'long test = 0; test = __atomic_add_fetch(&test, 1, __ATOMIC_SEQ_CST)')
++        'name': 'atomic_builtins',
++        'desc': 'compiler support for __atomic built-ins ',
++        'func': check_libs(['atomic'], check_statement('stdint.h', 'int64_t test = 0; test = __atomic_add_fetch(&test, 1, __ATOMIC_SEQ_CST)'))
 +    }, {
          'name': 'librt',
          'desc': 'linking with -lrt',
