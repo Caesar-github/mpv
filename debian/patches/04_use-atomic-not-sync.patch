@@ -1,0 +1,49 @@
+Description: Use __atomic* GCC built-ins when available
+ Some platforms (ppc, mips) do not have __sync_add_and_fetch_8 and other atomic
+ built-ins and thus FTBFS. __atomic_add_fetch on the other hand is always
+ available (GCC >= 4.8) and resolves to a function in GCC's libatomic when the
+ equivalent __sync is not available.
+Origin: vendor
+Bug: *** FIXME ***
+Forwarded: *** FIXME ***
+Author: Alessandro Ghedini <ghedo@debian.org>
+Reviewed-by: Alessandro Ghedini <ghedo@debian.org>
+Last-Update: 2013-12-30
+Applied-Upstream: *** FIXME ***
+
+--- a/compat/atomics.h
++++ b/compat/atomics.h
+@@ -19,5 +19,14 @@
+ // At this point both gcc and clang had __sync_synchronize support for some
+ // time. We only support a full memory barrier.
+ 
+-#define mp_memory_barrier()           __sync_synchronize()
+-#define mp_atomic_add_and_fetch(a, b) __sync_add_and_fetch(a, b)
++#if HAVE_ATOMIC_THREAD_FENCE
++# define mp_memory_barrier()           __atomic_thread_fence(__ATOMIC_SEQ_CST)
++#else
++# define mp_memory_barrier()           __sync_synchronize()
++#endif
++
++#if HAVE_ATOMIC_ADD_FETCH
++# define mp_atomic_add_and_fetch(a, b) __atomic_add_fetch(a, b,__ATOMIC_SEQ_CST)
++#else
++# define mp_atomic_add_and_fetch(a, b) __sync_add_and_fetch(a, b)
++#endif
+--- a/wscript
++++ b/wscript
+@@ -99,6 +99,14 @@
+         'req': True,
+         'fmsg': 'Unable to find pthreads support.'
+     }, {
++        'name': 'atomic_thread_fence',
++        'desc': '__atomic_thread_fence',
++        'func': check_statement('stdio.h', '__atomic_thread_fence()')
++    }, {
++        'name': 'atomic_add_fetch',
++        'desc': '__atomic_add_fetch',
++        'func': check_statement('stdio.h', 'long test = 0; test = __atomic_add_fetch(&test, 1, __ATOMIC_SEQ_CST)')
++    }, {
+         'name': 'librt',
+         'desc': 'linking with -lrt',
+         'deps': [ 'pthreads' ],
