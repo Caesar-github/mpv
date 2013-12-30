@@ -13,12 +13,14 @@ Applied-Upstream: *** FIXME ***
 
 --- a/compat/atomics.h
 +++ b/compat/atomics.h
-@@ -19,5 +19,14 @@
+@@ -19,5 +19,16 @@
  // At this point both gcc and clang had __sync_synchronize support for some
  // time. We only support a full memory barrier.
  
 -#define mp_memory_barrier()           __sync_synchronize()
 -#define mp_atomic_add_and_fetch(a, b) __sync_add_and_fetch(a, b)
++#include "config.h"
++
 +#if HAVE_ATOMIC_THREAD_FENCE
 +# define mp_memory_barrier()           __atomic_thread_fence(__ATOMIC_SEQ_CST)
 +#else
@@ -32,10 +34,14 @@ Applied-Upstream: *** FIXME ***
 +#endif
 --- a/wscript
 +++ b/wscript
-@@ -99,6 +99,14 @@
+@@ -99,6 +99,18 @@
          'req': True,
          'fmsg': 'Unable to find pthreads support.'
      }, {
++        'name': 'libatomic',
++        'desc': '-latomic',
++        'func': check_cc(lib='atomic')
++    }, {
 +        'name': 'atomic_thread_fence',
 +        'desc': '__atomic_thread_fence',
 +        'func': check_statement('stdio.h', '__atomic_thread_fence()')
