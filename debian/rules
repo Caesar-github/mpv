@@ -1,5 +1,9 @@
 #!/usr/bin/make -f
 
+ifeq ($(DEB_HOST_ARCH_CPU),$(filter $(DEB_HOST_ARCH_CPU),powerpc sparc))
+	export CC=gcc-4.8 # fixes #73363
+endif
+
 %:
 	dh $@
 
