@@ -8,17 +8,17 @@ endif
 	dh $@
 
 override_dh_auto_configure:
-	python ./waf --nocache configure \
-		     --prefix=/usr       \
-		     --confdir=/etc/mpv  \
+	python ./waf -v --nocache configure \
+		     --prefix=/usr          \
+		     --confdir=/etc/mpv     \
 		     --enable-sdl2
 
 override_dh_auto_build:
-	python ./waf --nocache build
+	python ./waf -v --nocache build
 
 override_dh_auto_install:
-	python ./waf --nocache install --destdir=debian/mpv
+	python ./waf -v --nocache install --destdir=debian/mpv
 
 override_dh_auto_clean:
-	python ./waf --nocache distclean
+	python ./waf -v --nocache distclean
 	find . -name "*.pyc" -delete
