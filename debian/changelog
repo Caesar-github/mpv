@@ -1,8 +1,12 @@
 mpv (0.3.0-2) unstable; urgency=medium
 
   * Enable ALSA on Linux only (should fix FTBFS on kfreebsd)
+  * Add 04_use-atomic-not-sync.patch to fix FTBFS on mips, powerpc and sparc
+    (Closes: #733632)
+  * Explicitly use gcc-4.8 on powerpc and sparc
+  * Use waf verbose output (shows build commands)
 
- -- Alessandro Ghedini <ghedo@debian.org>  Sun, 29 Dec 2013 23:03:05 +0100
+ -- Alessandro Ghedini <ghedo@debian.org>  Tue, 31 Dec 2013 12:38:24 +0100
 
 mpv (0.3.0-1) unstable; urgency=medium
 
