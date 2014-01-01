@@ -1,8 +1,9 @@
-mpv (0.3.1-1) UNRELEASED; urgency=medium
+mpv (0.3.1-1) unstable; urgency=medium
 
   * New upstream release
+  * Drop 04_use-atomic-not-sync.patch (merged upstream)
 
- -- Alessandro Ghedini <ghedo@debian.org>  Wed, 01 Jan 2014 22:45:32 +0100
+ -- Alessandro Ghedini <ghedo@debian.org>  Wed, 01 Jan 2014 22:51:36 +0100
 
 mpv (0.3.0-2) unstable; urgency=medium
 
