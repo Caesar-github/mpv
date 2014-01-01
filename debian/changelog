@@ -1,3 +1,9 @@
+mpv (0.3.1-1) UNRELEASED; urgency=medium
+
+  * New upstream release
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Wed, 01 Jan 2014 22:45:32 +0100
+
 mpv (0.3.0-2) unstable; urgency=medium
 
   * Enable ALSA on Linux only (should fix FTBFS on kfreebsd)
