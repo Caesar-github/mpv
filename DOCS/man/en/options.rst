@@ -1369,8 +1369,7 @@ OPTIONS
     :trace:     very noisy debug messages
 
     One special case is the ``identify`` module name. This is silenced by
-    default, and can be set to ``trace`` level to enable the remains of the
-    code once enabled with the ``-identify`` option.
+    default, and can be enabled with the ``-identify`` option.
 
 ``--msgmodule``
     Prepend module name in front of each console message.
@@ -2023,8 +2022,10 @@ OPTIONS
     the top of the screen) alongside the normal subtitle, and provides a way
     to render two subtitles at once.
 
-    there are some caveats associated with this feature. For example, secondary
-    subtitles are never shown on the terminal if video is disabled.
+    there are some caveats associated with this feature. For example, bitmap
+    subtitles will always be rendered in their usual position, so selecting a
+    bitmap subtitle as secondary subtitle will result in overlapping subtitles.
+    Secondary subtitles are never shown on the terminal if video is disabled.
 
     .. note::
 
