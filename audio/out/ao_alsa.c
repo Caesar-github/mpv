@@ -585,9 +585,11 @@ static void audio_resume(struct ao *ao)
 
     if (snd_pcm_state(p->alsa) == SND_PCM_STATE_SUSPENDED) {
         MP_INFO(ao, "PCM in suspend mode, trying to resume.\n");
+
         while ((err = snd_pcm_resume(p->alsa)) == -EAGAIN)
             sleep(1);
     }
+
     if (p->can_pause) {
         err = snd_pcm_pause(p->alsa, 0);
         CHECK_ALSA_ERROR("pcm resume error");
@@ -639,11 +641,8 @@ static int play(struct ao *ao, void **data, int samples, int flags)
             /* nothing to do */
             res = 0;
         } else if (res == -ESTRPIPE) {  /* suspend */
-            MP_INFO(ao, "PCM in suspend mode, trying to resume.\n");
-            while ((res = snd_pcm_resume(p->alsa)) == -EAGAIN)
-                sleep(1);
-        }
-        if (res < 0) {
+            audio_resume(ao);
+        } else if (res < 0) {
             MP_ERR(ao, "Write error: %s\n", snd_strerror(res));
             res = snd_pcm_prepare(p->alsa);
             int err = res;

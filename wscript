@@ -118,7 +118,7 @@ main_dependencies = [
         'func': check_true,
         'deps_any': ['atomic-builtins', 'sync-builtins'],
         'req': True,
-        'fmsg': 'your compiler must support either __atomic or __aync bult-ins',
+        'fmsg': 'your compiler must support either __atomic or __sync built-ins',
     }, {
         'name': 'librt',
         'desc': 'linking with -lrt',
@@ -335,6 +335,7 @@ Libav libraries ({0}). Aborting.".format(" ".join(libav_pkg_config_checks))
         'name': '--libswresample',
         'desc': 'libswresample',
         'func': check_pkg_config('libswresample', '>= 0.17.102'),
+        'deps_neg': ['libavresample'],
     }, {
         'name': 'resampler',
         'desc': 'usable resampler found',
@@ -498,11 +499,7 @@ video_output_features = [
     {
         'name': '--cocoa',
         'desc': 'Cocoa',
-        'func': check_cc(
-            fragment=load_fragment('cocoa.m'),
-            compile_filename='test.m',
-            framework_name=['Cocoa', 'IOKit', 'OpenGL'],
-            linkflags='-fobjc-arc')
+        'func': check_cocoa
     } , {
         'name': 'gdi',
         'desc': 'GDI',
