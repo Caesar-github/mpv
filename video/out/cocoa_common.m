@@ -221,8 +221,6 @@ static void vo_cocoa_update_screen_info(struct vo *vo)
     aspect_save_screenres(vo, r.size.width, r.size.height);
     opts->screenwidth  = r.size.width;
     opts->screenheight = r.size.height;
-    vo->xinerama_x     = r.origin.x;
-    vo->xinerama_y     = r.origin.y;
 }
 
 static void resize_window(struct vo *vo)
@@ -262,7 +260,7 @@ static void create_window(struct vo *vo, uint32_t d_width, uint32_t d_height,
     struct vo_cocoa_state *s = vo->cocoa;
     struct mp_vo_opts *opts  = vo->opts;
 
-    const NSRect contentRect = NSMakeRect(0, 0, d_width, d_height);
+    const NSRect contentRect = NSMakeRect(vo->dx, vo->dy, d_width, d_height);
 
     int window_mask = 0;
     if (opts->border) {
@@ -276,7 +274,8 @@ static void create_window(struct vo *vo, uint32_t d_width, uint32_t d_height,
         [[MpvVideoWindow alloc] initWithContentRect:contentRect
                                           styleMask:window_mask
                                             backing:NSBackingStoreBuffered
-                                              defer:NO];
+                                              defer:NO
+                                             screen:s->current_screen];
     s->view = [[[MpvVideoView alloc] initWithFrame:contentRect] autorelease];
 
     [s->view setWantsBestResolutionOpenGLSurface:YES];
@@ -299,7 +298,6 @@ static void create_window(struct vo *vo, uint32_t d_width, uint32_t d_height,
     [s->window setDelegate:s->window];
     [s->window makeMainWindow];
 
-    [s->window setFrameOrigin:NSMakePoint(vo->dx, vo->dy)];
     [s->window makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];
 
