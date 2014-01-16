@@ -539,7 +539,7 @@ static void draw_image(struct vo *vo, mp_image_t *mpi)
     struct buffer *buf = buffer_get_back(p);
 
     if (!buf) {
-        MP_WARN(p->wl, "can't draw, back buffer is busy\n");
+        MP_VERBOSE(p->wl, "can't draw, back buffer is busy\n");
         return;
     }
 
@@ -570,7 +570,7 @@ static void flip_page(struct vo *vo)
     buffer_swap(p);
 
     if (!p->redraw_callback) {
-        MP_INFO(p->wl, "restart frame callback\n");
+        MP_DBG(p->wl, "restart frame callback\n");
         frame_handle_redraw(p, NULL, 0);
     }
 }
@@ -639,6 +639,9 @@ static int reconfig(struct vo *vo, struct mp_image_params *fmt, int flags)
 
     vo_wayland_config(vo, vo->dwidth, vo->dheight, flags);
 
+    if (p->wl->window.events & VO_EVENT_RESIZE)
+        resize(p);
+
     return 0;
 }
 
@@ -647,6 +650,9 @@ static void uninit(struct vo *vo)
     struct priv *p = vo->priv;
     for (int i = 0; i < MAX_BUFFERS; ++i)
         destroy_shm_buffer(&p->buffers[i]);
+
+    if (p->redraw_callback)
+        wl_callback_destroy(p->redraw_callback);
 
     talloc_free(p->original_image);
 
@@ -657,10 +663,8 @@ static int preinit(struct vo *vo)
 {
     struct priv *p = vo->priv;
 
-    if (!vo_wayland_init(vo)) {
-        MP_ERR(p->wl, "could not initalise backend\n");
+    if (!vo_wayland_init(vo))
         return -1;
-    }
 
     p->vo = vo;
     p->wl = vo->wayland;

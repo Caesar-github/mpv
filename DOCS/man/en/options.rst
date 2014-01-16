@@ -1142,6 +1142,9 @@ OPTIONS
     Allow hardware decoding for a given list of codecs only. The special value
     ``all`` always allows all codecs.
 
+    You can get the list of allowed codecs with ``mpv --vd=help``. Remove the
+    prefix, e.g. instead of ``lavc:h264`` use ``h264``.
+
     By default this is set to ``h264,vc1,wmv3``.
 
     This is usually only needed with broken GPUs, where a codec is reported
@@ -2366,7 +2369,7 @@ OPTIONS
         Some ``--sws`` options are tunable. The description of the ``scale``
         video filter has further information.
 
-``--term-osd, --no-term-osd``
+``--term-osd, --no-term-osd``, ``--term-osd=force``
     Display OSD messages on the console when no video output is available.
     Enabled by default.
 
@@ -2374,6 +2377,8 @@ OPTIONS
     Specify the escape sequence to use before writing an OSD message on the
     console. The escape sequence should move the pointer to the beginning of
     the line used for the OSD and clear it (default: ``^[[A\r^[[K``).
+
+    ``force`` enables terminal OSD even if a video window is created.
 
 ``--title=<string>``
     Set the window title. Properties are expanded on playback start.
