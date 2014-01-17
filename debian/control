@@ -2,7 +2,8 @@ Source: mpv
 Section: video
 Priority: optional
 Maintainer: Debian Multimedia Maintainers <pkg-multimedia-maintainers@lists.alioth.debian.org>
-Uploaders: Alessandro Ghedini <ghedo@debian.org>
+Uploaders: Alessandro Ghedini <ghedo@debian.org>,
+ Reinhard Tartler <siretart@tauware.de>
 Build-Depends: debhelper (>= 9),
  gcc-4.8 [powerpc powerpcspe sparc],
  ladspa-sdk,
