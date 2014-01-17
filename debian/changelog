@@ -1,3 +1,9 @@
+mpv (0.3.3-1+exp1) experimental; urgency=low
+
+  * Rebuild against libav10
+
+ -- Reinhard Tartler <siretart@tauware.de>  Fri, 17 Jan 2014 03:35:15 +0000
+
 mpv (0.3.3-1) unstable; urgency=medium
 
   * New upstream release
