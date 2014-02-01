@@ -1,8 +1,9 @@
-mpv (0.3.4-1) UNRELEASED; urgency=medium
+mpv (0.3.4-1) unstable; urgency=medium
 
   * New upstream release
+  * Refresh patches
 
- -- Alessandro Ghedini <ghedo@debian.org>  Sat, 01 Feb 2014 12:13:08 +0100
+ -- Alessandro Ghedini <ghedo@debian.org>  Sat, 01 Feb 2014 12:20:29 +0100
 
 mpv (0.3.3-1) unstable; urgency=medium
 
