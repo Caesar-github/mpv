@@ -17,6 +17,7 @@
 
 #include <stdlib.h>
 #include <assert.h>
+#include <math.h>
 
 #include <libavcodec/avcodec.h>
 #include <libavutil/common.h>
@@ -182,10 +183,12 @@ static void decode(struct sd *sd, struct demux_packet *packet)
                                       sub.num_rects);
             for (int i = 0; i < sub.num_rects; i++) {
                 struct AVSubtitleRect *r = sub.rects[i];
-                struct sub_bitmap *b = &priv->inbitmaps[i];
-                struct osd_bmp_indexed *img = &priv->imgs[i];
+                struct sub_bitmap *b = &priv->inbitmaps[priv->count];
+                struct osd_bmp_indexed *img = &priv->imgs[priv->count];
                 if (!(r->flags & AV_SUBTITLE_FLAG_FORCED) &&
                     opts->forced_subs_only)
+                    continue;
+                if (r->w == 0 || r->h == 0)
                     continue;
                 img->bitmap = r->pict.data[0];
                 assert(r->nb_colors > 0);
@@ -234,9 +237,11 @@ static void get_bitmaps(struct sd *sd, struct mp_osd_res d, double pts,
     if (priv->avctx->codec_id == AV_CODEC_ID_DVD_SUBTITLE &&
             opts->stretch_dvd_subs) {
         // For DVD subs, try to keep the subtitle PAR at display PAR.
-        video_par =
+        double par =
               (priv->video_params.d_w / (double)priv->video_params.d_h)
             / (priv->video_params.w   / (double)priv->video_params.h);
+        if (isnormal(par))
+            video_par = par;
     }
     int insize[2];
     get_resolution(sd, insize);

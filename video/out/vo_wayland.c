@@ -149,7 +149,7 @@ struct priv {
 
     // options
     int enable_alpha;
-    int use_default;
+    int use_rgb565;
 };
 
 /* copied from weston clients */
@@ -230,6 +230,21 @@ static int os_create_anonymous_file(off_t size)
 static bool is_alpha_format(const struct fmtentry *fmt)
 {
     return !!(mp_imgfmt_get_desc(fmt->mp_fmt).flags & MP_IMGFLAG_ALPHA);
+}
+
+static const struct fmtentry * is_wayland_format_supported(struct priv *p,
+                                                           enum wl_shm_format fmt)
+{
+    struct supported_format *sf;
+
+    // find the matching format first
+    wl_list_for_each(sf, &p->format_list, link) {
+        if (sf->fmt->wl_fmt == fmt) {
+            return sf->fmt;
+        }
+    }
+
+    return NULL;
 }
 
 static void buffer_swap(struct priv *p)
@@ -466,27 +481,7 @@ static void frame_handle_redraw(void *data,
     struct buffer *buf = buffer_get_front(p);
 
     if (buf) {
-        if (p->resize_attach) {
-            wl_surface_attach(wl->window.surface, buf->wlbuf, p->x, p->y);
-            wl_surface_damage(wl->window.surface, 0, 0, p->dst_w, p->dst_h);
-            wl_surface_commit(wl->window.surface);
-
-            if (callback)
-                wl_callback_destroy(callback);
-
-            p->redraw_callback = NULL;
-            buffer_finalise_front(buf);
-            p->resize_attach = false;
-
-            destroy_shm_buffer(&p->tmp_buffer);
-
-            // I have to destroy the callback and return early to avoid black flickers
-            // I don't exactly know why this, but I guess the back buffer is still
-            // empty. The callback loop will be restored on the next flip_page call
-            return;
-        }
-
-        wl_surface_attach(wl->window.surface, buf->wlbuf, 0, 0);
+        wl_surface_attach(wl->window.surface, buf->wlbuf, p->x, p->y);
         wl_surface_damage(wl->window.surface, 0, 0, p->dst_w, p->dst_h);
 
         if (callback)
@@ -496,6 +491,12 @@ static void frame_handle_redraw(void *data,
         wl_callback_add_listener(p->redraw_callback, &frame_listener, p);
         wl_surface_commit(wl->window.surface);
         buffer_finalise_front(buf);
+
+        // to avoid multiple resizes of non-shown frames
+        if (p->resize_attach) {
+            destroy_shm_buffer(&p->tmp_buffer);
+            p->resize_attach = false;
+        }
     }
     else {
         if (callback)
@@ -595,13 +596,13 @@ static int reconfig(struct vo *vo, struct mp_image_params *fmt, int flags)
     struct priv *p = vo->priv;
     mp_image_unrefp(&p->original_image);
 
-    p->width = vo->dwidth;
-    p->height = vo->dheight;
+    p->width = fmt->w;
+    p->height = fmt->h;
     p->in_format = *fmt;
 
     struct supported_format *sf;
 
-    // find the same format first
+    // find the matching format first
     wl_list_for_each(sf, &p->format_list, link) {
         if (sf->fmt->mp_fmt == fmt->imgfmt && (p->enable_alpha == sf->is_alpha)) {
             p->pref_format = sf->fmt;
@@ -609,25 +610,22 @@ static int reconfig(struct vo *vo, struct mp_image_params *fmt, int flags)
         }
     }
 
-    // if the format is not supported choose one of the fancy formats next
-    // the default formats are always last
     if (!p->pref_format) {
-        wl_list_for_each(sf, &p->format_list, link) {
-            if (p->enable_alpha == sf->is_alpha) {
-                p->pref_format = sf->fmt;
-                break;
-            }
-        }
-    }
-
-    // if use default is enable overwrite the auto selected one
-    if (p->use_default) {
+        // if use default is enable overwrite the auto selected one
         if (p->enable_alpha)
             p->pref_format = &fmttable[DEFAULT_ALPHA_FORMAT_ENTRY];
         else
             p->pref_format = &fmttable[DEFAULT_FORMAT_ENTRY];
     }
 
+    // overides alpha
+    // use rgb565 if performance is your main concern
+    if (p->use_rgb565) {
+        const struct fmtentry *mp_fmt =
+            is_wayland_format_supported(p, WL_SHM_FORMAT_RGB565);
+        if (mp_fmt)
+            p->pref_format = mp_fmt;
+    }
 
     p->bytes_per_pixel = mp_imgfmt_get_desc(p->pref_format->mp_fmt).bytes[0];
     MP_VERBOSE(p->wl, "bytes per pixel: %d\n", p->bytes_per_pixel);
@@ -732,7 +730,7 @@ const struct vo_driver video_out_wayland = {
     .uninit = uninit,
     .options = (const struct m_option[]) {
         OPT_FLAG("alpha", enable_alpha, 0),
-        OPT_FLAG("default-format", use_default, 0),
+        OPT_FLAG("rgb565", use_rgb565, 0),
         {0}
     },
 };

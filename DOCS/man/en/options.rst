@@ -1746,6 +1746,15 @@ OPTIONS
 
     Also see ``--really-quiet`` and ``--msglevel``.
 
+``--quvi-fetch-subtitles=<yes|no>``
+    Toggles fetching of subtitles from streaming sites with libquvi. Disabled
+    by default, because it's unreliable and slow. Note that when enabled,
+    subtitles will always be fetched, even if subtitles are explicitly
+    disabled with ``--no-sub`` (because you might want to enable subtitles
+    at runtime).
+
+    Supported when using libquvi 0.9.x.
+
 ``--quvi-format=<best|default|...>``
     Video format/quality that is directly passed to libquvi (default: ``best``).
     This is used when opening links to streaming sites like YouTube. The
