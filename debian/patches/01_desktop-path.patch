@@ -7,7 +7,7 @@ Last-Update: 2013-10-30
 
 --- a/etc/mpv.desktop
 +++ b/etc/mpv.desktop
-@@ -15,8 +15,8 @@
+@@ -18,8 +18,8 @@
  Comment[ru]=Воспроизвести фильмы и музыку
  Comment[zh]=多媒体播放器
  Icon=mpv

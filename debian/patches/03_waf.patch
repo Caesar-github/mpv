@@ -7,7 +7,7 @@ Author: Alessandro Ghedini <ghedo@debian.org>
 Last-Update: 2013-12-29
 
 --- /dev/null
-+++ mpv-0.3.0/waf
++++ b/waf
 @@ -0,0 +1,164 @@
 +#!/usr/bin/env python
 +# encoding: ISO8859-1
@@ -174,7 +174,7 @@ Last-Update: 2013-12-29
 +	Scripting.waf_entry_point(cwd, VERSION, wafdir)
 +
 --- /dev/null
-+++ mpv-0.3.0/waflib/Build.py
++++ b/waflib/Build.py
 @@ -0,0 +1,758 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -935,7 +935,7 @@ Last-Update: 2013-12-29
 +BuildContext.store=Utils.nogc(BuildContext.store)
 +BuildContext.restore=Utils.nogc(BuildContext.restore)
 --- /dev/null
-+++ mpv-0.3.0/waflib/ConfigSet.py
++++ b/waflib/ConfigSet.py
 @@ -0,0 +1,152 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -1090,7 +1090,7 @@ Last-Update: 2013-12-29
 +	def revert(self):
 +		self.table=self.undo_stack.pop(-1)
 --- /dev/null
-+++ mpv-0.3.0/waflib/Configure.py
++++ b/waflib/Configure.py
 @@ -0,0 +1,317 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -1410,7 +1410,7 @@ Last-Update: 2013-12-29
 +			self.env[var]=Utils.to_list(self.env['PERL'])+[app]
 +	self.msg('Checking for %r'%filename,app)
 --- /dev/null
-+++ mpv-0.3.0/waflib/Context.py
++++ b/waflib/Context.py
 @@ -0,0 +1,319 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -1732,7 +1732,7 @@ Last-Update: 2013-12-29
 +		Context.tools[tool]=ret
 +		return ret
 --- /dev/null
-+++ mpv-0.3.0/waflib/Errors.py
++++ b/waflib/Errors.py
 @@ -0,0 +1,37 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -1772,7 +1772,7 @@ Last-Update: 2013-12-29
 +class TaskNotReady(WafError):
 +	pass
 --- /dev/null
-+++ mpv-0.3.0/waflib/Logs.py
++++ b/waflib/Logs.py
 @@ -0,0 +1,177 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -1952,7 +1952,7 @@ Last-Update: 2013-12-29
 +def pprint(col,str,label='',sep='\n'):
 +	sys.stderr.write("%s%s%s %s%s"%(colors(col),str,colors.NORMAL,label,sep))
 --- /dev/null
-+++ mpv-0.3.0/waflib/Node.py
++++ b/waflib/Node.py
 @@ -0,0 +1,467 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -2422,7 +2422,7 @@ Last-Update: 2013-12-29
 +class Nod3(Node):
 +	pass
 --- /dev/null
-+++ mpv-0.3.0/waflib/Options.py
++++ b/waflib/Options.py
 @@ -0,0 +1,135 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -2560,7 +2560,7 @@ Last-Update: 2013-12-29
 +		super(OptionsContext,self).execute()
 +		self.parse_args()
 --- /dev/null
-+++ mpv-0.3.0/waflib/Runner.py
++++ b/waflib/Runner.py
 @@ -0,0 +1,197 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -2760,7 +2760,7 @@ Last-Update: 2013-12-29
 +		assert(self.count==0 or self.stop)
 +		self.free_task_pool()
 --- /dev/null
-+++ mpv-0.3.0/waflib/Scripting.py
++++ b/waflib/Scripting.py
 @@ -0,0 +1,373 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -3136,7 +3136,7 @@ Last-Update: 2013-12-29
 +	return execute
 +Build.BuildContext.execute=autoconfigure(Build.BuildContext.execute)
 --- /dev/null
-+++ mpv-0.3.0/waflib/Task.py
++++ b/waflib/Task.py
 @@ -0,0 +1,677 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -3816,7 +3816,7 @@ Last-Update: 2013-12-29
 +	cls.runnable_status=runnable_status
 +	return cls
 --- /dev/null
-+++ mpv-0.3.0/waflib/TaskGen.py
++++ b/waflib/TaskGen.py
 @@ -0,0 +1,404 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -4223,14 +4223,14 @@ Last-Update: 2013-12-29
 +			self.bld.install_files(inst_to,b,chmod=getattr(self,'chmod',Utils.O644))
 +	self.source=[]
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/__init__.py
++++ b/waflib/Tools/__init__.py
 @@ -0,0 +1,4 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
 +# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
 +
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/ar.py
++++ b/waflib/Tools/ar.py
 @@ -0,0 +1,11 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -4244,7 +4244,7 @@ Last-Update: 2013-12-29
 +	conf.find_program('ar',var='AR')
 +	conf.env.ARFLAGS='rcs'
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/asm.py
++++ b/waflib/Tools/asm.py
 @@ -0,0 +1,25 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -4272,7 +4272,7 @@ Last-Update: 2013-12-29
 +def configure(conf):
 +	conf.env['ASMPATH_ST']='-I%s'
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/bison.py
++++ b/waflib/Tools/bison.py
 @@ -0,0 +1,28 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -4303,7 +4303,7 @@ Last-Update: 2013-12-29
 +	conf.find_program('bison',var='BISON')
 +	conf.env.BISONFLAGS=['-d']
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/c.py
++++ b/waflib/Tools/c.py
 @@ -0,0 +1,24 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -4330,7 +4330,7 @@ Last-Update: 2013-12-29
 +class cstlib(stlink_task):
 +	pass
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/c_aliases.py
++++ b/waflib/Tools/c_aliases.py
 @@ -0,0 +1,55 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -4388,7 +4388,7 @@ Last-Update: 2013-12-29
 +	set_features(kw,'objects')
 +	return bld(*k,**kw)
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/c_config.py
++++ b/waflib/Tools/c_config.py
 @@ -0,0 +1,744 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -5135,7 +5135,7 @@ Last-Update: 2013-12-29
 +			self.fatal(kw.get('fatalmsg',None)or'One of the tests has failed, see the config.log for more information')
 +	self.end_msg('ok')
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/c_osx.py
++++ b/waflib/Tools/c_osx.py
 @@ -0,0 +1,120 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -5258,7 +5258,7 @@ Last-Update: 2013-12-29
 +			txt=self.inputs[0].read()
 +		self.outputs[0].write(txt)
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/c_preproc.py
++++ b/waflib/Tools/c_preproc.py
 @@ -0,0 +1,604 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -5865,7 +5865,7 @@ Last-Update: 2013-12-29
 +		debug('deps: deps for %r: %r; unresolved %r'%(task.inputs,tmp.nodes,tmp.names))
 +	return(tmp.nodes,tmp.names)
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/c_tests.py
++++ b/waflib/Tools/c_tests.py
 @@ -0,0 +1,153 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -6021,7 +6021,7 @@ Last-Update: 2013-12-29
 +	self.check(fragment=ENDIAN_FRAGMENT,features='c grep_for_endianness',msg="Checking for endianness",define='ENDIANNESS',tmp=tmp,okmsg=check_msg)
 +	return tmp[0]
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/ccroot.py
++++ b/waflib/Tools/ccroot.py
 @@ -0,0 +1,405 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -6429,7 +6429,7 @@ Last-Update: 2013-12-29
 +		obj=self.path.find_resource(obj)
 +	return self(features='fake_obj',source=obj,name=obj.name)
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/compiler_c.py
++++ b/waflib/Tools/compiler_c.py
 @@ -0,0 +1,39 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -6471,7 +6471,7 @@ Last-Update: 2013-12-29
 +	for x in test_for_compiler.split():
 +		opt.load('%s'%x)
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/compiler_cxx.py
++++ b/waflib/Tools/compiler_cxx.py
 @@ -0,0 +1,39 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -6513,7 +6513,7 @@ Last-Update: 2013-12-29
 +	for x in test_for_compiler.split():
 +		opt.load('%s'%x)
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/compiler_d.py
++++ b/waflib/Tools/compiler_d.py
 @@ -0,0 +1,29 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -6545,7 +6545,7 @@ Last-Update: 2013-12-29
 +	for d_compiler in['gdc','dmd','ldc2']:
 +		opt.load('%s'%d_compiler)
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/compiler_fc.py
++++ b/waflib/Tools/compiler_fc.py
 @@ -0,0 +1,43 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -6591,7 +6591,7 @@ Last-Update: 2013-12-29
 +	for compiler in test_for_compiler.split():
 +		opt.load('%s'%compiler)
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/cs.py
++++ b/waflib/Tools/cs.py
 @@ -0,0 +1,132 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -6726,7 +6726,7 @@ Last-Update: 2013-12-29
 +def read_csshlib(self,name,paths=[]):
 +	return self(name=name,features='fake_lib',lib_paths=paths,lib_type='csshlib')
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/cxx.py
++++ b/waflib/Tools/cxx.py
 @@ -0,0 +1,26 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -6755,7 +6755,7 @@ Last-Update: 2013-12-29
 +class cxxstlib(stlink_task):
 +	pass
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/d.py
++++ b/waflib/Tools/d.py
 @@ -0,0 +1,54 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -6812,7 +6812,7 @@ Last-Update: 2013-12-29
 +			raise Errors.WafError('file %r not found on d obj'%i[0])
 +		self.create_task('d_header',node,node.change_ext('.di'))
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/d_config.py
++++ b/waflib/Tools/d_config.py
 @@ -0,0 +1,52 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -6867,7 +6867,7 @@ Last-Update: 2013-12-29
 +	if execute:
 +		self.env.DLIBRARY=ret.strip()
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/d_scan.py
++++ b/waflib/Tools/d_scan.py
 @@ -0,0 +1,133 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -7003,7 +7003,7 @@ Last-Update: 2013-12-29
 +		Logs.debug('deps: deps for %s: %r; unresolved %r'%(str(node),nodes,names))
 +	return(nodes,names)
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/dbus.py
++++ b/waflib/Tools/dbus.py
 @@ -0,0 +1,29 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -7035,7 +7035,7 @@ Last-Update: 2013-12-29
 +def configure(conf):
 +	dbus_binding_tool=conf.find_program('dbus-binding-tool',var='DBUS_BINDING_TOOL')
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/dmd.py
++++ b/waflib/Tools/dmd.py
 @@ -0,0 +1,51 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -7089,7 +7089,7 @@ Last-Update: 2013-12-29
 +	if str(conf.env.D).find('ldc')>-1:
 +		conf.common_flags_ldc()
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/errcheck.py
++++ b/waflib/Tools/errcheck.py
 @@ -0,0 +1,161 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -7253,7 +7253,7 @@ Last-Update: 2013-12-29
 +def configure(conf):
 +	pass
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/fc.py
++++ b/waflib/Tools/fc.py
 @@ -0,0 +1,116 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -7372,7 +7372,7 @@ Last-Update: 2013-12-29
 +class fcstlib(ccroot.stlink_task):
 +	pass
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/fc_config.py
++++ b/waflib/Tools/fc_config.py
 @@ -0,0 +1,285 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -7660,7 +7660,7 @@ Last-Update: 2013-12-29
 +	else:
 +		self.fatal('Could not find OpenMP')
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/fc_scan.py
++++ b/waflib/Tools/fc_scan.py
 @@ -0,0 +1,68 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -7731,7 +7731,7 @@ Last-Update: 2013-12-29
 +			if not filename in self.names:
 +				self.names.append(filename)
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/flex.py
++++ b/waflib/Tools/flex.py
 @@ -0,0 +1,32 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -7766,7 +7766,7 @@ Last-Update: 2013-12-29
 +	if re.search(r"\\msys\\[0-9.]+\\bin\\flex.exe$",conf.env.FLEX):
 +		conf.env.FLEX_MSYS=True
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/g95.py
++++ b/waflib/Tools/g95.py
 @@ -0,0 +1,55 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -7824,7 +7824,7 @@ Last-Update: 2013-12-29
 +	conf.g95_flags()
 +	conf.g95_modifier_platform()
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/gas.py
++++ b/waflib/Tools/gas.py
 @@ -0,0 +1,12 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -7839,7 +7839,7 @@ Last-Update: 2013-12-29
 +	conf.find_ar()
 +	conf.load('asm')
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/gcc.py
++++ b/waflib/Tools/gcc.py
 @@ -0,0 +1,98 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -7940,7 +7940,7 @@ Last-Update: 2013-12-29
 +	conf.cc_add_flags()
 +	conf.link_add_flags()
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/gdc.py
++++ b/waflib/Tools/gdc.py
 @@ -0,0 +1,36 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -7979,7 +7979,7 @@ Last-Update: 2013-12-29
 +	conf.common_flags_gdc()
 +	conf.d_platform_flags()
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/gfortran.py
++++ b/waflib/Tools/gfortran.py
 @@ -0,0 +1,69 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -8051,7 +8051,7 @@ Last-Update: 2013-12-29
 +	conf.gfortran_flags()
 +	conf.gfortran_modifier_platform()
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/glib2.py
++++ b/waflib/Tools/glib2.py
 @@ -0,0 +1,173 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -8227,7 +8227,7 @@ Last-Update: 2013-12-29
 +def options(opt):
 +	opt.add_option('--gsettingsschemadir',help='GSettings schema location [Default: ${datadir}/glib-2.0/schemas]',default='',dest='GSETTINGSSCHEMADIR')
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/gnu_dirs.py
++++ b/waflib/Tools/gnu_dirs.py
 @@ -0,0 +1,65 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -8295,7 +8295,7 @@ Last-Update: 2013-12-29
 +		str_help='%s [Default: %s]'%(help,str_default)
 +		dirs_options.add_option(option_name,help=str_help,default='',dest=name.upper())
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/gxx.py
++++ b/waflib/Tools/gxx.py
 @@ -0,0 +1,98 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -8396,7 +8396,7 @@ Last-Update: 2013-12-29
 +	conf.cxx_add_flags()
 +	conf.link_add_flags()
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/icc.py
++++ b/waflib/Tools/icc.py
 @@ -0,0 +1,30 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -8429,7 +8429,7 @@ Last-Update: 2013-12-29
 +	conf.cc_add_flags()
 +	conf.link_add_flags()
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/icpc.py
++++ b/waflib/Tools/icpc.py
 @@ -0,0 +1,29 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -8461,7 +8461,7 @@ Last-Update: 2013-12-29
 +	conf.cxx_add_flags()
 +	conf.link_add_flags()
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/ifort.py
++++ b/waflib/Tools/ifort.py
 @@ -0,0 +1,49 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -8513,7 +8513,7 @@ Last-Update: 2013-12-29
 +	conf.fc_add_flags()
 +	conf.ifort_modifier_platform()
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/intltool.py
++++ b/waflib/Tools/intltool.py
 @@ -0,0 +1,77 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -8593,7 +8593,7 @@ Last-Update: 2013-12-29
 +	if conf.env.CC or conf.env.CXX:
 +		conf.check(header_name='locale.h')
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/irixcc.py
++++ b/waflib/Tools/irixcc.py
 @@ -0,0 +1,48 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -8644,7 +8644,7 @@ Last-Update: 2013-12-29
 +	conf.cc_add_flags()
 +	conf.link_add_flags()
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/javaw.py
++++ b/waflib/Tools/javaw.py
 @@ -0,0 +1,309 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -8956,7 +8956,7 @@ Last-Update: 2013-12-29
 +	else:
 +		conf.fatal('could not find lib jvm in %r (see config.log)'%libDirs)
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/kde4.py
++++ b/waflib/Tools/kde4.py
 @@ -0,0 +1,48 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -9007,7 +9007,7 @@ Last-Update: 2013-12-29
 +	self.env.append_value('INCLUDES_KDECORE',[self.env['KDE4_INCLUDE_INSTALL_DIR']+os.sep+'KDE'])
 +	self.find_program('msgfmt',var='MSGFMT')
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/ldc2.py
++++ b/waflib/Tools/ldc2.py
 @@ -0,0 +1,37 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -9047,7 +9047,7 @@ Last-Update: 2013-12-29
 +	conf.common_flags_ldc2()
 +	conf.d_platform_flags()
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/lua.py
++++ b/waflib/Tools/lua.py
 @@ -0,0 +1,18 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -9068,7 +9068,7 @@ Last-Update: 2013-12-29
 +def configure(conf):
 +	conf.find_program('luac',var='LUAC')
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/msvc.py
++++ b/waflib/Tools/msvc.py
 @@ -0,0 +1,749 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -9820,7 +9820,7 @@ Last-Update: 2013-12-29
 +def make_windows_app(self):
 +	make_winapp(self,'WINAPI_FAMILY_DESKTOP_APP')
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/nasm.py
++++ b/waflib/Tools/nasm.py
 @@ -0,0 +1,14 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -9837,7 +9837,7 @@ Last-Update: 2013-12-29
 +	conf.env.ASLNK_TGT_F=['-o']
 +	conf.load('asm')
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/perl.py
++++ b/waflib/Tools/perl.py
 @@ -0,0 +1,80 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -9920,7 +9920,7 @@ Last-Update: 2013-12-29
 +	opt.add_option('--with-perl-binary',type='string',dest='perlbinary',help='Specify alternate perl binary',default=None)
 +	opt.add_option('--with-perl-archdir',type='string',dest='perlarchdir',help='Specify directory where to install arch specific files',default=None)
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/python.py
++++ b/waflib/Tools/python.py
 @@ -0,0 +1,343 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -10266,7 +10266,7 @@ Last-Update: 2013-12-29
 +	opt.add_option('--nopyc',action='store_false',default=1,help='Do not install bytecode compiled .pyc files (configuration) [Default:install]',dest='pyc')
 +	opt.add_option('--nopyo',action='store_false',default=1,help='Do not install optimised compiled .pyo files (configuration) [Default:install]',dest='pyo')
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/qt4.py
++++ b/waflib/Tools/qt4.py
 @@ -0,0 +1,455 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -10724,7 +10724,7 @@ Last-Update: 2013-12-29
 +		opt.add_option('--'+i,type='string',default='',dest=i)
 +	opt.add_option('--translate',action="store_true",help="collect translation strings",dest="trans_qt4",default=False)
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/ruby.py
++++ b/waflib/Tools/ruby.py
 @@ -0,0 +1,103 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -10830,7 +10830,7 @@ Last-Update: 2013-12-29
 +	opt.add_option('--with-ruby-libdir',type='string',dest='rubylibdir',help='Specify alternate ruby library path')
 +	opt.add_option('--with-ruby-binary',type='string',dest='rubybinary',help='Specify alternate ruby binary')
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/suncc.py
++++ b/waflib/Tools/suncc.py
 @@ -0,0 +1,54 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -10887,7 +10887,7 @@ Last-Update: 2013-12-29
 +	conf.cc_add_flags()
 +	conf.link_add_flags()
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/suncxx.py
++++ b/waflib/Tools/suncxx.py
 @@ -0,0 +1,55 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -10945,7 +10945,7 @@ Last-Update: 2013-12-29
 +	conf.cxx_add_flags()
 +	conf.link_add_flags()
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/tex.py
++++ b/waflib/Tools/tex.py
 @@ -0,0 +1,257 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -11205,7 +11205,7 @@ Last-Update: 2013-12-29
 +			pass
 +	v['DVIPSFLAGS']='-Ppdf'
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/vala.py
++++ b/waflib/Tools/vala.py
 @@ -0,0 +1,201 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -11409,7 +11409,7 @@ Last-Update: 2013-12-29
 +	valaopts=opt.add_option_group('Vala Compiler Options')
 +	valaopts.add_option('--vala-target-glib',default=None,dest='vala_target_glib',metavar='MAJOR.MINOR',help='Target version of glib for Vala GObject code generation')
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/waf_unit_test.py
++++ b/waflib/Tools/waf_unit_test.py
 @@ -0,0 +1,97 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -11509,7 +11509,7 @@ Last-Update: 2013-12-29
 +	opt.add_option('--alltests',action='store_true',default=False,help='Exec all unit tests',dest='all_tests')
 +	opt.add_option('--testcmd',action='store',default=False,help='Run the unit tests using the test-cmd string'' example "--test-cmd="valgrind --error-exitcode=1'' %s" to run under valgrind',dest='testcmd')
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/winres.py
++++ b/waflib/Tools/winres.py
 @@ -0,0 +1,85 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -11597,7 +11597,7 @@ Last-Update: 2013-12-29
 +		conf.fatal('winrc was not found!')
 +	v['WINRCFLAGS']=[]
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/xlc.py
++++ b/waflib/Tools/xlc.py
 @@ -0,0 +1,45 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -11645,7 +11645,7 @@ Last-Update: 2013-12-29
 +	conf.cc_add_flags()
 +	conf.link_add_flags()
 --- /dev/null
-+++ mpv-0.3.0/waflib/Tools/xlcxx.py
++++ b/waflib/Tools/xlcxx.py
 @@ -0,0 +1,45 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -11693,7 +11693,7 @@ Last-Update: 2013-12-29
 +	conf.cxx_add_flags()
 +	conf.link_add_flags()
 --- /dev/null
-+++ mpv-0.3.0/waflib/Utils.py
++++ b/waflib/Utils.py
 @@ -0,0 +1,412 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -12108,14 +12108,14 @@ Last-Update: 2013-12-29
 +		if os.path.isfile(result):
 +			return result
 --- /dev/null
-+++ mpv-0.3.0/waflib/__init__.py
++++ b/waflib/__init__.py
 @@ -0,0 +1,4 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
 +# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
 +
 --- /dev/null
-+++ mpv-0.3.0/waflib/ansiterm.py
++++ b/waflib/ansiterm.py
 @@ -0,0 +1,177 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -12295,14 +12295,14 @@ Last-Update: 2013-12-29
 +	sys.stderr=sys.stdout=AnsiTerm()
 +	os.environ['TERM']='vt100'
 --- /dev/null
-+++ mpv-0.3.0/waflib/extras/__init__.py
++++ b/waflib/extras/__init__.py
 @@ -0,0 +1,4 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
 +# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
 +
 --- /dev/null
-+++ mpv-0.3.0/waflib/extras/compat15.py
++++ b/waflib/extras/compat15.py
 @@ -0,0 +1,220 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
@@ -12525,7 +12525,7 @@ Last-Update: 2013-12-29
 +	self.export_includes=val
 +TaskGen.task_gen.export_incdirs=property(None,set_incdirs)
 --- /dev/null
-+++ mpv-0.3.0/waflib/fixpy2.py
++++ b/waflib/fixpy2.py
 @@ -0,0 +1,53 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
