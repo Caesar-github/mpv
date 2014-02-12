@@ -757,7 +757,6 @@ int vo_x11_check_events(struct vo *vo)
         vo_x11_update_geometry(vo);
     while (XPending(display)) {
         XNextEvent(display, &Event);
-//       printf("\rEvent.type=%X  \n",Event.type);
         switch (Event.type) {
         case Expose:
             x11->pending_vo_events |= VO_EVENT_EXPOSE;
@@ -818,14 +817,9 @@ int vo_x11_check_events(struct vo *vo)
                              (MP_MOUSE_BTN0 + Event.xbutton.button - 1) |
                              get_mods(Event.xbutton.state) | MP_KEY_STATE_UP);
             break;
-        case PropertyNotify: {
-            char *name = XGetAtomName(display, Event.xproperty.atom);
-            if (!name)
-                break;
-            XFree(name);
-            break;
-        }
         case MapNotify:
+            x11->window_hidden = false;
+            vo_x11_update_geometry(vo);
             x11->vo_hint.win_gravity = x11->old_gravity;
             XSetWMNormalHints(display, x11->window, &x11->vo_hint);
             x11->fs_flip = 0;
@@ -1135,7 +1129,6 @@ static void vo_x11_map_window(struct vo *vo, int x, int y, int w, int h)
 {
     struct vo_x11_state *x11 = vo->x11;
 
-    x11->window_hidden = false;
     vo_x11_move_resize(vo, true, true, x, y, w, h);
     if (!vo->opts->border)
         vo_x11_decoration(vo, 0);
@@ -1230,6 +1223,13 @@ void vo_x11_config_vo_window(struct vo *vo, XVisualInfo *vis, int x, int y,
     XSync(x11->display, False);
 
     vo_x11_update_geometry(vo);
+    if (x11->window_hidden) {
+        // The real size is only known when the window is mapped, which
+        // unfortunately happens asynchronous to VO initialization. At least
+        // vdpau needs a _some_ window size, though.
+        x11->win_width = width;
+        x11->win_height = height;
+    }
     update_vo_size(vo);
     x11->pending_vo_events &= ~VO_EVENT_RESIZE; // implicitly done by the VO
 }
@@ -1342,6 +1342,8 @@ static void vo_x11_update_geometry(struct vo *vo)
     int dummy_int;
     Window dummy_win;
     Window win = vo->opts->WinID > 0 ? vo->opts->WinID : x11->window;
+    if (x11->window_hidden)
+        return;
     XGetGeometry(x11->display, win, &dummy_win, &dummy_int, &dummy_int,
                  &w, &h, &dummy_int, &dummy_uint);
     if (w <= INT_MAX && h <= INT_MAX) {
