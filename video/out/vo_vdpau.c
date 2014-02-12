@@ -176,6 +176,9 @@ static int change_vdptime_sync(struct vo *vo, int64_t *t)
             vdp_time -= (t2 - t1) * 1000ULL;
         else
             vdp_time = old;
+    } else if (!vdp_time) {
+        /* Some drivers do not return timestamps. */
+        vdp_time = old;
     }
     MP_DBG(vo, "adjusting VdpTime offset by %f µs\n",
            (int64_t)(vdp_time - old) / 1000.);
@@ -1063,6 +1066,10 @@ static void flip_page_timed(struct vo *vo, int64_t pts_us, int duration)
 
     if (vc->vsync_interval == 1)
         duration = -1;  // Make sure drop logic is disabled
+
+    /* If the presentation time may not be before our last timestamp sync. */
+    if (pts_us && pts_us < vc->last_sync_update)
+        pts_us = vc->last_sync_update;
 
     uint64_t now = sync_vdptime(vo);
     uint64_t pts = pts_us ? convert_to_vdptime(vo, pts_us) : now;
