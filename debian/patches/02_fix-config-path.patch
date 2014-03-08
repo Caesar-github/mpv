@@ -3,11 +3,11 @@ Origin: vendor
 Bug-Debian: http://bugs.debian.org/732214
 Forwarded: not-needed
 Author: Alessandro Ghedini <ghedo@debian.org>
-Last-Update: 2013-12-15
+Last-Update: 2014-06-25
 
---- a/DOCS/man/en/mpv.rst
-+++ b/DOCS/man/en/mpv.rst
-@@ -355,8 +355,7 @@
+--- a/DOCS/man/mpv.rst
++++ b/DOCS/man/mpv.rst
+@@ -350,8 +350,7 @@
  
  You can put all of the options in configuration files which will be read every
  time mpv is run. The system-wide configuration file 'mpv.conf' is in your
@@ -17,7 +17,7 @@ Last-Update: 2013-12-15
  User-specific options override system-wide options and options given on the
  command line override either. The syntax of the configuration files is
  ``option=<value>``; everything after a *#* is considered a comment. Options
-@@ -599,7 +598,7 @@
+@@ -591,7 +590,7 @@
  FILES
  =====
  
