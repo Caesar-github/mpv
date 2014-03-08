@@ -12,9 +12,9 @@ Last-Update: 2013-10-30
  Comment[zh]=多媒体播放器
  Icon=mpv
 -TryExec=mpv
--Exec=mpv --really-quiet --force-window -- %F
+-Exec=mpv --no-terminal --force-window -- %U
 +TryExec=/usr/bin/mpv
-+Exec=/usr/bin/mpv --really-quiet --force-window -- %F
++Exec=/usr/bin/mpv --no-terminal --force-window -- %U
  Terminal=false
  NoDisplay=true
  Categories=AudioVideo;Audio;Video;Player;TV;
