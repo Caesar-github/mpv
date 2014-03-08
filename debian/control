@@ -56,6 +56,7 @@ Vcs-Browser: http://anonscm.debian.org/gitweb/?p=pkg-multimedia/mpv.git
 Package: mpv
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}
+Multi-Arch: foreign
 Description: video player based on MPlayer/mplayer2
  mpv is a movie player based on MPlayer and mplayer2. It supports a wide
  variety of video file formats, audio and video codecs, and subtitle types.
