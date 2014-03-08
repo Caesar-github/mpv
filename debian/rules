@@ -27,4 +27,5 @@ override_dh_auto_clean:
 	find . -name "*.pyc" -delete
 
 override_dh_strip:
-	dh_strip --dbg-package=libmpv-dbg
+	dh_strip -pmpv --dbg-package=mpv-dbg
+	dh_strip -plibmpv1 --dbg-package=libmpv-dbg
