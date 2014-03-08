@@ -71,3 +71,39 @@ Description: video player based on MPlayer/mplayer2
   * Screenshot improvements
   * ...
  See mpv(1) for more info regarding changes between MPlayer, mplayer2 and mpv.
+
+Package: libmpv1
+Section: libs
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Pre-Depends: ${misc:Pre-Depends}
+Multi-Arch: same
+Description: video player based on MPlayer/mplayer2 (client library)
+ mpv is a movie player based on MPlayer and mplayer2. It supports a wide
+ variety of video file formats, audio and video codecs, and subtitle types.
+ .
+ This package provides a client library that can be used to embed mpv in other
+ applications.
+
+Package: libmpv-dev
+Section: libdevel
+Architecture: any
+Depends: libmpv1 (= ${binary:Version}), ${misc:Depends}
+Multi-Arch: same
+Description: video player based on MPlayer/mplayer2 (client library dev files)
+ mpv is a movie player based on MPlayer and mplayer2. It supports a wide
+ variety of video file formats, audio and video codecs, and subtitle types.
+ .
+ This package provides development files for libmpv.
+
+Package: libmpv-dbg
+Priority: extra
+Section: debug
+Architecture: any
+Depends: libmpv1 (= ${binary:Version}), ${misc:Depends}
+Multi-Arch: same
+Description: video player based on MPlayer/mplayer2 (client library debug)
+ mpv is a movie player based on MPlayer and mplayer2. It supports a wide
+ variety of video file formats, audio and video codecs, and subtitle types.
+ .
+ This package provides debugging symbols for libmpv.

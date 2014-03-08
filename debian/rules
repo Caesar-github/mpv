@@ -6,17 +6,25 @@ export DEB_BUILD_MAINT_OPTIONS:=hardening=+all # #741439
 	dh $@
 
 override_dh_auto_configure:
-	python ./waf -v --nocache configure \
-		     --prefix=/usr          \
-		     --confdir=/etc/mpv     \
-		     --enable-sdl2
+	python ./waf -v --nocache configure			\
+			--prefix=/usr				\
+			--libdir=/usr/lib/$(DEB_HOST_MULTIARCH)	\
+			--confdir=/etc/mpv			\
+			--enable-sdl2				\
+			--enable-libmpv-shared
 
 override_dh_auto_build:
 	python ./waf -v --nocache build
 
 override_dh_auto_install:
-	python ./waf -v --nocache install --destdir=debian/mpv
+	python ./waf -v --nocache install --destdir=debian/tmp
+
+override_dh_install:
+	dh_install --sourcedir=debian/tmp
 
 override_dh_auto_clean:
 	python ./waf -v --nocache distclean
 	find . -name "*.pyc" -delete
+
+override_dh_strip:
+	dh_strip --dbg-package=libmpv-dbg
