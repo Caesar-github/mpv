@@ -330,7 +330,8 @@ int cocoa_main(mpv_main_fn mpv_main, int argc, char *argv[])
         pthread_create(&playback_thread_id, NULL, playback_thread, &ctx);
 
         [mpv_shared_app().input_ready lock];
-        [mpv_shared_app().input_ready wait];
+        while (!mpv_shared_app().inputContext)
+            [mpv_shared_app().input_ready wait];
         [mpv_shared_app().input_ready unlock];
 
         cocoa_run_runloop();
@@ -388,13 +389,10 @@ void cocoa_stop_runloop(void)
 
 void cocoa_set_input_context(struct input_ctx *input_context)
 {
-    if (input_context) {
-        [mpv_shared_app().input_ready lock];
-        [mpv_shared_app().input_ready signal];
-        [mpv_shared_app().input_ready unlock];
-    }
-
+    [mpv_shared_app().input_ready lock];
     mpv_shared_app().inputContext = input_context;
+    [mpv_shared_app().input_ready signal];
+    [mpv_shared_app().input_ready unlock];
 }
 
 void cocoa_post_fake_event(void)

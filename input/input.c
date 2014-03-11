@@ -237,7 +237,7 @@ static bool queue_has_abort_cmds(struct cmd_queue *queue)
 {
     bool ret = false;
     for (struct mp_cmd *cmd = queue->first; cmd; cmd = cmd->queue_next)
-        if (mp_input_is_abort_cmd(cmd->id)) {
+        if (mp_input_is_abort_cmd(cmd)) {
             ret = true;
             break;
         }
@@ -544,9 +544,9 @@ static void release_down_cmd(struct input_ctx *ictx, bool drop_current)
 
 static int find_key_down(struct input_ctx *ictx, int code)
 {
-    code &= ~(MP_KEY_STATE_UP | MP_KEY_STATE_DOWN);
+    code &= ~(MP_KEY_STATE_UP | MP_KEY_STATE_DOWN | MP_KEY_MODIFIER_MASK);
     for (int j = 0; j < ictx->num_key_down; j++) {
-        if (ictx->key_down[j] == code)
+        if ((ictx->key_down[j] & ~MP_KEY_MODIFIER_MASK) == code)
             return j;
     }
     return -1;
@@ -580,7 +580,7 @@ static bool should_drop_cmd(struct input_ctx *ictx, struct mp_cmd *cmd)
 {
     struct cmd_queue *queue = &ictx->cmd_queue;
     return (queue_count_cmds(queue) >= ictx->key_fifo_size &&
-            (!mp_input_is_abort_cmd(cmd->id) || queue_has_abort_cmds(queue)));
+            (!mp_input_is_abort_cmd(cmd) || queue_has_abort_cmds(queue)));
 }
 
 static void interpret_key(struct input_ctx *ictx, int code, double scale)
