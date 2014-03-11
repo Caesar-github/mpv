@@ -4,7 +4,7 @@ Description: Provide waf and related scripts
 Origin: vendor
 Forwarded: not-needed
 Author: Alessandro Ghedini <ghedo@debian.org>
-Last-Update: 2013-12-29
+Last-Update: 2014-03-11
 
 --- /dev/null
 +++ b/waf
@@ -43,11 +43,11 @@ Last-Update: 2013-12-29
 +
 +import os, sys
 +
-+VERSION="1.7.13"
-+REVISION="5a064c2686fe54de4e11018d22148cfc"
++VERSION="1.7.15"
++REVISION="9c6c439a6416a92b3e844736c4ef3c7b"
 +INSTALL=''
-+C1='#('
-+C2='#$'
++C1='#+'
++C2='#%'
 +cwd = os.getcwd()
 +join = os.path.join
 +
@@ -1289,7 +1289,7 @@ Last-Update: 2013-12-29
 +			self.tools.append({'tool':tool,'tooldir':tooldir,'funs':funs})
 +	def post_recurse(self,node):
 +		super(ConfigurationContext,self).post_recurse(node)
-+		self.hash=hash((self.hash,node.read('rb')))
++		self.hash=Utils.h_list((self.hash,node.read('rb')))
 +		self.files.append(node.abspath())
 +	def eval_rules(self,rules):
 +		self.rules=Utils.to_list(rules)
@@ -1411,7 +1411,7 @@ Last-Update: 2013-12-29
 +	self.msg('Checking for %r'%filename,app)
 --- /dev/null
 +++ b/waflib/Context.py
-@@ -0,0 +1,319 @@
+@@ -0,0 +1,316 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
 +# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
@@ -1419,9 +1419,9 @@ Last-Update: 2013-12-29
 +import os,imp,sys
 +from waflib import Utils,Errors,Logs
 +import waflib.Node
-+HEXVERSION=0x1070d00
-+WAFVERSION="1.7.13"
-+WAFREVISION="daa91dba4b881d86bc25eec90a3745ebaeece835"
++HEXVERSION=0x1070f00
++WAFVERSION="1.7.15"
++WAFREVISION="f63ac9793de2d4eaae884e55d4ff70a761dcbab2"
 +ABI=98
 +DBFILE='.wafpickle-%s-%d-%d'%(sys.platform,sys.hexversion,ABI)
 +APPNAME='APPNAME'
@@ -1474,11 +1474,8 @@ Last-Update: 2013-12-29
 +		except KeyError:
 +			global run_dir
 +			rd=run_dir
-+		class node_class(waflib.Node.Node):
-+			pass
-+		self.node_class=node_class
++		self.node_class=type("Nod3",(waflib.Node.Node,),{})
 +		self.node_class.__module__="waflib.Node"
-+		self.node_class.__name__="Nod3"
 +		self.node_class.ctx=self
 +		self.root=self.node_class('',None)
 +		self.cur_script=None
@@ -2761,7 +2758,7 @@ Last-Update: 2013-12-29
 +		self.free_task_pool()
 --- /dev/null
 +++ b/waflib/Scripting.py
-@@ -0,0 +1,373 @@
+@@ -0,0 +1,375 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
 +# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
@@ -2966,8 +2963,10 @@ Last-Update: 2013-12-29
 +				except OSError ,e:
 +					if e.errno!=errno.ENOENT:
 +						Logs.warn('file %r cannot be removed'%f)
-+		if f.startswith('.waf')and not Options.commands:
-+			shutil.rmtree(f,ignore_errors=True)
++		if not Options.commands:
++			for x in'.waf-1. waf-1. .waf3-1. waf3-1.'.split():
++				if f.startswith(x):
++					shutil.rmtree(f,ignore_errors=True)
 +class Dist(Context.Context):
 +	'''creates an archive containing the project source code'''
 +	cmd='dist'
@@ -3126,7 +3125,7 @@ Last-Update: 2013-12-29
 +			else:
 +				h=0
 +				for f in env['files']:
-+					h=hash((h,Utils.readf(f,'rb')))
++					h=Utils.h_list((h,Utils.readf(f,'rb')))
 +				do_config=h!=env.hash
 +		if do_config:
 +			Options.commands.insert(0,self.cmd)
@@ -3137,7 +3136,7 @@ Last-Update: 2013-12-29
 +Build.BuildContext.execute=autoconfigure(Build.BuildContext.execute)
 --- /dev/null
 +++ b/waflib/Task.py
-@@ -0,0 +1,677 @@
+@@ -0,0 +1,683 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
 +# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
@@ -3803,9 +3802,15 @@ Last-Update: 2013-12-29
 +			prev_sig=bld.task_sigs[self.uid()]
 +			if prev_sig==self.signature():
 +				for x in self.outputs:
++					if not x.is_child_of(bld.bldnode):
++						x.sig=Utils.h_file(x.abspath())
 +					if not x.sig or bld.task_sigs[x.abspath()]!=self.uid():
 +						return RUN_ME
 +				return SKIP_ME
++		except OSError:
++			pass
++		except IOError:
++			pass
 +		except KeyError:
 +			pass
 +		except IndexError:
@@ -3817,7 +3822,7 @@ Last-Update: 2013-12-29
 +	return cls
 --- /dev/null
 +++ b/waflib/TaskGen.py
-@@ -0,0 +1,404 @@
+@@ -0,0 +1,405 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
 +# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
@@ -4142,7 +4147,8 @@ Last-Update: 2013-12-29
 +				lst.append(g(1))
 +				return"%%(%s)s"%g(1)
 +			return''
-+		code=re_m4.sub(repl,code)
++		global re_m4
++		code=getattr(self.generator,'re_m4',re_m4).sub(repl,code)
 +		try:
 +			d=self.generator.dct
 +		except AttributeError:
@@ -4389,7 +4395,7 @@ Last-Update: 2013-12-29
 +	return bld(*k,**kw)
 --- /dev/null
 +++ b/waflib/Tools/c_config.py
-@@ -0,0 +1,744 @@
+@@ -0,0 +1,746 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
 +# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
@@ -4554,6 +4560,13 @@ Last-Update: 2013-12-29
 +		defi=self.env.PKG_CONFIG_DEFINES or{}
 +	for key,val in defi.items():
 +		lst.append('--define-variable=%s=%s'%(key,val))
++	static=False
++	if'args'in kw:
++		args=Utils.to_list(kw['args'])
++		if'--static'in args or'--static-libs'in args:
++			static=True
++		lst+=args
++	lst.extend(Utils.to_list(kw['package']))
 +	if'variables'in kw:
 +		env=kw.get('env',self.env)
 +		uselib=kw.get('uselib_store',kw['package'].upper())
@@ -4565,13 +4578,6 @@ Last-Update: 2013-12-29
 +		if not'okmsg'in kw:
 +			kw['okmsg']='yes'
 +		return
-+	static=False
-+	if'args'in kw:
-+		args=Utils.to_list(kw['args'])
-+		if'--static'in args or'--static-libs'in args:
-+			static=True
-+		lst+=args
-+	lst.extend(Utils.to_list(kw['package']))
 +	ret=self.cmd_and_log(lst)
 +	if not'okmsg'in kw:
 +		kw['okmsg']='yes'
@@ -4719,7 +4725,8 @@ Last-Update: 2013-12-29
 +	if not kw.get('success'):kw['success']=None
 +	if'define_name'in kw:
 +		self.undefine(kw['define_name'])
-+	assert'msg'in kw,'invalid parameters, read http://freehackers.org/~tnagy/wafbook/single.html#config_helpers_c'
++	if not'msg'in kw:
++		self.fatal('missing "msg" in conf.check(...)')
 +@conf
 +def post_check(self,*k,**kw):
 +	is_success=0
@@ -4750,13 +4757,11 @@ Last-Update: 2013-12-29
 +				_vars|=ccroot.USELIB_VARS[x]
 +		for k in _vars:
 +			lk=k.lower()
-+			if k=='INCLUDES':lk='includes'
-+			if k=='DEFINES':lk='defines'
 +			if lk in kw:
 +				val=kw[lk]
 +				if isinstance(val,str):
 +					val=val.rstrip(os.path.sep)
-+				self.env.append_unique(k+'_'+kw['uselib_store'],val)
++				self.env.append_unique(k+'_'+kw['uselib_store'],Utils.to_list(val))
 +	return is_success
 +@conf
 +def check(self,*k,**kw):
@@ -5063,8 +5068,11 @@ Last-Update: 2013-12-29
 +	cmd=cc+['-V']
 +	try:
 +		out,err=conf.cmd_and_log(cmd,output=0)
-+	except Errors.WafError:
-+		conf.fatal('Could not find suncc %r'%cmd)
++	except Errors.WafError ,e:
++		if not(hasattr(e,'returncode')and hasattr(e,'stdout')and hasattr(e,'stderr')):
++			conf.fatal('Could not find suncc %r'%cmd)
++		out=e.stdout
++		err=e.stderr
 +	version=(out or err)
 +	version=version.split('\n')[0]
 +	version_re=re.compile(r'cc:\s+sun\s+(c\+\+|c)\s+(?P<major>\d*)\.(?P<minor>\d*)',re.I).search
@@ -5259,7 +5267,7 @@ Last-Update: 2013-12-29
 +		self.outputs[0].write(txt)
 --- /dev/null
 +++ b/waflib/Tools/c_preproc.py
-@@ -0,0 +1,604 @@
+@@ -0,0 +1,607 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
 +# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
@@ -5508,7 +5516,7 @@ Last-Update: 2013-12-29
 +							if one_param:args.append(one_param)
 +							break
 +						elif v2==',':
-+							if not one_param:raise PreprocError("empty param in funcall %s"%p)
++							if not one_param:raise PreprocError("empty param in funcall %s"%v)
 +							args.append(one_param)
 +							one_param=[]
 +						else:
@@ -5624,7 +5632,10 @@ Last-Update: 2013-12-29
 +		return(name,[params,t[i+1:]])
 +	else:
 +		(p,v)=t[0]
-+		return(v,[[],t[1:]])
++		if len(t)>1:
++			return(v,[[],t[1:]])
++		else:
++			return(v,[[],[('T','')]])
 +re_include=re.compile('^\s*(<(?P<a>.*)>|"(?P<b>.*)")')
 +def extract_include(txt,defs):
 +	m=re_include.search(txt)
@@ -7670,7 +7681,7 @@ Last-Update: 2013-12-29
 +from waflib import Utils,Task,TaskGen,Logs
 +from waflib.TaskGen import feature,before_method,after_method,extension
 +from waflib.Configure import conf
-+INC_REGEX="""(?:^|['">]\s*;)\s*INCLUDE\s+(?:\w+_)?[<"'](.+?)(?=["'>])"""
++INC_REGEX="""(?:^|['">]\s*;)\s*(?:|#\s*)INCLUDE\s+(?:\w+_)?[<"'](.+?)(?=["'>])"""
 +USE_REGEX="""(?:^|;)\s*USE(?:\s+|(?:(?:\s*,\s*(?:NON_)?INTRINSIC)?\s*::))\s*(\w+)"""
 +MOD_REGEX="""(?:^|;)\s*MODULE(?!\s*PROCEDURE)(?:\s+|(?:(?:\s*,\s*(?:NON_)?INTRINSIC)?\s*::))\s*(\w+)"""
 +re_inc=re.compile(INC_REGEX,re.I)
@@ -9821,11 +9832,12 @@ Last-Update: 2013-12-29
 +	make_winapp(self,'WINAPI_FAMILY_DESKTOP_APP')
 --- /dev/null
 +++ b/waflib/Tools/nasm.py
-@@ -0,0 +1,14 @@
+@@ -0,0 +1,16 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
 +# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
 +
++import os
 +import waflib.Tools.asm
 +from waflib.TaskGen import feature
 +@feature('asm')
@@ -9836,6 +9848,7 @@ Last-Update: 2013-12-29
 +	conf.env.AS_TGT_F=['-o']
 +	conf.env.ASLNK_TGT_F=['-o']
 +	conf.load('asm')
++	conf.env.ASMPATH_ST='-I%s'+os.sep
 --- /dev/null
 +++ b/waflib/Tools/perl.py
 @@ -0,0 +1,80 @@
@@ -11805,7 +11818,7 @@ Last-Update: 2013-12-29
 +	finally:
 +		f.close()
 +	return m.digest()
-+if hasattr(os,'O_NOINHERIT'):
++if hasattr(os,'O_NOINHERIT')and sys.hexversion<0x3040000:
 +	def readf_win32(f,m='r',encoding='ISO8859-1'):
 +		flags=os.O_NOINHERIT|os.O_RDONLY
 +		if'b'in m:
@@ -12116,7 +12129,7 @@ Last-Update: 2013-12-29
 +
 --- /dev/null
 +++ b/waflib/ansiterm.py
-@@ -0,0 +1,177 @@
+@@ -0,0 +1,191 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
 +# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
@@ -12125,7 +12138,7 @@ Last-Update: 2013-12-29
 +try:
 +	if not(sys.stderr.isatty()and sys.stdout.isatty()):
 +		raise ValueError('not a tty')
-+	from ctypes import*
++	from ctypes import Structure,windll,c_short,c_ushort,c_ulong,c_int,byref,POINTER,c_long,c_char
 +	class COORD(Structure):
 +		_fields_=[("X",c_short),("Y",c_short)]
 +	class SMALL_RECT(Structure):
@@ -12134,6 +12147,20 @@ Last-Update: 2013-12-29
 +		_fields_=[("Size",COORD),("CursorPosition",COORD),("Attributes",c_short),("Window",SMALL_RECT),("MaximumWindowSize",COORD)]
 +	class CONSOLE_CURSOR_INFO(Structure):
 +		_fields_=[('dwSize',c_ulong),('bVisible',c_int)]
++	windll.kernel32.GetStdHandle.argtypes=[c_ulong]
++	windll.kernel32.GetStdHandle.restype=c_ulong
++	windll.kernel32.GetConsoleScreenBufferInfo.argtypes=[c_ulong,POINTER(CONSOLE_SCREEN_BUFFER_INFO)]
++	windll.kernel32.GetConsoleScreenBufferInfo.restype=c_long
++	windll.kernel32.SetConsoleTextAttribute.argtypes=[c_ulong,c_ushort]
++	windll.kernel32.SetConsoleTextAttribute.restype=c_long
++	windll.kernel32.FillConsoleOutputCharacterA.argtypes=[c_ulong,c_char,c_ulong,POINTER(COORD),POINTER(c_ulong)]
++	windll.kernel32.FillConsoleOutputCharacterA.restype=c_long
++	windll.kernel32.FillConsoleOutputAttribute.argtypes=[c_ulong,c_ushort,c_ulong,POINTER(COORD),POINTER(c_ulong)]
++	windll.kernel32.FillConsoleOutputAttribute.restype=c_long
++	windll.kernel32.SetConsoleCursorPosition.argtypes=[c_ulong,POINTER(COORD)]
++	windll.kernel32.SetConsoleCursorPosition.restype=c_long
++	windll.kernel32.SetConsoleCursorInfo.argtypes=[c_ulong,POINTER(CONSOLE_CURSOR_INFO)]
++	windll.kernel32.SetConsoleCursorInfo.restype=c_long
 +	sbinfo=CONSOLE_SCREEN_BUFFER_INFO()
 +	csinfo=CONSOLE_CURSOR_INFO()
 +	hconsole=windll.kernel32.GetStdHandle(-11)
@@ -12178,8 +12205,8 @@ Last-Update: 2013-12-29
 +			else:
 +				line_start=sbinfo.CursorPosition
 +				line_length=sbinfo.Size.X-sbinfo.CursorPosition.X
-+			chars_written=c_int()
-+			windll.kernel32.FillConsoleOutputCharacterA(self.hconsole,c_wchar(' '),line_length,line_start,byref(chars_written))
++			chars_written=c_ulong()
++			windll.kernel32.FillConsoleOutputCharacterA(self.hconsole,c_char(' '),line_length,line_start,byref(chars_written))
 +			windll.kernel32.FillConsoleOutputAttribute(self.hconsole,sbinfo.Attributes,line_length,line_start,byref(chars_written))
 +		def clear_screen(self,param):
 +			mode=to_int(param,0)
@@ -12194,8 +12221,8 @@ Last-Update: 2013-12-29
 +			else:
 +				clear_start=sbinfo.CursorPosition
 +				clear_length=((sbinfo.Size.X-sbinfo.CursorPosition.X)+sbinfo.Size.X*(sbinfo.Size.Y-sbinfo.CursorPosition.Y))
-+			chars_written=c_int()
-+			windll.kernel32.FillConsoleOutputCharacterA(self.hconsole,c_wchar(' '),clear_length,clear_start,byref(chars_written))
++			chars_written=c_ulong()
++			windll.kernel32.FillConsoleOutputCharacterA(self.hconsole,c_char(' '),clear_length,clear_start,byref(chars_written))
 +			windll.kernel32.FillConsoleOutputAttribute(self.hconsole,sbinfo.Attributes,clear_length,clear_start,byref(chars_written))
 +		def push_cursor(self,param):
 +			sbinfo=self.screen_buffer_info()
@@ -12246,9 +12273,9 @@ Last-Update: 2013-12-29
 +					c=int(c)
 +				else:
 +					c=to_int(c,0)
-+				if c in range(30,38):
++				if 29<c<38:
 +					attr=(attr&0xfff0)|self.rgb2bgr(c-30)
-+				elif c in range(40,48):
++				elif 39<c<48:
 +					attr=(attr&0xff0f)|(self.rgb2bgr(c-40)<<4)
 +				elif c==0:
 +					attr=self.orig_sbinfo.Attributes
