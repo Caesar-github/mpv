@@ -1,5 +1,7 @@
 #!/usr/bin/make -f
 
+export DEB_BUILD_MAINT_OPTIONS:=hardening=+all # #741439
+
 ifeq ($(DEB_HOST_ARCH_CPU),$(filter $(DEB_HOST_ARCH_CPU),powerpc sparc))
 	export CC=gcc-4.8 # fixes #73363
 endif
