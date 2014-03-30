@@ -46,8 +46,6 @@
 #include "libavutil/common.h"
 #include "compat/mpbswap.h"
 
-#include "cdd.h"
-
 #include "common/msg.h"
 
 typedef struct {
@@ -56,7 +54,6 @@ typedef struct {
     int sector;
     int start_sector;
     int end_sector;
-    cd_info_t *cd_info;
 
     // options
     int speed;
@@ -132,8 +129,8 @@ static bool print_cdtext(stream_t *s, int track)
 #else
     cdtext_t *text = cdio_get_cdtext(p->cd->p_cdio);
 #endif
+    int header = 0;
     if (text) {
-        MP_INFO(s, "CD-Text (%s):\n", track ? "track" : "CD");
         for (int i = 0; i < sizeof(cdtext_name) / sizeof(cdtext_name[0]); i++) {
             const char *name = cdtext_name[i];
 #ifdef OLD_API
@@ -141,8 +138,12 @@ static bool print_cdtext(stream_t *s, int track)
 #else
             const char *value = cdtext_get_const(text, i, track);
 #endif
-            if (name && value)
+            if (name && value) {
+                if (!header)
+                    MP_INFO(s, "CD-Text (%s):\n", track ? "track" : "CD");
+                header = 1;
                 MP_INFO(s, "  %s: '%s'\n", name, value);
+            }
         }
         return true;
     }
@@ -151,17 +152,8 @@ static bool print_cdtext(stream_t *s, int track)
 
 static void print_track_info(stream_t *s, int track)
 {
-    cdda_priv* p = (cdda_priv*)s->priv;
-    cd_track_t *cd_track = cd_info_get_track(p->cd_info, track);
-    if( cd_track!=NULL ) {
-        MP_INFO(s, "\n%s\n", cd_track->name);
-        MP_INFO(s, "ID_CDDA_TRACK=%d\n",
-               cd_track->track_nb);
-    }
-    if (print_cdtext(s, track)) {
-        // hack for term OSD overwriting the last line of CDTEXT
-        MP_INFO(s, "\n");
-    }
+    MP_INFO(s, "Switched to track %d\n", track);
+    print_cdtext(s, track);
 }
 
 static void cdparanoia_callback(long int inpos, paranoia_cb_mode_t function)
@@ -242,7 +234,6 @@ static void close_cdda(stream_t *s)
     cdda_priv *p = (cdda_priv *)s->priv;
     paranoia_free(p->cdp);
     cdda_close(p->cd);
-    cd_info_free(p->cd_info);
     free(p);
 }
 
@@ -273,37 +264,18 @@ static int control(stream_t *stream, int cmd, void *arg)
         *(unsigned int *)arg = end_track + 1 - start_track;
         return STREAM_OK;
     }
-    case STREAM_CTRL_SEEK_TO_CHAPTER:
+    case STREAM_CTRL_GET_CHAPTER_TIME:
     {
-        int r;
-        unsigned int track = *(unsigned int *)arg;
+        int track = *(double *)arg;
         int start_track = get_track_by_sector(p, p->start_sector);
         int end_track = get_track_by_sector(p, p->end_sector);
-        int seek_sector;
-        if (start_track == -1 || end_track == -1)
+        track += start_track + 1;
+        if (track > end_track)
             return STREAM_ERROR;
-        track += start_track;
-        if (track > end_track) {
-            seek(stream, (p->end_sector + 1) * CDIO_CD_FRAMESIZE_RAW);
-            // seeking beyond EOF should not be an error,
-            // the cache cannot handle changing stream pos and
-            // returning error.
-            return STREAM_OK;
-        }
-        seek_sector = track == 0 ? p->start_sector
-                      : p->cd->disc_toc[track].dwStartSector;
-        r = seek(stream, seek_sector * CDIO_CD_FRAMESIZE_RAW);
-        if (r)
-            return STREAM_OK;
-        break;
-    }
-    case STREAM_CTRL_GET_CURRENT_CHAPTER:
-    {
-        int start_track = get_track_by_sector(p, p->start_sector);
-        int cur_track = get_track_by_sector(p, p->sector);
-        if (start_track == -1 || cur_track == -1)
-            return STREAM_ERROR;
-        *(unsigned int *)arg = cur_track - start_track;
+        int64_t sector = p->cd->disc_toc[track].dwStartSector;
+        int64_t pos = sector * (CDIO_CD_FRAMESIZE_RAW + 1) - 1;
+        // Assume standard audio CD: 44.1khz, 2 channels, s16 samples
+        *(double *)arg = pos / (44100.0 * 2 * 2);
         return STREAM_OK;
     }
     }
@@ -317,10 +289,7 @@ static int open_cdda(stream_t *st, int m)
     int mode = p->paranoia_mode;
     int offset = p->toc_offset;
     cdrom_drive_t *cdd = NULL;
-    cd_info_t *cd_info;
-    unsigned int audiolen = 0;
     int last_track;
-    int i;
 
     if (m != STREAM_READ) {
         return STREAM_UNSUPPORTED;
@@ -355,29 +324,9 @@ static int open_cdda(stream_t *st, int m)
         return STREAM_ERROR;
     }
 
-    cd_info = cd_info_new();
-    MP_INFO(st, "Found audio CD with %d tracks.\n",
-            (int)cdda_tracks(cdd));
-    for (i = 0; i < cdd->tracks; i++) {
-        char track_name[80];
-        long sec = cdda_track_firstsector(cdd, i + 1);
-        long off = cdda_track_lastsector(cdd, i + 1) - sec + 1;
-
-        sprintf(track_name, "Track %d", i + 1);
-        cd_info_add_track(cd_info, track_name, i + 1,
-                          (unsigned int)(off / (60 * 75)),
-                          (unsigned int)((off / 75) % 60),
-                          (unsigned int)(off % 75), sec, off);
-        audiolen += off;
-    }
-    cd_info->min  = (unsigned int)(audiolen / (60 * 75));
-    cd_info->sec  = (unsigned int)((audiolen / 75) % 60);
-    cd_info->msec = (unsigned int)(audiolen % 75);
-
     priv = malloc(sizeof(cdda_priv));
     memset(priv, 0, sizeof(cdda_priv));
     priv->cd = cdd;
-    priv->cd_info = cd_info;
 
     if (p->toc_bias)
         offset -= cdda_track_firstsector(cdd, 1);
@@ -411,7 +360,6 @@ static int open_cdda(stream_t *st, int m)
     if (priv->cdp == NULL) {
         cdda_close(cdd);
         free(priv);
-        cd_info_free(cd_info);
         return STREAM_ERROR;
     }
 

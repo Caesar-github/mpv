@@ -1152,7 +1152,9 @@ OPTIONS
     You can get the list of allowed codecs with ``mpv --vd=help``. Remove the
     prefix, e.g. instead of ``lavc:h264`` use ``h264``.
 
-    By default this is set to ``h264,vc1,wmv3``.
+    By default this is set to ``h264,vc1,wmv3``. Note that the hardware
+    acceleration special codecs like ``h264_vdpau`` are not relevant anymore,
+    and in fact have been removed from Libav in this form.
 
     This is usually only needed with broken GPUs, where a codec is reported
     as supported, but decoding causes more problems than it solves.
@@ -1780,7 +1782,7 @@ OPTIONS
     libquvi 0.9.x:
 
         The following explanations are relevant:
-        `<http://quvi.sourceforge.net/doc/0.9/glossary_termino.html#m_stream_id>`_
+        `<http://quvi.sourceforge.net/r/api/0.9/glossary_termino.html#m_stream_id>`_
 
     The ``quvi-format`` property can be used at runtime to cycle through the
     list of formats. Unfortunately, this is slow. On libquvi 0.4.x, this

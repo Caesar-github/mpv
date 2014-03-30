@@ -140,7 +140,10 @@ void mp_handle_nav(struct MPContext *mpctx)
         case MP_NAV_EVENT_RESET_ALL: {
             mpctx->stop_play = PT_RELOAD_DEMUXER;
             MP_VERBOSE(nav, "reload\n");
-            break;
+            // return immediately.
+            // other events should be handled after reloaded.
+            talloc_free(ev);
+            return;
         }
         case MP_NAV_EVENT_RESET: {
             nav->nav_still_frame = 0;
@@ -237,6 +240,8 @@ void mp_nav_get_highlight(struct osd_state *osd, struct mp_osd_res res,
         talloc_free(sub->bitmap);
         sub->bitmap = talloc_array(sub, uint32_t, sizes[0] * sizes[1]);
         memset(sub->bitmap, 0x80, talloc_get_size(sub->bitmap));
+        nav->subsize[0] = sizes[0];
+        nav->subsize[1] = sizes[1];
     }
 
     sub->x = nav->highlight[0];
