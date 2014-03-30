@@ -330,9 +330,16 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam,
                 // Window dragging hack
                 ReleaseCapture();
                 SendMessage(hWnd, WM_NCLBUTTONDOWN, HTCAPTION, 0);
+                mp_input_put_key(vo->input_ctx, MP_MOUSE_BTN0 |
+                                                MP_KEY_STATE_UP);
                 return 0;
             }
         }
+
+        if (mouse_button & MP_KEY_STATE_DOWN)
+            SetCapture(w32->window);
+        else
+            ReleaseCapture();
     }
 
     return DefWindowProcW(hWnd, message, wParam, lParam);
