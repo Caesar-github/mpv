@@ -1,10 +1,10 @@
-mpv (0.3.7-1) UNRELEASED; urgency=medium
+mpv (0.3.7-1) unstable; urgency=medium
 
   * New upstream release
   * Enable all hardening options.
     Thanks to Simon Ruderich for the patch (Closes: #741439)
 
- -- Alessandro Ghedini <ghedo@debian.org>  Sun, 30 Mar 2014 19:51:06 +0200
+ -- Alessandro Ghedini <ghedo@debian.org>  Sun, 30 Mar 2014 20:00:42 +0200
 
 mpv (0.3.6-1) unstable; urgency=medium
 
