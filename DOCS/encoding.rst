@@ -134,9 +134,9 @@ What works
 * Deinterlacing/Inverse Telecine with any of mpv's filters for that
 * Audio file converting: mpv -o outfile.mp3 infile.flac -no-video -oac
   libmp3lame -oacopts ab=320k
-* inverse telecine filters (confirmed working: detc, pullup, filmdint)
 
 What does not work yet
+======================
 
 * 3-pass encoding (ensuring constant total size and bitrate constraints while
   having VBR audio; mencoder calls this "frameno")
