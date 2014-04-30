@@ -115,6 +115,8 @@ static const vf_info_t *const filter_list[] = {
     NULL
 };
 
+static void vf_uninit_filter(vf_instance_t *vf);
+
 static bool get_desc(struct m_obj_desc *dst, int index)
 {
     if (index >= MP_ARRAY_SIZE(filter_list) - 1)
@@ -268,6 +270,17 @@ static vf_instance_t *vf_open_filter(struct vf_chain *c, const char *name,
         p += sprintf(p, " %s=%s", args[2 * i], args[2 * i + 1]);
     MP_INFO(c, "Opening video filter: [%s]\n", str);
     return vf_open(c, name, args);
+}
+
+void vf_remove_filter(struct vf_chain *c, struct vf_instance *vf)
+{
+    assert(vf != c->first && vf != c->last); // these are sentinels
+    struct vf_instance *prev = c->first;
+    while (prev && prev->next != vf)
+        prev = prev->next;
+    assert(prev); // not inserted
+    prev->next = vf->next;
+    vf_uninit_filter(vf);
 }
 
 struct vf_instance *vf_append_filter(struct vf_chain *c, const char *name,
@@ -439,6 +452,7 @@ static void update_formats(struct vf_chain *c, struct vf_instance *vf,
         MP_INFO(c, "Using conversion filter.\n");
         struct vf_instance *conv = vf_open(c, "scale", NULL);
         if (conv) {
+            conv->autoinserted = true;
             conv->next = vf->next;
             vf->next = conv;
             update_formats(c, conv, vf->last_outfmts);
@@ -492,6 +506,12 @@ int vf_reconfig(struct vf_chain *c, const struct mp_image_params *params)
 {
     struct mp_image_params cur = *params;
     int r = 0;
+    for (struct vf_instance *vf = c->first; vf; ) {
+        struct vf_instance *next = vf->next;
+        if (vf->autoinserted)
+            vf_remove_filter(c, vf);
+        vf = next;
+    }
     c->first->fmt_in = *params;
     uint8_t unused[IMGFMT_END - IMGFMT_START];
     update_formats(c, c->first, unused);
