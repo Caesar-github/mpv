@@ -1,3 +1,9 @@
+mpv (0.3.9-2) unstable; urgency=low
+
+  * Merge branch experimental
+
+ -- Reinhard Tartler <siretart@tauware.de>  Sun, 11 May 2014 15:27:12 -0400
+
 mpv (0.3.9-1) unstable; urgency=medium
 
   * New upstream release
@@ -37,6 +43,12 @@ mpv (0.3.4-1) unstable; urgency=medium
   * Refresh patches
 
  -- Alessandro Ghedini <ghedo@debian.org>  Sat, 01 Feb 2014 12:20:29 +0100
+
+mpv (0.3.3-1+exp1) experimental; urgency=low
+
+  * Rebuild against libav10
+
+ -- Reinhard Tartler <siretart@tauware.de>  Fri, 17 Jan 2014 03:35:15 +0000
 
 mpv (0.3.3-1) unstable; urgency=medium
 
