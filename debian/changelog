@@ -1,8 +1,13 @@
-mpv (0.3.9-2) UNRELEASED; urgency=low
+mpv (0.3.9-2) unstable; urgency=low
 
+  [ Reinhard Tartler ]
   * Merge branch experimental
 
- -- Reinhard Tartler <siretart@tauware.de>  Sun, 11 May 2014 15:27:12 -0400
+  [ Alessandro Ghedini ]
+  * Remove forced gcc-4.8 build depends on powerpc
+  * Rebuild against libav10
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Mon, 12 May 2014 12:06:15 +0200
 
 mpv (0.3.9-1) unstable; urgency=medium
 
