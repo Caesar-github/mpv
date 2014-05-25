@@ -716,6 +716,7 @@ radio_and_tv_features = [
     }, {
         'name': '--tv-v4l2',
         'desc': 'Video4Linux2 TV interface',
+        'deps': [ 'tv' ],
         'func': check_cc(header_name=['sys/time.h', 'linux/videodev2.h'])
     }, {
         'name': '--libv4l2',
@@ -818,7 +819,7 @@ def configure(ctx):
     ctx.load('detections.devices')
 
     if ctx.env.DEST_OS in ('freebsd', 'openbsd'):
-        ctx.env.CFLAGS += ['-I/usr/local/include']
+        ctx.env.CFLAGS += ['-I.', '-I..', '-I/usr/local/include']
         ctx.env.LINKFLAGS += ['-L/usr/local/lib']
 
     if ctx.env.DEST_OS == 'netbsd':
