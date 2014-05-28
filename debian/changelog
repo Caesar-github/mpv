@@ -1,3 +1,9 @@
+mpv (0.3.10-2) unstable; urgency=medium
+
+  * Switch to Lua 5.2
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Wed, 28 May 2014 21:45:06 +0200
+
 mpv (0.3.10-1) unstable; urgency=medium
 
   * New upstream release
