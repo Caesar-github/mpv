@@ -5,7 +5,6 @@ Maintainer: Debian Multimedia Maintainers <pkg-multimedia-maintainers@lists.alio
 Uploaders: Alessandro Ghedini <ghedo@debian.org>,
  Reinhard Tartler <siretart@tauware.de>
 Build-Depends: debhelper (>= 9),
- gcc-4.8 [sparc],
  ladspa-sdk,
  libasound2-dev [linux-any],
  libass-dev,
