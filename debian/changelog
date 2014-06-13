@@ -1,3 +1,9 @@
+mpv (0.3.10-3) UNRELEASED; urgency=medium
+
+  * Drop gcc-4.8 Build-Depends for sparc (Closes: #751321)
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Fri, 13 Jun 2014 12:08:11 +0200
+
 mpv (0.3.10-2) unstable; urgency=medium
 
   * Switch to Lua 5.2
