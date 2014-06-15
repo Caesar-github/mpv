@@ -44,10 +44,6 @@
 
 #include <libavcodec/avcodec.h>
 
-#if MP_INPUT_BUFFER_PADDING_SIZE < FF_INPUT_BUFFER_PADDING_SIZE
-#error MP_INPUT_BUFFER_PADDING_SIZE is too small!
-#endif
-
 // Demuxer list
 extern const struct demuxer_desc demuxer_desc_edl;
 extern const struct demuxer_desc demuxer_desc_cue;
@@ -117,7 +113,7 @@ static void packet_destroy(void *ptr)
 {
     struct demux_packet *dp = ptr;
     talloc_free(dp->avpacket);
-    free(dp->allocation);
+    av_free(dp->allocation);
 }
 
 static struct demux_packet *create_packet(size_t len)
@@ -143,12 +139,12 @@ static struct demux_packet *create_packet(size_t len)
 struct demux_packet *new_demux_packet(size_t len)
 {
     struct demux_packet *dp = create_packet(len);
-    dp->buffer = malloc(len + MP_INPUT_BUFFER_PADDING_SIZE);
+    dp->buffer = av_malloc(len + FF_INPUT_BUFFER_PADDING_SIZE);
     if (!dp->buffer) {
         fprintf(stderr, "Memory allocation failure!\n");
         abort();
     }
-    memset(dp->buffer + len, 0, MP_INPUT_BUFFER_PADDING_SIZE);
+    memset(dp->buffer + len, 0, FF_INPUT_BUFFER_PADDING_SIZE);
     dp->allocation = dp->buffer;
     return dp;
 }
@@ -168,21 +164,11 @@ struct demux_packet *new_demux_packet_from(void *data, size_t len)
     return dp;
 }
 
-void resize_demux_packet(struct demux_packet *dp, size_t len)
+void demux_packet_shorten(struct demux_packet *dp, size_t len)
 {
-    if (len > 1000000000) {
-        fprintf(stderr, "Attempt to realloc demux packet over 1 GB!\n");
-        abort();
-    }
-    assert(dp->allocation);
-    dp->buffer = realloc(dp->buffer, len + MP_INPUT_BUFFER_PADDING_SIZE);
-    if (!dp->buffer) {
-        fprintf(stderr, "Memory allocation failure!\n");
-        abort();
-    }
-    memset(dp->buffer + len, 0, MP_INPUT_BUFFER_PADDING_SIZE);
+    assert(len <= dp->len);
     dp->len = len;
-    dp->allocation = dp->buffer;
+    memset(dp->buffer + dp->len, 0, FF_INPUT_BUFFER_PADDING_SIZE);
 }
 
 void free_demux_packet(struct demux_packet *dp)

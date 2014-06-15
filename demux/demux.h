@@ -80,9 +80,6 @@ enum demux_check {
     DEMUX_CHECK_NORMAL, // normal, safe detection
 };
 
-// demux_lavf can pass lavf buffers using FF_INPUT_BUFFER_PADDING_SIZE instead
-#define MP_INPUT_BUFFER_PADDING_SIZE 16
-
 #define MAX_SH_STREAMS 256
 
 struct demuxer;
@@ -210,7 +207,7 @@ struct demux_packet *new_demux_packet(size_t len);
 // data must already have suitable padding
 struct demux_packet *new_demux_packet_fromdata(void *data, size_t len);
 struct demux_packet *new_demux_packet_from(void *data, size_t len);
-void resize_demux_packet(struct demux_packet *dp, size_t len);
+void demux_packet_shorten(struct demux_packet *dp, size_t len);
 void free_demux_packet(struct demux_packet *dp);
 struct demux_packet *demux_copy_packet(struct demux_packet *dp);
 
