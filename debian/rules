@@ -11,6 +11,7 @@ override_dh_auto_configure:
 			--libdir=/usr/lib/$(DEB_HOST_MULTIARCH)	\
 			--confdir=/etc/mpv			\
 			--enable-sdl2				\
+			--enable-zsh-comp			\
 			--enable-libmpv-shared
 
 override_dh_auto_build:
