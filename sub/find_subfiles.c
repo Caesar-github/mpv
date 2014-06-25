@@ -13,9 +13,9 @@
 #include "common/common.h"
 #include "sub/find_subfiles.h"
 
-static const char *sub_exts[] = {"utf", "utf8", "utf-8", "idx", "sub", "srt",
-                                 "smi", "rt", "txt", "ssa", "aqt", "jss",
-                                 "js", "ass", NULL};
+static const char *const sub_exts[] = {"utf", "utf8", "utf-8", "idx", "sub", "srt",
+                                       "smi", "rt", "txt", "ssa", "aqt", "jss",
+                                       "js", "ass", NULL};
 
 static bool is_sub_ext(bstr ext)
 {
@@ -40,6 +40,11 @@ static struct bstr get_ext(struct bstr s)
     if (dotpos < 0)
         return (struct bstr){NULL, 0};
     return bstr_splice(s, dotpos + 1, s.len);
+}
+
+bool mp_might_be_subtitle_file(const char *filename)
+{
+    return is_sub_ext(get_ext(bstr0(filename)));
 }
 
 static int compare_sub_filename(const void *a, const void *b)
@@ -151,12 +156,12 @@ static void append_dir_subtitles(struct mpv_global *global,
         if (!prio && bstrcmp(tmp_fname_trim, f_fname_trim) == 0)
             prio = 3; // matches the movie name
         if (!prio && bstr_find(tmp_fname_trim, f_fname_trim) >= 0
-            && opts->sub_match_fuzziness >= 1)
+            && opts->sub_auto >= 1)
             prio = 2; // contains the movie name
         if (!prio) {
             // doesn't contain the movie name
             // don't try in the mplayer subtitle directory
-            if (!limit_fuzziness && opts->sub_match_fuzziness >= 2) {
+            if (!limit_fuzziness && opts->sub_auto >= 2) {
                 prio = 1;
             }
         }

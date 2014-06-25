@@ -28,11 +28,18 @@
 
 #include "common/common.h"
 #include "af.h"
+#include "demux/demux.h"
 
 struct priv {
-    float level;                // Gain level for each channel
+    float level;                // User-specified gain level for each channel
+    float rgain;                // Replaygain level
+    int rgain_track;            // Enable/disable track based replaygain
+    int rgain_album;            // Enable/disable album based replaygain
+    float rgain_preamp;         // Set replaygain pre-amplification
+    int rgain_clip;             // Enable/disable clipping prevention
     int soft;                   // Enable/disable soft clipping
     int fast;                   // Use fix-point volume control
+    int detach;                 // Detach if gain volume is neutral
     float cfg_volume;
 };
 
@@ -54,6 +61,26 @@ static int control(struct af_instance *af, int cmd, void *arg)
         }
         if (af_fmt_is_planar(in->format))
             mp_audio_set_format(af->data, af_fmt_to_planar(af->data->format));
+        s->rgain = 1.0;
+        if ((s->rgain_track || s->rgain_album) && af->replaygain_data) {
+            float gain, peak;
+
+            if (s->rgain_track) {
+                gain = af->replaygain_data->track_gain;
+                peak = af->replaygain_data->track_peak;
+            } else {
+                gain = af->replaygain_data->album_gain;
+                peak = af->replaygain_data->album_peak;
+            }
+
+            gain += s->rgain_preamp;
+            af_from_dB(1, &gain, &s->rgain, 20.0, -200.0, 60.0);
+
+            if (!s->rgain_clip) // clipping prevention
+                s->rgain = MPMIN(s->rgain, 1.0 / peak);
+        }
+        if (s->detach && fabs(s->level + s->rgain - 2.0) < 0.00001)
+            return AF_DETACH;
         return af_test_output(af, in);
     }
     case AF_CONTROL_SET_VOLUME:
@@ -70,9 +97,11 @@ static void filter_plane(struct af_instance *af, void *ptr, int num_samples)
 {
     struct priv *s = af->priv;
 
+    float level = s->level + s->rgain - 1.0;
+
     if (af_fmt_from_planar(af->data->format) == AF_FORMAT_S16) {
         int16_t *a = ptr;
-        int vol = 256.0 * s->level;
+        int vol = 256.0 * level;
         if (vol != 256) {
             for (int i = 0; i < num_samples; i++) {
                 int x = (a[i] * vol) >> 8;
@@ -81,7 +110,7 @@ static void filter_plane(struct af_instance *af, void *ptr, int num_samples)
         }
     } else if (af_fmt_from_planar(af->data->format) == AF_FORMAT_FLOAT) {
         float *a = ptr;
-        float vol = s->level;
+        float vol = level;
         if (vol != 1.0) {
             for (int i = 0; i < num_samples; i++) {
                 float x = a[i] * vol;
@@ -111,7 +140,7 @@ static int af_open(struct af_instance *af)
 #define OPT_BASE_STRUCT struct priv
 
 // Description of this filter
-struct af_info af_info_volume = {
+const struct af_info af_info_volume = {
     .info = "Volume control audio filter",
     .name = "volume",
     .flags = AF_FLAGS_NOT_REENTRANT,
@@ -119,8 +148,13 @@ struct af_info af_info_volume = {
     .priv_size = sizeof(struct priv),
     .options = (const struct m_option[]) {
         OPT_FLOATRANGE("volumedb", cfg_volume, 0, -200, 60),
+        OPT_FLAG("replaygain-track", rgain_track, 0),
+        OPT_FLAG("replaygain-album", rgain_album, 0),
+        OPT_FLOATRANGE("replaygain-preamp", rgain_preamp, 0, -15, 15),
+        OPT_FLAG("replaygain-clip", rgain_clip, 0),
         OPT_FLAG("softclip", soft, 0),
         OPT_FLAG("s16", fast, 0),
+        OPT_FLAG("detach", detach, 0),
         {0}
     },
 };

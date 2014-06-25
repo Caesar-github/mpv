@@ -163,14 +163,10 @@ int audio_init_best_codec(struct dec_audio *d_audio, char *audio_decoders)
         d_audio->decoder_desc =
             talloc_asprintf(d_audio, "%s [%s:%s]", decoder->desc, decoder->family,
                             decoder->decoder);
-        MP_INFO(d_audio, "Selected audio codec: %s\n",
-                d_audio->decoder_desc);
+        MP_VERBOSE(d_audio, "Selected audio codec: %s\n", d_audio->decoder_desc);
         MP_VERBOSE(d_audio, "AUDIO: %d Hz, %d ch, %s\n",
                    d_audio->decoded.rate, d_audio->decoded.channels.num,
                    af_fmt_to_str(d_audio->decoded.format));
-        MP_SMODE(d_audio, "ID_AUDIO_BITRATE=%d\nID_AUDIO_RATE=%d\n" "ID_AUDIO_NCH=%d\n",
-                 d_audio->i_bps * 8, d_audio->decoded.rate,
-                 d_audio->decoded.channels.num);
     } else {
         MP_ERR(d_audio, "Failed to initialize an audio decoder for codec '%s'.\n",
                d_audio->header->codec ? d_audio->header->codec : "<unknown>");
@@ -212,6 +208,10 @@ int audio_init_filters(struct dec_audio *d_audio, int in_samplerate,
     afs->output.rate = *out_samplerate;
     mp_audio_set_channels(&afs->output, out_channels);
     mp_audio_set_format(&afs->output, *out_format);
+
+    afs->metadata = d_audio->metadata;
+
+    afs->replaygain_data = d_audio->replaygain_data;
 
     char *s_from = mp_audio_config_to_str(&afs->input);
     char *s_to = mp_audio_config_to_str(&afs->output);
@@ -313,7 +313,9 @@ int audio_decode(struct dec_audio *d_audio, struct mp_audio_buffer *outbuf,
     double filter_multiplier = af_calc_filter_multiplier(d_audio->afilter);
 
     int prev_buffered = -1;
-    while (minsamples >= 0) {
+    int res = 0;
+    MP_STATS(d_audio, "start audio");
+    while (res >= 0 && minsamples >= 0) {
         int buffered = mp_audio_buffer_samples(outbuf);
         if (minsamples < buffered || buffered == prev_buffered)
             break;
@@ -339,11 +341,10 @@ int audio_decode(struct dec_audio *d_audio, struct mp_audio_buffer *outbuf,
          * of buffering in filters */
         huge_filter_buffer = 1;
 
-        int res = filter_n_bytes(d_audio, outbuf, decsamples);
-        if (res < 0)
-            return res;
+        res = filter_n_bytes(d_audio, outbuf, decsamples);
     }
-    return 0;
+    MP_STATS(d_audio, "end audio");
+    return res;
 }
 
 void audio_reset_decoding(struct dec_audio *d_audio)

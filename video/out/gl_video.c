@@ -55,7 +55,7 @@ static const char vo_opengl_shaders[] =
 
 // lscale/cscale arguments that map directly to shader filter routines.
 // Note that the convolution filters are not included in this list.
-static const char *fixed_scale_filters[] = {
+static const char *const fixed_scale_filters[] = {
     "bilinear",
     "bicubic_fast",
     "sharpen3",
@@ -73,7 +73,7 @@ struct lut_tex_format {
 // This must match the weightsN functions in the shader.
 // Each entry uses (size+3)/4 pixels per LUT entry, and size/pixels components
 // per pixel.
-struct lut_tex_format lut_tex_formats[] = {
+const struct lut_tex_format lut_tex_formats[] = {
     [2] =  {1, GL_RG16F,   GL_RG},
     [4] =  {1, GL_RGBA16F, GL_RGBA},
     [6] =  {2, GL_RGB16F,  GL_RGB},
@@ -153,7 +153,9 @@ struct gl_video {
     GLuint osd_programs[SUBBITMAP_COUNT];
     GLuint indirect_program, scale_sep_program, final_program;
 
+    struct osd_state *osd_state;
     struct mpgl_osd *osd;
+    double osd_pts;
 
     GLuint lut_3d_texture;
     bool use_lut_3d;
@@ -190,11 +192,14 @@ struct gl_video {
     // state for luma (0) and chroma (1) scalers
     struct scaler scalers[2];
 
-    struct mp_csp_details colorspace;
     struct mp_csp_equalizer video_eq;
     struct mp_image_params image_params;
 
+    // Source and destination color spaces for the CMS matrix
+    struct mp_csp_primaries csp_src, csp_dest;
+
     struct mp_rect src_rect;    // displayed part of the source video
+    struct mp_rect src_rect_rot;// compensated for optional rotation
     struct mp_rect dst_rect;    // video rectangle on output window
     struct mp_osd_res osd_rect; // OSD size/margins
     int vp_x, vp_y, vp_w, vp_h; // GL viewport
@@ -220,10 +225,10 @@ struct fmt_entry {
 
 // Very special formats, for which OpenGL happens to have direct support
 static const struct fmt_entry mp_to_gl_formats[] = {
-    {IMGFMT_RGB15,   GL_RGBA,  GL_RGBA, GL_UNSIGNED_SHORT_1_5_5_5_REV},
-    {IMGFMT_RGB16,   GL_RGB,   GL_RGB,  GL_UNSIGNED_SHORT_5_6_5_REV},
-    {IMGFMT_BGR15,   GL_RGBA,  GL_BGRA, GL_UNSIGNED_SHORT_1_5_5_5_REV},
-    {IMGFMT_BGR16,   GL_RGB,   GL_RGB,  GL_UNSIGNED_SHORT_5_6_5},
+    {IMGFMT_BGR555,  GL_RGBA,  GL_RGBA, GL_UNSIGNED_SHORT_1_5_5_5_REV},
+    {IMGFMT_BGR565,  GL_RGB,   GL_RGB,  GL_UNSIGNED_SHORT_5_6_5_REV},
+    {IMGFMT_RGB555,  GL_RGBA,  GL_BGRA, GL_UNSIGNED_SHORT_1_5_5_5_REV},
+    {IMGFMT_RGB565,  GL_RGB,   GL_RGB,  GL_UNSIGNED_SHORT_5_6_5},
     {0},
 };
 
@@ -271,7 +276,7 @@ static const struct packed_fmt_entry mp_packed_formats[] = {
     {0},
 };
 
-static const char *osd_shaders[SUBBITMAP_COUNT] = {
+static const char *const osd_shaders[SUBBITMAP_COUNT] = {
     [SUBBITMAP_LIBASS] = "frag_osd_libass",
     [SUBBITMAP_RGBA] =   "frag_osd_rgba",
 };
@@ -291,21 +296,23 @@ const struct gl_video_opts gl_video_opts_hq_def = {
     .npot = 1,
     .dither_depth = 0,
     .dither_size = 6,
-    .fbo_format = GL_RGB16,
+    .fbo_format = GL_RGBA16,
     .scale_sep = 1,
-    .scalers = { "lanczos2", "bilinear" },
+    .scalers = { "spline36", "bilinear" },
     .scaler_params = {NAN, NAN},
     .alpha_mode = 2,
 };
 
 static int validate_scaler_opt(struct mp_log *log, const m_option_t *opt,
                                struct bstr name, struct bstr param);
+static void draw_osd_cb(void *ctx, struct sub_bitmaps *imgs);
 
 #define OPT_BASE_STRUCT struct gl_video_opts
 const struct m_sub_options gl_video_conf = {
-    .opts = (m_option_t[]) {
-        OPT_FLAG("gamma", gamma, 0),
+    .opts = (const m_option_t[]) {
+        OPT_FLOATRANGE("gamma", gamma, 0, 0.0, 10.0),
         OPT_FLAG("srgb", srgb, 0),
+        OPT_FLAG("approx-gamma", approx_gamma, 0),
         OPT_FLAG("npot", npot, 0),
         OPT_FLAG("pbo", pbo, 0),
         OPT_CHOICE("stereo", stereo_mode, 0,
@@ -423,12 +430,12 @@ static void draw_triangles(struct gl_video *p, struct vertex *vb, int vert_count
 // tx0, ty0, tx1, ty1 = source texture coordinates (usually in pixels)
 // texture_w, texture_h = size of the texture, or an inverse factor
 // color = optional color for all vertices, NULL for opaque white
-// flip = flip vertically
+// flags = bits 0-1: rotate, bits 2: flip vertically
 static void write_quad(struct vertex *va,
                        float x0, float y0, float x1, float y1,
                        float tx0, float ty0, float tx1, float ty1,
                        float texture_w, float texture_h,
-                       const uint8_t color[4], GLenum target, bool flip)
+                       const uint8_t color[4], GLenum target, int flags)
 {
     static const uint8_t white[4] = { 255, 255, 255, 255 };
 
@@ -442,7 +449,7 @@ static void write_quad(struct vertex *va,
         ty1 /= texture_h;
     }
 
-    if (flip) {
+    if (flags & 4) {
         float tmp = ty0;
         ty0 = ty1;
         ty1 = tmp;
@@ -456,6 +463,14 @@ static void write_quad(struct vertex *va,
     va[4] = va[2];
     va[5] = va[1];
 #undef COLOR_INIT
+    int rot = flags & 3;
+    while (rot--) {
+        static const int perm[6] = {1, 3, 0, 2, 0, 3};
+        struct vertex vb[6];
+        memcpy(vb, va, sizeof(vb));
+        for (int n = 0; n < 6; n++)
+            memcpy(va[n].texcoord, vb[perm[n]].texcoord, sizeof(float[2]));
+    }
 }
 
 static bool fbotex_init(struct gl_video *p, struct fbotex *fbo, int w, int h,
@@ -534,8 +549,13 @@ static void update_uniforms(struct gl_video *p, GLuint program)
 
     gl->UseProgram(program);
 
+    struct mp_csp_details csp = MP_CSP_DETAILS_DEFAULTS;
+    csp.levels_in = p->image_params.colorlevels;
+    csp.levels_out = p->image_params.outputlevels;
+    csp.format = p->image_params.colorspace;
+
     struct mp_csp_params cparams = {
-        .colorspace = p->colorspace,
+        .colorspace = csp,
         .input_bits = p->plane_bits,
         .texture_bits = (p->plane_bits + 7) & ~7,
     };
@@ -555,9 +575,17 @@ static void update_uniforms(struct gl_video *p, GLuint program)
 
     loc = gl->GetUniformLocation(program, "colormatrix");
     if (loc >= 0) {
-        float yuv2rgb[3][4] = {{0}};
-        mp_get_yuv2rgb_coeffs(&cparams, yuv2rgb);
-        gl->UniformMatrix4x3fv(loc, 1, GL_TRUE, &yuv2rgb[0][0]);
+        float m[3][4] = {{0}};
+        if (p->image_desc.flags & MP_IMGFLAG_XYZ) {
+            // Hard-coded as relative colorimetric for now, since this transforms
+            // from the source file's D55 material to whatever color space our
+            // projector/display lives in, which should be D55 for a proper
+            // home cinema setup either way.
+            mp_get_xyz2rgb_coeffs(&cparams, p->csp_src, MP_INTENT_RELATIVE_COLORIMETRIC, m);
+        } else {
+            mp_get_yuv2rgb_coeffs(&cparams, m);
+        }
+        gl->UniformMatrix4x3fv(loc, 1, GL_TRUE, &m[0][0]);
     }
 
     gl->Uniform1f(gl->GetUniformLocation(program, "input_gamma"),
@@ -566,10 +594,11 @@ static void update_uniforms(struct gl_video *p, GLuint program)
     gl->Uniform1f(gl->GetUniformLocation(program, "conv_gamma"),
                   p->conv_gamma);
 
+    float gamma = p->opts.gamma ? p->opts.gamma : 1.0;
     gl->Uniform3f(gl->GetUniformLocation(program, "inv_gamma"),
-                  1.0 / cparams.rgamma,
-                  1.0 / cparams.ggamma,
-                  1.0 / cparams.bgamma);
+                  1.0 / (cparams.rgamma * gamma),
+                  1.0 / (cparams.ggamma * gamma),
+                  1.0 / (cparams.bgamma * gamma));
 
     for (int n = 0; n < p->plane_count; n++) {
         char textures_n[32];
@@ -620,6 +649,16 @@ static void update_uniforms(struct gl_video *p, GLuint program)
                   p->dither_size, p->dither_size);
 
     gl->Uniform1i(gl->GetUniformLocation(program, "lut_3d"), TEXUNIT_3DLUT);
+
+    loc = gl->GetUniformLocation(program, "cms_matrix");
+    if (loc >= 0) {
+        float cms_matrix[3][3] = {{0}};
+        // Hard-coded to relative colorimetric - for a BT.2020 3DLUT we expect
+        // the input to be actual BT.2020 and not something red- or blueshifted,
+        // and for sRGB monitors we most likely want relative scaling either way.
+        mp_get_cms_matrix(p->csp_src, p->csp_dest, MP_INTENT_RELATIVE_COLORIMETRIC, cms_matrix);
+        gl->UniformMatrix3fv(loc, 1, GL_TRUE, &cms_matrix[0][0]);
+    }
 
     for (int n = 0; n < 2; n++) {
         const char *lut = p->scalers[n].lut_name;
@@ -822,6 +861,59 @@ static void compile_shaders(struct gl_video *p)
     char *header = talloc_asprintf(tmp, "#version %d\n%s%s", gl->glsl_version,
                                    shader_prelude, PRELUDE_END);
 
+    bool use_cms = p->opts.srgb || p->use_lut_3d;
+
+    float input_gamma = 1.0;
+    float conv_gamma = 1.0;
+
+    if (p->image_desc.flags & MP_IMGFLAG_XYZ) {
+        input_gamma *= 2.6;
+
+        // If we're using cms, we can treat it as proper linear input,
+        // otherwise we just scale back to 1.95 as a reasonable approximation.
+        if (use_cms) {
+            p->is_linear_rgb = true;
+        } else {
+            conv_gamma *= 1.0 / 1.95;
+        }
+    }
+
+    p->input_gamma = input_gamma;
+    p->conv_gamma = conv_gamma;
+
+    bool use_input_gamma = p->input_gamma != 1.0;
+    bool use_conv_gamma = p->conv_gamma != 1.0;
+    bool use_const_luma = p->image_params.colorspace == MP_CSP_BT_2020_C;
+
+    // Linear light scaling is only enabled when either color correction
+    // option (3dlut or srgb) is enabled, otherwise scaling is done in the
+    // source space. We also need to linearize for constant luminance systems.
+    bool convert_to_linear_gamma = !p->is_linear_rgb && use_cms || use_const_luma;
+
+    // Figure out the right color spaces we need to convert, if any
+    enum mp_csp_prim prim_src = p->image_params.primaries, prim_dest;
+    if (use_cms) {
+        // sRGB mode wants sRGB aka BT.709 primaries, but the 3DLUT is
+        // always built against BT.2020.
+        prim_dest = p->opts.srgb ? MP_CSP_PRIM_BT_709 : MP_CSP_PRIM_BT_2020;
+    } else {
+        // If no CMS is being done we just want to output stuff as-is,
+        // in the native colorspace of the source.
+        prim_dest = prim_src;
+    }
+
+    // XYZ input has no defined input color space, so we can directly convert
+    // it to whatever output space we actually need.
+    if (p->image_desc.flags & MP_IMGFLAG_XYZ)
+        prim_src = prim_dest;
+
+    // Set the colorspace primaries and figure out whether we need to perform
+    // an extra conversion.
+    p->csp_src  = mp_get_csp_primaries(prim_src);
+    p->csp_dest = mp_get_csp_primaries(prim_dest);
+
+    bool use_cms_matrix = prim_src != prim_dest;
+
     if (p->gl_target == GL_TEXTURE_RECTANGLE) {
         shader_def(&header, "VIDEO_SAMPLER", "sampler2DRect");
         shader_def_opt(&header, "USE_RECTANGLE", true);
@@ -834,10 +926,14 @@ static void compile_shaders(struct gl_video *p)
         shader_def_opt(&header, "USE_ALPHA", p->has_alpha);
 
     char *header_osd = talloc_strdup(tmp, header);
-    shader_def_opt(&header_osd, "USE_OSD_LINEAR_CONV", p->opts.srgb &&
-                                                      !p->use_lut_3d);
+    shader_def_opt(&header_osd, "USE_OSD_LINEAR_CONV_APPROX",
+                   use_cms && p->opts.approx_gamma);
+    shader_def_opt(&header_osd, "USE_OSD_LINEAR_CONV_BT2020",
+                   use_cms && !p->opts.approx_gamma);
+    shader_def_opt(&header_osd, "USE_OSD_CMS_MATRIX", use_cms_matrix);
     shader_def_opt(&header_osd, "USE_OSD_3DLUT", p->use_lut_3d);
-    shader_def_opt(&header_osd, "USE_OSD_SRGB", p->opts.srgb);
+    // 3DLUT overrides SRGB
+    shader_def_opt(&header_osd, "USE_OSD_SRGB", !p->use_lut_3d && p->opts.srgb);
 
     for (int n = 0; n < SUBBITMAP_COUNT; n++) {
         const char *name = osd_shaders[n];
@@ -852,23 +948,6 @@ static void compile_shaders(struct gl_video *p)
     char *header_final = talloc_strdup(tmp, "");
     char *header_sep = NULL;
 
-    float input_gamma = 1.0;
-    float conv_gamma = 1.0;
-
-    if (p->image_desc.flags & MP_IMGFLAG_XYZ) {
-        input_gamma *= 2.6;
-        conv_gamma *= 1.0 / 2.2;
-    }
-
-    if (!p->is_linear_rgb && (p->opts.srgb || p->use_lut_3d))
-        conv_gamma *= 1.0 / 0.45;
-
-    p->input_gamma = input_gamma;
-    p->conv_gamma = conv_gamma;
-
-    bool convert_input_gamma = p->input_gamma != 1.0;
-    bool convert_input_to_linear = p->conv_gamma != 1.0;
-
     if (p->image_format == IMGFMT_NV12 || p->image_format == IMGFMT_NV21) {
         shader_def(&header_conv, "USE_CONV", "CONV_NV12");
     } else if (p->plane_count > 1) {
@@ -880,18 +959,28 @@ static void compile_shaders(struct gl_video *p)
     shader_def_opt(&header_conv, "USE_SWAP_UV", p->image_format == IMGFMT_NV21);
     shader_def_opt(&header_conv, "USE_YGRAY", p->is_yuv && !p->is_packed_yuv
                                               && p->plane_count == 1);
-    shader_def_opt(&header_conv, "USE_INPUT_GAMMA", convert_input_gamma);
+    shader_def_opt(&header_conv, "USE_INPUT_GAMMA", use_input_gamma);
     shader_def_opt(&header_conv, "USE_COLORMATRIX", !p->is_rgb);
-    shader_def_opt(&header_conv, "USE_CONV_GAMMA", convert_input_to_linear);
+    shader_def_opt(&header_conv, "USE_CONV_GAMMA", use_conv_gamma);
+    shader_def_opt(&header_conv, "USE_CONST_LUMA", use_const_luma);
+    shader_def_opt(&header_conv, "USE_LINEAR_LIGHT_APPROX",
+                   convert_to_linear_gamma && p->opts.approx_gamma);
+    shader_def_opt(&header_conv, "USE_LINEAR_LIGHT_BT2020",
+                   convert_to_linear_gamma && !p->opts.approx_gamma);
     if (p->opts.alpha_mode > 0 && p->has_alpha && p->plane_count > 3)
         shader_def(&header_conv, "USE_ALPHA_PLANE", "3");
     if (p->opts.alpha_mode == 2 && p->has_alpha)
         shader_def(&header_conv, "USE_ALPHA_BLEND", "1");
 
-    shader_def_opt(&header_final, "USE_LINEAR_CONV_INV", p->use_lut_3d);
-    shader_def_opt(&header_final, "USE_GAMMA_POW", p->opts.gamma);
+    shader_def_opt(&header_final, "USE_GAMMA_POW", p->opts.gamma > 0);
+    shader_def_opt(&header_final, "USE_CMS_MATRIX", use_cms_matrix);
     shader_def_opt(&header_final, "USE_3DLUT", p->use_lut_3d);
-    shader_def_opt(&header_final, "USE_SRGB", p->opts.srgb);
+    // 3DLUT overrides SRGB
+    shader_def_opt(&header_final, "USE_SRGB", p->opts.srgb && !p->use_lut_3d);
+    shader_def_opt(&header_final, "USE_CONST_LUMA_INV_APPROX",
+                   use_const_luma && !use_cms && p->opts.approx_gamma);
+    shader_def_opt(&header_final, "USE_CONST_LUMA_INV_BT2020",
+                   use_const_luma && !use_cms && !p->opts.approx_gamma);
     shader_def_opt(&header_final, "USE_DITHER", p->dither_texture != 0);
     shader_def_opt(&header_final, "USE_TEMPORAL_DITHER", p->opts.temporal_dither);
 
@@ -912,8 +1001,8 @@ static void compile_shaders(struct gl_video *p)
     bool use_indirect = p->opts.indirect;
 
     // Don't sample from input video textures before converting the input to
-    // linear light. (Unneeded when sRGB textures are used.)
-    if (convert_input_gamma || convert_input_to_linear)
+    // linear light.
+    if (use_input_gamma || use_conv_gamma)
         use_indirect = true;
 
     // It doesn't make sense to scale the chroma with cscale in the 1. scale
@@ -1026,7 +1115,7 @@ static void init_scaler(struct gl_video *p, struct scaler *scaler)
 
     int size = scaler->kernel->size;
     assert(size < FF_ARRAY_ELEMS(lut_tex_formats));
-    struct lut_tex_format *fmt = &lut_tex_formats[size];
+    const struct lut_tex_format *fmt = &lut_tex_formats[size];
     bool use_2d = fmt->pixels > 1;
     bool is_luma = scaler->index == 0;
     scaler->lut_name = use_2d
@@ -1137,7 +1226,7 @@ static void recreate_osd(struct gl_video *p)
 {
     if (p->osd)
         mpgl_osd_destroy(p->osd);
-    p->osd = mpgl_osd_init(p->gl, p->log, false);
+    p->osd = mpgl_osd_init(p->gl, p->log, p->osd_state);
     p->osd->use_pbo = p->opts.pbo;
 }
 
@@ -1179,9 +1268,11 @@ static void reinit_rendering(struct gl_video *p)
     compile_shaders(p);
     update_all_uniforms(p);
 
+    int w = p->image_w;
+    int h = p->image_h;
+
     if (p->indirect_program && !p->indirect_fbo.fbo)
-        fbotex_init(p, &p->indirect_fbo, p->image_w, p->image_h,
-                    p->opts.fbo_format);
+        fbotex_init(p, &p->indirect_fbo, w, h, p->opts.fbo_format);
 
     recreate_osd(p);
 }
@@ -1207,12 +1298,17 @@ void gl_video_set_lut3d(struct gl_video *p, struct lut3d *lut3d)
 {
     GL *gl = p->gl;
 
-    assert(!p->lut_3d_texture);
-
-    if (!lut3d)
+    if (!lut3d) {
+        if (p->use_lut_3d) {
+            p->use_lut_3d = false;
+            reinit_rendering(p);
+        }
         return;
+    }
 
-    gl->GenTextures(1, &p->lut_3d_texture);
+    if (!p->lut_3d_texture)
+        gl->GenTextures(1, &p->lut_3d_texture);
+
     gl->ActiveTexture(GL_TEXTURE0 + TEXUNIT_3DLUT);
     gl->BindTexture(GL_TEXTURE_3D, p->lut_3d_texture);
     gl->PixelStorei(GL_UNPACK_ALIGNMENT, 4);
@@ -1230,6 +1326,8 @@ void gl_video_set_lut3d(struct gl_video *p, struct lut3d *lut3d)
     check_gl_features(p);
 
     debug_check_gl(p, "after 3d lut creation");
+
+    reinit_rendering(p);
 }
 
 static void set_image_textures(struct gl_video *p, struct video_image *vimg,
@@ -1287,20 +1385,19 @@ static void init_video(struct gl_video *p, const struct mp_image_params *params)
     p->image_dh = params->d_h;
     p->image_params = *params;
 
-    struct mp_csp_details csp = MP_CSP_DETAILS_DEFAULTS;
-    csp.levels_in = params->colorlevels;
-    csp.levels_out = params->outputlevels;
-    csp.format = params->colorspace;
-    p->colorspace = csp;
-
     if (p->is_rgb && (p->opts.srgb || p->use_lut_3d)) {
+        // If we're opening an RGB source like a png file or similar,
+        // we just sample it using GL_SRGB which treats it as an sRGB source
+        // and pretend it's linear as far as CMS is concerned
         p->is_linear_rgb = true;
         p->image.planes[0].gl_internal_format = GL_SRGB;
     }
 
     int eq_caps = MP_CSP_EQ_CAPS_GAMMA;
-    if (p->is_yuv)
+    if (p->is_yuv && p->image_params.colorspace != MP_CSP_BT_2020_C)
         eq_caps |= MP_CSP_EQ_CAPS_COLORMATRIX;
+    if (p->image_desc.flags & MP_IMGFLAG_XYZ)
+        eq_caps |= MP_CSP_EQ_CAPS_BRIGHTNESS;
     p->video_eq.capabilities = eq_caps;
 
     debug_check_gl(p, "before video texture creation");
@@ -1401,49 +1498,95 @@ static void change_dither_trafo(struct gl_video *p)
     gl->UseProgram(0);
 }
 
-static void render_to_fbo(struct gl_video *p, struct fbotex *fbo,
-                          int x, int y, int w, int h, int tex_w, int tex_h)
-{
-    GL *gl = p->gl;
-
-    gl->Viewport(fbo->vp_x, fbo->vp_y, fbo->vp_w, fbo->vp_h);
-    gl->BindFramebuffer(GL_FRAMEBUFFER, fbo->fbo);
-
-    struct vertex vb[VERTICES_PER_QUAD];
-    write_quad(vb, -1, -1, 1, 1,
-               x, y, x + w, y + h,
-               tex_w, tex_h,
-               NULL, p->gl_target, false);
-    draw_triangles(p, vb, VERTICES_PER_QUAD);
-
-    gl->BindFramebuffer(GL_FRAMEBUFFER, 0);
-    gl->Viewport(p->vp_x, p->vp_y, p->vp_w, p->vp_h);
-
-}
+struct pass {
+    int num;
+    // Not necessarily a FBO; we just abuse this struct because it's convenient.
+    // It specifies the source texture/sub-rectangle for the next pass.
+    struct fbotex f;
+    // If true, render source (f) to dst, instead of the full dest. fbo viewport
+    bool use_dst;
+    struct mp_rect dst;
+    int flags; // for write_quad
+    bool render_stereo;
+};
 
 // *chain contains the source, and is overwritten with a copy of the result
-static void handle_pass(struct gl_video *p, struct fbotex *chain,
+// fbo is used as destination texture/render target.
+static void handle_pass(struct gl_video *p, struct pass *chain,
                         struct fbotex *fbo, GLuint program)
 {
+    struct vertex vb[VERTICES_PER_QUAD];
     GL *gl = p->gl;
 
     if (!program)
         return;
 
-    gl->BindTexture(p->gl_target, chain->texture);
+    gl->BindTexture(p->gl_target, chain->f.texture);
     gl->UseProgram(program);
-    render_to_fbo(p, fbo, chain->vp_x, chain->vp_y,
-                  chain->vp_w, chain->vp_h,
-                  chain->tex_w, chain->tex_h);
-    *chain = *fbo;
+
+    gl->Viewport(fbo->vp_x, fbo->vp_y, fbo->vp_w, fbo->vp_h);
+    gl->BindFramebuffer(GL_FRAMEBUFFER, fbo->fbo);
+
+    int tex_w = chain->f.tex_w;
+    int tex_h = chain->f.tex_h;
+    struct mp_rect src = {
+        .x0 = chain->f.vp_x,
+        .y0 = chain->f.vp_y,
+        .x1 = chain->f.vp_x + chain->f.vp_w,
+        .y1 = chain->f.vp_y + chain->f.vp_h,
+    };
+
+    struct mp_rect dst = {-1, -1, 1, 1};
+    if (chain->use_dst)
+        dst = chain->dst;
+
+    MP_TRACE(p, "Pass %d: [%d,%d,%d,%d] -> [%d,%d,%d,%d][%d,%d@%dx%d/%dx%d] (%d)\n",
+             chain->num, src.x0, src.y0, src.x1, src.y1,
+             dst.x0, dst.y0, dst.x1, dst.y1,
+             fbo->vp_x, fbo->vp_y, fbo->vp_w, fbo->vp_h,
+             fbo->tex_w, fbo->tex_h, chain->flags);
+
+    if (chain->render_stereo && p->opts.stereo_mode) {
+        int w = src.x1 - src.x0;
+        int imgw = p->image_w;
+
+        glEnable3DLeft(gl, p->opts.stereo_mode);
+
+        write_quad(vb,
+                   dst.x0, dst.y0, dst.x1, dst.y1,
+                   src.x0 / 2, src.y0,
+                   src.x0 / 2 + w / 2, src.y1,
+                   tex_w, tex_h, NULL, p->gl_target, chain->flags);
+        draw_triangles(p, vb, VERTICES_PER_QUAD);
+
+        glEnable3DRight(gl, p->opts.stereo_mode);
+
+        write_quad(vb,
+                   dst.x0, dst.y0, dst.x1, dst.y1,
+                   src.x0 / 2 + imgw / 2, src.y0,
+                   src.x0 / 2 + imgw / 2 + w / 2, src.y1,
+                   tex_w, tex_h, NULL, p->gl_target, chain->flags);
+        draw_triangles(p, vb, VERTICES_PER_QUAD);
+
+        glDisable3D(gl, p->opts.stereo_mode);
+    } else {
+        write_quad(vb,
+                   dst.x0, dst.y0, dst.x1, dst.y1,
+                   src.x0, src.y0, src.x1, src.y1,
+                   tex_w, tex_h, NULL, p->gl_target, chain->flags);
+        draw_triangles(p, vb, VERTICES_PER_QUAD);
+    }
+
+    *chain = (struct pass){
+        .num = chain->num + 1,
+        .f = *fbo,
+    };
 }
 
 void gl_video_render_frame(struct gl_video *p)
 {
     GL *gl = p->gl;
-    struct vertex vb[VERTICES_PER_QUAD];
     struct video_image *vimg = &p->image;
-    bool is_flipped = vimg->image_flipped;
 
     if (p->opts.temporal_dither)
         change_dither_trafo(p);
@@ -1457,7 +1600,7 @@ void gl_video_render_frame(struct gl_video *p)
 
     if (!p->have_image) {
         gl->Clear(GL_COLOR_BUFFER_BIT);
-        return;
+        goto draw_osd;
     }
 
     // Order of processing:
@@ -1466,12 +1609,14 @@ void gl_video_render_frame(struct gl_video *p)
     GLuint imgtex[4] = {0};
     set_image_textures(p, vimg, imgtex);
 
-    struct fbotex chain = {
-        .vp_w = p->image_w,
-        .vp_h = p->image_h,
-        .tex_w = p->texture_w,
-        .tex_h = p->texture_h,
-        .texture = imgtex[0],
+    struct pass chain = {
+        .f = {
+            .vp_w = p->image_w,
+            .vp_h = p->image_h,
+            .tex_w = p->texture_w,
+            .tex_h = p->texture_h,
+            .texture = imgtex[0],
+        },
     };
 
     handle_pass(p, &chain, &p->indirect_fbo, p->indirect_program);
@@ -1479,70 +1624,63 @@ void gl_video_render_frame(struct gl_video *p)
     // Clip to visible height so that separate scaling scales the visible part
     // only (and the target FBO texture can have a bounded size).
     // Don't clamp width; too hard to get correct final scaling on l/r borders.
-    chain.vp_y = p->src_rect.y0,
-    chain.vp_h = p->src_rect.y1 - p->src_rect.y0,
+    chain.f.vp_y = p->src_rect_rot.y0;
+    chain.f.vp_h = p->src_rect_rot.y1 - p->src_rect_rot.y0;
 
     handle_pass(p, &chain, &p->scale_sep_fbo, p->scale_sep_program);
 
-    gl->BindTexture(p->gl_target, chain.texture);
-    gl->UseProgram(p->final_program);
+    struct fbotex screen = {
+        .vp_x = p->vp_x,
+        .vp_y = p->vp_y,
+        .vp_w = p->vp_w,
+        .vp_h = p->vp_h,
+        .texture = 0, //makes BindFramebuffer select the screen backbuffer
+    };
 
-    struct mp_rect src = {p->src_rect.x0, chain.vp_y,
-                          p->src_rect.x1, chain.vp_y + chain.vp_h};
-    int src_texw = chain.tex_w;
-    int src_texh = chain.tex_h;
+    // For Y direction, use the whole source viewport; it has been fit to the
+    // correct origin/height before.
+    // For X direction, assume the texture wasn't scaled yet, so we can
+    // select the correct portion, which will be scaled to screen.
+    chain.f.vp_x = p->src_rect_rot.x0;
+    chain.f.vp_w = p->src_rect_rot.x1 - p->src_rect_rot.x0;
 
-    if (p->opts.stereo_mode) {
-        int w = src.x1 - src.x0;
-        int imgw = p->image_w;
+    chain.use_dst = true;
+    chain.dst = p->dst_rect;
+    chain.flags = (p->image_params.rotate % 90 ? 0 : p->image_params.rotate / 90)
+                | (vimg->image_flipped ? 4 : 0);
+    chain.render_stereo = true;
 
-        glEnable3DLeft(gl, p->opts.stereo_mode);
-
-        write_quad(vb,
-                   p->dst_rect.x0, p->dst_rect.y0,
-                   p->dst_rect.x1, p->dst_rect.y1,
-                   src.x0 / 2, src.y0,
-                   src.x0 / 2 + w / 2, src.y1,
-                   src_texw, src_texh,
-                   NULL, p->gl_target, is_flipped);
-        draw_triangles(p, vb, VERTICES_PER_QUAD);
-
-        glEnable3DRight(gl, p->opts.stereo_mode);
-
-        write_quad(vb,
-                   p->dst_rect.x0, p->dst_rect.y0,
-                   p->dst_rect.x1, p->dst_rect.y1,
-                   src.x0 / 2 + imgw / 2, src.y0,
-                   src.x0 / 2 + imgw / 2 + w / 2, src.y1,
-                   src_texw, src_texh,
-                   NULL, p->gl_target, is_flipped);
-        draw_triangles(p, vb, VERTICES_PER_QUAD);
-
-        glDisable3D(gl, p->opts.stereo_mode);
-    } else {
-        write_quad(vb,
-                   p->dst_rect.x0, p->dst_rect.y0,
-                   p->dst_rect.x1, p->dst_rect.y1,
-                   src.x0, src.y0,
-                   src.x1, src.y1,
-                   src_texw, src_texh,
-                   NULL, p->gl_target, is_flipped);
-        draw_triangles(p, vb, VERTICES_PER_QUAD);
-    }
+    handle_pass(p, &chain, &screen, p->final_program);
 
     gl->UseProgram(0);
+    gl->BindFramebuffer(GL_FRAMEBUFFER, 0);
+    gl->Viewport(p->vp_x, p->vp_y, p->vp_w, p->vp_h);
 
     unset_image_textures(p);
 
     p->frames_rendered++;
 
     debug_check_gl(p, "after video rendering");
+
+draw_osd:
+    assert(p->osd);
+
+    osd_draw(p->osd_state, p->osd_rect, p->osd_pts, 0, p->osd->formats,
+             draw_osd_cb, p);
+
+    // The playloop calls this last before waiting some time until it decides
+    // to call flip_page(). Tell OpenGL to start execution of the GPU commands
+    // while we sleep (this happens asynchronously).
+    gl->Flush();
 }
 
 static void update_window_sized_objects(struct gl_video *p)
 {
     if (p->scale_sep_program) {
+        int w = p->dst_rect.x1 - p->dst_rect.x0;
         int h = p->dst_rect.y1 - p->dst_rect.y0;
+        if ((p->image_params.rotate % 180) == 90)
+            MPSWAP(int, w, h);
         if (h > p->scale_sep_fbo.tex_h) {
             fbotex_uninit(p, &p->scale_sep_fbo);
             // Round up to an arbitrary alignment to make window resizing or
@@ -1595,8 +1733,14 @@ void gl_video_resize(struct gl_video *p, struct mp_rect *window,
                      struct mp_osd_res *osd)
 {
     p->src_rect = *src;
+    p->src_rect_rot = *src;
     p->dst_rect = *dst;
     p->osd_rect = *osd;
+
+    if ((p->image_params.rotate % 180) == 90) {
+        MPSWAP(int, p->src_rect_rot.x0, p->src_rect_rot.y0);
+        MPSWAP(int, p->src_rect_rot.x1, p->src_rect_rot.y1);
+    }
 
     p->vp_x = window->x0;
     p->vp_y = window->y0;
@@ -1648,8 +1792,11 @@ void gl_video_upload_image(struct gl_video *p, struct mp_image *mpi)
 
     struct video_image *vimg = &p->image;
 
+    p->osd_pts = mpi->pts;
+
     if (p->hwdec_active) {
-        mp_image_setrefp(&vimg->hwimage, mpi);
+        talloc_free(vimg->hwimage);
+        vimg->hwimage = mpi;
         p->have_image = true;
         return;
     }
@@ -1664,13 +1811,12 @@ void gl_video_upload_image(struct gl_video *p, struct mp_image *mpi)
             memcpy_pic(mpi2.planes[n], mpi->planes[n], line_bytes, mpi->plane_h[n],
                        mpi2.stride[n], mpi->stride[n]);
         }
-        mpi = &mpi2;
         pbo = true;
     }
-    vimg->image_flipped = mpi->stride[0] < 0;
+    vimg->image_flipped = mpi2.stride[0] < 0;
     for (int n = 0; n < p->plane_count; n++) {
         struct texplane *plane = &vimg->planes[n];
-        void *plane_ptr = mpi->planes[n];
+        void *plane_ptr = mpi2.planes[n];
         if (pbo) {
             gl->BindBuffer(GL_PIXEL_UNPACK_BUFFER, plane->gl_buffer);
             if (!gl->UnmapBuffer(GL_PIXEL_UNPACK_BUFFER))
@@ -1682,12 +1828,13 @@ void gl_video_upload_image(struct gl_video *p, struct mp_image *mpi)
         gl->ActiveTexture(GL_TEXTURE0 + n);
         gl->BindTexture(p->gl_target, plane->gl_texture);
         glUploadTex(gl, p->gl_target, plane->gl_format, plane->gl_type,
-                    plane_ptr, mpi->stride[n], 0, 0, plane->w, plane->h, 0);
+                    plane_ptr, mpi2.stride[n], 0, 0, plane->w, plane->h, 0);
     }
     gl->ActiveTexture(GL_TEXTURE0);
     gl->BindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
 
     p->have_image = true;
+    talloc_free(mpi);
 }
 
 struct mp_image *gl_video_download_image(struct gl_video *p)
@@ -1714,29 +1861,33 @@ struct mp_image *gl_video_download_image(struct gl_video *p)
 
     mp_image_t *image = mp_image_alloc(p->image_format, p->texture_w,
                                                         p->texture_h);
-
-    for (int n = 0; n < p->plane_count; n++) {
-        struct texplane *plane = &vimg->planes[n];
-        gl->ActiveTexture(GL_TEXTURE0 + n);
-        glDownloadTex(gl, p->gl_target, plane->gl_format, plane->gl_type,
-                      image->planes[n], image->stride[n]);
+    if (image) {
+        for (int n = 0; n < p->plane_count; n++) {
+            struct texplane *plane = &vimg->planes[n];
+            gl->ActiveTexture(GL_TEXTURE0 + n);
+            glDownloadTex(gl, p->gl_target, plane->gl_format, plane->gl_type,
+                          image->planes[n], image->stride[n]);
+        }
+        mp_image_set_attributes(image, &p->image_params);
     }
-    mp_image_set_attributes(image, &p->image_params);
 
     unset_image_textures(p);
 
     return image;
 }
 
-static void draw_osd_cb(void *ctx, struct mpgl_osd_part *osd,
-                        struct sub_bitmaps *imgs)
+static void draw_osd_cb(void *ctx, struct sub_bitmaps *imgs)
 {
     struct gl_video *p = ctx;
     GL *gl = p->gl;
 
+    struct mpgl_osd_part *osd = mpgl_osd_generate(p->osd, imgs);
+    if (!osd)
+        return;
+
     assert(osd->format != SUBBITMAP_EMPTY);
 
-    if (!osd->num_vertices && imgs) {
+    if (!osd->num_vertices) {
         osd->vertices = talloc_realloc(osd, osd->vertices, struct vertex,
                                        osd->packer->count * VERTICES_PER_QUAD);
 
@@ -1755,7 +1906,7 @@ static void draw_osd_cb(void *ctx, struct mpgl_osd_part *osd,
             write_quad(&va[osd->num_vertices],
                     b->x, b->y, b->x + b->dw, b->y + b->dh,
                     pos.x, pos.y, pos.x + b->w, pos.y + b->h,
-                    osd->w, osd->h, color, GL_TEXTURE_2D, false);
+                    osd->w, osd->h, color, GL_TEXTURE_2D, 0);
             osd->num_vertices += VERTICES_PER_QUAD;
         }
     }
@@ -1771,19 +1922,6 @@ static void draw_osd_cb(void *ctx, struct mpgl_osd_part *osd,
     debug_check_gl(p, "after drawing osd");
 }
 
-void gl_video_draw_osd(struct gl_video *p, struct osd_state *osd)
-{
-    GL *gl = p->gl;
-    assert(p->osd);
-
-    mpgl_osd_draw_cb(p->osd, osd, p->osd_rect, draw_osd_cb, p);
-
-    // The playloop calls this last before waiting some time until it decides
-    // to call flip_page(). Tell OpenGL to start execution of the GPU commands
-    // while we sleep (this happens asynchronously).
-    gl->Flush();
-}
-
 static bool test_fbo(struct gl_video *p, GLenum format)
 {
     static const float vals[] = {
@@ -1792,7 +1930,7 @@ static bool test_fbo(struct gl_video *p, GLenum format)
         0xFFFFFF / (float)(1 << 25),    // float mantissa
         2,                              // out of range value
     };
-    static const char *val_names[] = {
+    static const char *const val_names[] = {
         "8-bit precision",
         "16-bit precision",
         "full float",
@@ -1833,10 +1971,7 @@ static void check_gl_features(struct gl_video *p)
     bool have_float_tex = gl->mpgl_caps & MPGL_CAP_FLOAT_TEX;
     bool have_fbo = gl->mpgl_caps & MPGL_CAP_FB;
     bool have_srgb = gl->mpgl_caps & MPGL_CAP_SRGB_TEX;
-
-    // srgb_compand() not available
-    if (gl->glsl_version < 130)
-        have_srgb = false;
+    bool have_mix = gl->glsl_version >= 130;
 
     char *disabled[10];
     int n_disabled = 0;
@@ -1871,19 +2006,32 @@ static void check_gl_features(struct gl_video *p)
         }
     }
 
-    if (!have_srgb && p->opts.srgb) {
+    int use_cms = p->opts.srgb || p->use_lut_3d;
+
+    // srgb_compand() not available
+    if (!have_mix && p->opts.srgb) {
         p->opts.srgb = false;
-        disabled[n_disabled++] = "sRGB";
+        disabled[n_disabled++] = "sRGB output (GLSL version)";
     }
-    if (!have_fbo && p->use_lut_3d) {
+    if (!have_fbo && use_cms) {
+        p->opts.srgb = false;
         p->use_lut_3d = false;
         disabled[n_disabled++] = "color management (FBO)";
     }
-    if (!have_srgb && p->use_lut_3d) {
-        p->use_lut_3d = false;
-        disabled[n_disabled++] = "color management (sRGB)";
+    if (p->is_rgb) {
+        // When opening RGB files we use SRGB to expand
+        if (!have_srgb && use_cms) {
+            p->opts.srgb = false;
+            p->use_lut_3d = false;
+            disabled[n_disabled++] = "color management (SRGB textures)";
+        }
+    } else {
+        // when opening non-RGB files we use bt709_expand()
+        if (!have_mix && p->use_lut_3d) {
+            p->use_lut_3d = false;
+            disabled[n_disabled++] = "color management (GLSL version)";
+        }
     }
-
     if (!have_fbo) {
         p->opts.scale_sep = false;
         p->opts.indirect = false;
@@ -1986,7 +2134,6 @@ static const struct fmt_entry *find_tex_format(int bytes_per_comp, int n_channel
 
 static bool init_format(int fmt, struct gl_video *init)
 {
-    bool supported = false;
     struct gl_video dummy;
     if (!init)
         init = &dummy;
@@ -2012,64 +2159,58 @@ static bool init_format(int fmt, struct gl_video *init)
     init->has_alpha = false;
 
     // YUV/planar formats
-    if (!supported && (desc.flags & MP_IMGFLAG_YUV_P)) {
+    if (desc.flags & MP_IMGFLAG_YUV_P) {
         int bits = desc.plane_bits;
         if ((desc.flags & MP_IMGFLAG_NE) && bits >= 8 && bits <= 16) {
-            supported = true;
             init->plane_bits = bits;
             init->has_alpha = desc.num_planes > 3;
             plane_format[0] = find_tex_format((bits + 7) / 8, 1);
             for (int p = 1; p < desc.num_planes; p++)
                 plane_format[p] = plane_format[0];
+            goto supported;
         }
     }
 
     // YUV/half-packed
-    if (!supported && (fmt == IMGFMT_NV12 || fmt == IMGFMT_NV21)) {
-        supported = true;
+    if (fmt == IMGFMT_NV12 || fmt == IMGFMT_NV21) {
         plane_format[0] = find_tex_format(1, 1);
         plane_format[1] = find_tex_format(1, 2);
         if (fmt == IMGFMT_NV21)
             snprintf(init->color_swizzle, sizeof(init->color_swizzle), "rbga");
+        goto supported;
     }
 
     // RGB/planar
-    if (!supported && fmt == IMGFMT_GBRP) {
-        supported = true;
+    if (fmt == IMGFMT_GBRP) {
         snprintf(init->color_swizzle, sizeof(init->color_swizzle), "brga");
         plane_format[0] = find_tex_format(1, 1);
         for (int p = 1; p < desc.num_planes; p++)
             plane_format[p] = plane_format[0];
+        goto supported;
     }
 
     // XYZ (same organization as RGB packed, but requires conversion matrix)
-    if (!supported && fmt == IMGFMT_XYZ12) {
-        supported = true;
+    if (fmt == IMGFMT_XYZ12) {
         plane_format[0] = find_tex_format(2, 3);
+        goto supported;
     }
 
     // Packed RGB special formats
-    if (!supported) {
-        for (const struct fmt_entry *e = mp_to_gl_formats; e->mp_format; e++) {
-            if (e->mp_format == fmt) {
-                supported = true;
-                plane_format[0] = e;
-                break;
-            }
+    for (const struct fmt_entry *e = mp_to_gl_formats; e->mp_format; e++) {
+        if (e->mp_format == fmt) {
+            plane_format[0] = e;
+            goto supported;
         }
     }
 
     // Packed RGB(A) formats
-    if (!supported) {
-        for (const struct packed_fmt_entry *e = mp_packed_formats; e->fmt; e++) {
-            if (e->fmt == fmt) {
-                supported = true;
-                int n_comp = desc.bytes[0] / e->component_size;
-                plane_format[0] = find_tex_format(e->component_size, n_comp);
-                packed_fmt_swizzle(init->color_swizzle, e);
-                init->has_alpha = e->components[3] != 0;
-                break;
-            }
+    for (const struct packed_fmt_entry *e = mp_packed_formats; e->fmt; e++) {
+        if (e->fmt == fmt) {
+            int n_comp = desc.bytes[0] / e->component_size;
+            plane_format[0] = find_tex_format(e->component_size, n_comp);
+            packed_fmt_swizzle(init->color_swizzle, e);
+            init->has_alpha = e->components[3] != 0;
+            goto supported;
         }
     }
 
@@ -2078,17 +2219,18 @@ static bool init_format(int fmt, struct gl_video *init)
         for (const struct fmt_entry *e = gl_apple_formats; e->mp_format; e++) {
             if (e->mp_format == fmt) {
                 init->is_packed_yuv = true;
-                supported = true;
                 snprintf(init->color_swizzle, sizeof(init->color_swizzle),
                          "gbra");
                 plane_format[0] = e;
-                break;
+                goto supported;
             }
         }
     }
 
-    if (!supported)
-        return false;
+    // Unsupported format
+    return false;
+
+supported:
 
     // Stuff like IMGFMT_420AP10. Untested, most likely insane.
     if (desc.num_planes == 4 && (init->plane_bits % 8) != 0)
@@ -2123,7 +2265,7 @@ void gl_video_config(struct gl_video *p, struct mp_image_params *params)
     p->have_image = false;
     mp_image_unrefp(&p->image.hwimage);
 
-    if (!mp_image_params_equals(&p->image_params, params)) {
+    if (!mp_image_params_equal(&p->image_params, params)) {
         uninit_video(p);
         init_video(p, params);
     }
@@ -2135,12 +2277,13 @@ void gl_video_set_output_depth(struct gl_video *p, int r, int g, int b)
     p->depth_g = g;
 }
 
-struct gl_video *gl_video_init(GL *gl, struct mp_log *log)
+struct gl_video *gl_video_init(GL *gl, struct mp_log *log, struct osd_state *osd)
 {
     struct gl_video *p = talloc_ptrtype(NULL, p);
     *p = (struct gl_video) {
         .gl = gl,
         .log = log,
+        .osd_state = osd,
         .opts = gl_video_opts_def,
         .gl_target = GL_TEXTURE_2D,
         .gl_debug = true,
@@ -2171,7 +2314,7 @@ static const char* handle_scaler_opt(const char *name)
         if (can_use_filter_kernel(kernel))
             return kernel->name;
 
-        for (const char **filter = fixed_scale_filters; *filter; filter++) {
+        for (const char *const *filter = fixed_scale_filters; *filter; filter++) {
             if (strcmp(*filter, name) == 0)
                 return *filter;
         }
@@ -2194,10 +2337,9 @@ void gl_video_set_options(struct gl_video *p, struct gl_video_opts *opts)
     reinit_rendering(p);
 }
 
-bool gl_video_get_csp_override(struct gl_video *p, struct mp_csp_details *csp)
+void gl_video_get_colorspace(struct gl_video *p, struct mp_image_params *params)
 {
-    *csp = p->colorspace;
-    return true;
+    *params = p->image_params; // supports everything
 }
 
 bool gl_video_set_equalizer(struct gl_video *p, const char *name, int val)
@@ -2205,7 +2347,7 @@ bool gl_video_set_equalizer(struct gl_video *p, const char *name, int val)
     if (mp_csp_equalizer_set(&p->video_eq, name, val) >= 0) {
         if (!p->opts.gamma && p->video_eq.values[MP_CSP_EQ_GAMMA] != 0) {
             MP_VERBOSE(p, "Auto-enabling gamma.\n");
-            p->opts.gamma = true;
+            p->opts.gamma = 1.0f;
             compile_shaders(p);
         }
         update_all_uniforms(p);
@@ -2224,7 +2366,7 @@ static int validate_scaler_opt(struct mp_log *log, const m_option_t *opt,
 {
     if (bstr_equals0(param, "help")) {
         mp_info(log, "Available scalers:\n");
-        for (const char **filter = fixed_scale_filters; *filter; filter++)
+        for (const char *const *filter = fixed_scale_filters; *filter; filter++)
             mp_info(log, "    %s\n", *filter);
         for (int n = 0; mp_filter_kernels[n].name; n++)
             mp_info(log, "    %s\n", mp_filter_kernels[n].name);
@@ -2245,7 +2387,6 @@ void gl_video_resize_redraw(struct gl_video *p, int w, int h)
     p->vp_w = w;
     p->vp_h = h;
     gl_video_render_frame(p);
-    mpgl_osd_redraw_cb(p->osd, draw_osd_cb, p);
 }
 
 void gl_video_set_hwdec(struct gl_video *p, struct gl_hwdec *hwdec)

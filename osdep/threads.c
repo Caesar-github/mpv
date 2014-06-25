@@ -15,43 +15,28 @@
  * with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include <time.h>
-#include <unistd.h>
-#include <sys/time.h>
-
 #include "threads.h"
+#include "timer.h"
 
-static void get_pthread_time(struct timespec *out_ts)
+int mpthread_cond_timedwait(pthread_cond_t *cond, pthread_mutex_t *mutex,
+                            int64_t abstime)
 {
-#if defined(_POSIX_TIMERS) && _POSIX_TIMERS > 0
-    clock_gettime(CLOCK_REALTIME, out_ts);
-#else
-    // OSX
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    out_ts->tv_sec = tv.tv_sec;
-    out_ts->tv_nsec = tv.tv_usec * 1000UL;
-#endif
-}
-
-static void timespec_add_seconds(struct timespec *ts, double seconds)
-{
-    unsigned long secs = (int)seconds;
-    unsigned long nsecs = (seconds - secs) * 1000000000UL;
-    if (nsecs + ts->tv_nsec >= 1000000000UL) {
-        secs += 1;
-        nsecs -= 1000000000UL;
-    }
-    ts->tv_sec += secs;
-    ts->tv_nsec += nsecs;
-}
-
-// Call pthread_cond_timedwait() with a relative timeout in seconds
-int mpthread_cond_timed_wait(pthread_cond_t *cond, pthread_mutex_t *mutex,
-                             double timeout)
-{
-    struct timespec ts;
-    get_pthread_time(&ts);
-    timespec_add_seconds(&ts, timeout);
+    struct timespec ts = mp_time_us_to_timespec(abstime);
     return pthread_cond_timedwait(cond, mutex, &ts);
+}
+
+int mpthread_cond_timedwait_rel(pthread_cond_t *cond, pthread_mutex_t *mutex,
+                                double s)
+{
+    return mpthread_cond_timedwait(cond, mutex, mp_add_timeout(mp_time_us(), s));
+}
+
+int mpthread_mutex_init_recursive(pthread_mutex_t *mutex)
+{
+    pthread_mutexattr_t attr;
+    pthread_mutexattr_init(&attr);
+    pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+    int r = pthread_mutex_init(mutex, &attr);
+    pthread_mutexattr_destroy(&attr);
+    return r;
 }

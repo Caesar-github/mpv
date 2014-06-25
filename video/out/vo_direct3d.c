@@ -38,8 +38,8 @@
 #include "video/img_format.h"
 #include "video/memcpy_pic.h"
 #include "common/msg.h"
+#include "common/common.h"
 #include "w32_common.h"
-#include "libavutil/common.h"
 #include "sub/osd.h"
 #include "bitmap_packer.h"
 
@@ -131,6 +131,7 @@ typedef struct d3d_priv {
     struct vo *vo;
 
     bool have_image;
+    double osd_pts;
 
     D3DLOCKED_RECT locked_rect; /**< The locked offscreen surface */
     RECT fs_movie_rect;         /**< Rect (upscaled) of the movie when displayed
@@ -141,6 +142,7 @@ typedef struct d3d_priv {
     int src_height;             /**< Source (movie) heigth */
     struct mp_osd_res osd_res;
     int image_format;           /**< mplayer image format */
+    struct mp_image_params params;
     bool use_textures;          /**< use 3D texture rendering, instead of
                                 StretchRect */
     bool use_shaders;           /**< use shader for YUV color conversion
@@ -180,7 +182,6 @@ typedef struct d3d_priv {
     int max_texture_height;         /**< from the device capabilities */
 
     D3DMATRIX d3d_colormatrix;
-    struct mp_csp_details colorspace;
     struct mp_csp_equalizer video_eq;
 
     struct osdpart *osd[MAX_OSD_PARTS];
@@ -207,9 +208,9 @@ static const struct fmt_entry fmt_table[] = {
     {IMGFMT_BGR32, D3DFMT_X8R8G8B8},
     {IMGFMT_RGB32, D3DFMT_X8B8G8R8},
     {IMGFMT_BGR24, D3DFMT_R8G8B8}, //untested
-    {IMGFMT_BGR16, D3DFMT_R5G6B5},
-    {IMGFMT_BGR15, D3DFMT_X1R5G5B5},
-    {IMGFMT_BGR8 , D3DFMT_R3G3B2}, //untested
+    {IMGFMT_RGB565, D3DFMT_R5G6B5},
+    {IMGFMT_RGB555, D3DFMT_X1R5G5B5},
+    {IMGFMT_RGB8,  D3DFMT_R3G3B2}, //untested
     // grayscale (can be considered both packed and planar)
     {IMGFMT_Y8,    D3DFMT_L8},
     {IMGFMT_Y16,   D3DFMT_L16},
@@ -233,7 +234,7 @@ static void uninit(struct vo *vo);
 static void flip_page(struct vo *vo);
 static mp_image_t *get_screenshot(d3d_priv *priv);
 static mp_image_t *get_window_screenshot(d3d_priv *priv);
-
+static void draw_osd(struct vo *vo);
 
 static void d3d_matrix_identity(D3DMATRIX *m)
 {
@@ -303,8 +304,8 @@ static void d3d_fix_texture_size(d3d_priv *priv, int *width, int *height)
     int tex_height = *height;
 
     // avoid nasty special cases with 0-sized textures and texture sizes
-    tex_width = FFMAX(tex_width, 1);
-    tex_height = FFMAX(tex_height, 1);
+    tex_width = MPMAX(tex_width, 1);
+    tex_height = MPMAX(tex_height, 1);
 
     if (priv->device_caps_power2_only) {
         tex_width  = 1;
@@ -314,7 +315,7 @@ static void d3d_fix_texture_size(d3d_priv *priv, int *width, int *height)
     }
     if (priv->device_caps_square_only)
         /* device only supports square textures */
-        tex_width = tex_height = FFMAX(tex_width, tex_height);
+        tex_width = tex_height = MPMAX(tex_width, tex_height);
     // better round up to a multiple of 16
     if (!priv->opt_disable_texture_align) {
         tex_width  = (tex_width  + 15) & ~15;
@@ -845,7 +846,7 @@ static uint32_t d3d_draw_frame(d3d_priv *priv)
     IDirect3DDevice9_Clear(priv->d3d_device, 0, NULL, D3DCLEAR_TARGET, 0, 0, 0);
 
     if (!priv->have_image)
-        return VO_TRUE;
+        goto render_osd;
 
     if (priv->use_textures) {
 
@@ -910,6 +911,10 @@ static uint32_t d3d_draw_frame(d3d_priv *priv)
             return VO_ERROR;
         }
     }
+
+render_osd:
+
+    draw_osd(priv->vo);
 
     return VO_TRUE;
 }
@@ -1126,7 +1131,10 @@ static int query_format(struct vo *vo, uint32_t movie_fmt)
 static void update_colorspace(d3d_priv *priv)
 {
     float coeff[3][4];
-    struct mp_csp_params csp = { .colorspace = priv->colorspace };
+    struct mp_csp_params csp = MP_CSP_PARAMS_DEFAULTS;
+    csp.colorspace.format = priv->params.colorspace;
+    csp.colorspace.levels_in = priv->params.colorlevels;
+    csp.colorspace.levels_out = priv->params.outputlevels;
     mp_csp_copy_equalizer_values(&csp, &priv->video_eq);
 
     if (priv->use_shaders) {
@@ -1205,16 +1213,15 @@ static int control(struct vo *vo, uint32_t request, void *data)
     case VOCTRL_REDRAW_FRAME:
         d3d_draw_frame(priv);
         return VO_TRUE;
-    case VOCTRL_SET_YUV_COLORSPACE:
-        priv->colorspace = *(struct mp_csp_details *)data;
-        update_colorspace(priv);
-        vo->want_redraw = true;
+    case VOCTRL_GET_COLORSPACE: {
+        struct mp_image_params *p = data;
+        if (priv->use_shaders) { // no idea what the heck D3D YUV uses
+            p->colorspace = priv->params.colorspace;
+            p->colorlevels = priv->params.colorlevels;
+            p->outputlevels = priv->params.outputlevels;
+        }
         return VO_TRUE;
-    case VOCTRL_GET_YUV_COLORSPACE:
-        if (!priv->use_shaders)
-            break; // no idea what the heck D3D YUV uses
-        *(struct mp_csp_details *)data = priv->colorspace;
-        return VO_TRUE;
+    }
     case VOCTRL_SET_EQUALIZER: {
         if (!priv->use_shaders)
             break;
@@ -1260,19 +1267,7 @@ static int control(struct vo *vo, uint32_t request, void *data)
     return r;
 }
 
-/** @brief libvo Callback: Configre the Direct3D adapter.
- *  @param width    Movie source width
- *  @param height   Movie source height
- *  @param d_width  Screen (destination) width
- *  @param d_height Screen (destination) height
- *  @param options  Options bitmap
- *  @param format   Movie colorspace format (using MPlayer's
- *                  defines, e.g. IMGFMT_YUYV)
- *  @return 0 on success, VO_ERROR on failure
- */
-static int config(struct vo *vo, uint32_t width, uint32_t height,
-                  uint32_t d_width, uint32_t d_height, uint32_t options,
-                  uint32_t format)
+static int reconfig(struct vo *vo, struct mp_image_params *params, int flags)
 {
     d3d_priv *priv = vo->priv;
 
@@ -1281,20 +1276,21 @@ static int config(struct vo *vo, uint32_t width, uint32_t height,
     /* w32_common framework call. Creates window on the screen with
      * the given coordinates.
      */
-    if (!vo_w32_config(vo, d_width, d_height, options)) {
+    if (!vo_w32_config(vo, flags)) {
         MP_VERBOSE(priv, "Creating window failed.\n");
         return VO_ERROR;
     }
 
-    if ((priv->image_format != format)
-        || (priv->src_width != width)
-        || (priv->src_height != height))
+    if ((priv->image_format != params->imgfmt)
+        || (priv->src_width != params->w)
+        || (priv->src_height != params->h))
     {
         d3d_destroy_video_objects(priv);
 
-        priv->src_width = width;
-        priv->src_height = height;
-        init_rendering_mode(priv, format, true);
+        priv->src_width = params->w;
+        priv->src_height = params->h;
+        priv->params = *params;
+        init_rendering_mode(priv, params->imgfmt, true);
     }
 
     if (!resize_d3d(priv))
@@ -1403,11 +1399,11 @@ static void draw_image(struct vo *vo, mp_image_t *mpi)
 {
     d3d_priv *priv = vo->priv;
     if (!priv->d3d_device)
-        return;
+        goto done;
 
     struct mp_image buffer;
     if (!get_video_buffer(priv, &buffer))
-        return;
+        goto done;
 
     mp_image_copy(&buffer, mpi);
 
@@ -1420,8 +1416,12 @@ static void draw_image(struct vo *vo, mp_image_t *mpi)
     }
 
     priv->have_image = true;
+    priv->osd_pts = mpi->pts;
 
     d3d_draw_frame(priv);
+
+done:
+    talloc_free(mpi);
 }
 
 static mp_image_t *get_screenshot(d3d_priv *priv)
@@ -1432,15 +1432,16 @@ static mp_image_t *get_screenshot(d3d_priv *priv)
     if (!priv->have_image)
         return NULL;
 
+    if (!priv->vo->params)
+        return NULL;
+
     struct mp_image buffer;
     if (!get_video_buffer(priv, &buffer))
         return NULL;
 
     struct mp_image *image = mp_image_new_copy(&buffer);
-    mp_image_set_display_size(image, priv->vo->aspdat.prew,
-                                     priv->vo->aspdat.preh);
-
-    mp_image_set_colorspace_details(image, &priv->colorspace);
+    if (image)
+        mp_image_set_attributes(image, priv->vo->params);
 
     d3d_unlock_video_objects(priv);
     return image;
@@ -1496,6 +1497,8 @@ static mp_image_t *get_window_screenshot(d3d_priv *priv)
         goto error_exit;
 
     image = mp_image_alloc(IMGFMT_BGR32, width, height);
+    if (!image)
+        goto error_exit;
 
     IDirect3DSurface9_LockRect(surface, &locked_rect, NULL, 0);
 
@@ -1694,13 +1697,13 @@ static void draw_osd_cb(void *ctx, struct sub_bitmaps *imgs)
 }
 
 
-static void draw_osd(struct vo *vo, struct osd_state *osd)
+static void draw_osd(struct vo *vo)
 {
     d3d_priv *priv = vo->priv;
     if (!priv->d3d_device)
         return;
 
-    osd_draw(osd, priv->osd_res, osd->vo_pts, 0, osd_fmt_supported,
+    osd_draw(vo->osd, priv->osd_res, priv->osd_pts, 0, osd_fmt_supported,
              draw_osd_cb, priv);
 }
 
@@ -1721,14 +1724,12 @@ static const struct m_option opts[] = {
 };
 
 static const d3d_priv defaults_noshaders = {
-    .colorspace = MP_CSP_DETAILS_DEFAULTS,
     .video_eq = { MP_CSP_EQ_CAPS_COLORMATRIX },
     .opt_disable_shaders = 1,
     .opt_disable_textures = 1,
 };
 
 static const d3d_priv defaults = {
-    .colorspace = MP_CSP_DETAILS_DEFAULTS,
     .video_eq = { MP_CSP_EQ_CAPS_COLORMATRIX },
 };
 
@@ -1737,10 +1738,9 @@ const struct vo_driver video_out_direct3d = {
     .name = "direct3d",
     .preinit = preinit,
     .query_format = query_format,
-    .config = config,
+    .reconfig = reconfig,
     .control = control,
     .draw_image = draw_image,
-    .draw_osd = draw_osd,
     .flip_page = flip_page,
     .uninit = uninit,
     .priv_size = sizeof(d3d_priv),
@@ -1753,10 +1753,9 @@ const struct vo_driver video_out_direct3d_shaders = {
     .name = "direct3d_shaders",
     .preinit = preinit,
     .query_format = query_format,
-    .config = config,
+    .reconfig = reconfig,
     .control = control,
     .draw_image = draw_image,
-    .draw_osd = draw_osd,
     .flip_page = flip_page,
     .uninit = uninit,
     .priv_size = sizeof(d3d_priv),

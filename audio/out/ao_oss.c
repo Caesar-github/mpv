@@ -49,6 +49,7 @@
 #include "audio/format.h"
 
 #include "ao.h"
+#include "internal.h"
 
 struct priv {
     int audio_fd;
@@ -64,7 +65,7 @@ struct priv {
     char *cfg_oss_mixer_channel;
 };
 
-static const char *mixer_channels[SOUND_MIXER_NRDEVICES] = SOUND_DEVICE_NAMES;
+static const char *const mixer_channels[SOUND_MIXER_NRDEVICES] = SOUND_DEVICE_NAMES;
 
 /* like alsa except for 6.1 and 7.1, from pcm/matrix_map.h */
 static const struct mp_chmap oss_layouts[MP_NUM_CHANNELS + 1] = {
@@ -79,7 +80,7 @@ static const struct mp_chmap oss_layouts[MP_NUM_CHANNELS + 1] = {
     MP_CHMAP8(FL, FR, BL, BR, FC, LFE, SL, SR), // 7.1
 };
 
-static int format_table[][2] = {
+static const int format_table[][2] = {
     {AFMT_U8,           AF_FORMAT_U8},
     {AFMT_S8,           AF_FORMAT_S8},
     {AFMT_U16_LE,       AF_FORMAT_U16_LE},
@@ -418,7 +419,7 @@ ac3_retry:
 #endif
     }
 
-    ao->bps = ao->channels.num * (af_fmt2bits(ao->format) / 8);
+    ao->bps = ao->channels.num * af_fmt2bps(ao->format);
     p->outburst -= p->outburst % ao->bps; // round down
     ao->bps *= ao->samplerate;
 
@@ -426,22 +427,26 @@ ac3_retry:
 }
 
 // close audio device
-static void uninit(struct ao *ao, bool immed)
+static void uninit(struct ao *ao)
 {
     struct priv *p = ao->priv;
     if (p->audio_fd == -1)
         return;
-#ifdef SNDCTL_DSP_SYNC
-    // to get the buffer played
-    if (!immed)
-        ioctl(p->audio_fd, SNDCTL_DSP_SYNC, NULL);
-#endif
 #ifdef SNDCTL_DSP_RESET
-    if (immed)
-        ioctl(p->audio_fd, SNDCTL_DSP_RESET, NULL);
+    ioctl(p->audio_fd, SNDCTL_DSP_RESET, NULL);
 #endif
     close(p->audio_fd);
     p->audio_fd = -1;
+}
+
+static void drain(struct ao *ao)
+{
+#ifdef SNDCTL_DSP_SYNC
+    struct priv *p = ao->priv;
+    // to get the buffer played
+    if (p->audio_fd != -1)
+        ioctl(p->audio_fd, SNDCTL_DSP_SYNC, NULL);
+#endif
 }
 
 #ifndef SNDCTL_DSP_RESET
@@ -600,6 +605,7 @@ const struct ao_driver audio_out_oss = {
     .pause     = audio_pause,
     .resume    = audio_resume,
     .reset     = reset,
+    .drain     = drain,
     .priv_size = sizeof(struct priv),
     .priv_defaults = &(const struct priv) {
         .audio_fd = -1,

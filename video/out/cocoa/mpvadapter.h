@@ -25,9 +25,10 @@
 - (void)putAxis:(int)mpkey delta:(float)delta;
 - (void)putCommand:(char*)cmd;
 - (void)performAsyncResize:(NSSize)size;
+- (void)handleFilesArray:(NSArray *)files;
+- (void)didChangeWindowedScreenProfile:(NSScreen *)screen;
 
 - (BOOL)isInFullScreenMode;
-- (NSSize)videoSize;
 - (NSScreen *)fsScreen;
 @property(nonatomic, assign) struct vo *vout;
 @end

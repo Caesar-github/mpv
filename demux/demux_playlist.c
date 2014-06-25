@@ -26,11 +26,14 @@
 #define PROBE_SIZE (8 * 1024)
 
 struct pl_parser {
+    struct mp_log *log;
     struct stream *s;
     char buffer[8 * 1024];
     int utf16;
     struct playlist *pl;
+    bool error;
     bool probing;
+    bool force;
 };
 
 static char *pl_get_line0(struct pl_parser *p)
@@ -40,6 +43,8 @@ static char *pl_get_line0(struct pl_parser *p)
         int len = strlen(res);
         if (len > 0 && res[len - 1] == '\n')
             res[len - 1] = '\0';
+    } else {
+        p->error |= !p->s->eof;
     }
     return res;
 }
@@ -58,21 +63,20 @@ static void pl_add(struct pl_parser *p, bstr entry)
 
 static bool pl_eof(struct pl_parser *p)
 {
-    return p->s->eof;
+    return p->error || p->s->eof;
 }
 
 static int parse_m3u(struct pl_parser *p)
 {
     bstr line = bstr_strip(pl_get_line(p));
-    if (!bstr_equals0(line, "#EXTM3U"))
+    if (p->probing && !bstr_equals0(line, "#EXTM3U"))
         return -1;
     if (p->probing)
         return 0;
     while (!pl_eof(p)) {
+        if (line.len > 0 && !bstr_startswith0(line, "#"))
+            pl_add(p, line);
         line = bstr_strip(pl_get_line(p));
-        if (line.len == 0 || bstr_startswith0(line, "#"))
-            continue;
-        pl_add(p, line);
     }
     return 0;
 }
@@ -131,24 +135,63 @@ static int parse_pls(struct pl_parser *p)
     return 0;
 }
 
+static int parse_txt(struct pl_parser *p)
+{
+    if (!p->force)
+        return -1;
+    if (p->probing)
+        return 0;
+    MP_WARN(p, "Reading plaintext playlist.\n");
+    while (!pl_eof(p)) {
+        bstr line = bstr_strip(pl_get_line(p));
+        if (line.len == 0)
+            continue;
+        pl_add(p, line);
+    }
+    return 0;
+}
+
 struct pl_format {
     const char *name;
     int (*parse)(struct pl_parser *p);
+    const char *const *mime_types;
 };
+
+#define MIME_TYPES(...) \
+    .mime_types = (const char*const[]){__VA_ARGS__, NULL}
 
 static const struct pl_format formats[] = {
-    {"m3u", parse_m3u},
+    {"m3u", parse_m3u,
+     MIME_TYPES("audio/mpegurl", "audio/x-mpegurl", "application/x-mpegurl")},
     {"ini", parse_ref_init},
     {"mov", parse_mov_rtsptext},
-    {"pls", parse_pls},
+    {"pls", parse_pls,
+     MIME_TYPES("audio/x-scpls")},
+    {"txt", parse_txt},
 };
 
-static const struct pl_format *probe_pl(struct pl_parser *p, bool force)
+static bool check_mimetype(struct stream *s, const char *const *list)
+{
+    if (s->mime_type) {
+        for (int n = 0; list && list[n]; n++) {
+            if (strcmp(s->mime_type, list[n]) == 0)
+                return true;
+        }
+    }
+    return false;
+}
+
+static const struct pl_format *probe_pl(struct pl_parser *p)
 {
     int64_t start = stream_tell(p->s);
     for (int n = 0; n < MP_ARRAY_SIZE(formats); n++) {
         const struct pl_format *fmt = &formats[n];
         stream_seek(p->s, start);
+        if (check_mimetype(p->s, fmt->mime_types)) {
+            MP_VERBOSE(p, "forcing format by mime-type.\n");
+            p->force = true;
+            return fmt;
+        }
         if (fmt->parse(p) >= 0)
             return fmt;
     }
@@ -160,13 +203,16 @@ static int open_file(struct demuxer *demuxer, enum demux_check check)
     bool force = check < DEMUX_CHECK_UNSAFE || check == DEMUX_CHECK_REQUEST;
 
     struct pl_parser *p = talloc_zero(NULL, struct pl_parser);
+    p->log = demuxer->log;
     p->pl = talloc_zero(p, struct playlist);
 
     bstr probe_buf = stream_peek(demuxer->stream, PROBE_SIZE);
     p->s = open_memory_stream(probe_buf.start, probe_buf.len);
+    p->s->mime_type = demuxer->stream->mime_type;
     p->utf16 = stream_skip_bom(p->s);
+    p->force = force;
     p->probing = true;
-    const struct pl_format *fmt = probe_pl(p, force);
+    const struct pl_format *fmt = probe_pl(p);
     free_stream(p->s);
     playlist_clear(p->pl);
     if (!fmt) {
@@ -175,9 +221,10 @@ static int open_file(struct demuxer *demuxer, enum demux_check check)
     }
 
     p->probing = false;
+    p->error = false;
     p->s = demuxer->stream;
     p->utf16 = stream_skip_bom(p->s);
-    bool ok = fmt->parse(p) >= 0;
+    bool ok = fmt->parse(p) >= 0 && !p->error;
     if (ok)
         playlist_add_base_path(p->pl, mp_dirname(demuxer->filename));
     demuxer->playlist = talloc_steal(demuxer, p->pl);

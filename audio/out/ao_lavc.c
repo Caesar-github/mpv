@@ -36,6 +36,7 @@
 #include "audio/fmt-conversion.h"
 #include "talloc.h"
 #include "ao.h"
+#include "internal.h"
 #include "common/msg.h"
 
 #include "common/encode_lavc.h"
@@ -101,12 +102,14 @@ static int init(struct ao *ao)
         return -1;
     }
 
+    pthread_mutex_lock(&ao->encode_lavc_ctx->lock);
+
     ac->stream = encode_lavc_alloc_stream(ao->encode_lavc_ctx,
                                           AVMEDIA_TYPE_AUDIO);
 
     if (!ac->stream) {
         MP_ERR(ao, "could not get a new audio stream\n");
-        return -1;
+        goto fail;
     }
 
     codec = encode_lavc_get_codec(ao->encode_lavc_ctx, ac->stream);
@@ -125,7 +128,7 @@ static int init(struct ao *ao)
     struct mp_chmap_sel sel = {0};
     mp_chmap_sel_add_any(&sel);
     if (!ao_chmap_sel_adjust(ao, &sel, &ao->channels))
-        return -1;
+        goto fail;
     mp_chmap_reorder_to_lavc(&ao->channels);
     ac->stream->codec->channels = ao->channels.num;
     ac->stream->codec->channel_layout = mp_chmap_to_lavc(&ao->channels);
@@ -134,12 +137,12 @@ static int init(struct ao *ao)
 
     select_format(ao, codec);
 
-    ac->sample_size = af_fmt2bits(ao->format) / 8;
+    ac->sample_size = af_fmt2bps(ao->format);
     ac->stream->codec->sample_fmt = af_to_avformat(ao->format);
     ac->stream->codec->bits_per_raw_sample = ac->sample_size * 8;
 
     if (encode_lavc_open_codec(ao->encode_lavc_ctx, ac->stream) < 0)
-        return -1;
+        goto fail;
 
     ac->pcmhack = 0;
     if (ac->stream->codec->frame_size <= 1)
@@ -163,23 +166,31 @@ static int init(struct ao *ao)
     // but at least one!
     ac->framecount = FFMAX(ac->framecount, 1);
 
-    ac->savepts = MP_NOPTS_VALUE;
-    ac->lastpts = MP_NOPTS_VALUE;
+    ac->savepts = AV_NOPTS_VALUE;
+    ac->lastpts = AV_NOPTS_VALUE;
 
     ao->untimed = true;
 
+    pthread_mutex_unlock(&ao->encode_lavc_ctx->lock);
     return 0;
+
+fail:
+    pthread_mutex_unlock(&ao->encode_lavc_ctx->lock);
+    return -1;
 }
 
 // close audio device
 static int encode(struct ao *ao, double apts, void **data);
-static void uninit(struct ao *ao, bool cut_audio)
+static void uninit(struct ao *ao)
 {
     struct priv *ac = ao->priv;
     struct encode_lavc_context *ectx = ao->encode_lavc_ctx;
 
+    pthread_mutex_lock(&ectx->lock);
+
     if (!encode_lavc_start(ectx)) {
         MP_WARN(ao, "not even ready to encode audio at end -> dropped\n");
+        pthread_mutex_unlock(&ectx->lock);
         return;
     }
 
@@ -191,7 +202,7 @@ static void uninit(struct ao *ao, bool cut_audio)
         while (encode(ao, outpts, NULL) > 0) ;
     }
 
-    ao->priv = NULL;
+    pthread_mutex_unlock(&ectx->lock);
 }
 
 // return: how many bytes can be played without blocking
@@ -205,7 +216,6 @@ static int get_space(struct ao *ao)
 // must get exactly ac->aframesize amount of data
 static int encode(struct ao *ao, double apts, void **data)
 {
-    AVFrame *frame;
     AVPacket packet;
     struct priv *ac = ao->priv;
     struct encode_lavc_context *ectx = ao->encode_lavc_ctx;
@@ -221,9 +231,9 @@ static int encode(struct ao *ao, double apts, void **data)
     av_init_packet(&packet);
     packet.data = ac->buffer;
     packet.size = ac->buffer_size;
-    if(data)
-    {
-        frame = avcodec_alloc_frame();
+    if(data) {
+        AVFrame *frame = av_frame_alloc();
+        frame->format = af_to_avformat(ao->format);
         frame->nb_samples = ac->aframesize;
 
         assert(ao->channels.num <= AV_NUM_DATA_POINTERS);
@@ -241,7 +251,7 @@ static int encode(struct ao *ao, double apts, void **data)
         }
 
         int64_t frame_pts = av_rescale_q(frame->pts, ac->stream->codec->time_base, ac->worst_time_base);
-        if (ac->lastpts != MP_NOPTS_VALUE && frame_pts <= ac->lastpts) {
+        if (ac->lastpts != AV_NOPTS_VALUE && frame_pts <= ac->lastpts) {
             // this indicates broken video
             // (video pts failing to increase fast enough to match audio)
             MP_WARN(ao, "audio frame pts went backwards (%d <- %d), autofixed\n",
@@ -255,11 +265,11 @@ static int encode(struct ao *ao, double apts, void **data)
         status = avcodec_encode_audio2(ac->stream->codec, &packet, frame, &gotpacket);
 
         if (!status) {
-            if (ac->savepts == MP_NOPTS_VALUE)
+            if (ac->savepts == AV_NOPTS_VALUE)
                 ac->savepts = frame->pts;
         }
 
-        avcodec_free_frame(&frame);
+        av_frame_free(&frame);
     }
     else
     {
@@ -300,7 +310,7 @@ static int encode(struct ao *ao, double apts, void **data)
         packet.duration = av_rescale_q(packet.duration, ac->stream->codec->time_base,
                 ac->stream->time_base);
 
-    ac->savepts = MP_NOPTS_VALUE;
+    ac->savepts = AV_NOPTS_VALUE;
 
     if (encode_lavc_write_frame(ao->encode_lavc_ctx, &packet) < 0) {
         MP_ERR(ao, "error writing at %f %f/%f\n",
@@ -320,37 +330,37 @@ static int play(struct ao *ao, void **data, int samples, int flags)
     struct encode_lavc_context *ectx = ao->encode_lavc_ctx;
     int bufpos = 0;
     double nextpts;
-    double pts = ao->pts;
     double outpts;
+    int orig_samples = samples;
+
+    pthread_mutex_lock(&ectx->lock);
 
     if (!encode_lavc_start(ectx)) {
         MP_WARN(ao, "not ready yet for encoding audio\n");
+        pthread_mutex_unlock(&ectx->lock);
         return 0;
     }
 
+    double pts = ectx->last_audio_in_pts;
+    pts += ectx->samples_since_last_pts / ao->samplerate;
+    ectx->samples_since_last_pts += samples;
+
     size_t num_planes = af_fmt_is_planar(ao->format) ? ao->channels.num : 1;
 
-    if (flags & AOPLAY_FINAL_CHUNK) {
-        int written = 0;
-        if (samples > 0) {
-            void *tmp = talloc_new(NULL);
-            size_t bytelen = samples * ao->sstride;
-            size_t extralen = (ac->aframesize - 1) * ao->sstride;
-            void *padded[MP_NUM_CHANNELS];
-            for (int n = 0; n < num_planes; n++) {
-                padded[n] = talloc_size(tmp, bytelen + extralen);
-                memcpy(padded[n], data[n], bytelen);
-                af_fill_silence((char *)padded[n] + bytelen, extralen, ao->format);
-            }
-            // No danger of recursion, because AOPLAY_FINAL_CHUNK not set
-            written = play(ao, padded, (bytelen + extralen) / ao->sstride, 0);
-            if (written < samples) {
-                MP_ERR(ao, "did not write enough data at the end\n");
-            }
-            talloc_free(tmp);
-        }
+    void *tempdata = NULL;
 
-        return FFMIN(written, samples);
+    if ((flags & AOPLAY_FINAL_CHUNK) && (samples % ac->aframesize)) {
+       tempdata = talloc_new(NULL);
+       size_t bytelen = samples * ao->sstride;
+       size_t extralen = (ac->aframesize - 1) * ao->sstride;
+       void *padded[MP_NUM_CHANNELS];
+       for (int n = 0; n < num_planes; n++) {
+           padded[n] = talloc_size(tempdata, bytelen + extralen);
+           memcpy(padded[n], data[n], bytelen);
+           af_fill_silence((char *)padded[n] + bytelen, extralen, ao->format);
+       }
+       data = padded;
+       samples = (bytelen + extralen) / ao->sstride;
     }
 
     if (pts == MP_NOPTS_VALUE) {
@@ -440,7 +450,25 @@ static int play(struct ao *ao, void **data, int samples, int flags)
             ectx->next_in_pts = nextpts;
     }
 
-    return bufpos;
+    talloc_free(tempdata);
+    pthread_mutex_unlock(&ectx->lock);
+
+    if (flags & AOPLAY_FINAL_CHUNK) {
+        if (bufpos < orig_samples) {
+            MP_ERR(ao, "did not write enough data at the end\n");
+        }
+    } else {
+        if (bufpos > orig_samples) {
+            MP_ERR(ao, "audio buffer overflow (should never happen)\n");
+        }
+    }
+
+    return FFMIN(bufpos, orig_samples);
+}
+
+static void drain(struct ao *ao)
+{
+    // pretend we support it, so generic code doesn't force a wait
 }
 
 const struct ao_driver audio_out_lavc = {
@@ -451,4 +479,5 @@ const struct ao_driver audio_out_lavc = {
     .uninit    = uninit,
     .get_space = get_space,
     .play      = play,
+    .drain     = drain,
 };

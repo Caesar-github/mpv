@@ -24,6 +24,8 @@
 
 #define MP_CMD_MAX_ARGS 10
 
+#define MP_CMD_OPT_ARG 0x1000
+
 struct mp_cmd_def {
     int id;             // one of MP_CMD_...
     const char *name;   // user-visible name (as used in input.conf)
@@ -44,9 +46,6 @@ enum mp_command_type {
     MP_CMD_PLAYLIST_NEXT,
     MP_CMD_PLAYLIST_PREV,
     MP_CMD_OSD,
-    MP_CMD_TV_STEP_CHANNEL,
-    MP_CMD_TV_STEP_NORM,
-    MP_CMD_TV_STEP_CHANNEL_LIST,
     MP_CMD_SCREENSHOT,
     MP_CMD_SCREENSHOT_TO_FILE,
     MP_CMD_LOADFILE,
@@ -56,10 +55,7 @@ enum mp_command_type {
     MP_CMD_PLAYLIST_MOVE,
     MP_CMD_SUB_STEP,
     MP_CMD_SUB_SEEK,
-    MP_CMD_TV_SET_CHANNEL,
     MP_CMD_TV_LAST_CHANNEL,
-    MP_CMD_TV_SET_FREQ,
-    MP_CMD_TV_SET_NORM,
     MP_CMD_FRAME_STEP,
     MP_CMD_FRAME_BACK_STEP,
     MP_CMD_RUN,
@@ -75,17 +71,12 @@ enum mp_command_type {
     MP_CMD_CYCLE,
     MP_CMD_MULTIPLY,
     MP_CMD_CYCLE_VALUES,
-    MP_CMD_TV_STEP_FREQ,
-    MP_CMD_TV_START_SCAN,
     MP_CMD_STOP,
 
     MP_CMD_ENABLE_INPUT_SECTION,
     MP_CMD_DISABLE_INPUT_SECTION,
 
-    MP_CMD_DVDNAV,
-
-    /// DVB commands
-    MP_CMD_DVB_SET_CHANNEL,
+    MP_CMD_DISCNAV,
 
     /// Audio Filter commands
     MP_CMD_AF,
@@ -98,9 +89,13 @@ enum mp_command_type {
 
     /// Internal for Lua scripts
     MP_CMD_SCRIPT_DISPATCH,
+    MP_CMD_SCRIPT_MESSAGE,
+    MP_CMD_SCRIPT_MESSAGE_TO,
 
     MP_CMD_OVERLAY_ADD,
     MP_CMD_OVERLAY_REMOVE,
+
+    MP_CMD_WRITE_WATCH_LATER_CONFIG,
 
     // Internal
     MP_CMD_COMMAND_LIST, // list of sub-commands in args[0].v.p

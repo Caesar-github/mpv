@@ -59,6 +59,8 @@ struct af_info {
 struct af_instance {
     const struct af_info *info;
     struct mp_log *log;
+    struct mp_tags *metadata;
+    struct replaygain_data *replaygain_data;
     int (*control)(struct af_instance *af, int cmd, void *arg);
     void (*uninit)(struct af_instance *af);
     /* flags is a bit mask of AF_FILTER_FLAG_* values
@@ -90,6 +92,8 @@ struct af_stream {
 
     struct mp_log *log;
     struct MPOpts *opts;
+    struct mp_tags *metadata;
+    struct replaygain_data *replaygain_data;
 };
 
 // Return values

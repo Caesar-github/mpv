@@ -29,7 +29,7 @@
 #include "stream.h"
 
 static int
-mf_stream_open (stream_t *stream, int mode)
+mf_stream_open (stream_t *stream)
 {
   stream->type = STREAMTYPE_MF;
   stream->demuxer = "mf";
@@ -41,5 +41,5 @@ mf_stream_open (stream_t *stream, int mode)
 const stream_info_t stream_info_mf = {
     .name = "mf",
     .open = mf_stream_open,
-    .protocols = (const char*[]){ "mf", NULL },
+    .protocols = (const char*const[]){ "mf", NULL },
 };

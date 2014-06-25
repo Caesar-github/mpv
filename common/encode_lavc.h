@@ -22,6 +22,8 @@
 #ifndef MPLAYER_ENCODE_LAVC_H
 #define MPLAYER_ENCODE_LAVC_H
 
+#include <pthread.h>
+
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavutil/avstring.h>
@@ -34,8 +36,14 @@
 
 struct encode_lavc_context {
     struct mpv_global *global;
-    struct encode_output_conf *options;
+    struct encode_opts *options;
     struct mp_log *log;
+    struct mp_tags *metadata;
+
+    // All entry points must be guarded with the lock. Functions called by
+    // the playback core lock this automatically, but ao_lavc.c and vo_lavc.c
+    // must lock manually before accessing state.
+    pthread_mutex_t lock;
 
     float vo_fps;
 
@@ -54,6 +62,9 @@ struct encode_lavc_context {
     // sync to audio mode
     double audio_pts_offset;
     double last_video_in_pts;
+
+    double last_audio_in_pts;
+    int64_t samples_since_last_pts;
 
     // anti discontinuity mode
     double next_in_pts;

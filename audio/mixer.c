@@ -68,6 +68,12 @@ bool mixer_audio_initialized(struct mixer *mixer)
     return !!mixer->ao;
 }
 
+float mixer_getneutralvolume(struct mixer *mixer)
+{
+    // gain == 1
+    return 1.0 / mixer->opts->softvol_max * 100.0 * 100.0;
+}
+
 static void checkvolume(struct mixer *mixer)
 {
     if (!mixer->ao)
@@ -173,21 +179,11 @@ bool mixer_getmute(struct mixer *mixer)
     return mixer->muted;
 }
 
-static void addvolume(struct mixer *mixer, float d)
+void mixer_addvolume(struct mixer *mixer, float step)
 {
     float vol_l, vol_r;
     mixer_getvolume(mixer, &vol_l, &vol_r);
-    mixer_setvolume(mixer, vol_l + d, vol_r + d);
-}
-
-void mixer_incvolume(struct mixer *mixer)
-{
-    addvolume(mixer, mixer->opts->volstep);
-}
-
-void mixer_decvolume(struct mixer *mixer)
-{
-    addvolume(mixer, -mixer->opts->volstep);
+    mixer_setvolume(mixer, vol_l + step, vol_r + step);
 }
 
 void mixer_getbalance(struct mixer *mixer, float *val)
@@ -208,9 +204,6 @@ void mixer_getbalance(struct mixer *mixer, float *val)
 
 void mixer_setbalance(struct mixer *mixer, float val)
 {
-    float level[AF_NCH];
-    int i;
-    af_control_ext_t arg_ext = { .arg = level };
     struct af_instance *af_pan_balance;
 
     mixer->balance = val;
@@ -221,7 +214,7 @@ void mixer_setbalance(struct mixer *mixer, float val)
     if (af_control_any_rev(mixer->af, AF_CONTROL_SET_PAN_BALANCE, &val))
         return;
 
-    if (val == 0 || mixer->ao->channels.num < 2)
+    if (val == 0)
         return;
 
     if (!(af_pan_balance = af_add(mixer->af, "pan", NULL))) {
@@ -230,13 +223,12 @@ void mixer_setbalance(struct mixer *mixer, float val)
     }
 
     /* make all other channels pass thru since by default pan blocks all */
-    memset(level, 0, sizeof(level));
-    for (i = 2; i < AF_NCH; i++) {
-        arg_ext.ch = i;
+    for (int i = 2; i < AF_NCH; i++) {
+        float level[AF_NCH] = {0};
         level[i] = 1.f;
+        af_control_ext_t arg_ext = { .ch = i, .arg = level };
         af_pan_balance->control(af_pan_balance, AF_CONTROL_SET_PAN_LEVEL,
                                 &arg_ext);
-        level[i] = 0.f;
     }
 
     af_pan_balance->control(af_pan_balance, AF_CONTROL_SET_PAN_BALANCE, &val);
@@ -255,8 +247,9 @@ static void probe_softvol(struct mixer *mixer)
 {
     if (mixer->opts->softvol == SOFTVOL_AUTO) {
         // No system-wide volume => fine with AO volume control.
-        mixer->softvol = !(mixer->ao->per_application_mixer ||
-                           mixer->ao->no_persistent_volume);
+        mixer->softvol =
+            ao_control(mixer->ao, AOCONTROL_HAS_TEMP_VOLUME, 0) != 1 ||
+            ao_control(mixer->ao, AOCONTROL_HAS_PER_APP_VOLUME, 0) != 1;
     } else {
         mixer->softvol = mixer->opts->softvol == SOFTVOL_YES;
     }
@@ -287,9 +280,10 @@ static void restore_volume(struct mixer *mixer)
     int force_mute = -1;
 
     const char *prev_driver = mixer->driver;
-    mixer->driver = mixer->softvol ? "softvol" : ao->driver->name;
+    mixer->driver = mixer->softvol ? "softvol" : ao_get_name(ao);
 
-    bool restore = mixer->softvol || ao->no_persistent_volume;
+    bool restore =
+        mixer->softvol || ao_control(ao, AOCONTROL_HAS_TEMP_VOLUME, 0) == 1;
 
     // Restore old parameters if volume won't survive reinitialization.
     // But not if volume scale is possibly different.

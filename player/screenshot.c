@@ -79,10 +79,8 @@ static void screenshot_msg(screenshot_ctx *ctx, int status, const char *msg,
     va_end(ap);
 
     MP_MSG(ctx->mpctx, status == SMSG_ERR ? MSGL_ERR : MSGL_INFO, "%s\n", s);
-    if (ctx->osd) {
-        set_osd_msg(ctx->mpctx, OSD_MSG_TEXT, 1, ctx->mpctx->opts->osd_duration,
-                     "%s", s);
-    }
+    if (ctx->osd)
+        set_osd_msg(ctx->mpctx, 1, ctx->mpctx->opts->osd_duration, "%s", s);
 
     talloc_free(s);
 }
@@ -175,6 +173,27 @@ static char *create_fname(struct MPContext *mpctx, char *template,
                 if (fmt == 'F')
                     name = stripext(res, video_file);
                 append_filename(&res, name);
+            }
+            break;
+        }
+        case 'x':
+        case 'X': {
+            char *fallback = "";
+            if (fmt == 'X') {
+                if (template[0] != '{')
+                    goto error_exit;
+                char *end = strchr(template, '}');
+                if (!end)
+                    goto error_exit;
+                fallback = talloc_strndup(res, template + 1, end - template - 1);
+                template = end + 1;
+            }
+            if (!mpctx->filename || mp_is_url(bstr0(mpctx->filename))) {
+                res = talloc_strdup_append(res, fallback);
+            } else {
+                bstr dir = mp_dirname(mpctx->filename);
+                if (!bstr_equals0(dir, "."))
+                    res = talloc_asprintf_append(res, "%.*s", BSTR_P(dir));
             }
             break;
         }
@@ -277,18 +296,15 @@ static char *gen_fname(screenshot_ctx *ctx, const char *file_ext)
 
 static void add_subs(struct MPContext *mpctx, struct mp_image *image)
 {
-    int d_w = image->display_w ? image->display_w : image->w;
-    int d_h = image->display_h ? image->display_h : image->h;
-
     double sar = (double)image->w / image->h;
-    double dar = (double)d_w / d_h;
+    double dar = (double)image->params.d_w / image->params.d_h;
     struct mp_osd_res res = {
         .w = image->w,
         .h = image->h,
         .display_par = sar / dar,
     };
 
-    osd_draw_on_image(mpctx->osd, res, mpctx->osd->vo_pts,
+    osd_draw_on_image(mpctx->osd, res, mpctx->video_pts,
                       OSD_DRAW_SUB_ONLY, image);
 }
 
@@ -311,7 +327,7 @@ static struct mp_image *screenshot_get(struct MPContext *mpctx, int mode)
 {
     struct mp_image *image = NULL;
     if (mpctx->video_out && mpctx->video_out->config_ok) {
-        if (mode == MODE_SUBTITLES && mpctx->osd->render_subs_in_filter)
+        if (mode == MODE_SUBTITLES && osd_get_render_subs_in_filter(mpctx->osd))
             mode = 0;
 
         struct voctrl_screenshot_args args =
@@ -367,7 +383,7 @@ void screenshot_request(struct MPContext *mpctx, int mode, bool each_frame,
 {
     screenshot_ctx *ctx = mpctx->screenshot_ctx;
 
-    if (mode == MODE_SUBTITLES && mpctx->osd->render_subs_in_filter)
+    if (mode == MODE_SUBTITLES && osd_get_render_subs_in_filter(mpctx->osd))
         mode = 0;
 
     if (each_frame) {

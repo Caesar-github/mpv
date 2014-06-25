@@ -261,30 +261,30 @@ const struct fmt2Xfmtentry_s {
     unsigned green_mask;
     unsigned blue_mask;
 } fmt2Xfmt[] = {
-    {IMGFMT_RGB8,  BO_NATIVE,    0x00000007, 0x00000038, 0x000000C0},
-    {IMGFMT_RGB8,  BO_NONNATIVE, 0x00000007, 0x00000038, 0x000000C0},
-    {IMGFMT_BGR8,  BO_NATIVE,    0x000000E0, 0x0000001C, 0x00000003},
-    {IMGFMT_BGR8,  BO_NONNATIVE, 0x000000E0, 0x0000001C, 0x00000003},
-    {IMGFMT_RGB15, BO_NATIVE,    0x0000001F, 0x000003E0, 0x00007C00},
-    {IMGFMT_BGR15, BO_NATIVE,    0x00007C00, 0x000003E0, 0x0000001F},
-    {IMGFMT_RGB16, BO_NATIVE,    0x0000001F, 0x000007E0, 0x0000F800},
-    {IMGFMT_BGR16, BO_NATIVE,    0x0000F800, 0x000007E0, 0x0000001F},
-    {IMGFMT_RGB24, MSBFirst,     0x00FF0000, 0x0000FF00, 0x000000FF},
-    {IMGFMT_RGB24, LSBFirst,     0x000000FF, 0x0000FF00, 0x00FF0000},
-    {IMGFMT_BGR24, MSBFirst,     0x000000FF, 0x0000FF00, 0x00FF0000},
-    {IMGFMT_BGR24, LSBFirst,     0x00FF0000, 0x0000FF00, 0x000000FF},
-    {IMGFMT_RGB32, BO_NATIVE,    0x000000FF, 0x0000FF00, 0x00FF0000},
-    {IMGFMT_RGB32, BO_NONNATIVE, 0xFF000000, 0x00FF0000, 0x0000FF00},
-    {IMGFMT_BGR32, BO_NATIVE,    0x00FF0000, 0x0000FF00, 0x000000FF},
-    {IMGFMT_BGR32, BO_NONNATIVE, 0x0000FF00, 0x00FF0000, 0xFF000000},
-    {IMGFMT_ARGB,  MSBFirst,     0x00FF0000, 0x0000FF00, 0x000000FF},
-    {IMGFMT_ARGB,  LSBFirst,     0x0000FF00, 0x00FF0000, 0xFF000000},
-    {IMGFMT_ABGR,  MSBFirst,     0x000000FF, 0x0000FF00, 0x00FF0000},
-    {IMGFMT_ABGR,  LSBFirst,     0xFF000000, 0x00FF0000, 0x0000FF00},
-    {IMGFMT_RGBA,  MSBFirst,     0xFF000000, 0x00FF0000, 0x0000FF00},
-    {IMGFMT_RGBA,  LSBFirst,     0x000000FF, 0x0000FF00, 0x00FF0000},
-    {IMGFMT_BGRA,  MSBFirst,     0x0000FF00, 0x00FF0000, 0xFF000000},
-    {IMGFMT_BGRA,  LSBFirst,     0x00FF0000, 0x0000FF00, 0x000000FF},
+    {IMGFMT_BGR8,   BO_NATIVE,    0x00000007, 0x00000038, 0x000000C0},
+    {IMGFMT_BGR8,   BO_NONNATIVE, 0x00000007, 0x00000038, 0x000000C0},
+    {IMGFMT_RGB8,   BO_NATIVE,    0x000000E0, 0x0000001C, 0x00000003},
+    {IMGFMT_RGB8,   BO_NONNATIVE, 0x000000E0, 0x0000001C, 0x00000003},
+    {IMGFMT_BGR555, BO_NATIVE,    0x0000001F, 0x000003E0, 0x00007C00},
+    {IMGFMT_BGR555, BO_NATIVE,    0x00007C00, 0x000003E0, 0x0000001F},
+    {IMGFMT_BGR565, BO_NATIVE,    0x0000001F, 0x000007E0, 0x0000F800},
+    {IMGFMT_RGB565, BO_NATIVE,    0x0000F800, 0x000007E0, 0x0000001F},
+    {IMGFMT_RGB24,  MSBFirst,     0x00FF0000, 0x0000FF00, 0x000000FF},
+    {IMGFMT_RGB24,  LSBFirst,     0x000000FF, 0x0000FF00, 0x00FF0000},
+    {IMGFMT_BGR24,  MSBFirst,     0x000000FF, 0x0000FF00, 0x00FF0000},
+    {IMGFMT_BGR24,  LSBFirst,     0x00FF0000, 0x0000FF00, 0x000000FF},
+    {IMGFMT_RGB32,  BO_NATIVE,    0x000000FF, 0x0000FF00, 0x00FF0000},
+    {IMGFMT_RGB32,  BO_NONNATIVE, 0xFF000000, 0x00FF0000, 0x0000FF00},
+    {IMGFMT_BGR32,  BO_NATIVE,    0x00FF0000, 0x0000FF00, 0x000000FF},
+    {IMGFMT_BGR32,  BO_NONNATIVE, 0x0000FF00, 0x00FF0000, 0xFF000000},
+    {IMGFMT_ARGB,   MSBFirst,     0x00FF0000, 0x0000FF00, 0x000000FF},
+    {IMGFMT_ARGB,   LSBFirst,     0x0000FF00, 0x00FF0000, 0xFF000000},
+    {IMGFMT_ABGR,   MSBFirst,     0x000000FF, 0x0000FF00, 0x00FF0000},
+    {IMGFMT_ABGR,   LSBFirst,     0xFF000000, 0x00FF0000, 0x0000FF00},
+    {IMGFMT_RGBA,   MSBFirst,     0xFF000000, 0x00FF0000, 0x0000FF00},
+    {IMGFMT_RGBA,   LSBFirst,     0x000000FF, 0x0000FF00, 0x00FF0000},
+    {IMGFMT_BGRA,   MSBFirst,     0x0000FF00, 0x00FF0000, 0xFF000000},
+    {IMGFMT_BGRA,   LSBFirst,     0x00FF0000, 0x0000FF00, 0x000000FF},
     {0}
 };
 
@@ -308,8 +308,7 @@ static int reconfig(struct vo *vo, struct mp_image_params *fmt, int flags)
                           TrueColor, &p->vinfo))
         return -1;
 
-    vo_x11_config_vo_window(vo, &p->vinfo, vo->dx, vo->dy, vo->dwidth,
-                            vo->dheight, flags, "x11");
+    vo_x11_config_vo_window(vo, &p->vinfo, flags, "x11");
 
     if (!resize(vo))
         return -1;
@@ -371,7 +370,7 @@ static bool resize(struct vo *vo)
     }
     p->bpp = p->myximage[0]->bits_per_pixel;
 
-    mp_sws_set_from_cmdline(p->sws);
+    mp_sws_set_from_cmdline(p->sws, vo->opts->sws_opts);
     p->sws->src = p->in_format;
     p->sws->dst = (struct mp_image_params) {
         .imgfmt = fmte->mpfmt,
@@ -422,15 +421,6 @@ static struct mp_image get_x_buffer(struct priv *p, int buf_index)
     return img;
 }
 
-static void draw_osd(struct vo *vo, struct osd_state *osd)
-{
-    struct priv *p = vo->priv;
-
-    struct mp_image img = get_x_buffer(p, p->current_buf);
-
-    osd_draw_on_image(osd, p->osd, osd->vo_pts, 0, &img);
-}
-
 static mp_image_t *get_screenshot(struct vo *vo)
 {
     struct priv *p = vo->priv;
@@ -470,7 +460,7 @@ static void flip_page(struct vo *vo)
         XSync(vo->x11->display, False);
 }
 
-// Note: redraw_frame() can call this with NULL.
+// Note: REDRAW_FRAME can call this with NULL.
 static void draw_image(struct vo *vo, mp_image_t *mpi)
 {
     struct priv *p = vo->priv;
@@ -491,15 +481,12 @@ static void draw_image(struct vo *vo, mp_image_t *mpi)
         mp_image_clear(&img, 0, 0, img.w, img.h);
     }
 
-    mp_image_setrefp(&p->original_image, mpi);
-}
+    osd_draw_on_image(vo->osd, p->osd, mpi ? mpi->pts : 0, 0, &img);
 
-static int redraw_frame(struct vo *vo)
-{
-    struct priv *p = vo->priv;
-
-    draw_image(vo, p->original_image);
-    return true;
+    if (mpi != p->original_image) {
+        talloc_free(p->original_image);
+        p->original_image = mpi;
+    }
 }
 
 static int query_format(struct vo *vo, uint32_t format)
@@ -633,7 +620,7 @@ static int control(struct vo *vo, uint32_t request, void *data)
         resize(vo);
         return VO_TRUE;
     case VOCTRL_REDRAW_FRAME:
-        redraw_frame(vo);
+        draw_image(vo, p->original_image);
         return true;
     case VOCTRL_WINDOW_TO_OSD_COORDS: {
         // OSD is rendered into the scaled image
@@ -667,7 +654,6 @@ const struct vo_driver video_out_x11 = {
     .reconfig = reconfig,
     .control = control,
     .draw_image = draw_image,
-    .draw_osd = draw_osd,
     .flip_page = flip_page,
     .uninit = uninit,
 };

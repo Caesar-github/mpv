@@ -16,8 +16,6 @@
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
-#include "config.h"
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -25,19 +23,20 @@
 #include <assert.h>
 #include <stdbool.h>
 
+#include "osdep/io.h"
 #include "common/global.h"
 #include "common/msg.h"
+#include "common/msg_control.h"
 #include "m_option.h"
 #include "m_config.h"
 #include "options.h"
 #include "common/playlist.h"
-#include "common/playlist_parser.h"
 #include "parse_commandline.h"
 
 #define GLOBAL 0
 #define LOCAL 1
 
-#define dvd_range(a)  (a > 0 && a < 256)
+#define dvd_range(a)  (a >= 0 && a < 255)
 
 
 struct parse_state {
@@ -83,11 +82,9 @@ static int split_opt_silent(struct parse_state *p)
 
     bool ambiguous = !bstr_split_tok(p->arg, "=", &p->arg, &p->param);
 
-    int r = m_config_option_requires_param(p->config, p->arg);
-    if (r < 0)
-        return r;
+    bool need_param = m_config_option_requires_param(p->config, p->arg) > 0;
 
-    if (ambiguous && r > 0) {
+    if (ambiguous && need_param) {
         if (p->argc < 1)
             return M_OPT_MISSING_PARAM;
         p->param = bstr0(p->argv[0]);
@@ -111,6 +108,28 @@ static bool split_opt(struct parse_state *p)
     return false;
 }
 
+#ifdef __MINGW32__
+static void process_non_option(struct playlist *files, const char *arg)
+{
+    glob_t gg;
+
+    // Glob filenames on Windows (cmd.exe doesn't do this automatically)
+    if (glob(arg, 0, NULL, &gg)) {
+        playlist_add_file(files, arg);
+    } else {
+        for (int i = 0; i < gg.gl_pathc; i++)
+            playlist_add_file(files, gg.gl_pathv[i]);
+
+        globfree(&gg);
+    }
+}
+#else
+static void process_non_option(struct playlist *files, const char *arg)
+{
+    playlist_add_file(files, arg);
+}
+#endif
+
 // returns M_OPT_... error code
 int m_config_parse_mp_command_line(m_config_t *config, struct playlist *files,
                                    struct mpv_global *global,
@@ -127,7 +146,7 @@ int m_config_parse_mp_command_line(m_config_t *config, struct playlist *files,
 
     mode = GLOBAL;
 
-    struct parse_state p = {config, argc, argv};
+    struct parse_state p = {config, argc - 1, argv + 1};
     while (split_opt(&p)) {
         if (p.is_opt) {
             int flags = M_SETOPT_FROM_CMDLINE;
@@ -234,13 +253,14 @@ int m_config_parse_mp_command_line(m_config_t *config, struct playlist *files,
 
                 } else // dvd:// or dvd://x entry
                     playlist_add_file(files, file0);
-            } else
-                playlist_add_file(files, file0);
+            } else {
+                process_non_option(files, file0);
+            }
             talloc_free(tmp);
 
             // Lock stdin if it will be used as input
             if (bstrcmp0(file, "-") == 0)
-                m_config_set_option0(config, "consolecontrols", "no");
+                m_config_set_option0(config, "input-terminal", "no");
         }
     }
 
@@ -273,7 +293,7 @@ void m_config_preparse_command_line(m_config_t *config, struct mpv_global *globa
     // Hack to shut up parser error messages
     mp_msg_mute(global, true);
 
-    struct parse_state p = {config, argc, argv};
+    struct parse_state p = {config, argc - 1, argv + 1};
     while (split_opt_silent(&p) == 0) {
         if (p.is_opt) {
             // Ignore non-pre-parse options. They will be set later.

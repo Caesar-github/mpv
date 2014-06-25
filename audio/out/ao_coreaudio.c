@@ -37,6 +37,7 @@
 
 #include "config.h"
 #include "ao.h"
+#include "internal.h"
 #include "audio/format.h"
 #include "osdep/timer.h"
 #include "options/m_option.h"
@@ -302,29 +303,27 @@ static int init(struct ao *ao)
                            &layouts, &n_layouts);
         CHECK_CA_ERROR("could not get audio device prefered layouts");
 
-        uint32_t *bitmaps;
-        size_t   n_bitmaps;
+        struct mp_chmap_sel chmap_sel = {0};
+        for (int i = 0; i < n_layouts; i++) {
+            struct mp_chmap chmap = {0};
+            if (ca_layout_to_mp_chmap(ao, &layouts[i], &chmap))
+                mp_chmap_sel_add_map(&chmap_sel, &chmap);
+        }
 
-        ca_bitmaps_from_layouts(ao, layouts, n_layouts, &bitmaps, &n_bitmaps);
         talloc_free(layouts);
 
-        struct mp_chmap_sel chmap_sel = {0};
-
-        for (int i=0; i < n_bitmaps; i++) {
-            struct mp_chmap chmap = {0};
-            mp_chmap_from_lavc(&chmap, bitmaps[i]);
+        if (ao->channels.num < 3) {
+            struct mp_chmap chmap;
+            mp_chmap_from_channels(&chmap, ao->channels.num);
             mp_chmap_sel_add_map(&chmap_sel, &chmap);
         }
 
-        talloc_free(bitmaps);
-
-        if (ao->channels.num < 3 || n_bitmaps < 1)
-            // If the input is not surround or we could not get any usable
-            // bitmap from the hardware, default to waveext...
-            mp_chmap_sel_add_waveext(&chmap_sel);
-
-        if (!ao_chmap_sel_adjust(ao, &chmap_sel, &ao->channels))
+        if (!ao_chmap_sel_adjust(ao, &chmap_sel, &ao->channels)) {
+            MP_ERR(ao, "could not select a suitable channel map among the "
+                       "hardware supported ones. Make sure to configure your "
+                       "output device correctly in 'Audio MIDI Setup.app'\n");
             goto coreaudio_error;
+        }
 
     } // closes if (!supports_digital)
 
@@ -407,21 +406,6 @@ static int init_lpcm(struct ao *ao, AudioStreamBasicDescription asbd)
                                sizeof(p->device));
     CHECK_CA_ERROR_L(coreaudio_error_audiounit,
                      "can't link audio unit to selected device");
-
-    if (ao->channels.num > 2) {
-        // No need to set a channel layout for mono and stereo inputs
-        AudioChannelLayout acl = (AudioChannelLayout) {
-            .mChannelLayoutTag = kAudioChannelLayoutTag_UseChannelBitmap,
-            .mChannelBitmap    = mp_chmap_to_waveext(&ao->channels)
-        };
-
-        err = AudioUnitSetProperty(p->audio_unit,
-                                   kAudioUnitProperty_AudioChannelLayout,
-                                   kAudioUnitScope_Input, 0, &acl,
-                                   sizeof(AudioChannelLayout));
-        CHECK_CA_ERROR_L(coreaudio_error_audiounit,
-                         "can't set channel layout bitmap into audio unit");
-    }
 
     p->buffer = mp_ring_new(p, get_ring_size(ao));
     print_buffer(ao, p->buffer);
@@ -625,13 +609,10 @@ static float get_delay(struct ao *ao)
     return mp_ring_buffered(p->buffer) / (float)ao->bps;
 }
 
-static void uninit(struct ao *ao, bool immed)
+static void uninit(struct ao *ao)
 {
     struct priv *p = ao->priv;
     OSStatus err = noErr;
-
-    if (!immed)
-        mp_sleep_us(get_delay(ao) * 1000000);
 
     if (!p->is_digital) {
         AudioOutputUnitStop(p->audio_unit);

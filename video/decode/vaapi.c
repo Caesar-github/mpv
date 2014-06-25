@@ -64,10 +64,7 @@ struct priv {
     struct vaapi_context *va_context;
     struct vaapi_context va_context_storage;
 
-    int format, w, h;
-    VASurfaceID surfaces[MAX_SURFACES];
-
-    struct va_surface_pool *pool;
+    struct mp_image_pool *pool;
     int rt_format;
 
     struct mp_image_pool *sw_pool;
@@ -163,19 +160,26 @@ static int is_direct_mapping(VADisplay display)
 // We achieve this by reserving surfaces in the pool as needed.
 // Releasing surfaces is necessary after filling the surface id list so
 // that reserved surfaces can be reused for decoding.
-static bool preallocate_surfaces(struct lavc_ctx *ctx, int num)
+static bool preallocate_surfaces(struct lavc_ctx *ctx, int num, int w, int h,
+                                 VASurfaceID out_surfaces[MAX_SURFACES])
 {
     struct priv *p = ctx->hwdec_priv;
-    if (!va_surface_pool_reserve(p->pool, num, p->w, p->h)) {
-        MP_ERR(p, "Could not allocate surfaces.\n");
-        return false;
+    assert(num <= MAX_SURFACES);
+    struct mp_image *reserve[MAX_SURFACES] = {0};
+    bool res = true;
+
+    for (int n = 0; n < num; n++) {
+        reserve[n] = mp_image_pool_get(p->pool, IMGFMT_VAAPI, w, h);
+        out_surfaces[n] = va_surface_id(reserve[n]);
+        if (out_surfaces[n] == VA_INVALID_ID) {
+            MP_ERR(p, "Could not allocate surfaces.\n");
+            res = false;
+            break;
+        }
     }
-    for (int i = 0; i < num; i++) {
-        struct va_surface *s = va_surface_pool_get(p->pool, p->w, p->h);
-        p->surfaces[i] = s->id;
-        va_surface_release(s);
-    }
-    return true;
+    for (int i = 0; i < num; i++)
+        talloc_free(reserve[i]);
+    return res;
 }
 
 static void destroy_decoder(struct lavc_ctx *ctx)
@@ -192,8 +196,7 @@ static void destroy_decoder(struct lavc_ctx *ctx)
         p->va_context->config_id = VA_INVALID_ID;
     }
 
-    for (int n = 0; n < MAX_SURFACES; n++)
-        p->surfaces[n] = VA_INVALID_ID;
+    mp_image_pool_clear(p->pool);
 }
 
 static bool has_profile(VAProfile *va_profiles, int num_profiles, VAProfile p)
@@ -205,15 +208,13 @@ static bool has_profile(VAProfile *va_profiles, int num_profiles, VAProfile p)
     return false;
 }
 
-static int create_decoder(struct lavc_ctx *ctx)
+static int init_decoder(struct lavc_ctx *ctx, int fmt, int w, int h)
 {
     void *tmp = talloc_new(NULL);
 
     struct priv *p = ctx->hwdec_priv;
     VAStatus status;
     int res = -1;
-
-    assert(p->format == IMGFMT_VAAPI);
 
     destroy_decoder(ctx);
 
@@ -254,7 +255,8 @@ static int create_decoder(struct lavc_ctx *ctx)
         goto error;
     }
 
-    if (!preallocate_surfaces(ctx, num_surfaces)) {
+    VASurfaceID surfaces[MAX_SURFACES];
+    if (!preallocate_surfaces(ctx, num_surfaces, w, h, surfaces)) {
         MP_ERR(p, "Could not allocate surfaces.\n");
         goto error;
     }
@@ -265,7 +267,7 @@ static int create_decoder(struct lavc_ctx *ctx)
     if (!CHECK_VA_STATUS(p, "vaQueryConfigEntrypoints()"))
         goto error;
 
-    int entrypoint = find_entrypoint(p->format, ep, num_ep);
+    int entrypoint = find_entrypoint(IMGFMT_VAAPI, ep, num_ep);
     if (entrypoint < 0) {
         MP_ERR(p, "Could not find VA entrypoint.\n");
         goto error;
@@ -289,8 +291,8 @@ static int create_decoder(struct lavc_ctx *ctx)
         goto error;
 
     status = vaCreateContext(p->display, p->va_context->config_id,
-                             p->w, p->h, VA_PROGRESSIVE,
-                             p->surfaces, num_surfaces,
+                             w, h, VA_PROGRESSIVE,
+                             surfaces, num_surfaces,
                              &p->va_context->context_id);
     if (!CHECK_VA_STATUS(p, "vaCreateContext()"))
         goto error;
@@ -306,31 +308,12 @@ static struct mp_image *allocate_image(struct lavc_ctx *ctx, int format,
 {
     struct priv *p = ctx->hwdec_priv;
 
-    if (format != IMGFMT_VAAPI)
-        return NULL;
-
-    if (format != p->format || w != p->w || h != p->h ||
-        p->va_context->context_id == VA_INVALID_ID)
-    {
-        p->format = format;
-        p->w = w;
-        p->h = h;
-        if (create_decoder(ctx) < 0)
-            return NULL;
-    }
-
-    struct va_surface *s = va_surface_pool_get(p->pool, p->w, p->h);
-    if (s) {
-        for (int n = 0; n < MAX_SURFACES; n++) {
-            if (p->surfaces[n] == s->id)
-                return va_surface_wrap(s);
-        }
-        va_surface_release(s);
-    }
-    MP_ERR(p, "Insufficient number of surfaces.\n");
-    return NULL;
+    struct mp_image *img =
+        mp_image_pool_get_no_alloc(p->pool, IMGFMT_VAAPI, w, h);
+    if (!img)
+        MP_ERR(p, "Insufficient number of surfaces.\n");
+    return img;
 }
-
 
 static void destroy_va_dummy_ctx(struct priv *p)
 {
@@ -372,7 +355,8 @@ static void uninit(struct lavc_ctx *ctx)
         return;
 
     destroy_decoder(ctx);
-    va_surface_pool_release(p->pool);
+
+    talloc_free(p->pool);
     p->pool = NULL;
 
     if (p->x11_display)
@@ -400,7 +384,8 @@ static int init_with_vactx(struct lavc_ctx *ctx, struct mp_vaapi_ctx *vactx)
     }
 
     p->display = p->ctx->display;
-    p->pool = va_surface_pool_alloc(p->ctx, p->rt_format);
+    p->pool = talloc_steal(p, mp_image_pool_new(MAX_SURFACES));
+    va_pool_set_allocator(p->pool, p->ctx, p->rt_format);
     p->sw_pool = talloc_steal(p, mp_image_pool_new(17));
 
     p->va_context->display = p->display;
@@ -428,6 +413,8 @@ static int probe(struct vd_lavc_hwdec *hwdec, struct mp_hwdec_info *info,
         return HWDEC_ERR_NO_CTX;
     if (!hwdec_check_codec_support(decoder, profiles))
         return HWDEC_ERR_NO_CODEC;
+    if (va_guess_if_emulated(info->vaapi_ctx))
+        return HWDEC_ERR_EMULATED;
     return 0;
 }
 
@@ -437,9 +424,12 @@ static int probe_copy(struct vd_lavc_hwdec *hwdec, struct mp_hwdec_info *info,
     struct priv dummy = {mp_null_log};
     if (!create_va_dummy_ctx(&dummy))
         return HWDEC_ERR_NO_CTX;
+    bool emulated = va_guess_if_emulated(dummy.ctx);
     destroy_va_dummy_ctx(&dummy);
     if (!hwdec_check_codec_support(decoder, profiles))
         return HWDEC_ERR_NO_CODEC;
+    if (emulated)
+        return HWDEC_ERR_EMULATED;
     return 0;
 }
 
@@ -452,36 +442,35 @@ static struct mp_image *copy_image(struct lavc_ctx *ctx, struct mp_image *img)
 {
     struct priv *p = ctx->hwdec_priv;
 
-    struct va_surface *surface = va_surface_in_mp_image(img);
-    if (surface) {
-        struct mp_image *simg = va_surface_download(surface, p->sw_pool);
-        if (simg) {
-            if (!p->printed_readback_warning) {
-                MP_WARN(p, "Using GPU readback. This is usually inefficient.\n");
-                p->printed_readback_warning = true;
-            }
-            talloc_free(img);
-            return simg;
+    struct mp_image *simg = va_surface_download(img, p->sw_pool);
+    if (simg) {
+        if (!p->printed_readback_warning) {
+            MP_WARN(p, "Using GPU readback. This is usually inefficient.\n");
+            p->printed_readback_warning = true;
         }
+        talloc_free(img);
+        return simg;
     }
     return img;
 }
 
 const struct vd_lavc_hwdec mp_vd_lavc_vaapi = {
     .type = HWDEC_VAAPI,
-    .image_formats = (const int[]) {IMGFMT_VAAPI, 0},
+    .image_format = IMGFMT_VAAPI,
     .probe = probe,
     .init = init,
     .uninit = uninit,
+    .init_decoder = init_decoder,
     .allocate_image = allocate_image,
 };
 
 const struct vd_lavc_hwdec mp_vd_lavc_vaapi_copy = {
     .type = HWDEC_VAAPI_COPY,
-    .image_formats = (const int[]) {IMGFMT_VAAPI, 0},
+    .image_format = IMGFMT_VAAPI,
     .probe = probe_copy,
     .init = init_copy,
     .uninit = uninit,
+    .init_decoder = init_decoder,
     .allocate_image = allocate_image,
     .process_image = copy_image,
 };

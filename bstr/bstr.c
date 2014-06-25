@@ -20,11 +20,14 @@
 #include <assert.h>
 #include <ctype.h>
 #include <stdarg.h>
+#include <stdint.h>
+#include <stdlib.h>
 
 #include <libavutil/common.h>
 
 #include "talloc.h"
 
+#include "common/common.h"
 #include "bstr/bstr.h"
 
 int bstrcmp(struct bstr str1, struct bstr str2)
@@ -293,6 +296,17 @@ int bstr_decode_utf8(struct bstr s, struct bstr *out_next)
     return codepoint;
 }
 
+struct bstr bstr_split_utf8(struct bstr str, struct bstr *out_next)
+{
+    bstr rest;
+    int code = bstr_decode_utf8(str, &rest);
+    if (code < 0)
+        return (bstr){0};
+    if (out_next)
+        *out_next = rest;
+    return bstr_splice(str, 0, str.len - rest.len);
+}
+
 int bstr_validate_utf8(struct bstr s)
 {
     while (s.len) {
@@ -318,13 +332,6 @@ int bstr_validate_utf8(struct bstr s)
     return 0;
 }
 
-static void append_bstr(bstr *buf, bstr s)
-{
-    buf->start = talloc_realloc(NULL, buf->start, unsigned char, buf->len + s.len);
-    memcpy(buf->start + buf->len, s.start, s.len);
-    buf->len += s.len;
-}
-
 struct bstr bstr_sanitize_utf8_latin1(void *talloc_ctx, struct bstr s)
 {
     bstr new = {0};
@@ -333,13 +340,8 @@ struct bstr bstr_sanitize_utf8_latin1(void *talloc_ctx, struct bstr s)
     while (left.len) {
         int r = bstr_decode_utf8(left, &left);
         if (r < 0) {
-            append_bstr(&new, (bstr){first_ok, left.start - first_ok});
-            uint32_t codepoint = (unsigned char)left.start[0];
-            char data[8];
-            uint8_t tmp;
-            char *output = data;
-            PUT_UTF8(codepoint, tmp, *output++ = tmp;);
-            append_bstr(&new, (bstr){data, output - data});
+            bstr_xappend(talloc_ctx, &new, (bstr){first_ok, left.start - first_ok});
+            mp_append_utf8_bstr(talloc_ctx, &new, (unsigned char)left.start[0]);
             left.start += 1;
             left.len -= 1;
             first_ok = left.start;
@@ -348,12 +350,61 @@ struct bstr bstr_sanitize_utf8_latin1(void *talloc_ctx, struct bstr s)
     if (!new.start)
         return s;
     if (first_ok != left.start)
-        append_bstr(&new, (bstr){first_ok, left.start - first_ok});
-    // For convenience
-    append_bstr(&new, (bstr){"\0", 1});
-    new.len -= 1;
-    talloc_steal(talloc_ctx, new.start);
+        bstr_xappend(talloc_ctx, &new, (bstr){first_ok, left.start - first_ok});
     return new;
+}
+
+static void resize_append(void *talloc_ctx, bstr *s, size_t append_min)
+{
+    size_t size = talloc_get_size(s->start);
+    assert(s->len <= size);
+    if (append_min > size - s->len) {
+        if (append_min < size)
+            append_min = size; // preallocate in power of 2s
+        if (size >= SIZE_MAX / 2 || append_min >= SIZE_MAX / 2)
+            abort(); // oom
+        s->start = talloc_realloc_size(talloc_ctx, s->start, size + append_min);
+    }
+}
+
+// Append the string, so that *s = *s + append. s->start is expected to be
+// a talloc allocation (which can be realloced) or NULL.
+// This function will always implicitly append a \0 after the new string for
+// convenience.
+// talloc_ctx will be used as parent context, if s->start is NULL.
+void bstr_xappend(void *talloc_ctx, bstr *s, bstr append)
+{
+    resize_append(talloc_ctx, s, append.len + 1);
+    memcpy(s->start + s->len, append.start, append.len);
+    s->len += append.len;
+    s->start[s->len] = '\0';
+}
+
+void bstr_xappend_asprintf(void *talloc_ctx, bstr *s, const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    bstr_xappend_vasprintf(talloc_ctx, s, fmt, ap);
+    va_end(ap);
+}
+
+// Exactly as bstr_xappend(), but with a formatted string.
+void bstr_xappend_vasprintf(void *talloc_ctx, bstr *s, const char *fmt,
+                            va_list ap)
+{
+    int size;
+    va_list copy;
+    va_copy(copy, ap);
+    char c;
+    size = vsnprintf(&c, 1, fmt, copy);
+    va_end(copy);
+
+    if (size < 0)
+        abort();
+
+    resize_append(talloc_ctx, s, size + 1);
+    vsnprintf(s->start + s->len, size + 1, fmt, ap);
+    s->len += size;
 }
 
 bool bstr_case_startswith(struct bstr s, struct bstr prefix)

@@ -56,6 +56,7 @@ known issues:
 #include <libv4l2.h>
 #endif
 #include "common/msg.h"
+#include "common/common.h"
 #include "video/img_fourcc.h"
 #include "audio/format.h"
 #include "tv.h"
@@ -83,8 +84,6 @@ const tvi_info_t tvi_info_v4l2 = {
     tvi_init_v4l2,
     "Video 4 Linux 2 input",
     "v4l2",
-    "Martin Olschewski <olschewski@zpr.uni-koeln.de>",
-    "first try, more to come ;-)"
 };
 
 struct map {
@@ -268,10 +267,8 @@ static int fcc_vl2mp(int fcc)
 ** Translate a video4linux2 fourcc aka pixel format
 ** to a human readable string.
 */
-static const char *pixfmt2name(int pixfmt)
+static const char *pixfmt2name(char *buf, int pixfmt)
 {
-    static char unknown[24];
-
     switch (pixfmt) {
     case V4L2_PIX_FMT_RGB332:       return "RGB332";
     case V4L2_PIX_FMT_RGB555:       return "RGB555";
@@ -301,8 +298,8 @@ static const char *pixfmt2name(int pixfmt)
     case V4L2_PIX_FMT_WNVA:         return "WNVA";
     case V4L2_PIX_FMT_MJPEG:        return "MJPEG";
     }
-    sprintf(unknown, "unknown (0x%x)", pixfmt);
-    return unknown;
+    sprintf(buf, "unknown (0x%x)", pixfmt);
+    return buf;
 }
 
 
@@ -411,7 +408,7 @@ static void init_audio(priv_t *priv)
 {
     if (priv->audio_initialized) return;
 
-    if (!priv->tv_param->noaudio) {
+    if (priv->tv_param->audio) {
 #if HAVE_ALSA
         if (priv->tv_param->alsa)
             audio_in_init(&priv->audio_in, priv->log, AUDIO_IN_ALSA);
@@ -642,6 +639,7 @@ static int do_control(priv_t *priv, int cmd, void *arg)
 {
     struct v4l2_control control;
     struct v4l2_frequency frequency;
+    char buf[80];
 
     switch(cmd) {
     case TVI_CONTROL_IS_VIDEO:
@@ -670,7 +668,7 @@ static int do_control(priv_t *priv, int cmd, void *arg)
         if (getfmt(priv) < 0) return TVI_CONTROL_FALSE;
         *(int *)arg = fcc_vl2mp(priv->format.fmt.pix.pixelformat);
         MP_VERBOSE(priv, "%s: get format: %s\n", info.short_name,
-               pixfmt2name(priv->format.fmt.pix.pixelformat));
+               pixfmt2name(buf, priv->format.fmt.pix.pixelformat));
         return TVI_CONTROL_TRUE;
     case TVI_CONTROL_VID_SET_FORMAT:
         if (getfmt(priv) < 0) return TVI_CONTROL_FALSE;
@@ -679,7 +677,7 @@ static int do_control(priv_t *priv, int cmd, void *arg)
 
         priv->mp_format = *(int *)arg;
         MP_VERBOSE(priv, "%s: set format: %s\n", info.short_name,
-               pixfmt2name(priv->format.fmt.pix.pixelformat));
+               pixfmt2name(buf, priv->format.fmt.pix.pixelformat));
         if (v4l2_ioctl(priv->video_fd, VIDIOC_S_FMT, &priv->format) < 0) {
             MP_ERR(priv, "%s: ioctl set format failed: %s\n",
                    info.short_name, strerror(errno));
@@ -793,7 +791,7 @@ static int do_control(priv_t *priv, int cmd, void *arg)
         case TVI_CONTROL_VID_SET_GAIN:
         {
             //value==0 means automatic gain control
-	    int value=*(int*)arg;
+            int value=*(int*)arg;
 
             if (value < 0 || value>100)
                 return TVI_CONTROL_FALSE;
@@ -1029,7 +1027,7 @@ static int uninit(priv_t *priv)
     }
 
     /* stop audio thread */
-    if (!priv->tv_param->noaudio && priv->audio_grabber_thread) {
+    if (priv->tv_param->audio && priv->audio_grabber_thread) {
         pthread_join(priv->audio_grabber_thread, NULL);
         pthread_mutex_destroy(&priv->skew_mutex);
         pthread_mutex_destroy(&priv->audio_mutex);
@@ -1049,7 +1047,7 @@ static int uninit(priv_t *priv)
         }
         free(priv->video_ringbuffer);
     }
-    if (!priv->tv_param->noaudio) {
+    if (priv->tv_param->audio) {
         free(priv->audio_ringbuffer);
         free(priv->audio_skew_buffer);
         free(priv->audio_skew_delta_buffer);
@@ -1182,6 +1180,7 @@ static int init(priv_t *priv)
         MP_ERR(priv, "%s: ioctl get input failed: %s\n",
                info.short_name, strerror(errno));
     }
+    char buf[80];
     MP_INFO(priv, "\n Current input: %d\n", i);
     for (i = 0; ; i++) {
         struct v4l2_fmtdesc fmtdesc;
@@ -1192,11 +1191,11 @@ static int init(priv_t *priv)
             break;
         }
         MP_VERBOSE(priv, " Format %-6s (%2d bits, %s)\n",
-               pixfmt2name(fmtdesc.pixelformat), pixfmt2depth(fmtdesc.pixelformat),
+               pixfmt2name(buf, fmtdesc.pixelformat), pixfmt2depth(fmtdesc.pixelformat),
                fmtdesc.description);
     }
     MP_INFO(priv, " Current format: %s\n",
-           pixfmt2name(priv->format.fmt.pix.pixelformat));
+           pixfmt2name(buf, priv->format.fmt.pix.pixelformat));
 
     /* set some nice defaults */
     if (getfmt(priv) < 0) return 0;
@@ -1279,7 +1278,7 @@ static int start(priv_t *priv)
     /* setup audio parameters */
 
     init_audio(priv);
-    if (!priv->tv_param->noaudio && !priv->audio_initialized) return 0;
+    if (priv->tv_param->audio && !priv->audio_initialized) return 0;
 
     /* we need this to size the audio buffer properly */
     if (priv->immediate_mode) {
@@ -1288,7 +1287,7 @@ static int start(priv_t *priv)
         priv->video_buffer_size_max = get_capture_buffer_size(priv);
     }
 
-    if (!priv->tv_param->noaudio) {
+    if (priv->tv_param->audio) {
         setup_audio_buffer_sizes(priv);
         priv->audio_skew_buffer = calloc(priv->aud_skew_cnt, sizeof(long long));
         if (!priv->audio_skew_buffer) {
@@ -1330,7 +1329,7 @@ static int start(priv_t *priv)
     }
 
     /* setup video parameters */
-    if (!priv->tv_param->noaudio) {
+    if (priv->tv_param->audio) {
         if (priv->video_buffer_size_max < 3*getfps(priv)*priv->audio_secs_per_block) {
             MP_ERR(priv, "Video buffer shorter than 3 times audio frame duration.\n"
                    "You will probably experience heavy framedrops.\n");
@@ -1407,7 +1406,7 @@ static int start(priv_t *priv)
                            ? CLOCK_MONOTONIC : CLOCK_REALTIME;
 #else
         if (priv->map[i].buf.flags & V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC)
-            mp_msg(MSGT_TV, MSGL_WARN, "MPlayer compiled without clock_gettime() that is needed to handle monotone video timestamps from the kernel. Expect desync.\n");
+            MP_WARN(priv, "compiled without clock_gettime() that is needed to handle monotone video timestamps from the kernel. Expect desync.\n");
 #endif
         /* count up to make sure this is correct everytime */
         priv->mapcount++;
@@ -1438,10 +1437,10 @@ static inline void copy_frame(priv_t *priv, video_buffer_entry *dest, unsigned c
     if(priv->tv_param->automute>0){
         if (v4l2_ioctl(priv->video_fd, VIDIOC_G_TUNER, &priv->tuner) >= 0) {
             if(priv->tv_param->automute<<8>priv->tuner.signal){
-	        fill_blank_frame(dest->data,dest->framesize,fcc_vl2mp(priv->format.fmt.pix.pixelformat));
-	        set_mute(priv,1);
-	        return;
-	    }
+                fill_blank_frame(dest->data,dest->framesize,fcc_vl2mp(priv->format.fmt.pix.pixelformat));
+                set_mute(priv,1);
+                return;
+            }
         }
         set_mute(priv,0);
     }
@@ -1474,7 +1473,7 @@ static void *video_grabber(void *data)
     }
     priv->streamon = 1;
 
-    if (!priv->tv_param->noaudio) {
+    if (priv->tv_param->audio) {
         pthread_create(&priv->audio_grabber_thread, NULL, audio_grabber, priv);
     }
 
@@ -1551,11 +1550,11 @@ static void *video_grabber(void *data)
 
         /* store the timestamp of the very first frame as reference */
         if (!priv->frames++) {
-            if (!priv->tv_param->noaudio) pthread_mutex_lock(&priv->skew_mutex);
-            priv->first_frame = (long long)1e6*buf.timestamp.tv_sec + buf.timestamp.tv_usec;
-            if (!priv->tv_param->noaudio) pthread_mutex_unlock(&priv->skew_mutex);
+            if (priv->tv_param->audio) pthread_mutex_lock(&priv->skew_mutex);
+            priv->first_frame = buf.timestamp.tv_sec * 1000000LL + buf.timestamp.tv_usec;
+            if (priv->tv_param->audio) pthread_mutex_unlock(&priv->skew_mutex);
         }
-        priv->curr_frame = (long long)buf.timestamp.tv_sec*1e6+buf.timestamp.tv_usec;
+        priv->curr_frame = buf.timestamp.tv_sec * 1000000LL + buf.timestamp.tv_usec;
 //        fprintf(stderr, "idx = %d, ts = %f\n", buf.index, (double)(priv->curr_frame) / 1e6);
 
         interval = priv->curr_frame - priv->first_frame;
@@ -1563,9 +1562,9 @@ static void *video_grabber(void *data)
 
         if (!priv->immediate_mode) {
             // interpolate the skew in time
-            if (!priv->tv_param->noaudio) pthread_mutex_lock(&priv->skew_mutex);
+            if (priv->tv_param->audio) pthread_mutex_lock(&priv->skew_mutex);
             xskew = priv->audio_skew + (interval - priv->audio_skew_measure_time)*priv->audio_skew_factor;
-            if (!priv->tv_param->noaudio) pthread_mutex_unlock(&priv->skew_mutex);
+            if (priv->tv_param->audio) pthread_mutex_unlock(&priv->skew_mutex);
              // correct extreme skew changes to avoid (especially) moving backwards in time
             if (xskew - prev_skew > delta*MAX_SKEW_DELTA) {
                 skew = prev_skew + delta*MAX_SKEW_DELTA;
@@ -1611,7 +1610,7 @@ static void *video_grabber(void *data)
             }
         } else {
             if (priv->immediate_mode) {
-                priv->video_ringbuffer[priv->video_tail].timestamp = 0;
+                priv->video_ringbuffer[priv->video_tail].timestamp = -1;
             } else {
                 // compensate for audio skew
                 // negative skew => there are more audio samples, increase interval
@@ -1642,7 +1641,6 @@ static void *video_grabber(void *data)
 #define MAX_LOOP 50
 static double grab_video_frame(priv_t *priv, char *buffer, int len)
 {
-    double interval;
     int loop_cnt = 0;
 
     if (priv->first) {
@@ -1656,13 +1654,13 @@ static double grab_video_frame(priv_t *priv, char *buffer, int len)
     }
 
     pthread_mutex_lock(&priv->video_buffer_mutex);
-    interval = (double)priv->video_ringbuffer[priv->video_head].timestamp*1e-6;
+    long long interval = priv->video_ringbuffer[priv->video_head].timestamp;
     memcpy(buffer, priv->video_ringbuffer[priv->video_head].data, len);
     priv->video_cnt--;
     priv->video_head = (priv->video_head+1)%priv->video_buffer_size_current;
     pthread_mutex_unlock(&priv->video_buffer_mutex);
 
-    return interval;
+    return interval == -1 ? MP_NOPTS_VALUE : interval*1e-6;
 }
 
 static int get_video_framesize(priv_t *priv)

@@ -20,11 +20,8 @@
 
 #include "stream.h"
 
-static int open_f(stream_t *stream, int mode)
+static int open_f(stream_t *stream)
 {
-    if (mode != STREAM_READ)
-        return STREAM_ERROR;
-
     stream->type = STREAMTYPE_AVDEVICE;
     stream->demuxer = "lavf";
 
@@ -34,5 +31,5 @@ static int open_f(stream_t *stream, int mode)
 const stream_info_t stream_info_avdevice = {
     .name = "avdevice",
     .open = open_f,
-    .protocols = (const char*[]){ "avdevice", "av", NULL },
+    .protocols = (const char*const[]){ "avdevice", "av", NULL },
 };

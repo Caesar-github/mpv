@@ -56,7 +56,8 @@ static volatile int tio_orig_set;
 
 int screen_width = 80;
 int screen_height = 24;
-char * erase_to_end_of_line = NULL;
+char *terminal_erase_to_end_of_line = "\033[K";
+char *terminal_cursor_up = "\033[A";
 
 typedef struct {
     char *cap;
@@ -270,10 +271,20 @@ static int load_termcap(char *termtype){
 #endif
     ensure_cap(&termcap_buf, 2048);
 
-    static char term_buf[64];
+    static char term_buf[128];
     char *buf_ptr = &term_buf[0];
+    char *tmp;
 
-    erase_to_end_of_line = tgetstr("ce", &buf_ptr);
+    // References for terminfo/termcap codes:
+    //  http://linux.die.net/man/5/termcap
+    //  http://unixhelp.ed.ac.uk/CGI/man-cgi?terminfo+5
+
+    tmp = tgetstr("ce", &buf_ptr);
+    if (tmp)
+        terminal_erase_to_end_of_line = tmp;
+    tmp = tgetstr("up", &buf_ptr);
+    if (tmp)
+        terminal_cursor_up = tmp;
 
     screen_width  = tgetnum("co");
     screen_height = tgetnum("li");
@@ -328,6 +339,9 @@ static int load_termcap(char *termtype){
 
     /* mintty uses this instead of the "K2" cap for keypad center */
     keys_push_once("\033OE", MP_KEY_KP5);
+
+    /* fallback if terminfo and termcap are not available */
+    keys_push_once("\012", MP_KEY_ENTER);
 
     return getch2_keys.len;
 }

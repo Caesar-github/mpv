@@ -32,6 +32,26 @@
 #include "common/msg.h"
 #include "stream.h"
 #include "options/m_option.h"
+#include "options/path.h"
+
+#if HAVE_BSD_FSTATFS
+#include <sys/param.h>
+#include <sys/mount.h>
+#endif
+
+#if HAVE_LINUX_FSTATFS
+#include <sys/vfs.h>
+#endif
+
+#ifdef _WIN32
+#include <windows.h>
+#include <winternl.h>
+#include <io.h>
+
+#ifndef FILE_REMOTE_DEVICE
+#define FILE_REMOTE_DEVICE (0x10)
+#endif
+#endif
 
 struct priv {
     int fd;
@@ -71,14 +91,13 @@ static int control(stream_t *s, int cmd, void *arg)
     struct priv *p = s->priv;
     switch (cmd) {
     case STREAM_CTRL_GET_SIZE: {
-        off_t size;
-
-        size = lseek(p->fd, 0, SEEK_END);
+        off_t size = lseek(p->fd, 0, SEEK_END);
         lseek(p->fd, s->pos, SEEK_SET);
         if (size != (off_t)-1) {
-            *(uint64_t *)arg = size;
+            *(int64_t *)arg = size;
             return 1;
         }
+        break;
     }
     }
     return STREAM_UNSUPPORTED;
@@ -91,50 +110,128 @@ static void s_close(stream_t *s)
         close(p->fd);
 }
 
-static int open_f(stream_t *stream, int mode)
+// If url is a file:// URL, return the local filename, otherwise return NULL.
+char *mp_file_url_to_filename(void *talloc_ctx, bstr url)
+{
+    bstr proto = mp_split_proto(url, &url);
+    if (bstrcasecmp0(proto, "file") != 0)
+        return NULL;
+    char *filename = bstrto0(talloc_ctx, url);
+    mp_url_unescape_inplace(filename);
+#if HAVE_DOS_PATHS
+    // extract '/' from '/x:/path'
+    if (filename[0] == '/' && filename[1] && filename[2] == ':')
+        memmove(filename, filename + 1, strlen(filename)); // including \0
+#endif
+    return filename;
+}
+
+#if HAVE_BSD_FSTATFS
+static bool check_stream_network(stream_t *stream)
+{
+    struct statfs fs;
+    const char *stypes[] = { "afpfs", "nfs", "smbfs", "webdav", NULL };
+    struct priv *priv = stream->priv;
+    if (fstatfs(priv->fd, &fs) == 0)
+        for (int i=0; stypes[i]; i++)
+            if (strcmp(stypes[i], fs.f_fstypename) == 0)
+                return true;
+    return false;
+
+}
+#elif HAVE_LINUX_FSTATFS
+static bool check_stream_network(stream_t *stream)
+{
+    struct statfs fs;
+    const uint32_t stypes[] = {
+        0x5346414F  /*AFS*/,    0x61756673  /*AUFS*/,   0x00C36400  /*CEPH*/,
+        0xFF534D42  /*CIFS*/,   0x73757245  /*CODA*/,   0x19830326  /*FHGFS*/,
+        0x65735546  /*FUSEBLK*/,0x65735543  /*FUSECTL*/,0x1161970   /*GFS*/,
+        0x47504653  /*GPFS*/,   0x6B414653  /*KAFS*/,   0x0BD00BD0  /*LUSTRE*/,
+        0x564C      /*NCP*/,    0x6969      /*NFS*/,    0x6E667364  /*NFSD*/,
+        0xAAD7AAEA  /*PANFS*/,  0x50495045  /*PIPEFS*/, 0x517B      /*SMB*/,
+        0xBEEFDEAD  /*SNFS*/,   0xBACBACBC  /*VMHGFS*/, 0x7461636f  /*OCFS2*/,
+        0
+    };
+    struct priv *priv = stream->priv;
+    if (fstatfs(priv->fd, &fs) == 0) {
+        for (int i=0; stypes[i]; i++) {
+            if (stypes[i] == fs.f_type)
+                return true;
+        }
+    }
+    return false;
+
+}
+#elif defined(_WIN32)
+static bool check_stream_network(stream_t *stream)
+{
+    NTSTATUS (NTAPI *pNtQueryVolumeInformationFile)(HANDLE,
+        PIO_STATUS_BLOCK, PVOID, ULONG, FS_INFORMATION_CLASS) = NULL;
+
+    // NtQueryVolumeInformationFile is an internal Windows function. It has
+    // been present since Windows XP, however this code should fail gracefully
+    // if it's removed from a future version of Windows.
+    HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    pNtQueryVolumeInformationFile = (NTSTATUS (NTAPI*)(HANDLE,
+        PIO_STATUS_BLOCK, PVOID, ULONG, FS_INFORMATION_CLASS))
+        GetProcAddress(ntdll, "NtQueryVolumeInformationFile");
+
+    if (!pNtQueryVolumeInformationFile)
+        return false;
+
+    struct priv *priv = stream->priv;
+    HANDLE h = (HANDLE)_get_osfhandle(priv->fd);
+    if (h == INVALID_HANDLE_VALUE)
+        return false;
+
+    FILE_FS_DEVICE_INFORMATION info = { 0 };
+    IO_STATUS_BLOCK io;
+    NTSTATUS status = pNtQueryVolumeInformationFile(h, &io, &info,
+        sizeof(info), FileFsDeviceInformation);
+    if (!NT_SUCCESS(status))
+        return false;
+
+    return info.DeviceType == FILE_DEVICE_NETWORK_FILE_SYSTEM ||
+           (info.Characteristics & FILE_REMOTE_DEVICE);
+}
+#else
+static bool check_stream_network(stream_t *stream)
+{
+    return false;
+}
+#endif
+
+static int open_f(stream_t *stream)
 {
     int fd;
-    char *filename = stream->path;
     struct priv *priv = talloc_ptrtype(stream, priv);
     *priv = (struct priv) {
         .fd = -1
     };
     stream->priv = priv;
 
-    int m = O_CLOEXEC;
-    if (mode == STREAM_READ)
-        m |= O_RDONLY;
-    else if (mode == STREAM_WRITE)
-        m |= O_RDWR | O_CREAT | O_TRUNC;
-    else {
-        MP_ERR(stream, "Unknown open mode %d\n", mode);
-        return STREAM_UNSUPPORTED;
+    bool write = stream->mode == STREAM_WRITE;
+    int m = O_CLOEXEC | (write ? O_RDWR | O_CREAT | O_TRUNC : O_RDONLY);
+
+    char *filename = mp_file_url_to_filename(stream, bstr0(stream->url));
+    if (filename) {
+        stream->path = filename;
+    } else {
+        filename = stream->path;
     }
 
-    // "file://" prefix -> decode URL-style escapes
-    if (strlen(stream->url) > strlen(stream->path))
-        mp_url_unescape_inplace(stream->path);
-
-#if HAVE_DOS_PATHS
-    // extract '/' from '/x:/path'
-    if (filename[0] == '/' && filename[1] && filename[2] == ':')
-        filename++;
-#endif
-
     if (!strcmp(filename, "-")) {
-        if (mode == STREAM_READ) {
+        if (!write) {
             MP_INFO(stream, "Reading from stdin...\n");
             fd = 0;
-#if HAVE_SETMODE
-            setmode(fileno(stdin), O_BINARY);
-#endif
         } else {
-            MP_INFO(stream, "Writing to stdout\n");
+            MP_INFO(stream, "Writing to stdout...\n");
             fd = 1;
-#if HAVE_SETMODE
-            setmode(fileno(stdout), O_BINARY);
-#endif
         }
+#ifdef __MINGW32__
+        setmode(fd, O_BINARY);
+#endif
         priv->fd = fd;
         priv->close = false;
     } else {
@@ -148,40 +245,33 @@ static int open_f(stream_t *stream, int mode)
                     filename, strerror(errno));
             return STREAM_ERROR;
         }
-#ifndef __MINGW32__
         struct stat st;
         if (fstat(fd, &st) == 0 && S_ISDIR(st.st_mode)) {
-            MP_ERR(stream, "File is a directory: '%s'\n",
-                    filename);
+            MP_ERR(stream, "File is a directory: '%s'\n", filename);
             close(fd);
             return STREAM_ERROR;
         }
-#endif
         priv->fd = fd;
         priv->close = true;
     }
 
-    int64_t len = lseek(fd, 0, SEEK_END);
+    off_t len = lseek(fd, 0, SEEK_END);
     lseek(fd, 0, SEEK_SET);
-#ifdef __MINGW32__
-    // seeks on stdin incorrectly succeed on MinGW
-    if (fd == 0)
-        len = -1;
-#endif
-    stream->type = STREAMTYPE_FILE;
-    stream->flags = MP_STREAM_FAST_SKIPPING;
-    if (len >= 0) {
+    if (len != (off_t)-1) {
         stream->seek = seek;
-        stream->end_pos = len;
+        stream->seekable = true;
     }
 
-    MP_VERBOSE(stream, "File size is %" PRId64 " bytes\n", len);
-
+    stream->type = STREAMTYPE_FILE;
+    stream->fast_skip = true;
     stream->fill_buffer = fill_buffer;
     stream->write_buffer = write_buffer;
     stream->control = control;
     stream->read_chunk = 64 * 1024;
     stream->close = s_close;
+
+    if (check_stream_network(stream))
+        stream->streaming = true;
 
     return STREAM_OK;
 }
@@ -189,5 +279,6 @@ static int open_f(stream_t *stream, int mode)
 const stream_info_t stream_info_file = {
     .name = "file",
     .open = open_f,
-    .protocols = (const char*[]){ "file", "", NULL },
+    .protocols = (const char*const[]){ "file", "", NULL },
+    .can_write = true,
 };

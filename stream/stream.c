@@ -30,8 +30,8 @@
 #include <strings.h>
 #include <assert.h>
 
-#include <libavutil/intreadwrite.h>
 #include <libavutil/common.h>
+#include "compat/mpbswap.h"
 
 #include "talloc.h"
 
@@ -41,6 +41,7 @@
 #include "common/global.h"
 #include "bstr/bstr.h"
 #include "common/msg.h"
+#include "options/options.h"
 #include "options/path.h"
 #include "osdep/timer.h"
 #include "stream.h"
@@ -51,20 +52,9 @@
 // Includes additional padding in case sizes get rounded up by sector size.
 #define TOTAL_BUFFER_SIZE (STREAM_MAX_BUFFER_SIZE + STREAM_MAX_SECTOR_SIZE)
 
-/// We keep these 2 for the gui atm, but they will be removed.
-char *cdrom_device = NULL;
-char *dvd_device = NULL;
-int dvd_title = 0;
-
-struct input_ctx;
-static int (*stream_check_interrupt_cb)(struct input_ctx *ctx, int time);
-static struct input_ctx *stream_check_interrupt_ctx;
-
-extern const stream_info_t stream_info_vcd;
 extern const stream_info_t stream_info_cdda;
 extern const stream_info_t stream_info_dvb;
 extern const stream_info_t stream_info_tv;
-extern const stream_info_t stream_info_radio;
 extern const stream_info_t stream_info_pvr;
 extern const stream_info_t stream_info_smb;
 extern const stream_info_t stream_info_null;
@@ -77,14 +67,12 @@ extern const stream_info_t stream_info_ifo;
 extern const stream_info_t stream_info_dvd;
 extern const stream_info_t stream_info_dvdnav;
 extern const stream_info_t stream_info_bluray;
+extern const stream_info_t stream_info_bdnav;
 extern const stream_info_t stream_info_rar_filter;
 extern const stream_info_t stream_info_rar_entry;
 extern const stream_info_t stream_info_edl;
 
 static const stream_info_t *const stream_list[] = {
-#if HAVE_VCD
-    &stream_info_vcd,
-#endif
 #if HAVE_CDDA
     &stream_info_cdda,
 #endif
@@ -95,9 +83,6 @@ static const stream_info_t *const stream_list[] = {
 #endif
 #if HAVE_TV
     &stream_info_tv,
-#endif
-#if HAVE_RADIO
-    &stream_info_radio,
 #endif
 #if HAVE_PVR
     &stream_info_pvr,
@@ -114,6 +99,7 @@ static const stream_info_t *const stream_list[] = {
 #endif
 #if HAVE_LIBBLURAY
     &stream_info_bluray,
+    &stream_info_bdnav,
 #endif
 
     &stream_info_memory,
@@ -294,6 +280,13 @@ static int open_internal(const stream_info_t *sinfo, struct stream *underlying,
     s->path = talloc_strdup(s, path);
     s->source = underlying;
     s->allow_caching = true;
+    s->mode = flags & (STREAM_READ | STREAM_WRITE);
+
+    if ((s->mode & STREAM_WRITE) && !sinfo->can_write) {
+        MP_VERBOSE(s, "No write access implemented.\n");
+        talloc_free(s);
+        return STREAM_NO_MATCH;
+    }
 
     // Parse options
     if (sinfo->priv_size) {
@@ -302,6 +295,8 @@ static int open_internal(const stream_info_t *sinfo, struct stream *underlying,
             .priv_defaults = sinfo->priv_defaults,
             .options = sinfo->options,
         };
+        if (sinfo->get_defaults)
+            desc.priv_defaults = sinfo->get_defaults(s);
         struct m_config *config = m_config_from_obj_desc(s, s->log, &desc);
         s->priv = config->optstruct;
         if (s->info->url_options && !parse_url(s, config)) {
@@ -311,9 +306,7 @@ static int open_internal(const stream_info_t *sinfo, struct stream *underlying,
         }
     }
 
-    s->flags = 0;
-    s->mode = flags & (STREAM_READ | STREAM_WRITE);
-    int r = sinfo->open(s, s->mode);
+    int r = sinfo->open(s);
     if (r != STREAM_OK) {
         talloc_free(s);
         return r;
@@ -322,13 +315,7 @@ static int open_internal(const stream_info_t *sinfo, struct stream *underlying,
     if (!s->read_chunk)
         s->read_chunk = 4 * (s->sector_size ? s->sector_size : STREAM_BUFFER_SIZE);
 
-    if (!s->seek)
-        s->flags &= ~MP_STREAM_SEEK;
-    if (s->seek && !(s->flags & MP_STREAM_SEEK))
-        s->flags |= MP_STREAM_SEEK;
-
-    if (!(s->flags & MP_STREAM_SEEK))
-        s->end_pos = 0;
+    assert(s->seekable == !!s->seek);
 
     s->uncached_type = s->type;
 
@@ -399,7 +386,7 @@ static int stream_reconnect(stream_t *s)
 #define RECONNECT_SLEEP_MAX_MS 500
     if (!s->streaming)
         return 0;
-    if (!(s->flags & MP_STREAM_SEEK_FW))
+    if (!s->seekable)
         return 0;
     int64_t pos = s->pos;
     int sleep_ms = 5;
@@ -411,7 +398,7 @@ static int stream_reconnect(stream_t *s)
             sleep_ms = MPMIN(sleep_ms * 2, RECONNECT_SLEEP_MAX_MS);
         }
 
-        if (stream_check_interrupt(0))
+        if (stream_check_interrupt(s))
             return 0;
 
         s->eof = 1;
@@ -473,7 +460,9 @@ static int stream_read_unbuffered(stream_t *s, void *buf, int len)
         len = 0;
     if (len == 0) {
         // do not retry if this looks like proper eof
-        if (s->eof || (s->end_pos && s->pos == s->end_pos))
+        int64_t size = -1;
+        stream_control(s, STREAM_CTRL_GET_SIZE, &size);
+        if (s->eof || s->pos == size)
             goto eof_out;
 
         // just in case this is an error e.g. due to network
@@ -627,11 +616,11 @@ void stream_drop_buffers(stream_t *s)
 static int stream_seek_unbuffered(stream_t *s, int64_t newpos)
 {
     if (newpos != s->pos) {
-        if (newpos > s->pos && !(s->flags & MP_STREAM_SEEK_FW)) {
-            MP_ERR(s, "Can not seek in this stream\n");
+        if (newpos > s->pos && !s->seekable) {
+            MP_ERR(s, "Cannot seek forward in this stream\n");
             return 0;
         }
-        if (newpos < s->pos && !(s->flags & MP_STREAM_SEEK_BW)) {
+        if (newpos < s->pos && !s->seekable) {
             MP_ERR(s, "Cannot seek backward in linear streams!\n");
             return 1;
         }
@@ -652,7 +641,7 @@ static int stream_seek_long(stream_t *s, int64_t pos)
     stream_drop_buffers(s);
 
     if (s->mode == STREAM_WRITE) {
-        if (!(s->flags & MP_STREAM_SEEK) || !s->seek(s, pos))
+        if (!s->seekable || !s->seek(s, pos))
             return 0;
         return 1;
     }
@@ -664,9 +653,7 @@ static int stream_seek_long(stream_t *s, int64_t pos)
     MP_TRACE(s, "Seek from %" PRId64 " to %" PRId64
              " (with offset %d)\n", s->pos, pos, (int)(pos - newpos));
 
-    if (pos >= s->pos && !(s->flags & MP_STREAM_SEEK) &&
-        (s->flags & MP_STREAM_FAST_SKIPPING))
-    {
+    if (pos >= s->pos && !s->seekable && s->fast_skip) {
         // skipping is handled by generic code below
     } else if (stream_seek_unbuffered(s, newpos) >= 0) {
         return 0;
@@ -713,7 +700,7 @@ int stream_skip(stream_t *s, int64_t len)
     int64_t target = stream_tell(s) + len;
     if (len < 0)
         return stream_seek(s, target);
-    if (len > 2 * STREAM_BUFFER_SIZE && (s->flags & MP_STREAM_SEEK_FW)) {
+    if (len > 2 * STREAM_BUFFER_SIZE && s->seekable) {
         // Seek to 1 byte before target - this is the only way to distinguish
         // skip-to-EOF and skip-past-EOF in general. Successful seeking means
         // absolutely nothing, so test by doing a real read of the last byte.
@@ -731,18 +718,19 @@ int stream_control(stream_t *s, int cmd, void *arg)
 {
     if (!s->control)
         return STREAM_UNSUPPORTED;
-    return s->control(s, cmd, arg);
-}
-
-void stream_update_size(stream_t *s)
-{
-    if (!(s->flags & MP_STREAM_SEEK))
-        return;
-    uint64_t size;
-    if (stream_control(s, STREAM_CTRL_GET_SIZE, &size) == STREAM_OK) {
-        if (size > s->end_pos)
-            s->end_pos = size;
+    int r = s->control(s, cmd, arg);
+    if (r == STREAM_UNSUPPORTED) {
+        // Fallbacks
+        switch (cmd) {
+        case STREAM_CTRL_GET_SIZE:
+            if (s->end_pos > 0) {
+                *(int64_t *)arg = s->end_pos;
+                return STREAM_OK;
+            }
+            break;
+        }
     }
+    return r;
 }
 
 void free_stream(stream_t *s)
@@ -759,20 +747,11 @@ void free_stream(stream_t *s)
     talloc_free(s);
 }
 
-void stream_set_interrupt_callback(int (*cb)(struct input_ctx *, int),
-                                   struct input_ctx *ctx)
+bool stream_check_interrupt(struct stream *s)
 {
-    stream_check_interrupt_cb = cb;
-    stream_check_interrupt_ctx = ctx;
-}
-
-int stream_check_interrupt(int time)
-{
-    if (!stream_check_interrupt_cb) {
-        mp_sleep_us(time * 1000);
-        return 0;
-    }
-    return stream_check_interrupt_cb(stream_check_interrupt_ctx, time);
+    if (!s->global || !s->global->stream_interrupt_cb)
+        return false;
+    return s->global->stream_interrupt_cb(s->global->stream_interrupt_cb_ctx);
 }
 
 stream_t *open_memory_stream(void *data, int len)
@@ -787,41 +766,12 @@ stream_t *open_memory_stream(void *data, int len)
     return s;
 }
 
-static int stream_enable_cache(stream_t **stream, int64_t size, int64_t min,
-                               int64_t seek_limit);
-
-/**
- * \return 1 on success, 0 if the function was interrupted and -1 on error, or
- *         if the cache is disabled
- */
-int stream_enable_cache_percent(stream_t **stream, int64_t stream_cache_size,
-                                int64_t stream_cache_def_size,
-                                float stream_cache_min_percent,
-                                float stream_cache_seek_min_percent)
+static stream_t *open_cache(stream_t *orig, const char *name)
 {
-    if (stream_cache_size == -1)
-        stream_cache_size = (*stream)->streaming ? stream_cache_def_size : 0;
-
-    stream_cache_size = stream_cache_size * 1024; // input is in KiB
-    return stream_enable_cache(stream, stream_cache_size,
-                               stream_cache_size *
-                               (stream_cache_min_percent / 100.0),
-                               stream_cache_size *
-                               (stream_cache_seek_min_percent / 100.0));
-}
-
-static int stream_enable_cache(stream_t **stream, int64_t size, int64_t min,
-                               int64_t seek_limit)
-{
-    stream_t *orig = *stream;
-
-    if (orig->mode != STREAM_READ || !orig->allow_caching)
-        return 1;
-
     stream_t *cache = new_stream();
     cache->uncached_type = orig->type;
     cache->uncached_stream = orig;
-    cache->flags |= MP_STREAM_SEEK;
+    cache->seekable = true;
     cache->mode = STREAM_READ;
     cache->read_chunk = 4 * STREAM_BUFFER_SIZE;
 
@@ -832,154 +782,134 @@ static int stream_enable_cache(stream_t **stream, int64_t size, int64_t min,
     cache->safe_origin = orig->safe_origin;
     cache->opts = orig->opts;
     cache->global = orig->global;
-    cache->start_pos = orig->start_pos;
-    cache->end_pos = orig->end_pos;
 
-    cache->log = mp_log_new(cache, cache->global->log, "cache");
+    cache->log = mp_log_new(cache, cache->global->log, name);
 
-    int res = stream_cache_init(cache, orig, size, min, seek_limit);
+    return cache;
+}
+
+static struct mp_cache_opts check_cache_opts(stream_t *stream,
+                                             struct mp_cache_opts *opts)
+{
+    struct mp_cache_opts use_opts = *opts;
+    if (use_opts.size == -1)
+        use_opts.size = stream->streaming ? use_opts.def_size : 0;
+
+    if (stream->mode != STREAM_READ || !stream->allow_caching || use_opts.size < 1)
+        use_opts.size = 0;
+    return use_opts;
+}
+
+bool stream_wants_cache(stream_t *stream, struct mp_cache_opts *opts)
+{
+    struct mp_cache_opts use_opts = check_cache_opts(stream, opts);
+    return use_opts.size > 0;
+}
+
+// return: 1 on success, 0 if the function was interrupted and -1 on error, or
+//         if the cache is disabled
+int stream_enable_cache(stream_t **stream, struct mp_cache_opts *opts)
+{
+    stream_t *orig = *stream;
+    struct mp_cache_opts use_opts = check_cache_opts(*stream, opts);
+
+    if (use_opts.size < 1)
+        return -1;
+
+    stream_t *fcache = open_cache(orig, "file-cache");
+    if (stream_file_cache_init(fcache, orig, &use_opts) <= 0) {
+        fcache->uncached_stream = NULL; // don't free original stream
+        free_stream(fcache);
+        fcache = orig;
+    }
+
+    stream_t *cache = open_cache(fcache, "cache");
+
+    int res = stream_cache_init(cache, fcache, &use_opts);
     if (res <= 0) {
         cache->uncached_stream = NULL; // don't free original stream
         free_stream(cache);
+        if (fcache != orig)
+            free_stream(fcache);
     } else {
         *stream = cache;
     }
     return res;
 }
 
-/**
- * Helper function to read 16 bits little-endian and advance pointer
- */
-static uint16_t get_le16_inc(const uint8_t **buf)
+static uint16_t stream_read_word_endian(stream_t *s, bool big_endian)
 {
-    uint16_t v = AV_RL16(*buf);
-    *buf += 2;
-    return v;
+    unsigned int y = stream_read_char(s);
+    y = (y << 8) | stream_read_char(s);
+    if (big_endian)
+        y = bswap_16(y);
+    return y;
 }
 
-/**
- * Helper function to read 16 bits big-endian and advance pointer
- */
-static uint16_t get_be16_inc(const uint8_t **buf)
+// Read characters until the next '\n' (including), or until the buffer in s is
+// exhausted.
+static int read_characters(stream_t *s, uint8_t *dst, int dstsize, int utf16)
 {
-    uint16_t v = AV_RB16(*buf);
-    *buf += 2;
-    return v;
-}
-
-/**
- * Find a newline character in buffer
- * \param buf buffer to search
- * \param len amount of bytes to search in buffer, may not overread
- * \param utf16 chose between UTF-8/ASCII/other and LE and BE UTF-16
- *              0 = UTF-8/ASCII/other, 1 = UTF-16-LE, 2 = UTF-16-BE
- */
-static const uint8_t *find_newline(const uint8_t *buf, int len, int utf16)
-{
-    uint32_t c;
-    const uint8_t *end = buf + len;
-    switch (utf16) {
-    case 0:
-        return (uint8_t *)memchr(buf, '\n', len);
-    case 1:
-        while (buf < end - 1) {
-            GET_UTF16(c, buf < end - 1 ? get_le16_inc(&buf) : 0, return NULL;)
-            if (buf <= end && c == '\n')
-                return buf - 1;
-        }
-        break;
-    case 2:
-        while (buf < end - 1) {
-            GET_UTF16(c, buf < end - 1 ? get_be16_inc(&buf) : 0, return NULL;)
-            if (buf <= end && c == '\n')
-                return buf - 1;
-        }
-        break;
-    }
-    return NULL;
-}
-
-#define EMPTY_STMT do{}while(0);
-
-/**
- * Copy a number of bytes, converting to UTF-8 if input is UTF-16
- * \param dst buffer to copy to
- * \param dstsize size of dst buffer
- * \param src buffer to copy from
- * \param len amount of bytes to copy from src
- * \param utf16 chose between UTF-8/ASCII/other and LE and BE UTF-16
- *              0 = UTF-8/ASCII/other, 1 = UTF-16-LE, 2 = UTF-16-BE
- */
-static int copy_characters(uint8_t *dst, int dstsize,
-                           const uint8_t *src, int *len, int utf16)
-{
-    uint32_t c;
-    uint8_t *dst_end = dst + dstsize;
-    const uint8_t *end = src + *len;
-    switch (utf16) {
-    case 0:
-        if (*len > dstsize)
-            *len = dstsize;
-        memcpy(dst, src, *len);
-        return *len;
-    case 1:
-        while (src < end - 1 && dst_end - dst > 8) {
+    if (utf16 == 1 || utf16 == 2) {
+        uint8_t *cur = dst;
+        while (1) {
+            if ((cur - dst) + 8 >= dstsize) // PUT_UTF8 writes max. 8 bytes
+                return -1; // line too long
+            uint32_t c;
             uint8_t tmp;
-            GET_UTF16(c, src < end - 1 ? get_le16_inc(&src) : 0, EMPTY_STMT)
-            PUT_UTF8(c, tmp, *dst++ = tmp; EMPTY_STMT)
+            GET_UTF16(c, stream_read_word_endian(s, utf16 == 2), return -1;)
+            if (s->eof)
+                break; // legitimate EOF; ignore the case of partial reads
+            PUT_UTF8(c, tmp, *cur++ = tmp;)
+            if (c == '\n')
+                break;
         }
-        *len -= end - src;
-        return dstsize - (dst_end - dst);
-    case 2:
-        while (src < end - 1 && dst_end - dst > 8) {
-            uint8_t tmp;
-            GET_UTF16(c, src < end - 1 ? get_be16_inc(&src) : 0, EMPTY_STMT)
-            PUT_UTF8(c, tmp, *dst++ = tmp; EMPTY_STMT)
-        }
-        *len -= end - src;
-        return dstsize - (dst_end - dst);
+        return cur - dst;
+    } else {
+        if (s->buf_pos >= s->buf_len)
+            stream_fill_buffer(s);
+        uint8_t *src = s->buffer + s->buf_pos;
+        int src_len = s->buf_len - s->buf_pos;
+        uint8_t *end = memchr(src, '\n', src_len);
+        int len = end ? end - src + 1 : src_len;
+        if (len > dstsize)
+            return -1; // line too long
+        memcpy(dst, src, len);
+        s->buf_pos += len;
+        return len;
     }
-    return 0;
 }
 
+// On error, or if the line is larger than max-1, return NULL and unset s->eof.
+// On EOF, return NULL, and s->eof will be set.
+// Otherwise, return the line (including \n or \r\n at the end of the line).
+// If the return value is non-NULL, it's always the same as mem.
+// utf16: 0: UTF8 or 8 bit legacy, 1: UTF16-LE, 2: UTF16-BE
 unsigned char *stream_read_line(stream_t *s, unsigned char *mem, int max,
                                 int utf16)
 {
-    int len;
-    const unsigned char *end;
-    unsigned char *ptr = mem;
-    if (utf16 == -1)
-        utf16 = 0;
     if (max < 1)
         return NULL;
-    max--; // reserve one for 0-termination
-    do {
-        len = s->buf_len - s->buf_pos;
-        // try to fill the buffer
-        if (len <= 0 &&
-            (!stream_fill_buffer(s) ||
-             (len = s->buf_len - s->buf_pos) <= 0))
-            break;
-        end = find_newline(s->buffer + s->buf_pos, len, utf16);
-        if (end)
-            len = end - (s->buffer + s->buf_pos) + 1;
-        if (len > 0 && max > 0) {
-            int l = copy_characters(ptr, max, s->buffer + s->buf_pos, &len,
-                                    utf16);
-            max -= l;
-            ptr += l;
-            if (!len)
-                break;
+    int read = 0;
+    while (1) {
+        // Reserve 1 byte of ptr for terminating \0.
+        int l = read_characters(s, &mem[read], max - read - 1, utf16);
+        if (l < 0 || memchr(&mem[read], '\0', l)) {
+            MP_WARN(s, "error reading line\n");
+            s->eof = false;
+            return NULL;
         }
-        s->buf_pos += len;
-    } while (!end);
-    ptr[0] = 0;
-    if (s->eof && ptr == mem)
+        read += l;
+        if (l == 0 || (read > 0 && mem[read - 1] == '\n'))
+            break;
+    }
+    mem[read] = '\0';
+    if (s->eof && read == 0) // legitimate EOF
         return NULL;
     return mem;
 }
 
-static const char *bom[3] = {"\xEF\xBB\xBF", "\xFF\xFE", "\xFE\xFF"};
+static const char *const bom[3] = {"\xEF\xBB\xBF", "\xFF\xFE", "\xFE\xFF"};
 
 // Return utf16 argument for stream_read_line
 int stream_skip_bom(struct stream *s)
@@ -1013,10 +943,12 @@ struct bstr stream_read_complete(struct stream *s, void *talloc_ctx,
     int total_read = 0;
     int padding = 1;
     char *buf = NULL;
-    if (s->end_pos > max_size)
+    int64_t size = 0;
+    stream_control(s, STREAM_CTRL_GET_SIZE, &size);
+    if (size > max_size)
         return (struct bstr){NULL, 0};
-    if (s->end_pos > 0)
-        bufsize = s->end_pos + padding;
+    if (size > 0)
+        bufsize = size + padding;
     else
         bufsize = 1000;
     while (1) {

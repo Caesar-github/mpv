@@ -35,9 +35,12 @@
 #include "osdep/timer.h"
 #include "stream.h"
 #include "demux/demux.h"
-#include "stream_dvdnav.h"
+#include "discnav.h"
 #include "video/out/vo.h"
 #include "stream_dvd_common.h"
+
+#define TITLE_MENU -1
+#define TITLE_LONGEST -2
 
 struct priv {
     dvdnav_t *dvdnav;                   // handle to libdvdnav stuff
@@ -54,21 +57,27 @@ struct priv {
     bool nav_enabled;
     bool had_initial_vts;
 
+    int dvd_speed;
+
     int track;
     char *device;
 };
 
+static const struct priv stream_priv_dflts = {
+  .track = TITLE_LONGEST,
+};
+
 #define OPT_BASE_STRUCT struct priv
 static const m_option_t stream_opts_fields[] = {
-    OPT_CHOICE_OR_INT("title", track, 0, 1, 99,
-                      ({"menu", -1},
-                       {"longest", 0})),
+    OPT_CHOICE_OR_INT("title", track, 0, 0, 99,
+                      ({"menu", TITLE_MENU},
+                       {"longest", TITLE_LONGEST})),
     OPT_STRING("device", device, 0),
     {0}
 };
 
 #define DNE(e) [e] = # e
-static char *mp_dvdnav_events[] = {
+static const char *const mp_dvdnav_events[] = {
     DNE(DVDNAV_BLOCK_OK),
     DNE(DVDNAV_NOP),
     DNE(DVDNAV_STILL_FRAME),
@@ -84,7 +93,7 @@ static char *mp_dvdnav_events[] = {
     DNE(DVDNAV_WAIT),
 };
 
-static char *mp_nav_cmd_types[] = {
+static const char *const mp_nav_cmd_types[] = {
     DNE(MP_NAV_CMD_NONE),
     DNE(MP_NAV_CMD_ENABLE),
     DNE(MP_NAV_CMD_DRAIN_OK),
@@ -94,7 +103,7 @@ static char *mp_nav_cmd_types[] = {
     DNE(MP_NAV_CMD_MOUSE_POS),
 };
 
-static char *mp_nav_event_types[] = {
+static const char *const mp_nav_event_types[] = {
     DNE(MP_NAV_EVENT_NONE),
     DNE(MP_NAV_EVENT_RESET),
     DNE(MP_NAV_EVENT_RESET_CLUT),
@@ -373,8 +382,12 @@ static int fill_buffer(stream_t *s, char *buf, int max_len)
             priv->next_event |= 1 << MP_NAV_EVENT_EOF;
             return 0;
         }
-        case DVDNAV_NAV_PACKET:
+        case DVDNAV_NAV_PACKET: {
+            pci_t *pnavpci = dvdnav_get_current_nav_pci(dvdnav);
+            uint32_t start_pts = pnavpci->pci_gi.vobu_s_ptm;
+            MP_TRACE(s, "start pts = %"PRIu32"\n", start_pts);
             break;
+        }
         case DVDNAV_STILL_FRAME: {
             dvdnav_still_event_t *still_event = (dvdnav_still_event_t *) buf;
             priv->still_length = still_event->length;
@@ -466,17 +479,6 @@ static int control(stream_t *stream, int cmd, void *arg)
     int tit, part;
 
     switch (cmd) {
-    case STREAM_CTRL_SEEK_TO_CHAPTER: {
-        int chap = *(unsigned int *)arg + 1;
-
-        if (chap < 1)
-            break;
-        if (dvdnav_current_title_info(dvdnav, &tit, &part) != DVDNAV_STATUS_OK)
-            break;
-        if (dvdnav_part_play(dvdnav, tit, chap) != DVDNAV_STATUS_OK)
-            break;
-        return 1;
-    }
     case STREAM_CTRL_GET_NUM_CHAPTERS: {
         if (dvdnav_current_title_info(dvdnav, &tit, &part) != DVDNAV_STATUS_OK)
             break;
@@ -502,12 +504,6 @@ static int control(stream_t *stream, int cmd, void *arg)
         free(parts);
         return 1;
     }
-    case STREAM_CTRL_GET_CURRENT_CHAPTER: {
-        if (dvdnav_current_title_info(dvdnav, &tit, &part) != DVDNAV_STATUS_OK)
-            break;
-        *(unsigned int *)arg = part - 1;
-        return 1;
-    }
     case STREAM_CTRL_GET_TIME_LENGTH: {
         if (priv->duration) {
             *(double *)arg = (double)priv->duration / 1000.0;
@@ -529,21 +525,29 @@ static int control(stream_t *stream, int cmd, void *arg)
         }
         break;
     }
+    case STREAM_CTRL_GET_NUM_TITLES: {
+        int32_t num_titles = 0;
+        if (dvdnav_get_number_of_titles(dvdnav, &num_titles) != DVDNAV_STATUS_OK)
+            break;
+        *((unsigned int*)arg)= num_titles;
+        return STREAM_OK;
+    }
     case STREAM_CTRL_GET_CURRENT_TITLE: {
         if (dvdnav_current_title_info(dvdnav, &tit, &part) != DVDNAV_STATUS_OK)
             break;
-        *((unsigned int *) arg) = tit;
+        *((unsigned int *) arg) = tit - 1;
         return STREAM_OK;
     }
     case STREAM_CTRL_SET_CURRENT_TITLE: {
         int title = *((unsigned int *) arg);
-        if (dvdnav_title_play(priv->dvdnav, title) != DVDNAV_STATUS_OK)
+        if (dvdnav_title_play(priv->dvdnav, title + 1) != DVDNAV_STATUS_OK)
             break;
         stream_drop_buffers(stream);
         return STREAM_OK;
     }
     case STREAM_CTRL_SEEK_TO_TIME: {
         uint64_t tm = (uint64_t) (*((double *)arg) * 90000);
+        MP_VERBOSE(stream, "seek to PTS %"PRId64"\n", tm);
         if (dvdnav_time_search(dvdnav, tm) != DVDNAV_STATUS_OK)
             break;
         stream_drop_buffers(stream);
@@ -609,6 +613,15 @@ static int control(stream_t *stream, int cmd, void *arg)
         handle_cmd(stream, (struct mp_nav_cmd *)arg);
         return STREAM_OK;
     }
+    case STREAM_CTRL_GET_DISC_NAME: {
+        const char *volume = NULL;
+        if (dvdnav_get_title_string(dvdnav, &volume) != DVDNAV_STATUS_OK)
+            break;
+        if (!volume || !volume[0])
+            break;
+        *(char**)arg = talloc_strdup(NULL, volume);
+        return STREAM_OK;
+    }
     }
 
     return STREAM_UNSUPPORTED;
@@ -619,7 +632,8 @@ static void stream_dvdnav_close(stream_t *s)
     struct priv *priv = s->priv;
     dvdnav_close(priv->dvdnav);
     priv->dvdnav = NULL;
-    dvd_set_speed(s, priv->filename, -1);
+    if (priv->dvd_speed)
+        dvd_set_speed(s, priv->filename, -1);
 }
 
 static struct priv *new_dvdnav_stream(stream_t *stream, char *filename)
@@ -633,7 +647,8 @@ static struct priv *new_dvdnav_stream(stream_t *stream, char *filename)
     if (!(priv->filename = strdup(filename)))
         return NULL;
 
-    dvd_set_speed(stream, priv->filename, dvd_speed);
+    priv->dvd_speed = stream->opts->dvd_speed;
+    dvd_set_speed(stream, priv->filename, priv->dvd_speed);
 
     if (dvdnav_open(&(priv->dvdnav), priv->filename) != DVDNAV_STATUS_OK) {
         free(priv->filename);
@@ -648,22 +663,21 @@ static struct priv *new_dvdnav_stream(stream_t *stream, char *filename)
     if (dvdnav_set_PGC_positioning_flag(priv->dvdnav, 1) != DVDNAV_STATUS_OK)
         MP_ERR(stream, "stream_dvdnav, failed to set PGC positioning\n");
     /* report the title?! */
-    if (dvdnav_get_title_string(priv->dvdnav, &title_str) == DVDNAV_STATUS_OK)
-        MP_SMODE(stream, "ID_DVD_VOLUME_ID=%s\n", title_str);
+    dvdnav_get_title_string(priv->dvdnav, &title_str);
 
     return priv;
 }
 
-static int open_s(stream_t *stream, int mode)
+static int open_s(stream_t *stream)
 {
     struct priv *priv, *p;
     priv = p = stream->priv;
     char *filename;
 
-    if (p->device)
+    if (p->device && p->device[0])
         filename = p->device;
-    else if (dvd_device)
-        filename = dvd_device;
+    else if (stream->opts->dvd_device && stream->opts->dvd_device[0])
+        filename = stream->opts->dvd_device;
     else
         filename = DEFAULT_DVD_DEVICE;
     if (!new_dvdnav_stream(stream, filename)) {
@@ -672,7 +686,7 @@ static int open_s(stream_t *stream, int mode)
         return STREAM_UNSUPPORTED;
     }
 
-    if (p->track == 0) {
+    if (p->track == TITLE_LONGEST) { // longest
         dvdnav_t *dvdnav = priv->dvdnav;
         uint64_t best_length = 0;
         int best_title = -1;
@@ -690,27 +704,25 @@ static int open_s(stream_t *stream, int mode)
                 }
             }
         }
-        MP_INFO(stream, "Selecting title %d.\n", best_title);
-        p->track = best_title;
+        p->track = best_title - 1;
+        MP_INFO(stream, "Selecting title %d.\n", p->track);
     }
 
-    if (p->track > 0) {
+    if (p->track >= 0) {
         priv->title = p->track;
-        if (dvdnav_title_play(priv->dvdnav, p->track) != DVDNAV_STATUS_OK) {
+        if (dvdnav_title_play(priv->dvdnav, p->track + 1) != DVDNAV_STATUS_OK) {
             MP_FATAL(stream, "dvdnav_stream, couldn't select title %d, error '%s'\n",
                    p->track, dvdnav_err_to_string(priv->dvdnav));
             return STREAM_UNSUPPORTED;
         }
-        MP_SMODE(stream, "ID_DVD_CURRENT_TITLE=%d\n", p->track);
     } else {
         if (dvdnav_menu_call(priv->dvdnav, DVD_MENU_Root) != DVDNAV_STATUS_OK)
             dvdnav_menu_call(priv->dvdnav, DVD_MENU_Title);
     }
-    if (dvd_angle > 1)
-        dvdnav_angle_change(priv->dvdnav, dvd_angle);
+    if (stream->opts->dvd_angle > 1)
+        dvdnav_angle_change(priv->dvdnav, stream->opts->dvd_angle);
 
     stream->sector_size = 2048;
-    stream->flags = STREAM_READ;
     stream->fill_buffer = fill_buffer;
     stream->control = control;
     stream->close = stream_dvdnav_close;
@@ -725,10 +737,11 @@ static int open_s(stream_t *stream, int mode)
 const stream_info_t stream_info_dvdnav = {
     .name = "dvdnav",
     .open = open_s,
-    .protocols = (const char*[]){ "dvdnav", NULL },
+    .protocols = (const char*const[]){ "dvd", "dvdnav", NULL },
     .priv_size = sizeof(struct priv),
+    .priv_defaults = &stream_priv_dflts,
     .options = stream_opts_fields,
-    .url_options = (const char*[]){
+    .url_options = (const char*const[]){
         "hostname=title",
         "filename=device",
         NULL

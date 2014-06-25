@@ -16,6 +16,9 @@
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
+#include <stdarg.h>
+#include <assert.h>
+
 #include <libavutil/common.h>
 
 #include "talloc.h"
@@ -104,15 +107,39 @@ bool mp_rect_intersection(struct mp_rect *rc, const struct mp_rect *rc2)
     return rc->x1 > rc->x0 && rc->y1 > rc->y0;
 }
 
+// This works like snprintf(), except that it starts writing the first output
+// character to str[strlen(str)]. This returns the number of characters the
+// string would have *appended* assuming a large enough buffer, will make sure
+// str is null-terminated, and will never write to str[size] or past.
+// Example:
+//  int example(char *buf, size_t buf_size, double num, char *str) {
+//      int n = 0;
+//      n += mp_snprintf_cat(buf, size, "%f", num);
+//      n += mp_snprintf_cat(buf, size, "%s", str);
+//      return n; }
+// Note how this can be chained with functions similar in style.
+int mp_snprintf_cat(char *str, size_t size, const char *format, ...)
+{
+    size_t len = strnlen(str, size);
+    assert(!size || len < size); // str with no 0-termination is not allowed
+    int r;
+    va_list ap;
+    va_start(ap, format);
+    r = vsnprintf(str + len, size - len, format, ap);
+    va_end(ap);
+    return r;
+}
+
 // Encode the unicode codepoint as UTF-8, and append to the end of the
-// talloc'ed buffer.
-char *mp_append_utf8_buffer(char *buffer, uint32_t codepoint)
+// talloc'ed buffer. All guarantees bstr_xappend() give applies, such as
+// implicit \0-termination for convenience.
+void mp_append_utf8_bstr(void *talloc_ctx, struct bstr *buf, uint32_t codepoint)
 {
     char data[8];
     uint8_t tmp;
     char *output = data;
     PUT_UTF8(codepoint, tmp, *output++ = tmp;);
-    return talloc_strndup_append_buffer(buffer, data, output - data);
+    bstr_xappend(talloc_ctx, buf, (bstr){data, output - data});
 }
 
 // Parse a C-style escape beginning at code, and append the result to *str
@@ -120,7 +147,7 @@ char *mp_append_utf8_buffer(char *buffer, uint32_t codepoint)
 // after the initial '\', and after parsing *code is set to the first character
 // after the current escape.
 // On error, false is returned, and all input remains unchanged.
-bool mp_parse_escape(bstr *code, char **str)
+static bool mp_parse_escape(void *talloc_ctx, bstr *dst, bstr *code)
 {
     if (code->len < 1)
         return false;
@@ -137,7 +164,7 @@ bool mp_parse_escape(bstr *code, char **str)
     case '\'': replace = '\''; break;
     }
     if (replace) {
-        *str = talloc_strndup_append_buffer(*str, &replace, 1);
+        bstr_xappend(talloc_ctx, dst, (bstr){&replace, 1});
         *code = bstr_cut(*code, 1);
         return true;
     }
@@ -146,7 +173,7 @@ bool mp_parse_escape(bstr *code, char **str)
         char c = bstrtoll(num, &num, 16);
         if (!num.len)
             return false;
-        *str = talloc_strndup_append_buffer(*str, &c, 1);
+        bstr_xappend(talloc_ctx, dst, (bstr){&c, 1});
         *code = bstr_cut(*code, 3);
         return true;
     }
@@ -155,8 +182,63 @@ bool mp_parse_escape(bstr *code, char **str)
         int c = bstrtoll(num, &num, 16);
         if (num.len)
             return false;
-        *str = mp_append_utf8_buffer(*str, c);
+        mp_append_utf8_bstr(talloc_ctx, dst, c);
         *code = bstr_cut(*code, 5);
+        return true;
+    }
+    return false;
+}
+
+// Like mp_append_escaped_string, but set *dst to sliced *src if no escape
+// sequences have to be parsed (i.e. no memory allocation is required), and
+// if dst->start was NULL on function entry.
+bool mp_append_escaped_string_noalloc(void *talloc_ctx, bstr *dst, bstr *src)
+{
+    bstr t = *src;
+    int cur = 0;
+    while (1) {
+        if (cur >= t.len || t.start[cur] == '"') {
+            *src = bstr_cut(t, cur);
+            t = bstr_splice(t, 0, cur);
+            if (dst->start == NULL) {
+                *dst = t;
+            } else {
+                bstr_xappend(talloc_ctx, dst, t);
+            }
+            return true;
+        } else if (t.start[cur] == '\\') {
+            bstr_xappend(talloc_ctx, dst, bstr_splice(t, 0, cur));
+            t = bstr_cut(t, cur + 1);
+            cur = 0;
+            if (!mp_parse_escape(talloc_ctx, dst, &t))
+                goto error;
+        } else {
+            cur++;
+        }
+    }
+error:
+    return false;
+}
+
+// src is expected to point to a C-style string literal, *src pointing to the
+// first char after the starting '"'. It will append the contents of the literal
+// to *dst (using talloc_ctx) until the first '"' or the end of *str is found.
+// See bstr_xappend() how data is appended to *dst.
+// On success, *src will either start with '"', or be empty.
+// On error, return false, and *dst will contain the string until the first
+// error, *src is not changed.
+// Note that dst->start will be implicitly \0-terminated on successful return,
+// and if it was NULL or \0-terminated before calling the function.
+// As mentioned above, the caller is responsible for skipping the '"' chars.
+bool mp_append_escaped_string(void *talloc_ctx, bstr *dst, bstr *src)
+{
+    if (mp_append_escaped_string_noalloc(talloc_ctx, dst, src)) {
+        // Guarantee copy (or allocation).
+        if (!dst->start || dst->start == src->start) {
+            bstr res = *dst;
+            *dst = (bstr){0};
+            bstr_xappend(talloc_ctx, dst, res);
+        }
         return true;
     }
     return false;

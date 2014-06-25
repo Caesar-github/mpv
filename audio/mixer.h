@@ -39,13 +39,13 @@ void mixer_uninit_audio(struct mixer *mixer);
 bool mixer_audio_initialized(struct mixer *mixer);
 void mixer_getvolume(struct mixer *mixer, float *l, float *r);
 void mixer_setvolume(struct mixer *mixer, float l, float r);
-void mixer_incvolume(struct mixer *mixer);
-void mixer_decvolume(struct mixer *mixer);
+void mixer_addvolume(struct mixer *mixer, float step);
 void mixer_getbothvolume(struct mixer *mixer, float *b);
 void mixer_setmute(struct mixer *mixer, bool mute);
 bool mixer_getmute(struct mixer *mixer);
 void mixer_getbalance(struct mixer *mixer, float *bal);
 void mixer_setbalance(struct mixer *mixer, float bal);
+float mixer_getneutralvolume(struct mixer *mixer);
 char *mixer_get_volume_restore_data(struct mixer *mixer);
 
 #endif /* MPLAYER_MIXER_H */

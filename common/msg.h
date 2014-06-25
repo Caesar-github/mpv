@@ -41,7 +41,9 @@ enum {
     MSGL_V,         // -v
     MSGL_DEBUG,     // -v -v
     MSGL_TRACE,     // -v -v -v
-    MSGL_SMODE,     // old slave mode (-identify)
+    MSGL_STATS,     // dumping fine grained stats (--dump-stats)
+
+    MSGL_MAX = MSGL_STATS,
 };
 
 struct mp_log *mp_log_new(void *talloc_ctx, struct mp_log *parent,
@@ -63,7 +65,7 @@ bool mp_msg_test(struct mp_log *log, int lev);
 #define mp_trace(log, ...)      mp_msg(log, MSGL_TRACE, __VA_ARGS__)
 
 // Convenience macros, typically called with a pointer to a context struct
-// as first argument, which has a "struct mp_log log;" member.
+// as first argument, which has a "struct mp_log *log;" member.
 
 #define MP_MSG(obj, lev, ...)   mp_msg((obj)->log, lev, __VA_ARGS__)
 
@@ -74,16 +76,10 @@ bool mp_msg_test(struct mp_log *log, int lev);
 #define MP_VERBOSE(obj, ...)    MP_MSG(obj, MSGL_V, __VA_ARGS__)
 #define MP_DBG(obj, ...)        MP_MSG(obj, MSGL_DEBUG, __VA_ARGS__)
 #define MP_TRACE(obj, ...)      MP_MSG(obj, MSGL_TRACE, __VA_ARGS__)
-#define MP_SMODE(obj, ...)      MP_MSG(obj, MSGL_SMODE, __VA_ARGS__)
 
-struct mpv_global;
-void mp_msg_init(struct mpv_global *global);
-void mp_msg_uninit(struct mpv_global *global);
-void mp_msg_update_msglevels(struct mpv_global *global);
-void mp_msg_mute(struct mpv_global *global, bool mute);
-void mp_msg_force_stderr(struct mpv_global *global, bool force_stderr);
-
-struct bstr;
-int mp_msg_split_msglevel(struct bstr *s, struct bstr *out_mod, int *out_level);
+// This is a bit special. See TOOLS/stats-conv.py what rules text passed
+// to these functions should follow. Also see --dump-stats.
+#define mp_stats(obj, ...)      mp_msg(obj, MSGL_STATS, __VA_ARGS__)
+#define MP_STATS(obj, ...)      MP_MSG(obj, MSGL_STATS, __VA_ARGS__)
 
 #endif /* MPLAYER_MP_MSG_H */

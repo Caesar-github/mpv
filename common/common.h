@@ -19,6 +19,7 @@
 #ifndef MPLAYER_MPCOMMON_H
 #define MPLAYER_MPCOMMON_H
 
+#include <stddef.h>
 #include <stdlib.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -26,8 +27,8 @@
 #include "compat/compiler.h"
 #include "talloc.h"
 
-// both int64_t and double should be able to represent this exactly
-#define MP_NOPTS_VALUE (-1LL<<63)
+// double should be able to represent this exactly
+#define MP_NOPTS_VALUE (-0x1p+63)
 
 #define MP_CONCAT_(a, b) a ## b
 #define MP_CONCAT(a, b) MP_CONCAT_(a, b)
@@ -70,12 +71,22 @@ struct mp_rect {
     int x1, y1;
 };
 
+#define mp_rect_w(r) ((r).x1 - (r).x0)
+#define mp_rect_h(r) ((r).y1 - (r).y0)
+
 void mp_rect_union(struct mp_rect *rc, const struct mp_rect *src);
 bool mp_rect_intersection(struct mp_rect *rc, const struct mp_rect *rc2);
 
-char *mp_append_utf8_buffer(char *buffer, uint32_t codepoint);
+int mp_snprintf_cat(char *str, size_t size, const char *format, ...)
+    PRINTF_ATTRIBUTE(3, 4);
 
 struct bstr;
-bool mp_parse_escape(struct bstr *code, char **str);
+
+void mp_append_utf8_bstr(void *talloc_ctx, struct bstr *buf, uint32_t codepoint);
+
+bool mp_append_escaped_string_noalloc(void *talloc_ctx, struct bstr *dst,
+                                      struct bstr *src);
+bool mp_append_escaped_string(void *talloc_ctx, struct bstr *dst,
+                              struct bstr *src);
 
 #endif /* MPLAYER_MPCOMMON_H */

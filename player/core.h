@@ -21,8 +21,11 @@
 
 #include <stdbool.h>
 
+#include "libmpv/client.h"
+
 #include "common/common.h"
 #include "options/options.h"
+#include "sub/osd.h"
 
 // definitions used internally by the core player code
 
@@ -80,19 +83,6 @@ enum mp_osd_seek_info {
 
 
 enum {
-    OSD_MSG_TEXT = 1,
-    OSD_MSG_SUB_DELAY,
-    OSD_MSG_SPEED,
-    OSD_MSG_OSD_STATUS,
-    OSD_MSG_BAR,
-    OSD_MSG_PAUSE,
-    OSD_MSG_RADIO_CHANNEL,
-    OSD_MSG_TV_CHANNEL,
-
-    // Base id for messages generated from the commmand to property bridge.
-    OSD_MSG_PROPERTY = 0x100,
-    OSD_MSG_SUB_BASE = 0x1000,
-
     // other constants
     MAX_OSD_LEVEL = 3,
     MAX_TERM_OSD_LEVEL = 1,
@@ -152,15 +142,24 @@ enum {
 #define NUM_PTRACKS 2
 
 typedef struct MPContext {
+    bool initialized;
+    bool is_cplayer;
+    bool autodetach;
     struct mpv_global *global;
     struct MPOpts *opts;
     struct mp_log *log;
-    struct mp_log *statusline;
     struct m_config *mconfig;
     struct input_ctx *input;
+    struct mp_client_api *clients;
+    struct mp_dispatch_queue *dispatch;
+
+    struct mp_log *statusline;
     struct osd_state *osd;
     struct mp_osd_msg *osd_msg_stack;
-    char *terminal_osd_text;
+    char *term_osd_text;
+    char *term_osd_status;
+    char *term_osd_subs;
+    char *term_osd_contents;
     char *last_window_title;
 
     int add_osd_seek_info; // bitfield of enum mp_osd_seek_info
@@ -168,6 +167,7 @@ typedef struct MPContext {
     int osd_function;
     double osd_function_visible;
     double osd_last_update;
+    struct osd_progbar_state osd_progbar;
 
     struct playlist *playlist;
     char *filename; // currently playing file
@@ -180,6 +180,7 @@ typedef struct MPContext {
     int quit_custom_rc;
     bool has_quit_custom_rc;
     bool error_playing;
+    char **resume_defaults;
 
     int64_t shown_vframes, shown_aframes;
 
@@ -189,8 +190,6 @@ typedef struct MPContext {
     struct timeline_part *timeline;
     int num_timeline_parts;
     int timeline_part;
-    // NOTE: even if num_chapters==0, chapters being not NULL signifies presence
-    //       of chapter metadata
     struct chapter *chapters;
     int num_chapters;
     double video_offset;
@@ -218,6 +217,10 @@ typedef struct MPContext {
 
     struct mixer *mixer;
     struct ao *ao;
+    double ao_pts;
+    struct mp_audio *ao_decoder_fmt; // for weak gapless audio check
+    struct mp_audio_buffer *ao_buffer;  // queued audio; passed to ao_play() later
+
     struct vo *video_out;
 
     /* We're starting playback from scratch or after a seek. Show first
@@ -275,6 +278,8 @@ typedef struct MPContext {
     // Video PTS, or audio PTS if video has ended.
     double playback_pts;
 
+    int last_chapter;
+
     // History of video frames timestamps that were queued in the VO
     // This includes even skipped frames during hr-seek
     double vo_pts_history_pts[MAX_NUM_VO_PTS];
@@ -288,6 +293,7 @@ typedef struct MPContext {
 
     double last_heartbeat;
     double last_metadata_update;
+    double last_idle_tick;
 
     double mouse_timer;
     unsigned int mouse_event_ts;
@@ -306,6 +312,7 @@ typedef struct MPContext {
         enum seek_type type;
         double amount;
         int exact;  // -1 = disable, 0 = default, 1 = enable
+        bool immediate; // disable seek delay logic
         // currently not set by commands, only used internally by seek()
         int direction; // -1 = backward, 0 = default, 1 = forward
     } seek;
@@ -327,6 +334,7 @@ typedef struct MPContext {
     int last_dvb_step;
 
     bool paused;
+    bool eof_reached;
     // step this many frames, then pause
     int step_frames;
     // Counted down each frame, stop playback if 0 is reached. (-1 = disable)
@@ -342,7 +350,6 @@ typedef struct MPContext {
     struct screenshot_ctx *screenshot_ctx;
     struct command_ctx *command_ctx;
     struct encode_lavc_context *encode_lavc_ctx;
-    struct lua_ctx *lua_ctx;
     struct mp_nav_state *nav_state;
 } MPContext;
 
@@ -358,17 +365,19 @@ void clear_audio_decode_buffers(struct MPContext *mpctx);
 // configfiles.c
 bool mp_parse_cfgfiles(struct MPContext *mpctx);
 void mp_load_auto_profiles(struct MPContext *mpctx);
+void mp_get_resume_defaults(struct MPContext *mpctx);
 void mp_load_playback_resume(struct MPContext *mpctx, const char *file);
 void mp_write_watch_later_conf(struct MPContext *mpctx);
 struct playlist_entry *mp_check_playlist_resume(struct MPContext *mpctx,
                                                 struct playlist *playlist);
 
-// dvdnav.c
+// discnav.c
 void mp_nav_init(struct MPContext *mpctx);
 void mp_nav_reset(struct MPContext *mpctx);
 void mp_nav_destroy(struct MPContext *mpctx);
 void mp_nav_user_input(struct MPContext *mpctx, char *command);
 void mp_handle_nav(struct MPContext *mpctx);
+int mp_nav_in_menu(struct MPContext *mpctx);
 
 // loadfile.c
 void uninit_player(struct MPContext *mpctx, unsigned int mask);
@@ -378,6 +387,8 @@ void mp_switch_track(struct MPContext *mpctx, enum stream_type type,
 void mp_switch_track_n(struct MPContext *mpctx, int order,
                        enum stream_type type, struct track *track);
 void mp_deselect_track(struct MPContext *mpctx, struct track *track);
+void mp_mark_user_track_selection(struct MPContext *mpctx, int order,
+                                  enum stream_type type);
 struct track *mp_track_by_tid(struct MPContext *mpctx, enum stream_type type,
                               int tid);
 bool timeline_set_part(struct MPContext *mpctx, int i, bool force);
@@ -392,13 +403,16 @@ void mp_set_playlist_entry(struct MPContext *mpctx, struct playlist_entry *e);
 void mp_play_files(struct MPContext *mpctx);
 
 // main.c
+int mpv_main(int argc, char *argv[]);
+int mp_initialize(struct MPContext *mpctx);
+struct MPContext *mp_create(void);
+void mp_destroy(struct MPContext *mpctx);
 void mp_print_version(struct mp_log *log, int always);
 
 // misc.c
 double get_start_time(struct MPContext *mpctx);
 double get_main_demux_pts(struct MPContext *mpctx);
-double rel_time_to_abs(struct MPContext *mpctx, struct m_rel_time t,
-                       double fallback_time);
+double rel_time_to_abs(struct MPContext *mpctx, struct m_rel_time t);
 double get_play_end_pts(struct MPContext *mpctx);
 double get_relative_time(struct MPContext *mpctx);
 void merge_playlist_files(struct playlist *pl);
@@ -408,13 +422,11 @@ void update_window_title(struct MPContext *mpctx, bool force);
 void stream_dump(struct MPContext *mpctx);
 
 // osd.c
-void write_status_line(struct MPContext *mpctx, const char *line);
 void print_status(struct MPContext *mpctx);
 void set_osd_bar(struct MPContext *mpctx, int type, const char* name,
-                 double min, double max, double val);
-void set_osd_msg(struct MPContext *mpctx, int id, int level, int time,
-                 const char* fmt, ...) PRINTF_ATTRIBUTE(5,6);
-void rm_osd_msg(struct MPContext *mpctx, int id);
+                 double min, double max, double neutral, double val);
+void set_osd_msg(struct MPContext *mpctx, int level, int time,
+                 const char* fmt, ...) PRINTF_ATTRIBUTE(4,5);
 void set_osd_function(struct MPContext *mpctx, int osd_function);
 void set_osd_subtitle(struct MPContext *mpctx, const char *text);
 
@@ -423,7 +435,7 @@ void pause_player(struct MPContext *mpctx);
 void unpause_player(struct MPContext *mpctx);
 void add_step_frame(struct MPContext *mpctx, int dir);
 void queue_seek(struct MPContext *mpctx, enum seek_type type, double amount,
-                int exact);
+                int exact, bool immediate);
 bool mp_seek_chapter(struct MPContext *mpctx, int chapter);
 double get_time_length(struct MPContext *mpctx);
 double get_current_time(struct MPContext *mpctx);
@@ -439,6 +451,13 @@ void run_playloop(struct MPContext *mpctx);
 void idle_loop(struct MPContext *mpctx);
 void handle_force_window(struct MPContext *mpctx, bool reconfig);
 void add_frame_pts(struct MPContext *mpctx, double pts);
+
+// scripting.c
+struct mp_scripting {
+    const char *file_ext;   // e.g. "lua"
+    int (*load)(struct mpv_handle *client, const char *filename);
+};
+void mp_load_scripts(struct MPContext *mpctx);
 
 // sub.c
 void reset_subtitles(struct MPContext *mpctx, int order);
@@ -457,9 +476,9 @@ void build_cue_timeline(struct MPContext *mpctx);
 // video.c
 int reinit_video_chain(struct MPContext *mpctx);
 int reinit_video_filters(struct MPContext *mpctx);
-double update_video(struct MPContext *mpctx, double endpts);
+int update_video(struct MPContext *mpctx, double endpts, bool reconfig_ok,
+                 double *frame_duration);
 void mp_force_video_refresh(struct MPContext *mpctx);
 void update_fps(struct MPContext *mpctx);
-void video_execute_format_change(struct MPContext *mpctx);
 
 #endif /* MPLAYER_MP_CORE_H */

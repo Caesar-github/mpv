@@ -32,7 +32,7 @@
 typedef struct af_pan_s
 {
   int nch; // Number of output channels; zero means same as input
-  float level[AF_NCH][AF_NCH];	// Gain level for each channel
+  float level[AF_NCH][AF_NCH];  // Gain level for each channel
   char *matrixstr;
 }af_pan_t;
 
@@ -80,7 +80,7 @@ static int control(struct af_instance* af, int cmd, void* arg)
 
     // Sanity check
     if(((int*)arg)[0] <= 0 || ((int*)arg)[0] > AF_NCH){
-      MP_ERR(af, "[pan] The number of output channels must be"
+      MP_ERR(af, "The number of output channels must be"
             " between 1 and %i. Current value is %i\n",AF_NCH,((int*)arg)[0]);
       return AF_ERROR;
     }
@@ -110,14 +110,14 @@ static int control(struct af_instance* af, int cmd, void* arg)
 // Filter data through filter
 static int filter(struct af_instance* af, struct mp_audio* data, int flags)
 {
-  struct mp_audio*    c    = data;		// Current working data
-  struct mp_audio*	l    = af->data;	// Local data
-  af_pan_t*  	s    = af->priv; 	// Setup for this instance
-  float*   	in   = c->planes[0];	// Input audio data
-  float*   	out  = NULL;		// Output audio data
-  float*	end  = in+c->samples*c->nch; 	// End of loop
-  int		nchi = c->nch;		// Number of input channels
-  int		ncho = l->nch;		// Number of output channels
+  struct mp_audio*    c    = data;              // Current working data
+  struct mp_audio*      l    = af->data;        // Local data
+  af_pan_t*     s    = af->priv;        // Setup for this instance
+  float*        in   = c->planes[0];    // Input audio data
+  float*        out  = NULL;            // Output audio data
+  float*        end  = in+c->samples*c->nch;    // End of loop
+  int           nchi = c->nch;          // Number of input channels
+  int           ncho = l->nch;          // Number of output channels
   register int  j,k;
 
   mp_audio_realloc_min(af->data, data->samples);
@@ -130,7 +130,7 @@ static int filter(struct af_instance* af, struct mp_audio* data, int flags)
       register float  x   = 0.0;
       register float* tin = in;
       for(k=0;k<nchi;k++)
-	x += tin[k] * s->level[j][k];
+        x += tin[k] * s->level[j][k];
       out[j] = x;
     }
     out+= ncho;
@@ -161,7 +161,7 @@ static int af_open(struct af_instance* af){
     j = 0; k = 0;
     while(cp && k < AF_NCH){
         sscanf(cp, "%f%n" , &s->level[j][k], &n);
-        MP_VERBOSE(af, "[pan] Pan level from channel %i to"
+        MP_VERBOSE(af, "Pan level from channel %i to"
                 " channel %i = %f\n",k,j,s->level[j][k]);
         cp =&cp[n];
         j++;
@@ -177,7 +177,7 @@ static int af_open(struct af_instance* af){
 }
 
 #define OPT_BASE_STRUCT af_pan_t
-struct af_info af_info_pan = {
+const struct af_info af_info_pan = {
     .info = "Panning audio filter",
     .name = "pan",
     .open = af_open,

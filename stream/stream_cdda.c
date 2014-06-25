@@ -43,12 +43,13 @@
 
 #include "stream.h"
 #include "options/m_option.h"
-#include "libavutil/common.h"
+#include "options/m_config.h"
+#include "options/options.h"
 #include "compat/mpbswap.h"
 
 #include "common/msg.h"
 
-typedef struct {
+typedef struct cdda_params {
     cdrom_drive_t *cd;
     cdrom_paranoia_t *cdp;
     int sector;
@@ -58,21 +59,17 @@ typedef struct {
     // options
     int speed;
     int paranoia_mode;
-    char *generic_dev;
     int sector_size;
     int search_overlap;
     int toc_bias;
     int toc_offset;
-    int no_skip;
+    int skip;
     char *device;
     int span[2];
 } cdda_priv;
 
-static cdda_priv cdda_dflts = {
-    .search_overlap = -1,
-};
+#define OPT_BASE_STRUCT struct cdda_params
 
-#define OPT_BASE_STRUCT cdda_priv
 static const m_option_t cdda_params_fields[] = {
     OPT_INTPAIR("span", span, 0),
     OPT_INTRANGE("speed", speed, 0, 1, 100),
@@ -80,26 +77,27 @@ static const m_option_t cdda_params_fields[] = {
     {0}
 };
 
-/// We keep these options but now they set the defaults
-const m_option_t cdda_opts[] = {
-    {"speed", &cdda_dflts.speed, CONF_TYPE_INT, M_OPT_RANGE, 1, 100, NULL},
-    {"paranoia", &cdda_dflts.paranoia_mode, CONF_TYPE_INT, M_OPT_RANGE, 0, 2,
-     NULL},
-    {"generic-dev", &cdda_dflts.generic_dev, CONF_TYPE_STRING, 0, 0, 0, NULL},
-    {"sector-size", &cdda_dflts.sector_size, CONF_TYPE_INT, M_OPT_RANGE, 1,
-     100, NULL},
-    {"overlap", &cdda_dflts.search_overlap, CONF_TYPE_INT, M_OPT_RANGE, 0, 75,
-     NULL},
-    {"toc-bias", &cdda_dflts.toc_bias, CONF_TYPE_INT, 0, 0, 0, NULL},
-    {"toc-offset", &cdda_dflts.toc_offset, CONF_TYPE_INT, 0, 0, 0, NULL},
-    {"noskip", &cdda_dflts.no_skip, CONF_TYPE_FLAG, 0, 0, 1, NULL},
-    {"skip", &cdda_dflts.no_skip, CONF_TYPE_FLAG, 0, 1, 0, NULL},
-    {"device", &cdda_dflts.device, CONF_TYPE_STRING, 0, 0, 0, NULL},
-    {"span", &cdda_dflts.span, CONF_TYPE_INT_PAIR, 0, 0, 0, NULL},
-    {NULL, NULL, 0, 0, 0, 0, NULL}
+const struct m_sub_options stream_cdda_conf = {
+    .opts = (const m_option_t[]) {
+        OPT_INTRANGE("speed", speed, 0, 1, 100),
+        OPT_INTRANGE("paranoia", paranoia_mode, 0, 0, 2),
+        OPT_INTRANGE("sector-size", sector_size, 0, 1, 100),
+        OPT_INTRANGE("overlap", search_overlap, 0, 0, 75),
+        OPT_INT("toc-bias", toc_bias, 0),
+        OPT_INT("toc-offset", toc_offset, 0),
+        OPT_FLAG("skip", skip, 0),
+        OPT_STRING("device", device, 0),
+        OPT_INTPAIR("span", span, 0),
+        {0}
+    },
+    .size = sizeof(struct cdda_params),
+    .defaults = &(const struct cdda_params){
+        .search_overlap = -1,
+        .skip = 1,
+    },
 };
 
-static const char *cdtext_name[] = {
+static const char *const cdtext_name[] = {
 #ifdef OLD_API
     [CDTEXT_ARRANGER] = "Arranger",
     [CDTEXT_COMPOSER] = "Composer",
@@ -203,6 +201,8 @@ static int seek(stream_t *s, int64_t newpos)
     int seek_to_track = 0;
     int i;
 
+    newpos += p->start_sector * CDIO_CD_FRAMESIZE_RAW;
+
     sec = newpos / CDIO_CD_FRAMESIZE_RAW;
     if (newpos < 0 || sec > p->end_sector) {
         p->sector = p->end_sector + 1;
@@ -282,7 +282,7 @@ static int control(stream_t *stream, int cmd, void *arg)
     return STREAM_UNSUPPORTED;
 }
 
-static int open_cdda(stream_t *st, int m)
+static int open_cdda(stream_t *st)
 {
     cdda_priv *priv = st->priv;
     cdda_priv *p = priv;
@@ -291,13 +291,10 @@ static int open_cdda(stream_t *st, int m)
     cdrom_drive_t *cdd = NULL;
     int last_track;
 
-    if (m != STREAM_READ) {
-        return STREAM_UNSUPPORTED;
-    }
-
-    if (!p->device) {
-        if (cdrom_device)
-            p->device = talloc_strdup(NULL, cdrom_device);
+    if (!p->device || !p->device[0]) {
+        talloc_free(p->device);
+        if (st->opts->cdrom_device && st->opts->cdrom_device[0])
+            p->device = talloc_strdup(NULL, st->opts->cdrom_device);
         else
             p->device = talloc_strdup(NULL, DEFAULT_CDROM_DEVICE);
     }
@@ -370,10 +367,10 @@ static int open_cdda(stream_t *st, int m)
     else
         mode = PARANOIA_MODE_FULL;
 
-    if (p->no_skip)
-        mode |= PARANOIA_MODE_NEVERSKIP;
-    else
+    if (p->skip)
         mode &= ~PARANOIA_MODE_NEVERSKIP;
+    else
+        mode |= PARANOIA_MODE_NEVERSKIP;
 
     if (p->search_overlap > 0)
         mode |= PARANOIA_MODE_OVERLAP;
@@ -389,12 +386,13 @@ static int open_cdda(stream_t *st, int m)
     priv->sector = priv->start_sector;
 
     st->priv = priv;
-    st->start_pos = priv->start_sector * CDIO_CD_FRAMESIZE_RAW;
-    st->end_pos = (priv->end_sector + 1) * CDIO_CD_FRAMESIZE_RAW;
+    st->end_pos =
+        (priv->end_sector + 1 - priv->start_sector) * CDIO_CD_FRAMESIZE_RAW;
     st->sector_size = CDIO_CD_FRAMESIZE_RAW;
 
     st->fill_buffer = fill_buffer;
     st->seek = seek;
+    st->seekable = true;
     st->control = control;
     st->close = close_cdda;
 
@@ -405,14 +403,19 @@ static int open_cdda(stream_t *st, int m)
     return STREAM_OK;
 }
 
+static void *get_defaults(stream_t *st)
+{
+    return m_sub_options_copy(st, &stream_cdda_conf, st->opts->stream_cdda_opts);
+}
+
 const stream_info_t stream_info_cdda = {
     .name = "cdda",
     .open = open_cdda,
-    .protocols = (const char*[]){"cdda", NULL },
+    .protocols = (const char*const[]){"cdda", NULL },
     .priv_size = sizeof(cdda_priv),
-    .priv_defaults = &cdda_dflts,
+    .get_defaults = get_defaults,
     .options = cdda_params_fields,
-    .url_options = (const char*[]){
+    .url_options = (const char*const[]){
         "hostname=span",
         "port=speed",
         "filename=device",

@@ -23,6 +23,7 @@
 #include "vf.h"
 #include "video/vaapi.h"
 #include "video/hwdec.h"
+#include "video/mp_image_pool.h"
 
 static bool check_error(struct vf_instance *vf, VAStatus status, const char *msg)
 {
@@ -59,7 +60,8 @@ struct vf_priv_s {
     VADisplay display;
     struct mp_vaapi_ctx *va;
     struct pipeline pipe;
-    struct va_surface_pool *pool;
+    struct mp_image_pool *pool;
+    int current_rt_format;
 };
 
 static const struct vf_priv_s vf_priv_default = {
@@ -121,19 +123,23 @@ static inline int get_deint_field(struct vf_priv_s *p, int i,
     return !!(mpi->fields & MP_IMGFIELD_TOP_FIRST) ^ i ? VA_TOP_FIELD : VA_BOTTOM_FIELD;
 }
 
-static struct mp_image *render(struct vf_instance *vf, struct va_surface *in,
+static struct mp_image *render(struct vf_instance *vf, struct mp_image *in,
                                unsigned int flags)
 {
     struct vf_priv_s *p = vf->priv;
-    if (!p->pipe.filters || !in)
+    VASurfaceID in_id = va_surface_id(in);
+    if (!p->pipe.filters || in_id == VA_INVALID_ID)
         return NULL;
-    struct va_surface *out = va_surface_pool_get(p->pool, in->w, in->h);
-    if (!out)
+    struct mp_image *img = mp_image_pool_get(p->pool, IMGFMT_VAAPI, in->w, in->h);
+    if (!img)
         return NULL;
     enum {Begun = 1, Rendered = 2};
     int state = 0;
     do { // not a loop, just for break
-        VAStatus status = vaBeginPicture(p->display, p->context, out->id);
+        VASurfaceID id = va_surface_id(img);
+        if (id == VA_INVALID_ID)
+            break;
+        VAStatus status = vaBeginPicture(p->display, p->context, id);
         if (!check_error(vf, status, "vaBeginPicture()"))
             break;
         state |= Begun;
@@ -147,7 +153,7 @@ static struct mp_image *render(struct vf_instance *vf, struct va_surface *in,
         status = vaMapBuffer(p->display, buffer, (void**)&param);
         if (!check_error(vf, status, "vaMapBuffer()"))
             break;
-        param->surface = in->id;
+        param->surface = in_id;
         param->surface_region = NULL;
         param->output_region = NULL;
         param->output_background_color = 0;
@@ -167,8 +173,8 @@ static struct mp_image *render(struct vf_instance *vf, struct va_surface *in,
     if (state & Begun)
         vaEndPicture(p->display, p->context);
     if (state & Rendered)
-        return va_surface_wrap(out);
-    va_surface_release(out);
+        return img;
+    talloc_free(img);
     return NULL;
 }
 
@@ -180,10 +186,9 @@ static int process(struct vf_instance *vf, struct mp_image *in,
     const bool deint = p->do_deint && p->deint_type > 0;
     if (!update_pipeline(vf, deint) || !p->pipe.filters) // no filtering
         return 0;
-    struct va_surface *surface = va_surface_in_mp_image(in);
     const unsigned int csp = va_get_colorspace_flag(p->params.colorspace);
     const unsigned int field = get_deint_field(p, 0, in);
-    *out1 = render(vf, surface, field | csp);
+    *out1 = render(vf, in, field | csp);
     if (!*out1) // cannot render
         return 0;
     mp_image_copy_attributes(*out1, in);
@@ -192,7 +197,7 @@ static int process(struct vf_instance *vf, struct mp_image *in,
     const double add = (in->pts - p->prev_pts)*0.5;
     if (p->prev_pts == MP_NOPTS_VALUE || add <= 0.0 || add > 0.5) // no pts, skip it
         return 1;
-    *out2 = render(vf, surface, get_deint_field(p, 1, in) | csp);
+    *out2 = render(vf, in, get_deint_field(p, 1, in) | csp);
     if (!*out2) // cannot render
         return 1;
     mp_image_copy_attributes(*out2, in);
@@ -203,13 +208,13 @@ static int process(struct vf_instance *vf, struct mp_image *in,
 static struct mp_image *upload(struct vf_instance *vf, struct mp_image *in)
 {
     struct vf_priv_s *p = vf->priv;
-    struct va_surface *surface =
-        va_surface_pool_get_by_imgfmt(p->pool, in->imgfmt, in->w, in->h);
-    if (!surface)
-        surface = va_surface_pool_get(p->pool, in->w, in->h); // dummy
-    else
-        va_surface_upload(surface, in);
-    struct mp_image *out = va_surface_wrap(surface);
+    struct mp_image *out = mp_image_pool_get(p->pool, IMGFMT_VAAPI, in->w, in->h);
+    if (!out)
+        return NULL;
+    if (va_surface_upload(out, in) < 0) {
+        talloc_free(out);
+        return NULL;
+    }
     mp_image_copy_attributes(out, in);
     return out;
 }
@@ -217,16 +222,22 @@ static struct mp_image *upload(struct vf_instance *vf, struct mp_image *in)
 static int filter_ext(struct vf_instance *vf, struct mp_image *in)
 {
     struct vf_priv_s *p = vf->priv;
-    struct va_surface *surface = va_surface_in_mp_image(in);
-    const int rt_format = surface ? surface->rt_format : VA_RT_FORMAT_YUV420;
-    if (!p->pool || va_surface_pool_rt_format(p->pool) != rt_format) {
-        va_surface_pool_release(p->pool);
-        p->pool = va_surface_pool_alloc(p->va, rt_format);
+    if (!in)
+        return 0;
+    int rt_format = in->imgfmt == IMGFMT_VAAPI ? va_surface_rt_format(in)
+                                               : VA_RT_FORMAT_YUV420;
+    if (!p->pool || p->current_rt_format != rt_format) {
+        talloc_free(p->pool);
+        p->pool = mp_image_pool_new(20);
+        va_pool_set_allocator(p->pool, p->va, rt_format);
+        p->current_rt_format = rt_format;
     }
-    if (!surface) {
+    if (in->imgfmt != IMGFMT_VAAPI) {
         struct mp_image *tmp = upload(vf, in);
         talloc_free(in);
         in = tmp;
+        if (!in)
+            return -1;
     }
 
     struct mp_image *out1, *out2;
@@ -267,7 +278,7 @@ static void uninit(struct vf_instance *vf)
         vaDestroyConfig(p->display, p->config);
     free(p->pipe.forward.surfaces);
     free(p->pipe.backward.surfaces);
-    va_surface_pool_release(p->pool);
+    talloc_free(p->pool);
 }
 
 static int query_format(struct vf_instance *vf, unsigned int imgfmt)

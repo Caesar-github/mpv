@@ -38,13 +38,7 @@
 
 #if HAVE_LCMS2
 
-#include <pthread.h>
 #include <lcms2.h>
-
-// lcms2 only provides a global error handler function, so we have to do this.
-// Not setting a lcms2 error handler will suppress any error messages.
-static pthread_mutex_t lcms2_dumb_crap_lock = PTHREAD_MUTEX_INITIALIZER;
-static struct mp_log *lcms2_dumb_crap;
 
 static bool parse_3dlut_size(const char *arg, int *p1, int *p2, int *p3)
 {
@@ -52,7 +46,7 @@ static bool parse_3dlut_size(const char *arg, int *p1, int *p2, int *p3)
         return false;
     for (int n = 0; n < 3; n++) {
         int s = ((int[]) { *p1, *p2, *p3 })[n];
-        if (s < 2 || s > 256 || ((s - 1) & s))
+        if (s < 2 || s > 512 || ((s - 1) & s))
             return false;
     }
     return true;
@@ -69,8 +63,9 @@ static int validate_3dlut_size_opt(struct mp_log *log, const m_option_t *opt,
 
 #define OPT_BASE_STRUCT struct mp_icc_opts
 const struct m_sub_options mp_icc_conf = {
-    .opts = (m_option_t[]) {
+    .opts = (const m_option_t[]) {
         OPT_STRING("icc-profile", profile, 0),
+        OPT_FLAG("icc-profile-auto", profile_auto, 0),
         OPT_STRING("icc-cache", cache, 0),
         OPT_INT("icc-intent", intent, 0),
         OPT_STRING_VALIDATE("3dlut-size", size_str, 0, validate_3dlut_size_opt),
@@ -79,17 +74,15 @@ const struct m_sub_options mp_icc_conf = {
     .size = sizeof(struct mp_icc_opts),
     .defaults = &(const struct mp_icc_opts) {
         .size_str = "128x256x64",
-        .intent = INTENT_ABSOLUTE_COLORIMETRIC,
+        .intent = INTENT_RELATIVE_COLORIMETRIC,
     },
 };
 
 static void lcms2_error_handler(cmsContext ctx, cmsUInt32Number code,
                                 const char *msg)
 {
-    pthread_mutex_lock(&lcms2_dumb_crap_lock);
-    if (lcms2_dumb_crap)
-        mp_msg(lcms2_dumb_crap, MSGL_ERR, "lcms2: %s\n", msg);
-    pthread_mutex_unlock(&lcms2_dumb_crap_lock);
+    struct mp_log *log = cmsGetContextUserData(ctx);
+    mp_msg(log, MSGL_ERR, "lcms2: %s\n", msg);
 }
 
 static struct bstr load_file(void *talloc_ctx, const char *filename,
@@ -104,6 +97,17 @@ static struct bstr load_file(void *talloc_ctx, const char *filename,
     }
     talloc_free(fname);
     return res;
+}
+
+bool mp_icc_set_profile(struct mp_icc_opts *opts, char *profile)
+{
+    if (!opts->profile || strcmp(opts->profile, profile) != 0) {
+        if (opts->profile)
+            talloc_free(opts->profile);
+        opts->profile = talloc_strdup(opts, profile);
+        return true;
+    }
+    return false;
 }
 
 #define LUT3D_CACHE_HEADER "mpv 3dlut cache 1.0\n"
@@ -121,15 +125,19 @@ struct lut3d *mp_load_icc(struct mp_icc_opts *opts, struct mp_log *log,
     void *tmp = talloc_new(NULL);
     uint16_t *output = talloc_array(tmp, uint16_t, s_r * s_g * s_b * 3);
     struct lut3d *lut = NULL;
-    bool locked = false;
+    cmsContext cms = NULL;
 
     mp_msg(log, MSGL_INFO, "Opening ICC profile '%s'\n", opts->profile);
     struct bstr iccdata = load_file(tmp, opts->profile, global);
     if (!iccdata.len)
         goto error_exit;
 
-    char *cache_info = talloc_asprintf(tmp, "intent=%d, size=%dx%dx%d\n",
-                                       opts->intent, s_r, s_g, s_b);
+    char *cache_info =
+        // Gamma is included in the header to help uniquely identify it,
+        // because we may change the parameter in the future or make it
+        // customizable, same for the primaries.
+        talloc_asprintf(tmp, "intent=%d, size=%dx%dx%d, gamma=2.4, prim=bt2020\n",
+                        opts->intent, s_r, s_g, s_b);
 
     // check cache
     if (opts->cache) {
@@ -148,36 +156,36 @@ struct lut3d *mp_load_icc(struct mp_icc_opts *opts, struct mp_log *log,
         }
     }
 
-    locked = true;
-    pthread_mutex_lock(&lcms2_dumb_crap_lock);
-    lcms2_dumb_crap = log;
-    cmsSetLogErrorHandler(lcms2_error_handler);
+    cms = cmsCreateContext(NULL, log);
+    if (!cms)
+        goto error_exit;
+    cmsSetLogErrorHandlerTHR(cms, lcms2_error_handler);
 
-    cmsHPROFILE profile = cmsOpenProfileFromMem(iccdata.start, iccdata.len);
+    cmsHPROFILE profile = cmsOpenProfileFromMemTHR(cms, iccdata.start, iccdata.len);
     if (!profile)
         goto error_exit;
 
-    cmsCIExyY d65 = {0.3127, 0.3290, 1.0};
-    static const cmsCIExyYTRIPLE bt709prim = {
-        .Red   = {0.64, 0.33, 1.0},
-        .Green = {0.30, 0.60, 1.0},
-        .Blue  = {0.15, 0.06, 1.0},
+    // We always generate the 3DLUT against BT.2020, and transform into this
+    // space inside the shader if the source differs.
+    struct mp_csp_primaries csp = mp_get_csp_primaries(MP_CSP_PRIM_BT_2020);
+
+    cmsCIExyY wp = {csp.white.x, csp.white.y, 1.0};
+    cmsCIExyYTRIPLE prim = {
+        .Red   = {csp.red.x,   csp.red.y,   1.0},
+        .Green = {csp.green.x, csp.green.y, 1.0},
+        .Blue  = {csp.blue.x,  csp.blue.y,  1.0},
     };
 
-    /* Rec BT.709 defines the tone curve as:
-       V = 1.099 * L^0.45 - 0.099 for L >= 0.018
-       V = 4.500 * L              for L <  0.018
-
-       The 0.081 parameter comes from inserting 0.018 into the function */
-    cmsToneCurve *tonecurve = cmsBuildParametricToneCurve(NULL, 4,
-            (cmsFloat64Number[5]){1/0.45, 1/1.099, 0.099/1.099, 1/4.5, 0.081});
-    cmsHPROFILE vid_profile = cmsCreateRGBProfile(&d65, &bt709prim,
+    // 2.4 is arbitrarily used as a gamma compression factor for the 3DLUT,
+    // reducing artifacts due to rounding errors on wide gamut profiles
+    cmsToneCurve *tonecurve = cmsBuildGamma(cms, 2.4);
+    cmsHPROFILE vid_profile = cmsCreateRGBProfileTHR(cms, &wp, &prim,
                         (cmsToneCurve*[3]){tonecurve, tonecurve, tonecurve});
     cmsFreeToneCurve(tonecurve);
-    cmsHTRANSFORM trafo = cmsCreateTransform(vid_profile, TYPE_RGB_16,
-                                             profile, TYPE_RGB_16,
-                                             opts->intent,
-                                             cmsFLAGS_HIGHRESPRECALC);
+    cmsHTRANSFORM trafo = cmsCreateTransformTHR(cms, vid_profile, TYPE_RGB_16,
+                                                profile, TYPE_RGB_16,
+                                                opts->intent,
+                                                cmsFLAGS_HIGHRESPRECALC);
     cmsCloseProfile(profile);
     cmsCloseProfile(vid_profile);
 
@@ -201,13 +209,15 @@ struct lut3d *mp_load_icc(struct mp_icc_opts *opts, struct mp_log *log,
     cmsDeleteTransform(trafo);
 
     if (opts->cache) {
-        FILE *out = fopen(opts->cache, "wb");
+        char *fname = mp_get_user_path(NULL, global, opts->cache);
+        FILE *out = fopen(fname, "wb");
         if (out) {
             fprintf(out, "%s%s", LUT3D_CACHE_HEADER, cache_info);
             fwrite(iccdata.start, iccdata.len, 1, out);
             fwrite(output, talloc_get_size(output), 1, out);
             fclose(out);
         }
+        talloc_free(fname);
     }
 
 done: ;
@@ -220,11 +230,8 @@ done: ;
 
 error_exit:
 
-    if (locked) {
-        lcms2_dumb_crap = NULL;
-        cmsSetLogErrorHandler(NULL);
-        pthread_mutex_unlock(&lcms2_dumb_crap_lock);
-    }
+    if (cms)
+        cmsDeleteContext(cms);
 
     if (!lut)
         mp_msg(log, MSGL_FATAL, "Error loading ICC profile.\n");
@@ -236,10 +243,15 @@ error_exit:
 #else /* HAVE_LCMS2 */
 
 const struct m_sub_options mp_icc_conf = {
-    .opts = (m_option_t[]) { {0} },
+    .opts = (const m_option_t[]) { {0} },
     .size = sizeof(struct mp_icc_opts),
     .defaults = &(const struct mp_icc_opts) {0},
 };
+
+bool mp_icc_set_profile(struct mp_icc_opts *opts, char *profile)
+{
+    return false;
+}
 
 struct lut3d *mp_load_icc(struct mp_icc_opts *opts, struct mp_log *log,
                           struct mpv_global *global)

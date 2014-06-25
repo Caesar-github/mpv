@@ -47,11 +47,14 @@ struct mp_image_params {
     int d_w, d_h;               // define display aspect ratio (never 0/0)
     enum mp_csp colorspace;
     enum mp_csp_levels colorlevels;
+    enum mp_csp_prim primaries;
     enum mp_chroma_location chroma_location;
     // The image should be converted to these levels. Unlike colorlevels, it
     // does not describe the current state of the image. (Somewhat similar to
     // d_w/d_h vs. w/h.)
     enum mp_csp_levels outputlevels;
+    // The image should be rotated clockwise (0-359 degrees).
+    int rotate;
 };
 
 /* Memory management:
@@ -72,16 +75,17 @@ struct mp_image_params {
  */
 typedef struct mp_image {
     unsigned int flags; // same as fmt.flags
-    struct mp_imgfmt_desc fmt;
 
-    // fields redundant to fmt, for convenience or compatibility
+    struct mp_image_params params;
+
+    // fields redundant to params.imgfmt, for convenience or compatibility
+    struct mp_imgfmt_desc fmt;
     enum mp_imgfmt imgfmt;
     int num_planes;
     int chroma_x_shift; // horizontal
     int chroma_y_shift; // vertical
 
     int w,h;  // visible dimensions
-    int display_w,display_h; // if set (!= 0), anamorphic size
     uint8_t *planes[MP_MAX_PLANES];
     int stride[MP_MAX_PLANES];
 
@@ -97,10 +101,6 @@ typedef struct mp_image {
     int plane_w[MP_MAX_PLANES];
     int plane_h[MP_MAX_PLANES];
 
-    enum mp_csp colorspace;
-    enum mp_csp_levels levels;
-    enum mp_chroma_location chroma_location;
-
     /* only inside filter chain */
     double pts;
     /* memory management */
@@ -109,13 +109,13 @@ typedef struct mp_image {
     void* priv;
 } mp_image_t;
 
-struct mp_image *mp_image_alloc(unsigned int fmt, int w, int h);
+struct mp_image *mp_image_alloc(int fmt, int w, int h);
 void mp_image_copy(struct mp_image *dmpi, struct mp_image *mpi);
 void mp_image_copy_attributes(struct mp_image *dmpi, struct mp_image *mpi);
 struct mp_image *mp_image_new_copy(struct mp_image *img);
 struct mp_image *mp_image_new_ref(struct mp_image *img);
 bool mp_image_is_writeable(struct mp_image *img);
-void mp_image_make_writeable(struct mp_image *img);
+bool mp_image_make_writeable(struct mp_image *img);
 void mp_image_setrefp(struct mp_image **p_img, struct mp_image *new_value);
 void mp_image_unrefp(struct mp_image **p_img);
 
@@ -125,9 +125,8 @@ void mp_image_crop_rc(struct mp_image *img, struct mp_rect rc);
 void mp_image_vflip(struct mp_image *img);
 
 void mp_image_set_size(struct mp_image *mpi, int w, int h);
-void mp_image_set_display_size(struct mp_image *mpi, int dw, int dh);
 
-void mp_image_setfmt(mp_image_t* mpi,unsigned int out_fmt);
+void mp_image_setfmt(mp_image_t* mpi, int out_fmt);
 void mp_image_steal_data(struct mp_image *dst, struct mp_image *src);
 
 struct mp_image *mp_image_new_custom_ref(struct mp_image *img, void *arg,
@@ -139,17 +138,11 @@ struct mp_image *mp_image_new_external_ref(struct mp_image *img, void *arg,
                                            bool (*is_unique)(void *arg),
                                            void (*free)(void *arg));
 
-struct mp_csp_details;
-void mp_image_set_colorspace_details(struct mp_image *image,
-                                     struct mp_csp_details *csp);
-
 void mp_image_params_guess_csp(struct mp_image_params *params);
 
-bool mp_image_params_equals(const struct mp_image_params *p1,
-                            const struct mp_image_params *p2);
-
-void mp_image_params_from_image(struct mp_image_params *params,
-                                const struct mp_image *image);
+bool mp_image_params_valid(const struct mp_image_params *p);
+bool mp_image_params_equal(const struct mp_image_params *p1,
+                           const struct mp_image_params *p2);
 
 void mp_image_set_params(struct mp_image *image,
                          const struct mp_image_params *params);

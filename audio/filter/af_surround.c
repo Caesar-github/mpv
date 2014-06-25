@@ -76,13 +76,13 @@ typedef struct af_surround_s
 {
   float lq[2*L]; // Circular queue for filtering left rear channel
   float rq[2*L]; // Circular queue for filtering right rear channel
-  float w[L]; 	 // FIR filter coefficients for surround sound 7kHz low-pass
-  float* dr;	 // Delay queue right rear channel
-  float* dl;	 // Delay queue left rear channel
-  float  d;	 // Delay time
-  int i;       	 // Position in circular buffer
-  int wi;	 // Write index for delay queue
-  int ri;	 // Read index for delay queue
+  float w[L];    // FIR filter coefficients for surround sound 7kHz low-pass
+  float* dr;     // Delay queue right rear channel
+  float* dl;     // Delay queue left rear channel
+  float  d;      // Delay time
+  int i;         // Position in circular buffer
+  int wi;        // Write index for delay queue
+  int ri;        // Read index for delay queue
 }af_surround_t;
 
 // Initialization and runtime control
@@ -94,7 +94,7 @@ static int control(struct af_instance* af, int cmd, void* arg)
     struct mp_audio *in = arg;
     float fc;
     if (!mp_chmap_is_stereo(&in->channels)) {
-        MP_ERR(af, "[surround] Only stereo input is supported.\n");
+        MP_ERR(af, "Only stereo input is supported.\n");
         return AF_DETACH;
     }
 
@@ -105,7 +105,7 @@ static int control(struct af_instance* af, int cmd, void* arg)
     // Surround filer coefficients
     fc = 2.0 * 7000.0/(float)af->data->rate;
     if (-1 == af_filter_design_fir(L, s->w, &fc, LP|HAMMING, 0)){
-      MP_ERR(af, "[surround] Unable to design low-pass filter.\n");
+      MP_ERR(af, "Unable to design low-pass filter.\n");
       return AF_ERROR;
     }
 
@@ -116,7 +116,7 @@ static int control(struct af_instance* af, int cmd, void* arg)
     s->dl = calloc(LD,af->data->bps);
     s->dr = calloc(LD,af->data->bps);
     if((NULL == s->dl) || (NULL == s->dr))
-      MP_FATAL(af, "[delay] Out of memory\n");
+      MP_FATAL(af, "Out of memory\n");
 
     // Initialize delay queue index
     if(AF_OK != af_from_ms(1, &s->d, &s->wi, af->data->rate, 0.0, 1000.0))
@@ -131,11 +131,11 @@ static int control(struct af_instance* af, int cmd, void* arg)
 }
 
 // The beginnings of an active matrix...
-static float steering_matrix[][12] = {
-//	LL	RL	LR	RR	LS	RS
-//	LLs	RLs	LRs	RRs	LC	RC
-       {.707,	.0,	.0,	.707,	.5,	-.5,
-	.5878,	-.3928,	.3928,	-.5878,	.5,	.5},
+static const float steering_matrix[][12] = {
+//      LL      RL      LR      RR      LS      RS
+//      LLs     RLs     LRs     RRs     LC      RC
+       {.707,   .0,     .0,     .707,   .5,     -.5,
+        .5878,  -.3928, .3928,  -.5878, .5,     .5},
 };
 
 // Experimental moving average dominance
@@ -144,13 +144,13 @@ static float steering_matrix[][12] = {
 // Filter data through filter
 static int filter(struct af_instance* af, struct mp_audio* data, int flags){
   af_surround_t* s   = (af_surround_t*)af->priv;
-  float*	 m   = steering_matrix[0];
-  float*     	 in  = data->planes[0]; 	// Input audio data
-  float*     	 out = NULL;		// Output audio data
-  float*	 end = in + data->samples * data->nch;
-  int 		 i   = s->i;	// Filter queue index
-  int 		 ri  = s->ri;	// Read index for delay queue
-  int 		 wi  = s->wi;	// Write index for delay queue
+  const float*   m   = steering_matrix[0];
+  float*         in  = data->planes[0];         // Input audio data
+  float*         out = NULL;            // Output audio data
+  float*         end = in + data->samples * data->nch;
+  int            i   = s->i;    // Filter queue index
+  int            ri  = s->ri;   // Read index for delay queue
+  int            wi  = s->wi;   // Write index for delay queue
 
   mp_audio_realloc_min(af->data, data->samples);
 
@@ -229,7 +229,7 @@ static int af_open(struct af_instance* af){
 }
 
 #define OPT_BASE_STRUCT af_surround_t
-struct af_info af_info_surround =
+const struct af_info af_info_surround =
 {
     .info = "Surround decoder filter",
     .name = "surround",

@@ -86,7 +86,7 @@ static int rar_entry_control(stream_t *s, int cmd, void *arg)
     return STREAM_UNSUPPORTED;
 }
 
-static int rar_entry_open(stream_t *stream, int mode)
+static int rar_entry_open(stream_t *stream)
 {
     if (!strchr(stream->path, '|'))
         return STREAM_ERROR;
@@ -133,6 +133,7 @@ static int rar_entry_open(stream_t *stream, int mode)
     stream->end_pos = file->size;
     stream->fill_buffer = rar_entry_fill_buffer;
     stream->seek = rar_entry_seek;
+    stream->seekable = true;
     stream->close = rar_entry_close;
     stream->control = rar_entry_control;
 
@@ -157,11 +158,8 @@ static void rar_filter_close(stream_t *s)
     free_stream(m);
 }
 
-static int rar_filter_open(stream_t *stream, int mode)
+static int rar_filter_open(stream_t *stream)
 {
-    if (mode != STREAM_READ)
-        return STREAM_UNSUPPORTED;
-
     struct stream *rar = stream->source;
     if (!rar)
         return STREAM_UNSUPPORTED;
@@ -190,6 +188,7 @@ static int rar_filter_open(stream_t *stream, int mode)
     stream->end_pos = m->end_pos;
     stream->fill_buffer = rar_filter_fill_buffer;
     stream->seek = rar_filter_seek;
+    stream->seekable = true;
     stream->close = rar_filter_close;
     stream->safe_origin = true;
 
@@ -200,7 +199,7 @@ static int rar_filter_open(stream_t *stream, int mode)
 const stream_info_t stream_info_rar_entry = {
     .name = "rar_entry",
     .open = rar_entry_open,
-    .protocols = (const char*[]){ "rar", NULL },
+    .protocols = (const char*const[]){ "rar", NULL },
 };
 
 const stream_info_t stream_info_rar_filter = {

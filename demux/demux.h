@@ -27,6 +27,7 @@
 
 #include "bstr/bstr.h"
 #include "common/common.h"
+#include "common/tags.h"
 #include "packet.h"
 #include "stheader.h"
 
@@ -50,12 +51,18 @@ enum demuxer_type {
 #define DEMUXER_CTRL_GUESS 2
 
 enum demux_ctrl {
-    DEMUXER_CTRL_UPDATE_INFO = 1,
-    DEMUXER_CTRL_SWITCHED_TRACKS,
+    DEMUXER_CTRL_SWITCHED_TRACKS = 1,
     DEMUXER_CTRL_GET_TIME_LENGTH,
     DEMUXER_CTRL_GET_START_TIME,
     DEMUXER_CTRL_RESYNC,
     DEMUXER_CTRL_IDENTIFY_PROGRAM,
+    DEMUXER_CTRL_STREAM_CTRL,       // stupid workaround for legacy TV code
+};
+
+struct demux_ctrl_stream_ctrl {
+    int ctrl;
+    void *arg;
+    int res;
 };
 
 #define SEEK_ABSOLUTE (1 << 0)
@@ -102,12 +109,6 @@ typedef struct demuxer_desc {
     int (*control)(struct demuxer *demuxer, int cmd, void *arg);
 } demuxer_desc_t;
 
-struct mp_tags {
-    char **keys;
-    char **values;
-    int num_keys;
-};
-
 typedef struct demux_chapter
 {
     int original_index;
@@ -116,6 +117,12 @@ typedef struct demux_chapter
     struct mp_tags *metadata;
     uint64_t demuxer_id; // for mapping to internal demuxer data structures
 } demux_chapter_t;
+
+struct demux_edition {
+    uint64_t demuxer_id;
+    bool default_edition;
+    struct mp_tags *metadata;
+};
 
 struct matroska_segment_uid {
     unsigned char segment[16];
@@ -135,6 +142,13 @@ struct matroska_data {
     int num_ordered_chapters;
 };
 
+struct replaygain_data {
+    float track_gain;
+    float track_peak;
+    float album_gain;
+    float album_peak;
+};
+
 typedef struct demux_attachment
 {
     char *name;
@@ -148,7 +162,6 @@ struct demuxer_params {
     struct matroska_segment_uid *matroska_wanted_uids;
     int matroska_wanted_segment;
     bool *matroska_was_valid;
-    struct ass_library *ass_library;
     bool expect_subtitle;
 };
 
@@ -167,12 +180,12 @@ typedef struct demuxer {
     // File format allows PTS resets (even if the current file is without)
     bool ts_resets_possible;
     bool warned_queue_overflow;
-    bool initializing;
 
     struct sh_stream **streams;
     int num_streams;
     bool stream_autoselect;
 
+    struct demux_edition *editions;
     int num_editions;
     int edition;
 
@@ -186,10 +199,13 @@ typedef struct demuxer {
     // for trivial demuxers which just read the whole file for codec to use
     struct bstr file_contents;
 
+    struct replaygain_data *replaygain_data;
+
     // If the file is a playlist file
     struct playlist *playlist;
 
     struct mp_tags *metadata;
+    char *previous_metadata;
 
     void *priv;   // demuxer-specific internal data
     struct MPOpts *opts;
@@ -234,12 +250,8 @@ struct demuxer *demux_open(struct stream *stream, char *force_format,
 void demux_flush(struct demuxer *demuxer);
 int demux_seek(struct demuxer *demuxer, float rel_seek_secs, int flags);
 
-int demux_info_add(struct demuxer *demuxer, const char *opt, const char *param);
-int demux_info_add_bstr(struct demuxer *demuxer, struct bstr opt,
-                        struct bstr param);
 char *demux_info_get(struct demuxer *demuxer, const char *opt);
-int demux_info_print(struct demuxer *demuxer);
-void demux_info_update(struct demuxer *demuxer);
+bool demux_info_update(struct demuxer *demuxer);
 
 int demux_control(struct demuxer *demuxer, int cmd, void *arg);
 
@@ -255,23 +267,10 @@ int demuxer_add_attachment(struct demuxer *demuxer, struct bstr name,
                            struct bstr type, struct bstr data);
 int demuxer_add_chapter(struct demuxer *demuxer, struct bstr name,
                         uint64_t start, uint64_t end, uint64_t demuxer_id);
-void demuxer_add_chapter_info(struct demuxer *demuxer, uint64_t demuxer_id,
-                              bstr key, bstr value);
-int demuxer_seek_chapter(struct demuxer *demuxer, int chapter,
-                         double *seek_pts);
-void demuxer_sort_chapters(demuxer_t *demuxer);
 
 double demuxer_get_time_length(struct demuxer *demuxer);
 double demuxer_get_start_time(struct demuxer *demuxer);
 
-/// Get current chapter index if available.
-int demuxer_get_current_chapter(struct demuxer *demuxer, double time_now);
-/// Get chapter name by index if available.
-char *demuxer_chapter_name(struct demuxer *demuxer, int chapter);
-/// Get chapter start time by index if available.
-double demuxer_chapter_time(struct demuxer *demuxer, int chapter);
-/// Get total chapter number.
-int demuxer_chapter_count(struct demuxer *demuxer);
 /// Get current angle index.
 int demuxer_get_current_angle(struct demuxer *demuxer);
 /// Set angle.
@@ -292,12 +291,9 @@ double demux_packet_list_duration(struct demux_packet **pkts, int num_pkts);
 struct demux_packet *demux_packet_list_fill(struct demux_packet **pkts,
                                             int num_pkts, int *current);
 
-void mp_tags_set_str(struct mp_tags *tags, const char *key, const char *value);
-void mp_tags_set_bstr(struct mp_tags *tags, bstr key, bstr value);
-char *mp_tags_get_str(struct mp_tags *tags, const char *key);
-char *mp_tags_get_bstr(struct mp_tags *tags, bstr key);
-
 bool demux_matroska_uid_cmp(struct matroska_segment_uid *a,
                             struct matroska_segment_uid *b);
+
+const char *stream_type_name(enum stream_type type);
 
 #endif /* MPLAYER_DEMUXER_H */

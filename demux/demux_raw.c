@@ -24,6 +24,7 @@
 #include <string.h>
 
 #include "options/m_option.h"
+#include "options/options.h"
 
 #include "stream/stream.h"
 #include "demux.h"
@@ -33,48 +34,69 @@
 #include "video/img_format.h"
 #include "video/img_fourcc.h"
 
+struct demux_rawaudio_opts {
+    struct mp_chmap channels;
+    int samplerate;
+    int aformat;
+};
+
+#define OPT_BASE_STRUCT struct demux_rawaudio_opts
+const struct m_sub_options demux_rawaudio_conf = {
+    .opts = (const m_option_t[]) {
+        OPT_CHMAP("channels", channels, CONF_MIN, .min = 1),
+        OPT_INTRANGE("rate", samplerate, 0, 1000, 8 * 48000),
+        OPT_AUDIOFORMAT("format", aformat, 0),
+        {0}
+    },
+    .size = sizeof(struct demux_rawaudio_opts),
+    .defaults = &(const struct demux_rawaudio_opts){
+        .channels = MP_CHMAP_INIT_STEREO,
+        .samplerate = 44100,
+        .aformat = AF_FORMAT_S16,
+    },
+};
+
+struct demux_rawvideo_opts {
+    int vformat;
+    int mp_format;
+    char *codec;
+    int width;
+    int height;
+    float fps;
+    int imgsize;
+};
+
+#undef OPT_BASE_STRUCT
+#define OPT_BASE_STRUCT struct demux_rawvideo_opts
+const struct m_sub_options demux_rawvideo_conf = {
+    .opts = (const m_option_t[]) {
+        OPT_INTRANGE("w", width, 0, 1, 8192),
+        OPT_INTRANGE("h", height, 0, 1, 8192),
+        OPT_GENERAL(int, "format", vformat, 0, .type = &m_option_type_fourcc),
+        OPT_IMAGEFORMAT("mp-format", mp_format, 0),
+        OPT_STRING("codec", codec, 0),
+        OPT_FLOATRANGE("fps", fps, 0, 0.001, 1000),
+        OPT_INTRANGE("size", imgsize, 0, 1, 8192 * 8192 * 4),
+        {0}
+    },
+    .size = sizeof(struct demux_rawvideo_opts),
+    .defaults = &(const struct demux_rawvideo_opts){
+        .vformat = MP_FOURCC_I420,
+        .width = 1280,
+        .height = 720,
+        .fps = 25,
+    },
+};
+
 struct priv {
     int frame_size;
     int read_frames;
     double frame_rate;
 };
 
-static struct mp_chmap channels = MP_CHMAP_INIT_STEREO;
-static int samplerate = 44100;
-static int aformat = AF_FORMAT_S16;
-
-const m_option_t demux_rawaudio_opts[] = {
-    { "channels", &channels, &m_option_type_chmap, CONF_MIN, 1 },
-    { "rate", &samplerate, CONF_TYPE_INT, CONF_RANGE, 1000, 8 * 48000, NULL },
-    { "format", &aformat, CONF_TYPE_AFMT, 0, 0, 0, NULL },
-    {NULL, NULL, 0, 0, 0, 0, NULL}
-};
-
-static int vformat = MP_FOURCC_I420;
-static int mp_format;
-static char *codec;
-static int width = 1280;
-static int height = 720;
-static float fps = 25;
-static int imgsize = 0;
-
-const m_option_t demux_rawvideo_opts[] = {
-    // size:
-    { "w", &width, CONF_TYPE_INT, CONF_RANGE, 1, 8192, NULL },
-    { "h", &height, CONF_TYPE_INT, CONF_RANGE, 1, 8192, NULL },
-    // format:
-    { "format", &vformat, CONF_TYPE_FOURCC, 0, 0, 0, NULL },
-    { "mp-format", &mp_format, CONF_TYPE_IMGFMT, 0, 0, 0, NULL },
-    { "codec", &codec, CONF_TYPE_STRING, 0, 0, 0, NULL },
-    // misc:
-    { "fps", &fps, CONF_TYPE_FLOAT, CONF_RANGE, 0.001, 1000, NULL },
-    { "size", &imgsize, CONF_TYPE_INT, CONF_RANGE, 1, 8192 * 8192 * 4, NULL },
-
-    {NULL, NULL, 0, 0, 0, 0, NULL}
-};
-
 static int demux_rawaudio_open(demuxer_t *demuxer, enum demux_check check)
 {
+    struct demux_rawaudio_opts *opts = demuxer->opts->demux_rawaudio;
     struct sh_stream *sh;
     sh_audio_t *sh_audio;
     MP_WAVEFORMATEX *w;
@@ -82,20 +104,20 @@ static int demux_rawaudio_open(demuxer_t *demuxer, enum demux_check check)
     if (check != DEMUX_CHECK_REQUEST && check != DEMUX_CHECK_FORCE)
         return -1;
 
-    if ((aformat & AF_FORMAT_SPECIAL_MASK) != 0)
+    if ((opts->aformat & AF_FORMAT_SPECIAL_MASK) != 0)
         return -1;
 
     sh = new_sh_stream(demuxer, STREAM_AUDIO);
     sh_audio = sh->audio;
     sh->codec = "mp-pcm";
-    sh->format = aformat;
+    sh->format = opts->aformat;
     sh_audio->wf = w = talloc_zero(sh, MP_WAVEFORMATEX);
     w->wFormatTag = 0;
-    sh_audio->channels = channels;
+    sh_audio->channels = opts->channels;
     w->nChannels = sh_audio->channels.num;
-    w->nSamplesPerSec = sh_audio->samplerate = samplerate;
-    int samplesize = (af_fmt2bits(aformat) + 7) / 8;
-    w->nAvgBytesPerSec = samplerate * samplesize * w->nChannels;
+    w->nSamplesPerSec = sh_audio->samplerate = opts->samplerate;
+    int samplesize = af_fmt2bps(opts->aformat);
+    w->nAvgBytesPerSec = sh_audio->samplerate * samplesize * w->nChannels;
     w->nBlockAlign = w->nChannels * samplesize;
     w->wBitsPerSample = 8 * samplesize;
     w->cbSize = 0;
@@ -104,8 +126,8 @@ static int demux_rawaudio_open(demuxer_t *demuxer, enum demux_check check)
     demuxer->priv = p;
     *p = (struct priv) {
         .frame_size = samplesize * sh_audio->channels.num,
-        .frame_rate = samplerate,
-        .read_frames = samplerate,
+        .frame_rate = sh_audio->samplerate,
+        .read_frames = sh_audio->samplerate,
     };
 
     return 0;
@@ -113,11 +135,15 @@ static int demux_rawaudio_open(demuxer_t *demuxer, enum demux_check check)
 
 static int demux_rawvideo_open(demuxer_t *demuxer, enum demux_check check)
 {
+    struct demux_rawvideo_opts *opts = demuxer->opts->demux_rawvideo;
     struct sh_stream *sh;
     sh_video_t *sh_video;
 
     if (check != DEMUX_CHECK_REQUEST && check != DEMUX_CHECK_FORCE)
         return -1;
+
+    int width = opts->width;
+    int height = opts->height;
 
     if (!width || !height) {
         MP_ERR(demuxer, "rawvideo: width or height not specified!\n");
@@ -125,23 +151,24 @@ static int demux_rawvideo_open(demuxer_t *demuxer, enum demux_check check)
     }
 
     const char *decoder = "rawvideo";
-    int imgfmt = vformat;
-    if (mp_format && !IMGFMT_IS_HWACCEL(mp_format)) {
+    int imgfmt = opts->vformat;
+    int imgsize = opts->imgsize;
+    if (opts->mp_format && !IMGFMT_IS_HWACCEL(opts->mp_format)) {
         decoder = "mp-rawvideo";
-        imgfmt = mp_format;
+        imgfmt = opts->mp_format;
         if (!imgsize) {
-            struct mp_imgfmt_desc desc = mp_imgfmt_get_desc(mp_format);
+            struct mp_imgfmt_desc desc = mp_imgfmt_get_desc(opts->mp_format);
             for (int p = 0; p < desc.num_planes; p++) {
                 imgsize += ((width >> desc.xs[p]) * (height >> desc.ys[p]) *
                             desc.bpp[p] + 7) / 8;
             }
         }
-    } else if (codec && codec[0])
-        decoder = talloc_strdup(demuxer, codec);
+    } else if (opts->codec && opts->codec[0])
+        decoder = talloc_strdup(demuxer, opts->codec);
 
     if (!imgsize) {
         int bpp = 0;
-        switch (vformat) {
+        switch (imgfmt) {
         case MP_FOURCC_I420: case MP_FOURCC_IYUV:
         case MP_FOURCC_NV12: case MP_FOURCC_NV21:
         case MP_FOURCC_HM12:
@@ -176,16 +203,16 @@ static int demux_rawvideo_open(demuxer_t *demuxer, enum demux_check check)
     sh_video = sh->video;
     sh->codec = decoder;
     sh->format = imgfmt;
-    sh_video->fps = fps;
+    sh_video->fps = opts->fps;
     sh_video->disp_w = width;
     sh_video->disp_h = height;
-    sh_video->i_bps = fps * imgsize;
+    sh_video->bitrate = sh_video->fps * imgsize * 8;
 
     struct priv *p = talloc_ptrtype(demuxer, p);
     demuxer->priv = p;
     *p = (struct priv) {
         .frame_size = imgsize,
-        .frame_rate = fps,
+        .frame_rate = sh_video->fps,
         .read_frames = 1,
     };
 
@@ -200,7 +227,7 @@ static int raw_fill_buffer(demuxer_t *demuxer)
         return 0;
 
     struct demux_packet *dp = new_demux_packet(p->frame_size * p->read_frames);
-    dp->pos = stream_tell(demuxer->stream) - demuxer->stream->start_pos;
+    dp->pos = stream_tell(demuxer->stream);
     dp->pts = (dp->pos  / p->frame_size) / p->frame_rate;
 
     int len = stream_read(demuxer->stream, dp->buffer, dp->len);
@@ -214,12 +241,11 @@ static void raw_seek(demuxer_t *demuxer, float rel_seek_secs, int flags)
 {
     struct priv *p = demuxer->priv;
     stream_t *s = demuxer->stream;
-    stream_update_size(s);
-    int64_t start = s->start_pos;
-    int64_t end = s->end_pos;
-    int64_t pos = (flags & SEEK_ABSOLUTE) ? start : stream_tell(s);
+    int64_t end = 0;
+    stream_control(s, STREAM_CTRL_GET_SIZE, &end);
+    int64_t pos = (flags & SEEK_ABSOLUTE) ? 0 : stream_tell(s);
     if (flags & SEEK_FACTOR)
-        pos += (end - start) * rel_seek_secs;
+        pos += end * rel_seek_secs;
     else
         pos += rel_seek_secs * p->frame_rate * p->frame_size;
     if (pos < 0)
@@ -236,13 +262,11 @@ static int raw_control(demuxer_t *demuxer, int cmd, void *arg)
     switch (cmd) {
     case DEMUXER_CTRL_GET_TIME_LENGTH: {
         stream_t *s = demuxer->stream;
-        stream_update_size(s);
-        int64_t start = s->start_pos;
-        int64_t end = s->end_pos;
-        if (!end)
+        int64_t end = 0;
+        if (stream_control(s, STREAM_CTRL_GET_SIZE, &end) != STREAM_OK)
             return DEMUXER_CTRL_DONTKNOW;
 
-        *((double *) arg) = ((end - start) / p->frame_size) / p->frame_rate;
+        *((double *) arg) = (end / p->frame_size) / p->frame_rate;
         return DEMUXER_CTRL_OK;
     }
     default:

@@ -25,6 +25,8 @@
 #include <assert.h>
 #include <unistd.h>
 
+#include <math.h>
+
 #include <sys/types.h>
 #include <sys/stat.h>
 
@@ -94,6 +96,7 @@ struct demux_stream {
 };
 
 static void add_stream_chapters(struct demuxer *demuxer);
+void demuxer_sort_chapters(demuxer_t *demuxer);
 
 static void ds_free_packs(struct demux_stream *ds)
 {
@@ -184,20 +187,17 @@ static void destroy_avpacket(void *pkt)
 struct demux_packet *demux_copy_packet(struct demux_packet *dp)
 {
     struct demux_packet *new = NULL;
-    // No av_copy_packet() in Libav
-#if LIBAVCODEC_VERSION_MICRO >= 100
     if (dp->avpacket) {
         assert(dp->buffer == dp->avpacket->data);
         assert(dp->len == dp->avpacket->size);
         AVPacket *newavp = talloc_zero(NULL, AVPacket);
         talloc_set_destructor(newavp, destroy_avpacket);
         av_init_packet(newavp);
-        if (av_copy_packet(newavp, dp->avpacket) < 0)
+        if (av_packet_ref(newavp, dp->avpacket) < 0)
             abort();
         new = new_demux_packet_fromdata(newavp->data, newavp->size);
         new->avpacket = newavp;
     }
-#endif
     if (!new) {
         new = new_demux_packet(dp->len);
         memcpy(new->buffer, dp->buffer, new->len);
@@ -267,7 +267,7 @@ void free_demuxer(demuxer_t *demuxer)
     talloc_free(demuxer);
 }
 
-static const char *stream_type_name(enum stream_type type)
+const char *stream_type_name(enum stream_type type)
 {
     switch (type) {
     case STREAM_VIDEO:  return "video";
@@ -340,7 +340,7 @@ int demuxer_add_packet(demuxer_t *demuxer, struct sh_stream *stream,
     if (stream->type != STREAM_VIDEO && dp->pts == MP_NOPTS_VALUE)
         dp->pts = dp->dts;
 
-    MP_DBG(demuxer, "DEMUX: Append packet to %s, len=%d  pts=%5.3f  pos=%"PRIu64" "
+    MP_DBG(demuxer, "DEMUX: Append packet to %s, len=%d  pts=%5.3f  pos=%"PRIi64" "
            "[packs: A=%d V=%d S=%d]\n", stream_type_name(stream->type),
            dp->len, dp->pts, dp->pos, count_packs(demuxer, STREAM_AUDIO),
            count_packs(demuxer, STREAM_VIDEO), count_packs(demuxer, STREAM_SUB));
@@ -485,6 +485,81 @@ static const char *d_level(enum demux_check level)
     abort();
 }
 
+static int decode_float(char *str, float *out)
+{
+    char *rest;
+    float dec_val;
+
+    dec_val = strtod(str, &rest);
+    if (!rest || (rest == str) || !isfinite(dec_val))
+        return -1;
+
+    *out = dec_val;
+    return 0;
+}
+
+static int decode_gain(demuxer_t *demuxer, const char *tag, float *out)
+{
+    char *tag_val = NULL;
+    float dec_val;
+
+    tag_val = mp_tags_get_str(demuxer->metadata, tag);
+    if (!tag_val) {
+        mp_msg(demuxer->log, MSGL_V, "Replaygain tags not found\n");
+        return -1;
+    }
+
+    if (decode_float(tag_val, &dec_val)) {
+        mp_msg(demuxer->log, MSGL_ERR, "Invalid replaygain value\n");
+        return -1;
+    }
+
+    *out = dec_val;
+    return 0;
+}
+
+static int decode_peak(demuxer_t *demuxer, const char *tag, float *out)
+{
+    char *tag_val = NULL;
+    float dec_val;
+
+    *out = 1.0;
+
+    tag_val = mp_tags_get_str(demuxer->metadata, tag);
+    if (!tag_val)
+        return 0;
+
+    if (decode_float(tag_val, &dec_val))
+        return 0;
+
+    if (dec_val == 0.0)
+        return 0;
+
+    *out = dec_val;
+    return 0;
+}
+
+static void demux_export_replaygain(demuxer_t *demuxer)
+{
+    float tg, tp, ag, ap;
+
+    if (!demuxer->replaygain_data &&
+        !decode_gain(demuxer, "REPLAYGAIN_TRACK_GAIN", &tg) &&
+        !decode_peak(demuxer, "REPLAYGAIN_TRACK_PEAK", &tp) &&
+        !decode_gain(demuxer, "REPLAYGAIN_ALBUM_GAIN", &ag) &&
+        !decode_peak(demuxer, "REPLAYGAIN_ALBUM_PEAK", &ap))
+    {
+        struct replaygain_data *rgain = talloc_ptrtype(demuxer, rgain);
+
+        rgain->track_gain = tg;
+        rgain->track_peak = tp;
+        rgain->album_gain = ag;
+        rgain->album_peak = ap;
+
+        demuxer->replaygain_data = rgain;
+    }
+}
+
 static struct demuxer *open_given_type(struct mpv_global *global,
                                        struct mp_log *log,
                                        const struct demuxer_desc *desc,
@@ -498,8 +573,7 @@ static struct demuxer *open_given_type(struct mpv_global *global,
         .type = desc->type,
         .stream = stream,
         .stream_pts = MP_NOPTS_VALUE,
-        .seekable = (stream->flags & MP_STREAM_SEEK) == MP_STREAM_SEEK &&
-                    stream->end_pos > 0,
+        .seekable = stream->seekable,
         .accurate_seek = true,
         .filepos = -1,
         .opts = global->opts,
@@ -508,10 +582,9 @@ static struct demuxer *open_given_type(struct mpv_global *global,
         .glog = log,
         .filename = talloc_strdup(demuxer, stream->url),
         .metadata = talloc_zero(demuxer, struct mp_tags),
-        .initializing = true,
     };
     demuxer->params = params; // temporary during open()
-    stream_seek(stream, stream->start_pos);
+    int64_t start_pos = stream_tell(stream);
 
     mp_verbose(log, "Trying demuxer: %s (force-level: %s)\n",
                desc->name, d_level(check));
@@ -520,10 +593,10 @@ static struct demuxer *open_given_type(struct mpv_global *global,
     if (ret >= 0) {
         demuxer->params = NULL;
         if (demuxer->filetype)
-            mp_info(log, "Detected file format: %s (%s)\n",
-                    demuxer->filetype, desc->desc);
+            mp_verbose(log, "Detected file format: %s (%s)\n",
+                       demuxer->filetype, desc->desc);
         else
-            mp_info(log, "Detected file format: %s\n", desc->desc);
+            mp_verbose(log, "Detected file format: %s\n", desc->desc);
         if (stream_manages_timeline(demuxer->stream)) {
             // Incorrect, but fixes some behavior with DVD/BD
             demuxer->ts_resets_possible = false;
@@ -535,17 +608,18 @@ static struct demuxer *open_given_type(struct mpv_global *global,
         add_stream_chapters(demuxer);
         demuxer_sort_chapters(demuxer);
         demux_info_update(demuxer);
+        demux_export_replaygain(demuxer);
         // Pretend we can seek if we can't seek, but there's a cache.
         if (!demuxer->seekable && stream->uncached_stream) {
             mp_warn(log,
                     "File is not seekable, but there's a cache: enabling seeking.\n");
             demuxer->seekable = true;
         }
-        demuxer->initializing = false;
         return demuxer;
     }
 
     free_demuxer(demuxer);
+    stream_seek(stream, start_pos);
     return NULL;
 }
 
@@ -665,64 +739,7 @@ int demux_seek(demuxer_t *demuxer, float rel_seek_secs, int flags)
     return 1;
 }
 
-void mp_tags_set_str(struct mp_tags *tags, const char *key, const char *value)
-{
-    mp_tags_set_bstr(tags, bstr0(key), bstr0(value));
-}
-
-void mp_tags_set_bstr(struct mp_tags *tags, bstr key, bstr value)
-{
-    for (int n = 0; n < tags->num_keys; n++) {
-        if (bstrcasecmp0(key, tags->keys[n]) == 0) {
-            talloc_free(tags->values[n]);
-            tags->values[n] = talloc_strndup(tags, value.start, value.len);
-            return;
-        }
-    }
-
-    MP_RESIZE_ARRAY(tags, tags->keys,   tags->num_keys + 1);
-    MP_RESIZE_ARRAY(tags, tags->values, tags->num_keys + 1);
-    tags->keys[tags->num_keys]   = talloc_strndup(tags, key.start,   key.len);
-    tags->values[tags->num_keys] = talloc_strndup(tags, value.start, value.len);
-    tags->num_keys++;
-}
-
-char *mp_tags_get_str(struct mp_tags *tags, const char *key)
-{
-    return mp_tags_get_bstr(tags, bstr0(key));
-}
-
-char *mp_tags_get_bstr(struct mp_tags *tags, bstr key)
-{
-    for (int n = 0; n < tags->num_keys; n++) {
-        if (bstrcasecmp0(key, tags->keys[n]) == 0)
-            return tags->values[n];
-    }
-    return NULL;
-}
-
-int demux_info_add(demuxer_t *demuxer, const char *opt, const char *param)
-{
-    return demux_info_add_bstr(demuxer, bstr0(opt), bstr0(param));
-}
-
-int demux_info_add_bstr(demuxer_t *demuxer, struct bstr opt, struct bstr param)
-{
-    char *oldval = mp_tags_get_bstr(demuxer->metadata, opt);
-    if (oldval) {
-        if (bstrcmp0(param, oldval) == 0)
-            return 0;
-    }
-    if (!demuxer->initializing) {
-        MP_INFO(demuxer, "Demuxer info %.*s changed to %.*s\n",
-                BSTR_P(opt), BSTR_P(param));
-    }
-
-    mp_tags_set_bstr(demuxer->metadata, opt, param);
-    return 1;
-}
-
-int demux_info_print(demuxer_t *demuxer)
+static int demux_info_print(demuxer_t *demuxer)
 {
     struct mp_tags *info = demuxer->metadata;
     int n;
@@ -730,17 +747,10 @@ int demux_info_print(demuxer_t *demuxer)
     if (!info || !info->num_keys)
         return 0;
 
-    demux_info_update(demuxer);
-
-    mp_info(demuxer->glog, "Clip info:\n");
+    mp_info(demuxer->glog, "File tags:\n");
     for (n = 0; n < info->num_keys; n++) {
         mp_info(demuxer->glog, " %s: %s\n", info->keys[n], info->values[n]);
-        mp_msg(demuxer->glog, MSGL_SMODE, "ID_CLIP_INFO_NAME%d=%s\n", n,
-               info->keys[n]);
-        mp_msg(demuxer->glog, MSGL_SMODE, "ID_CLIP_INFO_VALUE%d=%s\n", n,
-               info->values[n]);
     }
-    mp_msg(demuxer->glog, MSGL_SMODE, "ID_CLIP_INFO_N=%d\n", n);
 
     return 0;
 }
@@ -750,15 +760,32 @@ char *demux_info_get(demuxer_t *demuxer, const char *opt)
     return mp_tags_get_str(demuxer->metadata, opt);
 }
 
-void demux_info_update(struct demuxer *demuxer)
+bool demux_info_update(struct demuxer *demuxer)
 {
-    demux_control(demuxer, DEMUXER_CTRL_UPDATE_INFO, NULL);
+    struct mp_tags *tags = demuxer->metadata;
     // Take care of stream metadata as well
     char **meta;
     if (stream_control(demuxer->stream, STREAM_CTRL_GET_METADATA, &meta) > 0) {
         for (int n = 0; meta[n + 0]; n += 2)
-            demux_info_add(demuxer, meta[n + 0], meta[n + 1]);
+            mp_tags_set_str(tags, meta[n + 0], meta[n + 1]);
         talloc_free(meta);
+    }
+    // Check for metadata changes the hard way.
+    char *data = talloc_strdup(demuxer, "");
+    for (int n = 0; n < tags->num_keys; n++) {
+        data = talloc_asprintf_append_buffer(data, "%s=%s\n", tags->keys[n],
+                                             tags->values[n]);
+    }
+    if (!demuxer->previous_metadata ||
+        strcmp(demuxer->previous_metadata, data) != 0)
+    {
+        talloc_free(demuxer->previous_metadata);
+        demuxer->previous_metadata = data;
+        demux_info_print(demuxer);
+        return true;
+    } else {
+        talloc_free(data);
+        return false;
     }
 }
 
@@ -865,26 +892,17 @@ int demuxer_add_chapter(demuxer_t *demuxer, struct bstr name,
     };
     mp_tags_set_bstr(new.metadata, bstr0("TITLE"), name);
     MP_TARRAY_APPEND(demuxer, demuxer->chapters, demuxer->num_chapters, new);
-    return 0;
-}
-
-void demuxer_add_chapter_info(struct demuxer *demuxer, uint64_t demuxer_id,
-                              bstr key, bstr value)
-{
-    for (int n = 0; n < demuxer->num_chapters; n++) {
-        struct demux_chapter *ch = &demuxer->chapters[n];
-        if (ch->demuxer_id == demuxer_id) {
-            mp_tags_set_bstr(ch->metadata, key, value);
-            return;
-        }
-    }
+    return demuxer->num_chapters - 1;
 }
 
 static void add_stream_chapters(struct demuxer *demuxer)
 {
     if (demuxer->num_chapters)
         return;
-    int num_chapters = demuxer_chapter_count(demuxer);
+    int num_chapters = 0;
+    if (stream_control(demuxer->stream, STREAM_CTRL_GET_NUM_CHAPTERS,
+                          &num_chapters) != STREAM_OK)
+        return;
     for (int n = 0; n < num_chapters; n++) {
         double p = n;
         if (stream_control(demuxer->stream, STREAM_CTRL_GET_CHAPTER_TIME, &p)
@@ -892,92 +910,6 @@ static void add_stream_chapters(struct demuxer *demuxer)
             return;
         demuxer_add_chapter(demuxer, bstr0(""), p * 1e9, 0, 0);
     }
-}
-
-/**
- * \brief demuxer_seek_chapter() seeks to a chapter in two possible ways:
- *        either using the demuxer->chapters structure set by the demuxer
- *        or asking help to the stream layer (e.g. dvd)
- * \param chapter - chapter number wished - 0-based
- * \param seek_pts set by the function to the pts to seek to (if demuxer->chapters is set)
- * \return -1 on error, current chapter if successful
- */
-
-int demuxer_seek_chapter(demuxer_t *demuxer, int chapter, double *seek_pts)
-{
-    int ris = STREAM_UNSUPPORTED;
-
-    if (demuxer->num_chapters == 0)
-        ris = stream_control(demuxer->stream, STREAM_CTRL_SEEK_TO_CHAPTER,
-                             &chapter);
-
-    if (ris != STREAM_UNSUPPORTED) {
-        demux_flush(demuxer);
-        demux_control(demuxer, DEMUXER_CTRL_RESYNC, NULL);
-
-        // exit status may be ok, but main() doesn't have to seek itself
-        // (because e.g. dvds depend on sectors, not on pts)
-        *seek_pts = -1.0;
-
-        return chapter;
-    } else {
-        if (chapter >= demuxer->num_chapters)
-            return -1;
-        if (chapter < 0)
-            chapter = 0;
-
-        *seek_pts = demuxer->chapters[chapter].start / 1e9;
-
-        return chapter;
-    }
-}
-
-int demuxer_get_current_chapter(demuxer_t *demuxer, double time_now)
-{
-    int chapter = -2;
-    if (!demuxer->num_chapters || !demuxer->chapters) {
-        if (stream_control(demuxer->stream, STREAM_CTRL_GET_CURRENT_CHAPTER,
-                           &chapter) == STREAM_UNSUPPORTED)
-            chapter = -2;
-    } else {
-        uint64_t now = time_now * 1e9 + 0.5;
-        for (chapter = demuxer->num_chapters - 1; chapter >= 0; --chapter) {
-            if (demuxer->chapters[chapter].start <= now)
-                break;
-        }
-    }
-    return chapter;
-}
-
-char *demuxer_chapter_name(demuxer_t *demuxer, int chapter)
-{
-    if (demuxer->num_chapters && demuxer->chapters) {
-        if (chapter >= 0 && chapter < demuxer->num_chapters
-            && demuxer->chapters[chapter].name)
-            return talloc_strdup(NULL, demuxer->chapters[chapter].name);
-    }
-    return NULL;
-}
-
-double demuxer_chapter_time(demuxer_t *demuxer, int chapter)
-{
-    if (demuxer->num_chapters && demuxer->chapters && chapter >= 0
-        && chapter < demuxer->num_chapters) {
-        return demuxer->chapters[chapter].start / 1e9;
-    }
-    return -1.0;
-}
-
-int demuxer_chapter_count(demuxer_t *demuxer)
-{
-    if (!demuxer->num_chapters || !demuxer->chapters) {
-        int num_chapters = 0;
-        if (stream_control(demuxer->stream, STREAM_CTRL_GET_NUM_CHAPTERS,
-                           &num_chapters) == STREAM_UNSUPPORTED)
-            num_chapters = 0;
-        return num_chapters;
-    } else
-        return demuxer->num_chapters;
 }
 
 double demuxer_get_time_length(struct demuxer *demuxer)

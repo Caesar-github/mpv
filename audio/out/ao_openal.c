@@ -38,6 +38,7 @@
 #include "common/msg.h"
 
 #include "ao.h"
+#include "internal.h"
 #include "audio/format.h"
 #include "osdep/timer.h"
 #include "options/m_option.h"
@@ -177,23 +178,25 @@ err_out:
 }
 
 // close audio device
-static void uninit(struct ao *ao, bool immed)
+static void uninit(struct ao *ao)
 {
     ALCcontext *ctx = alcGetCurrentContext();
     ALCdevice *dev = alcGetContextsDevice(ctx);
-    if (!immed) {
-        ALint state;
-        alGetSourcei(sources[0], AL_SOURCE_STATE, &state);
-        while (state == AL_PLAYING) {
-            mp_sleep_us(10000);
-            alGetSourcei(sources[0], AL_SOURCE_STATE, &state);
-        }
-    }
     reset(ao);
     alcMakeContextCurrent(NULL);
     alcDestroyContext(ctx);
     alcCloseDevice(dev);
     ao_data = NULL;
+}
+
+static void drain(struct ao *ao)
+{
+    ALint state;
+    alGetSourcei(sources[0], AL_SOURCE_STATE, &state);
+    while (state == AL_PLAYING) {
+        mp_sleep_us(10000);
+        alGetSourcei(sources[0], AL_SOURCE_STATE, &state);
+    }
 }
 
 static void unqueue_buffers(void)
@@ -297,6 +300,7 @@ const struct ao_driver audio_out_openal = {
     .pause     = audio_pause,
     .resume    = audio_resume,
     .reset     = reset,
+    .drain     = drain,
     .priv_size = sizeof(struct priv),
     .options = (const struct m_option[]) {
         OPT_STRING_VALIDATE("device", cfg_device, 0, validate_device_opt),

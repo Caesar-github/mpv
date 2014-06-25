@@ -71,7 +71,6 @@
 struct mp_imgfmt_desc {
     int id;                 // IMGFMT_*
     int avformat;           // AV_PIX_FMT_* (or AV_PIX_FMT_NONE)
-    const char *name;       // e.g. "420p16"
     int flags;              // MP_IMGFLAG_* bitfield
     int8_t num_planes;
     int8_t chroma_xs, chroma_ys; // chroma shift (i.e. log2 of chroma pixel size)
@@ -204,29 +203,29 @@ enum mp_imgfmt {
     IMGFMT_RGB0_START = IMGFMT_0RGB,
     IMGFMT_RGB0_END = IMGFMT_RGB0,
 
-    // Accessed with bit-shifts (components ordered from LSB to MSB)
-    IMGFMT_RGB8,                // r3 g3 b2
-    IMGFMT_BGR8,
-    IMGFMT_RGB4_BYTE,           // r1 g2 b1 with 1 pixel per byte
-    IMGFMT_BGR4_BYTE,
-    IMGFMT_RGB4,                // r1 g2 b1, bit-packed
-    IMGFMT_BGR4,
+    // Accessed with bit-shifts (components ordered from MSB to LSB)
+    IMGFMT_BGR8,                // r3 g3 b2
+    IMGFMT_RGB8,
+    IMGFMT_BGR4_BYTE,           // r1 g2 b1 with 1 pixel per byte
+    IMGFMT_RGB4_BYTE,
+    IMGFMT_BGR4,                // r1 g2 b1, bit-packed
+    IMGFMT_RGB4,
     IMGFMT_MONO,                // 1 bit per pixel, bit-packed
     IMGFMT_MONO_W,              // like IMGFMT_MONO, but inverted (white pixels)
 
     // Accessed with bit-shifts after endian-swapping the uint16_t pixel
-    IMGFMT_RGB12_LE,            // 4r 4g 4b 4a  (LSB to MSB)
-    IMGFMT_RGB12_BE,
-    IMGFMT_RGB15_LE,            // 5r 5g 5b 1a
-    IMGFMT_RGB15_BE,
-    IMGFMT_RGB16_LE,            // 5r 6g 5b
-    IMGFMT_RGB16_BE,
-    IMGFMT_BGR12_LE,            // 4b 4r 4g 4a
-    IMGFMT_BGR12_BE,
-    IMGFMT_BGR15_LE,            // 5b 5g 5r 1a
-    IMGFMT_BGR15_BE,
-    IMGFMT_BGR16_LE,            // 5b 6g 5r
-    IMGFMT_BGR16_BE,
+    IMGFMT_RGB444_LE,           // 4r 4g 4b 4a  (MSB to LSB)
+    IMGFMT_RGB444_BE,
+    IMGFMT_RGB555_LE,           // 5r 5g 5b 1a
+    IMGFMT_RGB555_BE,
+    IMGFMT_RGB565_LE,           // 5r 6g 5b
+    IMGFMT_RGB565_BE,
+    IMGFMT_BGR444_LE,           // 4b 4r 4g 4a
+    IMGFMT_BGR444_BE,
+    IMGFMT_BGR555_LE,           // 5b 5g 5r 1a
+    IMGFMT_BGR555_BE,
+    IMGFMT_BGR565_LE,           // 5b 6g 5r
+    IMGFMT_BGR565_BE,
 
     // The first plane has 1 byte per pixel. The second plane is a palette with
     // 256 entries, with each entry encoded like in IMGFMT_BGR32.
@@ -252,20 +251,9 @@ enum mp_imgfmt {
 
     // Hardware accelerated formats. Plane data points to special data
     // structures, instead of pixel data.
-
-    IMGFMT_VDPAU,               // new decoder API
-    IMGFMT_VDPAU_MPEG1,         // old API
-    IMGFMT_VDPAU_MPEG2,
-    IMGFMT_VDPAU_H264,
-    IMGFMT_VDPAU_WMV3,
-    IMGFMT_VDPAU_VC1,
-    IMGFMT_VDPAU_MPEG4,
-
-    IMGFMT_VDPAU_FIRST = IMGFMT_VDPAU,
-    IMGFMT_VDPAU_LAST  = IMGFMT_VDPAU_MPEG4,
-
+    IMGFMT_VDPAU,           // VdpVideoSurface
+    IMGFMT_VDPAU_OUTPUT,    // VdpOutputSurface
     IMGFMT_VDA,
-
     IMGFMT_VAAPI,
 
 
@@ -282,12 +270,12 @@ enum mp_imgfmt {
     IMGFMT_RGB32   = MP_SELECT_LE_BE(IMGFMT_RGBA, IMGFMT_ABGR),
     IMGFMT_BGR32   = MP_SELECT_LE_BE(IMGFMT_BGRA, IMGFMT_ARGB),
 
-    IMGFMT_RGB12   = MP_SELECT_LE_BE(IMGFMT_RGB12_LE, IMGFMT_RGB12_BE),
-    IMGFMT_RGB15   = MP_SELECT_LE_BE(IMGFMT_RGB15_LE, IMGFMT_RGB15_BE),
-    IMGFMT_RGB16   = MP_SELECT_LE_BE(IMGFMT_RGB16_LE, IMGFMT_RGB16_BE),
-    IMGFMT_BGR12   = MP_SELECT_LE_BE(IMGFMT_BGR12_LE, IMGFMT_BGR12_BE),
-    IMGFMT_BGR15   = MP_SELECT_LE_BE(IMGFMT_BGR15_LE, IMGFMT_BGR15_BE),
-    IMGFMT_BGR16   = MP_SELECT_LE_BE(IMGFMT_BGR16_LE, IMGFMT_BGR16_BE),
+    IMGFMT_RGB444  = MP_SELECT_LE_BE(IMGFMT_RGB444_LE, IMGFMT_RGB444_BE),
+    IMGFMT_RGB555  = MP_SELECT_LE_BE(IMGFMT_RGB555_LE, IMGFMT_RGB555_BE),
+    IMGFMT_RGB565  = MP_SELECT_LE_BE(IMGFMT_RGB565_LE, IMGFMT_RGB565_BE),
+    IMGFMT_BGR444  = MP_SELECT_LE_BE(IMGFMT_BGR444_LE, IMGFMT_BGR444_BE),
+    IMGFMT_BGR555  = MP_SELECT_LE_BE(IMGFMT_BGR555_LE, IMGFMT_BGR555_BE),
+    IMGFMT_BGR565  = MP_SELECT_LE_BE(IMGFMT_BGR565_LE, IMGFMT_BGR565_BE),
     IMGFMT_RGB48   = MP_SELECT_LE_BE(IMGFMT_RGB48_LE, IMGFMT_RGB48_BE),
     IMGFMT_RGBA64  = MP_SELECT_LE_BE(IMGFMT_RGBA64_LE, IMGFMT_RGBA64_BE),
     IMGFMT_BGRA64  = MP_SELECT_LE_BE(IMGFMT_BGRA64_LE, IMGFMT_BGRA64_BE),
@@ -333,7 +321,7 @@ enum mp_imgfmt {
     IMGFMT_XYZ12   = MP_SELECT_LE_BE(IMGFMT_XYZ12_LE, IMGFMT_XYZ12_BE),
 };
 
-static inline bool IMGFMT_IS_RGB(unsigned int fmt)
+static inline bool IMGFMT_IS_RGB(int fmt)
 {
     struct mp_imgfmt_desc desc = mp_imgfmt_get_desc(fmt);
     return (desc.flags & MP_IMGFLAG_RGB) && desc.num_planes == 1;
@@ -341,22 +329,15 @@ static inline bool IMGFMT_IS_RGB(unsigned int fmt)
 
 #define IMGFMT_RGB_DEPTH(fmt) (mp_imgfmt_get_desc(fmt).plane_bits)
 
-#define IMGFMT_IS_VDPAU(fmt) \
-    (((fmt) >= IMGFMT_VDPAU_FIRST) && ((fmt) <= IMGFMT_VDPAU_LAST))
-
 #define IMGFMT_IS_HWACCEL(fmt) \
-    (IMGFMT_IS_VDPAU(fmt) || ((fmt) == IMGFMT_VAAPI) || ((fmt) == IMGFMT_VDA))
+    ((fmt) == IMGFMT_VDPAU || (fmt) == IMGFMT_VDPAU_OUTPUT || \
+     (fmt) == IMGFMT_VAAPI || (fmt) == IMGFMT_VDA)
 
+int mp_imgfmt_from_name(bstr name, bool allow_hwaccel);
+char *mp_imgfmt_to_name_buf(char *buf, size_t buf_size, int fmt);
+#define mp_imgfmt_to_name(fmt) mp_imgfmt_to_name_buf((char[16]){0}, 16, (fmt))
 
-struct mp_imgfmt_entry {
-    const char *name;
-    unsigned int fmt;
-};
-
-extern struct mp_imgfmt_entry mp_imgfmt_list[];
-
-unsigned int mp_imgfmt_from_name(bstr name, bool allow_hwaccel);
-const char *mp_imgfmt_to_name(unsigned int fmt);
+char **mp_imgfmt_name_list(void);
 
 #define vo_format_name mp_imgfmt_to_name
 

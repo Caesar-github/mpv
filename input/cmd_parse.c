@@ -27,6 +27,13 @@
 #include "cmd_list.h"
 #include "input.h"
 
+static void destroy_cmd(void *ptr)
+{
+    struct mp_cmd *cmd = ptr;
+    for (int n = 0; n < cmd->nargs; n++)
+        m_option_free(cmd->args[n].type, &cmd->args[n].v);
+}
+
 static bool read_token(bstr str, bstr *out_rest, bstr *out_token)
 {
     bstr t = bstr_lstrip(str);
@@ -39,31 +46,6 @@ static bool read_token(bstr str, bstr *out_rest, bstr *out_token)
     *out_token = bstr_splice(t, 0, next);
     *out_rest = bstr_cut(t, next);
     return true;
-}
-
-static bool read_escaped_string(void *talloc_ctx, bstr *str, bstr *literal)
-{
-    bstr t = *str;
-    char *new = talloc_strdup(talloc_ctx, "");
-    while (t.len) {
-        if (t.start[0] == '"')
-            break;
-        if (t.start[0] == '\\') {
-            t = bstr_cut(t, 1);
-            if (!mp_parse_escape(&t, &new))
-                goto error;
-        } else {
-            new = talloc_strndup_append_buffer(new, t.start, 1);
-            t = bstr_cut(t, 1);
-        }
-    }
-    int len = str->len - t.len;
-    *literal = new ? bstr0(new) : bstr_splice(*str, 0, len);
-    *str = bstr_cut(*str, len);
-    return true;
-error:
-    talloc_free(new);
-    return false;
 }
 
 // Somewhat awkward; the main purpose is supporting both strings and
@@ -92,7 +74,7 @@ static int pctx_read_token(struct parse_ctx *ctx, bstr *out)
         ctx->str = bstr_lstrip(ctx->str);
         bstr start = ctx->str;
         if (bstr_eatstart0(&ctx->str, "\"")) {
-            if (!read_escaped_string(ctx->tmp, &ctx->str, out)) {
+            if (!mp_append_escaped_string_noalloc(ctx->tmp, out, &ctx->str)) {
                 MP_ERR(ctx, "Broken string escapes: ...>%.*s<.\n", BSTR_P(start));
                 return -1;
             }
@@ -126,8 +108,6 @@ struct flag {
 };
 
 static const struct flag cmd_flags[] = {
-    {"pausing",             MP_PAUSING_FLAGS, MP_PAUSING},
-    {"pausing-toggle",      MP_PAUSING_FLAGS, MP_PAUSING_TOGGLE},
     {"no-osd",              MP_ON_OSD_FLAGS, MP_ON_OSD_NO},
     {"osd-bar",             MP_ON_OSD_FLAGS, MP_ON_OSD_BAR},
     {"osd-msg",             MP_ON_OSD_FLAGS, MP_ON_OSD_MSG},
@@ -190,6 +170,7 @@ static struct mp_cmd *parse_cmd(struct parse_ctx *ctx, int def_flags)
     }
 
     cmd = talloc_ptrtype(NULL, cmd);
+    talloc_set_destructor(cmd, destroy_cmd);
     *cmd = (struct mp_cmd) {
         .name = (char *)cmd_def->name,
         .id = cmd_def->id,
@@ -216,10 +197,11 @@ static struct mp_cmd *parse_cmd(struct parse_ctx *ctx, int def_flags)
             if (is_vararg)
                 continue;
             // Skip optional arguments
-            if (opt->defval) {
+            if (opt->defval || (opt->flags & MP_CMD_OPT_ARG)) {
                 struct mp_cmd_arg *cmdarg = &cmd->args[cmd->nargs];
                 cmdarg->type = opt;
-                memcpy(&cmdarg->v, opt->defval, opt->type->size);
+                if (opt->defval)
+                    m_option_copy(opt, &cmdarg->v, opt->defval);
                 cmd->nargs++;
                 continue;
             }
@@ -237,8 +219,6 @@ static struct mp_cmd *parse_cmd(struct parse_ctx *ctx, int def_flags)
                    cmd->name, i + 1, m_option_strerror(r));
             goto error;
         }
-        if (opt->type == &m_option_type_string)
-            talloc_steal(cmd, cmdarg->v.s);
     }
 
     bstr left = pctx_get_trailing(ctx);
@@ -296,6 +276,7 @@ mp_cmd_t *mp_input_parse_cmd_(struct mp_log *log, bstr str, const char *loc)
         // own purposes, a pseudo-command is used to wrap the command list.
         if (!p_prev) {
             struct mp_cmd *list = talloc_ptrtype(NULL, list);
+            talloc_set_destructor(list, destroy_cmd);
             *list = (struct mp_cmd) {
                 .id = MP_CMD_COMMAND_LIST,
                 .name = "list",
@@ -365,10 +346,11 @@ mp_cmd_t *mp_cmd_clone(mp_cmd_t *cmd)
         return NULL;
 
     ret = talloc_memdup(NULL, cmd, sizeof(mp_cmd_t));
+    talloc_set_destructor(ret, destroy_cmd);
     ret->name = talloc_strdup(ret, cmd->name);
     for (i = 0; i < ret->nargs; i++) {
-        if (cmd->args[i].type->type == &m_option_type_string)
-            ret->args[i].v.s = talloc_strdup(ret, cmd->args[i].v.s);
+        memset(&ret->args[i].v, 0, ret->args[i].type->type->size);
+        m_option_copy(ret->args[i].type, &ret->args[i].v, &cmd->args[i].v);
     }
 
     if (cmd->id == MP_CMD_COMMAND_LIST) {

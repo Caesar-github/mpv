@@ -1,5 +1,5 @@
 /*
- * precise timer routines for Linux
+ * precise timer routines for Linux/UNIX
  * copyright (C) LGB & A'rpi/ASTRAL
  *
  * This file is part of MPlayer.
@@ -26,26 +26,41 @@
 #include "config.h"
 #include "timer.h"
 
+#if HAVE_NANOSLEEP
 void mp_sleep_us(int64_t us)
 {
     if (us < 0)
         return;
-#if HAVE_NANOSLEEP
     struct timespec ts;
     ts.tv_sec  =  us / 1000000;
     ts.tv_nsec = (us % 1000000) * 1000;
     nanosleep(&ts, NULL);
-#else
-    usleep(us);
-#endif
 }
+#else
+void mp_sleep_us(int64_t us)
+{
+    if (us < 0)
+        return;
+    usleep(us);
+}
+#endif
 
+#if defined(_POSIX_TIMERS) && _POSIX_TIMERS > 0 && defined(CLOCK_MONOTONIC)
+uint64_t mp_raw_time_us(void)
+{
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts))
+        abort();
+    return ts.tv_sec * 1000000LL + ts.tv_nsec / 1000;
+}
+#else
 uint64_t mp_raw_time_us(void)
 {
     struct timeval tv;
     gettimeofday(&tv,NULL);
     return tv.tv_sec * 1000000LL + tv.tv_usec;
 }
+#endif
 
 void mp_raw_time_init(void)
 {

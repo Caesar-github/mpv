@@ -8,14 +8,12 @@
 typedef struct mp_vo_opts {
     struct m_obj_settings *video_driver_list, *vo_defs;
 
-    int screenwidth;
-    int screenheight;
     int ontop;
     int fullscreen;
     int screen_id;
     int fsscreen_id;
     char *winname;
-    char** fstype_list;
+    int x11_netwm;
     int native_keyrepeat;
 
     float panscan;
@@ -28,7 +26,6 @@ typedef struct mp_vo_opts {
     struct m_geometry autofit;
     struct m_geometry autofit_larger;
 
-    int fsmode;
     int keepaspect;
     int border;
 
@@ -40,19 +37,34 @@ typedef struct mp_vo_opts {
     float monitor_pixel_aspect;
     int force_window_position;
 
-    int native_fs;
+    int fs_missioncontrol;
+
+    struct sws_opts *sws_opts;
 } mp_vo_opts;
 
+struct mp_cache_opts {
+    int size;
+    int def_size;
+    int initial;
+    int seek_min;
+    char *file;
+    int file_max;
+};
+
 typedef struct MPOpts {
+    int use_terminal;
     char *msglevels;
+    char *dump_stats;
     int verbose;
-    int msg_identify;
     int msg_color;
     int msg_module;
+    int msg_time;
 
     char **reset_options;
     char **lua_files;
+    char **lua_opts;
     int lua_load_osc;
+    int auto_load_scripts;
 
     struct m_obj_settings *audio_driver_list, *ao_defs;
     int fixed_vo;
@@ -66,6 +78,7 @@ typedef struct MPOpts {
     int gapless_audio;
 
     mp_vo_opts vo;
+    int allow_win_drag;
 
     char *wintitle;
     int force_rgba_osd;
@@ -84,6 +97,9 @@ typedef struct MPOpts {
     int requested_colorspace;
     int requested_input_range;
     int requested_output_range;
+    int requested_primaries;
+
+    int video_rotate;
 
     char *audio_decoders;
     char *video_decoders;
@@ -95,6 +111,7 @@ typedef struct MPOpts {
     char *stream_capture;
     char *stream_dump;
     int loop_times;
+    int loop_file;
     int shuffle;
     int ordered_chapters;
     char *ordered_chapters_files;
@@ -104,13 +121,12 @@ typedef struct MPOpts {
     int merge_files;
     int quiet;
     int load_config;
+    char *force_configdir;
     int use_filedir_conf;
-    int stream_cache_size;
-    int stream_cache_def_size;
-    float stream_cache_min_percent;
-    float stream_cache_seek_min_percent;
     int network_rtsp_transport;
+    struct mp_cache_opts stream_cache;
     int stream_cache_pause;
+    int stream_cache_unpause;
     int chapterrange[2];
     int edition_id;
     int correct_pts;
@@ -118,13 +134,15 @@ typedef struct MPOpts {
     int initial_audio_sync;
     int hr_seek;
     float hr_seek_demuxer_offset;
+    int hr_seek_framedrop;
     float audio_delay;
     float default_max_pts_correction;
     int autosync;
     int softsleep;
     int frame_dropping;
     int term_osd;
-    char *term_osd_esc;
+    int term_osd_bar;
+    char *term_osd_bar_chars;
     char *playing_msg;
     char *status_msg;
     char *osd_status_msg;
@@ -138,9 +156,9 @@ typedef struct MPOpts {
     struct m_rel_time play_length;
     int play_frames;
     double step_sec;
-    int64_t seek_to_byte;
     int position_resume;
     int position_save_on_quit;
+    int write_filename_in_watch_later_config;
     int pause;
     int keep_open;
     int audio_id;
@@ -160,12 +178,10 @@ typedef struct MPOpts {
     char *quvi_format;
     int quvi_fetch_subtitles;
 
-    // subreader.c
-    int suboverlap_enabled;
+    int sub_fix_timing;
     char *sub_cp;
 
-    char *audio_stream;
-    int audio_stream_cache;
+    char **audio_files;
     char *demuxer_name;
     char *audio_demuxer_name;
     char *sub_demuxer_name;
@@ -175,7 +191,7 @@ typedef struct MPOpts {
     char *screenshot_template;
 
     double force_fps;
-    int index_mode; // -1=untouched  0=don't use index  1=use (generate) index
+    int index_mode;
 
     struct mp_chmap audio_output_channels;
     int audio_output_format;
@@ -190,7 +206,6 @@ typedef struct MPOpts {
     char **sub_name;
     char **sub_paths;
     int sub_auto;
-    int sub_match_fuzziness;
     int osd_bar_visible;
     float osd_bar_align_x;
     float osd_bar_align_y;
@@ -215,9 +230,12 @@ typedef struct MPOpts {
     int ass_style_override;
     int ass_hinting;
     int ass_shaper;
+    int sub_scale_with_window;
 
     int hwdec_api;
     char *hwdec_codecs;
+
+    int w32_priority;
 
     int network_cookies_enabled;
     char *network_cookies_file;
@@ -227,76 +245,33 @@ typedef struct MPOpts {
     int network_tls_verify;
     char *network_tls_ca_file;
 
-    struct lavc_param {
-        int fast;
-        int show_all;
-        char *skip_loop_filter_str;
-        char *skip_idct_str;
-        char *skip_frame_str;
-        int threads;
-        int bitexact;
-        int check_hw_profile;
-        char *avopt;
-    } lavc_param;
+    struct tv_params *tv_params;
+    struct pvr_params *stream_pvr_opts;
+    struct cdda_params *stream_cdda_opts;
+    struct dvb_params *stream_dvb_opts;
 
-    struct ad_lavc_param {
-        float ac3drc;
-        int downmix;
-        int threads;
-        char *avopt;
-    } ad_lavc_param;
+    char *cdrom_device;
+    int dvd_title;
+    int dvd_angle;
+    int dvd_speed;
+    char *dvd_device;
+    int bluray_angle;
+    char *bluray_device;
 
-    struct lavfdopts {
-        int probesize;
-        int probescore;
-        float analyzeduration;
-        int buffersize;
-        int allow_mimetype;
-        char *format;
-        char *cryptokey;
-        char *avopt;
-        int genptsmode;
-    } lavfdopts;
+    double mf_fps;
+    char *mf_type;
 
-    struct input_conf {
-        char *config_file;
-        int doubleclick_time;
-        int key_fifo_size;
-        int ar_delay;
-        int ar_rate;
-        char *js_dev;
-        char *in_file;
-        int use_joystick;
-        int use_lirc;
-        char *lirc_configfile;
-        int use_lircc;
-        int use_alt_gr;
-        int use_ar;
-        int use_media_keys;
-        int default_bindings;
-        int test;
-    } input;
+    struct demux_rawaudio_opts *demux_rawaudio;
+    struct demux_rawvideo_opts *demux_rawvideo;
+    struct demux_lavf_opts *demux_lavf;
 
-    struct encode_output_conf {
-        char *file;
-        char *format;
-        char **fopts;
-        float fps;
-        float maxfps;
-        char *vcodec;
-        char **vopts;
-        char *acodec;
-        char **aopts;
-        int harddup;
-        float voffset;
-        float aoffset;
-        int copyts;
-        int rawts;
-        int autofps;
-        int neverdrop;
-        int video_first;
-        int audio_first;
-    } encode_output;
+    struct vd_lavc_params *vd_lavc_params;
+    struct ad_lavc_params *ad_lavc_params;
+
+    struct input_opts *input_opts;
+
+    // may be NULL if encoding is not compiled-in
+    struct encode_opts *encode_opts;
 } MPOpts;
 
 extern const m_option_t mp_opts[];

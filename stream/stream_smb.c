@@ -33,7 +33,7 @@ struct priv {
 
 static void smb_auth_fn(const char *server, const char *share,
              char *workgroup, int wgmaxlen, char *username, int unmaxlen,
-	     char *password, int pwmaxlen)
+             char *password, int pwmaxlen)
 {
   strncpy(workgroup, "LAN", wgmaxlen - 1);
 }
@@ -45,10 +45,11 @@ static int control(stream_t *s, int cmd, void *arg) {
       off_t size = smbc_lseek(p->fd,0,SEEK_END);
       smbc_lseek(p->fd,s->pos,SEEK_SET);
       if(size != (off_t)-1) {
-        *(uint64_t *)arg = size;
+        *(int64_t *)arg = size;
         return 1;
       }
     }
+    break;
   }
   return STREAM_UNSUPPORTED;
 }
@@ -86,10 +87,9 @@ static void close_f(stream_t *s){
   smbc_close(p->fd);
 }
 
-static int open_f (stream_t *stream, int mode)
+static int open_f (stream_t *stream)
 {
   char *filename;
-  mode_t m = 0;
   int64_t len;
   int fd, err;
 
@@ -98,14 +98,8 @@ static int open_f (stream_t *stream, int mode)
 
   filename = stream->url;
 
-  if(mode == STREAM_READ)
-    m = O_RDONLY;
-  else if (mode == STREAM_WRITE) //who's gonna do that ?
-    m = O_RDWR|O_CREAT|O_TRUNC;
-  else {
-    MP_ERR(stream, "[smb] Unknown open mode %d\n", mode);
-    return STREAM_UNSUPPORTED;
-  }
+  bool write = stream->mode == STREAM_WRITE;
+  mode_t m = write ? O_RDWR|O_CREAT|O_TRUNC : O_RDONLY;
 
   if(!filename) {
     MP_ERR(stream, "[smb] Bad url\n");
@@ -124,22 +118,21 @@ static int open_f (stream_t *stream, int mode)
     return STREAM_ERROR;
   }
 
-  stream->flags = mode;
   len = 0;
-  if(mode == STREAM_READ) {
+  if(!write) {
     len = smbc_lseek(fd,0,SEEK_END);
     smbc_lseek (fd, 0, SEEK_SET);
   }
-  if(len > 0 || mode == STREAM_WRITE) {
-    stream->flags |= MP_STREAM_SEEK;
+  if(len > 0 || write) {
+    stream->seekable = true;
     stream->seek = seek;
-    if(mode == STREAM_READ) stream->end_pos = len;
   }
   priv->fd = fd;
   stream->fill_buffer = fill_buffer;
   stream->write_buffer = write_buffer;
   stream->close = close_f;
   stream->control = control;
+  stream->read_chunk = 128 * 1024;
 
   return STREAM_OK;
 }
@@ -147,5 +140,6 @@ static int open_f (stream_t *stream, int mode)
 const stream_info_t stream_info_smb = {
     .name = "smb",
     .open = open_f,
-    .protocols = (const char*[]){"smb", NULL},
+    .protocols = (const char*const[]){"smb", NULL},
+    .can_write = true, //who's gonna do that?
 };

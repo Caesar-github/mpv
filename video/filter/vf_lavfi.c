@@ -30,6 +30,7 @@
 #include <libavutil/rational.h>
 #include <libavutil/pixdesc.h>
 #include <libavutil/time.h>
+#include <libavutil/error.h>
 #include <libswscale/swscale.h>
 #include <libavfilter/avfilter.h>
 #include <libavfilter/avfiltergraph.h>
@@ -39,6 +40,7 @@
 #include "common/msg.h"
 #include "options/m_option.h"
 #include "common/av_opts.h"
+#include "common/tags.h"
 
 #include "video/img_format.h"
 #include "video/mp_image.h"
@@ -47,34 +49,27 @@
 #include "vf.h"
 #include "vf_lavfi.h"
 
-#define IS_LIBAV_FORK (LIBAVFILTER_VERSION_MICRO < 100)
-
 // FFmpeg and Libav have slightly different APIs, just enough to cause us
 // unnecessary pain. <Expletive deleted.>
-#if IS_LIBAV_FORK
+#if LIBAVFILTER_VERSION_MICRO < 100
 #define graph_parse(graph, filters, inputs, outputs, log_ctx) \
     avfilter_graph_parse(graph, filters, inputs, outputs, log_ctx)
 #else
 #define graph_parse(graph, filters, inputs, outputs, log_ctx) \
-    avfilter_graph_parse(graph, filters, &(inputs), &(outputs), log_ctx)
-#endif
-
-// ":" is deprecated, but "|" doesn't work in earlier versions.
-#if (IS_LIBAV_FORK  && LIBAVFILTER_VERSION_INT >= AV_VERSION_INT(3, 7, 0)) || \
-    (!IS_LIBAV_FORK && LIBAVFILTER_VERSION_INT >= AV_VERSION_INT(3, 50, 100))
-#define FMTSEP "|"
-#else
-#define FMTSEP ":"
+    avfilter_graph_parse_ptr(graph, filters, &(inputs), &(outputs), log_ctx)
 #endif
 
 struct vf_priv_s {
     AVFilterGraph *graph;
     AVFilterContext *in;
     AVFilterContext *out;
+    bool eof;
 
     AVRational timebase_in;
     AVRational timebase_out;
     AVRational par_in;
+
+    struct mp_tags* metadata;
 
     // for the lw wrapper
     void *old_priv;
@@ -95,6 +90,13 @@ static void destroy_graph(struct vf_instance *vf)
     struct vf_priv_s *p = vf->priv;
     avfilter_graph_free(&p->graph);
     p->in = p->out = NULL;
+
+    if (p->metadata) {
+        talloc_free(p->metadata);
+        p->metadata = NULL;
+    }
+
+    p->eof = false;
 }
 
 static AVRational par_from_sar_dar(int width, int height,
@@ -159,7 +161,7 @@ static bool recreate_graph(struct vf_instance *vf, int width, int height,
         if (vf_next_query_format(vf, n)) {
             const char *name = av_get_pix_fmt_name(imgfmt2pixfmt(n));
             if (name) {
-                const char *s = fmtstr[0] ? FMTSEP : "";
+                const char *s = fmtstr[0] ? "|" : "";
                 fmtstr = talloc_asprintf_append_buffer(fmtstr, "%s%s", s, name);
             }
         }
@@ -220,6 +222,14 @@ error:
     return false;
 }
 
+static void reset(vf_instance_t *vf)
+{
+    struct vf_priv_s *p = vf->priv;
+    struct mp_image_params *f = &vf->fmt_in;
+    if (p->graph && f->imgfmt)
+        recreate_graph(vf, f->w, f->h, f->d_w, f->d_h, f->imgfmt);
+}
+
 static int config(struct vf_instance *vf, int width, int height,
                   int d_width, int d_height, unsigned int flags,
                   unsigned int fmt)
@@ -258,9 +268,13 @@ static int query_format(struct vf_instance *vf, unsigned int fmt)
 static AVFrame *mp_to_av(struct vf_instance *vf, struct mp_image *img)
 {
     struct vf_priv_s *p = vf->priv;
+    if (!img)
+        return NULL;
     uint64_t pts = img->pts == MP_NOPTS_VALUE ?
                    AV_NOPTS_VALUE : img->pts * av_q2d(av_inv_q(p->timebase_in));
     AVFrame *frame = mp_image_to_av_frame_and_unref(img);
+    if (!frame)
+        return NULL; // OOM is (coincidentally) handled as EOF
     frame->pts = pts;
     frame->sample_aspect_ratio = p->par_in;
     return frame;
@@ -270,15 +284,35 @@ static struct mp_image *av_to_mp(struct vf_instance *vf, AVFrame *av_frame)
 {
     struct vf_priv_s *p = vf->priv;
     struct mp_image *img = mp_image_from_av_frame(av_frame);
+    if (!img)
+        return NULL; // OOM
     img->pts = av_frame->pts == AV_NOPTS_VALUE ?
                MP_NOPTS_VALUE : av_frame->pts * av_q2d(p->timebase_out);
     av_frame_free(&av_frame);
     return img;
 }
 
+static void get_metadata_from_av_frame(struct vf_instance *vf, AVFrame *frame)
+{
+#if HAVE_AVFRAME_METADATA
+  struct vf_priv_s *p = vf->priv;
+  if (!p->metadata)
+      p->metadata = talloc_zero(p, struct mp_tags);
+
+  mp_tags_copy_from_av_dictionary(p->metadata, av_frame_get_metadata(frame));
+#endif
+}
+
 static int filter_ext(struct vf_instance *vf, struct mp_image *mpi)
 {
     struct vf_priv_s *p = vf->priv;
+
+    if (p->eof && mpi) {
+        // Once EOF is reached, libavfilter is "stuck" in the EOF state, and
+        // won't accept new input. Forcefully override it. This helps e.g.
+        // with cover art, where we always want to generate new output.
+        reset(vf);
+    }
 
     if (!p->graph)
         return -1;
@@ -292,23 +326,26 @@ static int filter_ext(struct vf_instance *vf, struct mp_image *mpi)
 
     for (;;) {
         frame = av_frame_alloc();
-        if (av_buffersink_get_frame(p->out, frame) < 0) {
+        int err = av_buffersink_get_frame(p->out, frame);
+        if (err == AVERROR(EAGAIN) || err == AVERROR_EOF) {
             // Not an error situation - no more output buffers in queue.
+            // AVERROR_EOF means we shouldn't even give the filter more
+            // input, but we don't handle that completely correctly.
             av_frame_free(&frame);
+            p->eof |= err == AVERROR_EOF;
             break;
         }
+        if (err < 0) {
+            av_frame_free(&frame);
+            MP_ERR(vf, "libavfilter error: %d\n", err);
+            return -1;
+        }
+
+        get_metadata_from_av_frame(vf, frame);
         vf_add_output_frame(vf, av_to_mp(vf, frame));
     }
 
     return 0;
-}
-
-static void reset(vf_instance_t *vf)
-{
-    struct vf_priv_s *p = vf->priv;
-    struct mp_image_params *f = &vf->fmt_in;
-    if (p->graph && f->imgfmt)
-        recreate_graph(vf, f->w, f->h, f->d_w, f->d_h, f->imgfmt);
 }
 
 static int control(vf_instance_t *vf, int request, void *data)
@@ -317,6 +354,13 @@ static int control(vf_instance_t *vf, int request, void *data)
     case VFCTRL_SEEK_RESET:
         reset(vf);
         return CONTROL_OK;
+    case VFCTRL_GET_METADATA:
+      if (vf->priv && vf->priv->metadata) {
+          *(struct mp_tags*) data = *vf->priv->metadata;
+          return CONTROL_OK;
+      } else {
+          return CONTROL_NA;
+      }
     }
     return CONTROL_UNKNOWN;
 }
@@ -440,7 +484,7 @@ int vf_lw_set_graph(struct vf_instance *vf, struct vf_lw_opts *lavfi_opts,
 {
     if (!lavfi_opts)
         lavfi_opts = (struct vf_lw_opts *)vf_lw_conf.defaults;
-    if (!lavfi_opts->enable || !have_filter(filter))
+    if (!lavfi_opts->enable || (filter && !have_filter(filter)))
         return -1;
     MP_VERBOSE(vf, "Using libavfilter for '%s'\n", vf->info->name);
     void *old_priv = vf->priv;
@@ -452,7 +496,8 @@ int vf_lw_set_graph(struct vf_instance *vf, struct vf_lw_opts *lavfi_opts,
     va_list ap;
     va_start(ap, opts);
     char *s = talloc_vasprintf(vf, opts, ap);
-    p->cfg_graph = talloc_asprintf(vf, "%s=%s", filter, s);
+    p->cfg_graph = filter ? talloc_asprintf(vf, "%s=%s", filter, s)
+                          : talloc_strdup(vf, s);
     talloc_free(s);
     va_end(ap);
     p->old_priv = old_priv;

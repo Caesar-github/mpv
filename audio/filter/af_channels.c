@@ -114,7 +114,7 @@ static void copy(struct af_instance *af, void* in, void* out,
   }
   default:
     MP_ERR(af, "Unsupported number of bytes/sample: %i"
-	   " please report this error on the MPlayer mailing list. \n",bps);
+           " please report this error on the MPlayer mailing list. \n",bps);
   }
 }
 
@@ -124,14 +124,14 @@ static int check_routes(struct af_instance *af, int nin, int nout)
   af_channels_t* s = af->priv;
   int i;
   if((s->nr < 1) || (s->nr > AF_NCH)){
-    MP_ERR(af, "[channels] The number of routing pairs must be"
-	   " between 1 and %i. Current value is %i\n",AF_NCH,s->nr);
+    MP_ERR(af, "The number of routing pairs must be"
+           " between 1 and %i. Current value is %i\n",AF_NCH,s->nr);
     return AF_ERROR;
   }
 
   for(i=0;i<s->nr;i++){
     if((s->route[i][FR] >= nin) || (s->route[i][TO] >= nout)){
-      MP_ERR(af, "[channels] Invalid routing in pair nr. %i.\n", i);
+      MP_ERR(af, "Invalid routing in pair nr. %i.\n", i);
       return AF_ERROR;
     }
   }
@@ -154,22 +154,22 @@ static int control(struct af_instance* af, int cmd, void* arg)
       int i;
       // Make sure this filter isn't redundant
       if(af->data->nch == ((struct mp_audio*)arg)->nch)
-	return AF_DETACH;
+        return AF_DETACH;
 
       // If mono: fake stereo
       if(((struct mp_audio*)arg)->nch == 1){
-	s->nr = MPMIN(af->data->nch,2);
-	for(i=0;i<s->nr;i++){
-	  s->route[i][FR] = 0;
-	  s->route[i][TO] = i;
-	}
+        s->nr = MPMIN(af->data->nch,2);
+        for(i=0;i<s->nr;i++){
+          s->route[i][FR] = 0;
+          s->route[i][TO] = i;
+        }
       }
       else{
-	s->nr = MPMIN(af->data->nch, ((struct mp_audio*)arg)->nch);
-	for(i=0;i<s->nr;i++){
-	  s->route[i][FR] = i;
-	  s->route[i][TO] = i;
-	}
+        s->nr = MPMIN(af->data->nch, ((struct mp_audio*)arg)->nch);
+        for(i=0;i<s->nr;i++){
+          s->route[i][FR] = i;
+          s->route[i][TO] = i;
+        }
       }
     }
 
@@ -184,10 +184,10 @@ static int control(struct af_instance* af, int cmd, void* arg)
 // Filter data through filter
 static int filter(struct af_instance* af, struct mp_audio* data, int flags)
 {
-  struct mp_audio*   	 c = data;			// Current working data
-  struct mp_audio*   	 l = af->data;	 		// Local data
+  struct mp_audio*       c = data;                      // Current working data
+  struct mp_audio*       l = af->data;                  // Local data
   af_channels_t* s = af->priv;
-  int 		 i;
+  int            i;
 
   mp_audio_realloc_min(af->data, data->samples);
 
@@ -197,7 +197,7 @@ static int filter(struct af_instance* af, struct mp_audio* data, int flags)
   if(AF_OK == check_routes(af,c->nch,l->nch))
     for(i=0;i<s->nr;i++)
       copy(af, c->planes[0],l->planes[0],c->nch,s->route[i][FR],
-	   l->nch,s->route[i][TO],mp_audio_psize(c),c->bps);
+           l->nch,s->route[i][TO],mp_audio_psize(c),c->bps);
 
   // Set output data
   c->planes[0] = l->planes[0];
@@ -220,11 +220,11 @@ static int af_open(struct af_instance* af){
         do {
             int n = 0;
             if (ch >= AF_NCH) {
-                MP_FATAL(af, "[channels] Can't have more than %d routes.\n", AF_NCH);
+                MP_FATAL(af, "Can't have more than %d routes.\n", AF_NCH);
                 return AF_ERROR;
             }
             sscanf(cp, "%i-%i%n" ,&s->route[ch][FR], &s->route[ch][TO], &n);
-            MP_VERBOSE(af, "[channels] Routing from channel %i to"
+            MP_VERBOSE(af, "Routing from channel %i to"
                 " channel %i\n",s->route[ch][FR],s->route[ch][TO]);
             cp = &cp[n];
             ch++;
@@ -238,7 +238,7 @@ static int af_open(struct af_instance* af){
 }
 
 #define OPT_BASE_STRUCT af_channels_t
-struct af_info af_info_channels = {
+const struct af_info af_info_channels = {
     .info = "Insert or remove channels",
     .name = "channels",
     .open = af_open,

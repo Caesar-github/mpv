@@ -62,25 +62,9 @@ static bool create_context_x11_old(struct MPGLContext *ctx)
         return false;
     }
 
-    void *(*getProcAddress)(const GLubyte *);
-    getProcAddress = mp_getdladdr("glXGetProcAddress");
-    if (!getProcAddress)
-        getProcAddress = mp_getdladdr("glXGetProcAddressARB");
+    const char *glxstr = glXQueryExtensionsString(display, ctx->vo->x11->screen);
 
-    const char *glxstr = "";
-    const char *(*glXExtStr)(Display *, int)
-        = mp_getdladdr("glXQueryExtensionsString");
-    if (glXExtStr)
-        glxstr = glXExtStr(display, ctx->vo->x11->screen);
-
-    mpgl_load_functions(gl, getProcAddress, glxstr, vo->log);
-    if (!gl->GenPrograms && gl->GetString &&
-        gl->version < MPGL_VER(3, 0) &&
-        strstr(gl->GetString(GL_EXTENSIONS), "GL_ARB_vertex_program"))
-    {
-        MP_WARN(vo, "Broken glXGetProcAddress detected, trying workaround\n");
-        mpgl_load_functions(gl, NULL, glxstr, vo->log);
-    }
+    mpgl_load_functions(gl, (void *)glXGetProcAddressARB, glxstr, vo->log);
 
     glx_ctx->context = new_context;
 
@@ -105,11 +89,8 @@ static bool create_context_x11_gl3(struct MPGLContext *ctx, bool debug)
         (glXCreateContextAttribsARBProc)
             glXGetProcAddressARB((const GLubyte *)"glXCreateContextAttribsARB");
 
-    const char *glxstr = "";
-    const char *(*glXExtStr)(Display *, int)
-        = mp_getdladdr("glXQueryExtensionsString");
-    if (glXExtStr)
-        glxstr = glXExtStr(vo->x11->display, vo->x11->screen);
+    const char *glxstr =
+        glXQueryExtensionsString(vo->x11->display, vo->x11->screen);
     bool have_ctx_ext = glxstr && !!strstr(glxstr, "GLX_ARB_create_context");
 
     if (!(have_ctx_ext && glXCreateContextAttribsARB)) {
@@ -162,7 +143,7 @@ static GLXFBConfig select_fb_config(struct vo *vo, const int *attribs, int flags
         return NULL;
 
     // The list in fbc is sorted (so that the first element is the best).
-    GLXFBConfig fbconfig = fbc[0];
+    GLXFBConfig fbconfig = fbcount > 0 ? fbc[0] : NULL;
 
     if (flags & VOFLAG_ALPHA) {
         for (int n = 0; n < fbcount; n++) {
@@ -197,8 +178,7 @@ static void set_glx_attrib(int *attribs, int name, int value)
     }
 }
 
-static bool config_window_x11(struct MPGLContext *ctx, uint32_t d_width,
-                              uint32_t d_height, uint32_t flags)
+static bool config_window_x11(struct MPGLContext *ctx, int flags)
 {
     struct vo *vo = ctx->vo;
     struct glx_context *glx_ctx = ctx->priv;
@@ -206,8 +186,7 @@ static bool config_window_x11(struct MPGLContext *ctx, uint32_t d_width,
     if (glx_ctx->context) {
         // GL context and window already exist.
         // Only update window geometry etc.
-        vo_x11_config_vo_window(vo, glx_ctx->vinfo, vo->dx, vo->dy, d_width,
-                                d_height, flags, "gl");
+        vo_x11_config_vo_window(vo, glx_ctx->vinfo, flags, "gl");
         return true;
     }
 
@@ -272,8 +251,7 @@ static bool config_window_x11(struct MPGLContext *ctx, uint32_t d_width,
     glXGetFBConfigAttrib(vo->x11->display, fbc, GLX_GREEN_SIZE, &ctx->depth_g);
     glXGetFBConfigAttrib(vo->x11->display, fbc, GLX_BLUE_SIZE, &ctx->depth_b);
 
-    vo_x11_config_vo_window(vo, glx_ctx->vinfo, vo->dx, vo->dy, d_width,
-                            d_height, flags, "gl");
+    vo_x11_config_vo_window(vo, glx_ctx->vinfo, flags, "gl");
 
     bool success = false;
     if (ctx->requested_gl_version >= MPGL_VER(3, 0))

@@ -32,6 +32,7 @@
 #include "common/msg.h"
 #include "video/out/vo.h"
 #include "video/memcpy_pic.h"
+#include "video/mp_image_pool.h"
 #include "sub/osd.h"
 #include "sub/img_convert.h"
 #include "x11_common.h"
@@ -90,10 +91,10 @@ struct priv {
     struct vaapi_osd_part    osd_parts[MAX_OSD_PARTS];
     bool                     osd_screen;
 
-    struct va_surface_pool  *pool;
+    struct mp_image_pool    *pool;
     struct va_image_formats *va_image_formats;
 
-    struct va_surface       *black_surface;
+    struct mp_image         *black_surface;
 
     VAImageFormat           *va_subpic_formats;
     unsigned int            *va_subpic_flags;
@@ -110,6 +111,8 @@ static const bool osd_formats[SUBBITMAP_COUNT] = {
     [SUBBITMAP_RGBA] = true,
 };
 
+static void draw_osd(struct vo *vo);
+
 static void flush_output_surfaces(struct priv *p)
 {
     for (int n = 0; n < MAX_OUTPUT_SURFACES; n++)
@@ -123,19 +126,21 @@ static void free_video_specific(struct priv *p)
 {
     flush_output_surfaces(p);
 
-    va_surface_releasep(&p->black_surface);
+    mp_image_unrefp(&p->black_surface);
 
     for (int n = 0; n < MAX_OUTPUT_SURFACES; n++)
         mp_image_unrefp(&p->swdec_surfaces[n]);
+
+    if (p->pool)
+        mp_image_pool_clear(p->pool);
 }
 
 static bool alloc_swdec_surfaces(struct priv *p, int w, int h, int imgfmt)
 {
     free_video_specific(p);
     for (int i = 0; i < MAX_OUTPUT_SURFACES; i++) {
-        p->swdec_surfaces[i] =
-            va_surface_pool_get_wrapped(p->pool, imgfmt, w, h);
-        if (!p->swdec_surfaces[i])
+        p->swdec_surfaces[i] = mp_image_pool_get(p->pool, IMGFMT_VAAPI, w, h);
+        if (va_surface_alloc_imgfmt(p->swdec_surfaces[i], imgfmt) < 0)
             return false;
     }
     return true;
@@ -157,8 +162,7 @@ static int reconfig(struct vo *vo, struct mp_image_params *params, int flags)
 
     free_video_specific(p);
 
-    vo_x11_config_vo_window(vo, NULL, vo->dx, vo->dy, vo->dwidth, vo->dheight,
-                            flags, "vaapi");
+    vo_x11_config_vo_window(vo, NULL, flags, "vaapi");
 
     if (params->imgfmt != IMGFMT_VAAPI) {
         if (!alloc_swdec_surfaces(p, params->w, params->h, params->imgfmt))
@@ -183,20 +187,21 @@ static bool render_to_screen(struct priv *p, struct mp_image *mpi)
 {
     VAStatus status;
 
-    VASurfaceID surface = va_surface_id_in_mp_image(mpi);
+    VASurfaceID surface = va_surface_id(mpi);
     if (surface == VA_INVALID_ID) {
         if (!p->black_surface) {
             int w = p->image_params.w, h = p->image_params.h;
             // 4:2:0 should work everywhere
             int fmt = IMGFMT_420P;
-            p->black_surface =
-                va_surface_pool_get_by_imgfmt(p->pool, fmt, w, h);
+            p->black_surface = mp_image_pool_get(p->pool, IMGFMT_VAAPI, w, h);
             if (p->black_surface) {
                 struct mp_image *img = mp_image_alloc(fmt, w, h);
-                mp_image_clear(img, 0, 0, w, h);
-                if (!va_surface_upload(p->black_surface, img))
-                    va_surface_releasep(&p->black_surface);
-                talloc_free(img);
+                if (img) {
+                    mp_image_clear(img, 0, 0, w, h);
+                    if (va_surface_upload(p->black_surface, img) < 0)
+                        mp_image_unrefp(&p->black_surface);
+                    talloc_free(img);
+                }
             }
         }
         surface = va_surface_id(p->black_surface);
@@ -272,26 +277,29 @@ static void draw_image(struct vo *vo, struct mp_image *mpi)
     struct priv *p = vo->priv;
 
     if (mpi->imgfmt != IMGFMT_VAAPI) {
-        struct mp_image *wrapper = p->swdec_surfaces[p->output_surface];
-        struct va_surface *surface = va_surface_in_mp_image(wrapper);
-        if (!surface || !va_surface_upload(surface, mpi)) {
+        struct mp_image *dst = p->swdec_surfaces[p->output_surface];
+        if (!dst || va_surface_upload(dst, mpi) < 0) {
             MP_WARN(vo, "Could not upload surface.\n");
+            talloc_free(mpi);
             return;
         }
-        mp_image_copy_attributes(wrapper, mpi);
-        mpi = wrapper;
+        mp_image_copy_attributes(dst, mpi);
+        talloc_free(mpi);
+        mpi = mp_image_new_ref(dst);
     }
 
-    mp_image_setrefp(&p->output_surfaces[p->output_surface], mpi);
+    talloc_free(p->output_surfaces[p->output_surface]);
+    p->output_surfaces[p->output_surface] = mpi;
+
+    draw_osd(vo);
 }
 
 static struct mp_image *get_screenshot(struct priv *p)
 {
-    struct va_surface *surface =
-        va_surface_in_mp_image(p->output_surfaces[p->visible_surface]);
-    if (!surface)
+    struct mp_image *hwimg = p->output_surfaces[p->visible_surface];
+    if (!hwimg)
         return NULL;
-    struct mp_image *img = va_surface_download(surface, NULL);
+    struct mp_image *img = va_surface_download(hwimg, NULL);
     if (!img)
         return NULL;
     struct mp_image_params params = p->image_params;
@@ -408,18 +416,17 @@ error:
     ;
 }
 
-static void draw_osd(struct vo *vo, struct osd_state *osd)
+static void draw_osd(struct vo *vo)
 {
     struct priv *p = vo->priv;
+
+    struct mp_image *cur = p->output_surfaces[p->output_surface];
+    double pts = cur ? cur->pts : 0;
 
     if (!p->osd_format.fourcc)
         return;
 
-    struct mp_osd_res vid_res = {
-        .w = p->image_params.w,
-        .h = p->image_params.h,
-        .display_par = 1.0 / vo->aspdat.par,
-    };
+    struct mp_osd_res vid_res = osd_res_from_image_params(vo->params);
 
     struct mp_osd_res *res;
     if (p->osd_screen) {
@@ -430,7 +437,7 @@ static void draw_osd(struct vo *vo, struct osd_state *osd)
 
     for (int n = 0; n < MAX_OSD_PARTS; n++)
         p->osd_parts[n].active = false;
-    osd_draw(osd, *res, osd->vo_pts, 0, osd_formats, draw_osd_cb, p);
+    osd_draw(vo->osd, *res, pts, 0, osd_formats, draw_osd_cb, p);
 }
 
 static int get_displayattribtype(const char *name)
@@ -513,6 +520,12 @@ static int control(struct vo *vo, uint32_t request, void *data)
         arg->vaapi_ctx = p->mpvaapi;
         return true;
     }
+    case VOCTRL_GET_COLORSPACE: {
+        struct mp_image_params *params = data;
+        if (va_get_colorspace_flag(p->image_params.colorspace))
+            params->colorspace = p->image_params.colorspace;
+        return true;
+    }
     case VOCTRL_SET_EQUALIZER: {
         struct voctrl_set_equalizer_args *eq = data;
         return set_equalizer(p, eq->name, eq->value);
@@ -523,6 +536,7 @@ static int control(struct vo *vo, uint32_t request, void *data)
     }
     case VOCTRL_REDRAW_FRAME:
         p->output_surface = p->visible_surface;
+        draw_osd(vo);
         return true;
     case VOCTRL_SCREENSHOT: {
         struct voctrl_screenshot_args *args = data;
@@ -550,7 +564,7 @@ static void uninit(struct vo *vo)
     struct priv *p = vo->priv;
 
     free_video_specific(p);
-    va_surface_pool_release(p->pool);
+    talloc_free(p->pool);
 
     for (int n = 0; n < MAX_OSD_PARTS; n++) {
         struct vaapi_osd_part *part = &p->osd_parts[n];
@@ -584,7 +598,13 @@ static int preinit(struct vo *vo)
         goto fail;
     }
 
-    p->pool = va_surface_pool_alloc(p->mpvaapi, VA_RT_FORMAT_YUV420);
+    if (va_guess_if_emulated(p->mpvaapi)) {
+        MP_WARN(vo, "VA-API is most likely emulated via VDPAU.\n"
+                    "It's better to use VDPAU directly with: --vo=vdpau\n");
+    }
+
+    p->pool = mp_image_pool_new(MAX_OUTPUT_SURFACES + 3);
+    va_pool_set_allocator(p->pool, p->mpvaapi, VA_RT_FORMAT_YUV420);
     p->va_image_formats = p->mpvaapi->image_formats;
 
     int max_subpic_formats = vaMaxNumSubpictureFormats(p->display);
@@ -647,7 +667,6 @@ const struct vo_driver video_out_vaapi = {
     .reconfig = reconfig,
     .control = control,
     .draw_image = draw_image,
-    .draw_osd = draw_osd,
     .flip_page = flip_page,
     .uninit = uninit,
     .priv_size = sizeof(struct priv),

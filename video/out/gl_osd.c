@@ -47,7 +47,7 @@ static const struct osd_fmt_entry osd_to_gl_legacy_formats[SUBBITMAP_COUNT] = {
     [SUBBITMAP_RGBA] =   {GL_RGBA,  GL_BGRA,  GL_UNSIGNED_BYTE},
 };
 
-struct mpgl_osd *mpgl_osd_init(GL *gl, struct mp_log *log, bool legacy)
+struct mpgl_osd *mpgl_osd_init(GL *gl, struct mp_log *log, struct osd_state *osd)
 {
     GLint max_texture_size;
     gl->GetIntegerv(GL_MAX_TEXTURE_SIZE, &max_texture_size);
@@ -55,8 +55,9 @@ struct mpgl_osd *mpgl_osd_init(GL *gl, struct mp_log *log, bool legacy)
     struct mpgl_osd *ctx = talloc_ptrtype(NULL, ctx);
     *ctx = (struct mpgl_osd) {
         .log = log,
+        .osd = osd,
         .gl = gl,
-        .fmt_table = legacy ? osd_to_gl_legacy_formats : osd_to_gl3_formats,
+        .fmt_table = osd_to_gl3_formats,
         .scratch = talloc_zero_size(ctx, 1),
     };
 
@@ -79,6 +80,9 @@ struct mpgl_osd *mpgl_osd_init(GL *gl, struct mp_log *log, bool legacy)
 
 void mpgl_osd_destroy(struct mpgl_osd *ctx)
 {
+    if (!ctx)
+        return;
+
     GL *gl = ctx->gl;
 
     for (int n = 0; n < MAX_OSD_PARTS; n++) {
@@ -204,8 +208,8 @@ static bool upload_osd(struct mpgl_osd *ctx, struct mpgl_osd_part *osd,
     return true;
 }
 
-static struct mpgl_osd_part *osd_generate(struct mpgl_osd *ctx,
-                                          struct sub_bitmaps *imgs)
+struct mpgl_osd_part *mpgl_osd_generate(struct mpgl_osd *ctx,
+                                        struct sub_bitmaps *imgs)
 {
     if (imgs->num_parts == 0 || !ctx->formats[imgs->format])
         return NULL;
@@ -249,54 +253,6 @@ void mpgl_osd_unset_gl_state(struct mpgl_osd *ctx, struct mpgl_osd_part *p)
     gl->BindTexture(GL_TEXTURE_2D, 0);
 }
 
-static void reset(struct mpgl_osd *ctx)
-{
-    for (int n = 0; n < MAX_OSD_PARTS; n++) {
-        struct mpgl_osd_part *p = ctx->parts[n];
-        p->active = false;
-    }
-}
-
-struct draw_cb_closure {
-    struct mpgl_osd *ctx;
-    void (*cb)(void *ctx, struct mpgl_osd_part *part, struct sub_bitmaps *imgs);
-    void *cb_ctx;
-};
-
-static void draw_cb(void *pctx, struct sub_bitmaps *imgs)
-{
-    struct draw_cb_closure *c = pctx;
-    struct mpgl_osd_part *part = osd_generate(c->ctx, imgs);
-    if (!part)
-        return;
-    part->active = true;
-    c->cb(c->cb_ctx, part, imgs);
-}
-
-void mpgl_osd_draw_cb(struct mpgl_osd *ctx,
-                      struct osd_state *osd,
-                      struct mp_osd_res res,
-                      void (*cb)(void *ctx, struct mpgl_osd_part *part,
-                                 struct sub_bitmaps *imgs),
-                      void *cb_ctx)
-{
-    struct draw_cb_closure c = {ctx, cb, cb_ctx};
-    reset(ctx);
-    osd_draw(osd, res, osd->vo_pts, 0, ctx->formats, draw_cb, &c);
-}
-
-void mpgl_osd_redraw_cb(struct mpgl_osd *ctx,
-                        void (*cb)(void *ctx, struct mpgl_osd_part *part,
-                                   struct sub_bitmaps *imgs),
-                        void *cb_ctx)
-{
-    for (int n = 0; n < MAX_OSD_PARTS; n++) {
-        struct mpgl_osd_part *p = ctx->parts[n];
-        if (p->active)
-            cb(cb_ctx, p, NULL);
-    }
-}
-
 struct vertex {
     float position[2];
     uint8_t color[4];
@@ -306,7 +262,7 @@ struct vertex {
 static void draw_legacy_cb(void *pctx, struct sub_bitmaps *imgs)
 {
     struct mpgl_osd *ctx = pctx;
-    struct mpgl_osd_part *osd = osd_generate(ctx, imgs);
+    struct mpgl_osd_part *osd = mpgl_osd_generate(ctx, imgs);
     if (!osd)
         return;
 
@@ -373,8 +329,11 @@ static void draw_legacy_cb(void *pctx, struct sub_bitmaps *imgs)
     gl->DisableClientState(GL_COLOR_ARRAY);
 }
 
-void mpgl_osd_draw_legacy(struct mpgl_osd *ctx, struct osd_state *osd,
+void mpgl_osd_draw_legacy(struct mpgl_osd *ctx, double pts,
                           struct mp_osd_res res)
 {
-    osd_draw(osd, res, osd->vo_pts, 0, ctx->formats, draw_legacy_cb, ctx);
+    ctx->fmt_table = osd_to_gl_legacy_formats;
+    for (int n = 0; n < SUBBITMAP_COUNT; n++)
+        ctx->formats[n] = ctx->fmt_table[n].type != 0;
+    osd_draw(ctx->osd, res, pts, 0, ctx->formats, draw_legacy_cb, ctx);
 }

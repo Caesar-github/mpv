@@ -23,14 +23,17 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include <string.h>
+#include <stdint.h>
+#include <pthread.h>
 
 #include <pulse/pulseaudio.h>
 
 #include "config.h"
 #include "audio/format.h"
 #include "common/msg.h"
+#include "options/m_option.h"
 #include "ao.h"
-#include "input/input.h"
+#include "internal.h"
 
 #define PULSE_CLIENT_NAME "mpv"
 
@@ -53,8 +56,14 @@ struct priv {
     bool broken_pause;
     int retval;
 
+    // for wakeup handling
+    pthread_mutex_t wakeup_lock;
+    pthread_cond_t wakeup;
+    int wakeup_status;
+
     char *cfg_host;
     char *cfg_sink;
+    int cfg_buffer;
 };
 
 #define GENERIC_ERR_MSG(str) \
@@ -87,12 +96,36 @@ static void stream_state_cb(pa_stream *s, void *userdata)
     }
 }
 
+static void wakeup(struct ao *ao)
+{
+    struct priv *priv = ao->priv;
+    pthread_mutex_lock(&priv->wakeup_lock);
+    priv->wakeup_status = 1;
+    pthread_cond_signal(&priv->wakeup);
+    pthread_mutex_unlock(&priv->wakeup_lock);
+}
+
 static void stream_request_cb(pa_stream *s, size_t length, void *userdata)
 {
     struct ao *ao = userdata;
     struct priv *priv = ao->priv;
-    mp_input_wakeup(ao->input_ctx);
+    wakeup(ao);
     pa_threaded_mainloop_signal(priv->mainloop, 0);
+}
+
+static int wait(struct ao *ao, pthread_mutex_t *lock)
+{
+    struct priv *priv = ao->priv;
+    // We don't use this mutex, because pulse like to call stream_request_cb
+    // while we have the central mutex held.
+    pthread_mutex_unlock(lock);
+    pthread_mutex_lock(&priv->wakeup_lock);
+    while (!priv->wakeup_status)
+        pthread_cond_wait(&priv->wakeup, &priv->wakeup_lock);
+    priv->wakeup_status = 0;
+    pthread_mutex_unlock(&priv->wakeup_lock);
+    pthread_mutex_lock(lock);
+    return 0;
 }
 
 static void stream_latency_update_cb(pa_stream *s, void *userdata)
@@ -202,13 +235,18 @@ static bool select_chmap(struct ao *ao, pa_channel_map *dst)
            chmap_pa_from_mp(dst, &ao->channels);
 }
 
-static void uninit(struct ao *ao, bool cut_audio)
+static void drain(struct ao *ao)
 {
     struct priv *priv = ao->priv;
-    if (priv->stream && !cut_audio) {
+    if (priv->stream) {
         pa_threaded_mainloop_lock(priv->mainloop);
         waitop(priv, pa_stream_drain(priv->stream, success_cb, ao));
     }
+}
+
+static void uninit(struct ao *ao)
+{
+    struct priv *priv = ao->priv;
 
     if (priv->mainloop)
         pa_threaded_mainloop_stop(priv->mainloop);
@@ -229,6 +267,9 @@ static void uninit(struct ao *ao, bool cut_audio)
         pa_threaded_mainloop_free(priv->mainloop);
         priv->mainloop = NULL;
     }
+
+    pthread_cond_destroy(&priv->wakeup);
+    pthread_mutex_destroy(&priv->wakeup_lock);
 }
 
 static int init(struct ao *ao)
@@ -240,6 +281,9 @@ static int init(struct ao *ao)
     char *host = priv->cfg_host && priv->cfg_host[0] ? priv->cfg_host : NULL;
     char *sink = priv->cfg_sink && priv->cfg_sink[0] ? priv->cfg_sink : NULL;
     const char *version = pa_get_library_version();
+
+    pthread_mutex_init(&priv->wakeup_lock, NULL);
+    pthread_cond_init(&priv->wakeup, NULL);
 
     ao->per_application_mixer = true;
 
@@ -328,7 +372,8 @@ static int init(struct ao *ao)
                                           stream_latency_update_cb, ao);
     pa_buffer_attr bufattr = {
         .maxlength = -1,
-        .tlength = pa_usec_to_bytes(1000000, &ss),
+        .tlength = priv->cfg_buffer > 0 ?
+            pa_usec_to_bytes(priv->cfg_buffer * 1000, &ss) : (uint32_t)-1,
         .prebuf = -1,
         .minreq = -1,
         .fragsize = -1,
@@ -362,7 +407,7 @@ fail:
     if (proplist)
         pa_proplist_free(proplist);
 
-    uninit(ao, true);
+    uninit(ao);
     return -1;
 }
 
@@ -616,10 +661,17 @@ const struct ao_driver audio_out_pulse = {
     .get_delay = get_delay,
     .pause     = pause,
     .resume    = resume,
+    .drain     = drain,
+    .wait      = wait,
+    .wakeup    = wakeup,
     .priv_size = sizeof(struct priv),
+    .priv_defaults = &(const struct priv) {
+        .cfg_buffer = 250,
+    },
     .options = (const struct m_option[]) {
         OPT_STRING("host", cfg_host, 0),
         OPT_STRING("sink", cfg_sink, 0),
+        OPT_CHOICE_OR_INT("buffer", cfg_buffer, 0, 1, 2000, ({"native", -1})),
         {0}
     },
 };

@@ -27,6 +27,7 @@
 #include "sws_utils.h"
 
 #include "common/common.h"
+#include "options/m_option.h"
 #include "video/mp_image.h"
 #include "video/img_format.h"
 #include "fmt-conversion.h"
@@ -35,14 +36,44 @@
 #include "video/filter/vf.h"
 
 //global sws_flags from the command line
-int sws_flags = 2;
+struct sws_opts {
+    int scaler;
+    float lum_gblur;
+    float chr_gblur;
+    int chr_vshift;
+    int chr_hshift;
+    float chr_sharpen;
+    float lum_sharpen;
+};
 
-float sws_lum_gblur = 0.0;
-float sws_chr_gblur = 0.0;
-int sws_chr_vshift = 0;
-int sws_chr_hshift = 0;
-float sws_chr_sharpen = 0.0;
-float sws_lum_sharpen = 0.0;
+#define OPT_BASE_STRUCT struct sws_opts
+const struct m_sub_options sws_conf = {
+    .opts = (const m_option_t[]) {
+        OPT_CHOICE("scaler", scaler, 0,
+                   ({"fast-bilinear",   SWS_FAST_BILINEAR},
+                    {"bilinear",        SWS_BILINEAR},
+                    {"bicubic",         SWS_BICUBIC},
+                    {"x",               SWS_X},
+                    {"point",           SWS_POINT},
+                    {"area",            SWS_AREA},
+                    {"bicublin",        SWS_BICUBLIN},
+                    {"gauss",           SWS_GAUSS},
+                    {"sinc",            SWS_SINC},
+                    {"lanczos",         SWS_LANCZOS},
+                    {"spline",          SWS_SPLINE})),
+        OPT_FLOATRANGE("lgb", lum_gblur, 0, 0, 100.0),
+        OPT_FLOATRANGE("cgb", chr_gblur, 0, 0, 100.0),
+        OPT_INT("cvs", chr_vshift, 0),
+        OPT_INT("chs", chr_hshift, 0),
+        OPT_FLOATRANGE("ls", lum_sharpen, 0, -100.0, 100.0),
+        OPT_FLOATRANGE("cs", chr_sharpen, 0, -100.0, 100.0),
+        {0}
+    },
+    .size = sizeof(struct sws_opts),
+    .defaults = &(const struct sws_opts){
+        .scaler = SWS_BICUBIC,
+    },
+};
 
 // Highest quality, but also slowest.
 const int mp_sws_hq_flags = SWS_LANCZOS | SWS_FULL_CHR_H_INT |
@@ -53,30 +84,16 @@ const int mp_sws_hq_flags = SWS_LANCZOS | SWS_FULL_CHR_H_INT |
 const int mp_sws_fast_flags = SWS_BILINEAR;
 
 // Set ctx parameters to global command line flags.
-void mp_sws_set_from_cmdline(struct mp_sws_context *ctx)
+void mp_sws_set_from_cmdline(struct mp_sws_context *ctx, struct sws_opts *opts)
 {
     sws_freeFilter(ctx->src_filter);
-    ctx->src_filter = sws_getDefaultFilter(sws_lum_gblur, sws_chr_gblur,
-                                           sws_lum_sharpen, sws_chr_sharpen,
-                                           sws_chr_hshift, sws_chr_vshift, 0);
+    ctx->src_filter = sws_getDefaultFilter(opts->lum_gblur, opts->chr_gblur,
+                                           opts->lum_sharpen, opts->chr_sharpen,
+                                           opts->chr_hshift, opts->chr_vshift, 0);
     ctx->force_reload = true;
 
     ctx->flags = SWS_PRINT_INFO;
-
-    switch (sws_flags) {
-    case 0:  ctx->flags |= SWS_FAST_BILINEAR;   break;
-    case 1:  ctx->flags |= SWS_BILINEAR;        break;
-    case 2:  ctx->flags |= SWS_BICUBIC;         break;
-    case 3:  ctx->flags |= SWS_X;               break;
-    case 4:  ctx->flags |= SWS_POINT;           break;
-    case 5:  ctx->flags |= SWS_AREA;            break;
-    case 6:  ctx->flags |= SWS_BICUBLIN;        break;
-    case 7:  ctx->flags |= SWS_GAUSS;           break;
-    case 8:  ctx->flags |= SWS_SINC;            break;
-    case 9:  ctx->flags |= SWS_LANCZOS;         break;
-    case 10: ctx->flags |= SWS_SPLINE;          break;
-    default: ctx->flags |= SWS_BILINEAR;        break;
-    }
+    ctx->flags |= opts->scaler;
 }
 
 bool mp_sws_supported_format(int imgfmt)
@@ -97,56 +114,13 @@ static int mp_csp_to_sws_colorspace(enum mp_csp csp)
     }
 }
 
-// component_offset[]: byte index of each r (0), g (1), b (2), a (3) component
-static void planarize32(struct mp_image *dst, struct mp_image *src,
-                        int component_offset[4])
-{
-    for (int y = 0; y < dst->h; y++) {
-        for (int p = 0; p < 3; p++) {
-            uint8_t *d_line = dst->planes[p] + y * dst->stride[p];
-            uint8_t *s_line = src->planes[0] + y * src->stride[0];
-            s_line += component_offset[(p + 1) % 3]; // GBR => RGB
-            for (int x = 0; x < dst->w; x++) {
-                d_line[x] = s_line[x * 4];
-            }
-        }
-    }
-}
-
-#define SET_COMPS(comp, r, g, b, a) \
-    { (comp)[0] = (r); (comp)[1] = (g); (comp)[2] = (b); (comp)[3] = (a); }
-
-static int to_gbrp(struct mp_image *dst, struct mp_image *src,
-                   int my_sws_flags)
-{
-    struct mp_image *temp = NULL;
-    int comp[4];
-
-    switch (src->imgfmt) {
-    case IMGFMT_ABGR: SET_COMPS(comp, 3, 2, 1, 0); break;
-    case IMGFMT_BGRA: SET_COMPS(comp, 2, 1, 0, 3); break;
-    case IMGFMT_ARGB: SET_COMPS(comp, 1, 2, 3, 0); break;
-    case IMGFMT_RGBA: SET_COMPS(comp, 0, 1, 2, 3); break;
-    default:
-        temp = mp_image_alloc(IMGFMT_RGBA, dst->w, dst->h);
-        mp_image_swscale(temp, src, my_sws_flags);
-        src = temp;
-        SET_COMPS(comp, 0, 1, 2, 3);
-    }
-
-    planarize32(dst, src, comp);
-
-    talloc_free(temp);
-    return 0;
-}
-
 static bool cache_valid(struct mp_sws_context *ctx)
 {
     struct mp_sws_context *old = ctx->cached;
     if (ctx->force_reload)
         return false;
-    return mp_image_params_equals(&ctx->src, &old->src) &&
-           mp_image_params_equals(&ctx->dst, &old->dst) &&
+    return mp_image_params_equal(&ctx->src, &old->src) &&
+           mp_image_params_equal(&ctx->dst, &old->dst) &&
            ctx->flags == old->flags &&
            ctx->brightness == old->brightness &&
            ctx->contrast == old->contrast &&
@@ -280,13 +254,8 @@ int mp_sws_reinit(struct mp_sws_context *ctx)
 int mp_sws_scale(struct mp_sws_context *ctx, struct mp_image *dst,
                  struct mp_image *src)
 {
-    // Hack for older swscale versions which don't support this.
-    // We absolutely need this in the OSD rendering path.
-    if (dst->imgfmt == IMGFMT_GBRP && !sws_isSupportedOutput(AV_PIX_FMT_GBRP))
-        return to_gbrp(dst, src, ctx->flags);
-
-    mp_image_params_from_image(&ctx->src, src);
-    mp_image_params_from_image(&ctx->dst, dst);
+    ctx->src = src->params;
+    ctx->dst = dst->params;
 
     int r = mp_sws_reinit(ctx);
     if (r < 0) {
