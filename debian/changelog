@@ -1,8 +1,19 @@
-mpv (0.4.0-1) UNRELEASED; urgency=medium
+mpv (0.4.0-1) unstable; urgency=medium
 
   * New upstream release
+  * Refresh 01_desktop-path.patch
+  * Refresh 02_fix-config-path.patch
+  * Enable shared libmpv client library
+  * Make mpv Multi-Arch: foreign
+  * Add mpv-dbg package as well
+  * Disable libpostproc support (ffmpeg's libpostproc is needed)
+  * Install Lua scripting examples
+  * Disable cdda support
+  * Bump lcms2 versioned Build-Depends
+  * Build and install zsh completion script
+  * Install upstream release notes as changelog (Closes: #722997)
 
- -- Alessandro Ghedini <ghedo@debian.org>  Wed, 25 Jun 2014 20:57:08 +0200
+ -- Alessandro Ghedini <ghedo@debian.org>  Wed, 25 Jun 2014 21:10:18 +0200
 
 mpv (0.3.11-1) unstable; urgency=medium
 
