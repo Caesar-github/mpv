@@ -23,6 +23,9 @@ override_dh_auto_install:
 override_dh_install:
 	dh_install --sourcedir=debian/tmp
 
+override_dh_installchangelogs:
+	dh_installchangelogs RELEASE_NOTES
+
 override_dh_auto_clean:
 	python ./waf -v --nocache distclean
 	find . -name "*.pyc" -delete
