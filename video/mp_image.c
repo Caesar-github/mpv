@@ -21,6 +21,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
 #include <pthread.h>
 #include <assert.h>
 
@@ -117,9 +118,12 @@ static bool m_refcount_is_unique(struct m_refcount *ref)
     return true;
 }
 
-static void mp_image_alloc_planes(struct mp_image *mpi)
+static bool mp_image_alloc_planes(struct mp_image *mpi)
 {
     assert(!mpi->planes[0]);
+
+    if (!mp_image_params_valid(&mpi->params))
+        return false;
 
     // Note: for non-mod-2 4:2:0 YUV frames, we have to allocate an additional
     //       top/right border. This is needed for correct handling of such
@@ -141,17 +145,19 @@ static void mp_image_alloc_planes(struct mp_image *mpi)
 
     uint8_t *data = av_malloc(FFMAX(sum, 1));
     if (!data)
-        abort(); //out of memory
+        return false;
 
     for (int n = 0; n < MP_MAX_PLANES; n++) {
         mpi->planes[n] = plane_size[n] ? data : NULL;
         data += plane_size[n];
     }
+    return true;
 }
 
-void mp_image_setfmt(struct mp_image *mpi, unsigned int out_fmt)
+void mp_image_setfmt(struct mp_image *mpi, int out_fmt)
 {
     struct mp_imgfmt_desc fmt = mp_imgfmt_get_desc(out_fmt);
+    mpi->params.imgfmt = fmt.id;
     mpi->fmt = fmt;
     mpi->flags = fmt.flags;
     mpi->imgfmt = fmt.id;
@@ -175,12 +181,9 @@ static int mp_chroma_div_up(int size, int shift)
 // Caller has to make sure this doesn't exceed the allocated plane data/strides.
 void mp_image_set_size(struct mp_image *mpi, int w, int h)
 {
-    // av_image_check_size has similar checks and triggers around 16000*16000
-    if (w >= (1 << 14) || h >= (1 << 14) || w < 0 || h < 0)
-        abort();
-
-    mpi->w = mpi->display_w = w;
-    mpi->h = mpi->display_h = h;
+    assert(w >= 0 && h >= 0);
+    mpi->w = mpi->params.w = mpi->params.d_w = w;
+    mpi->h = mpi->params.h = mpi->params.d_h = h;
     for (int n = 0; n < mpi->num_planes; n++) {
         mpi->plane_w[n] = mp_chroma_div_up(mpi->w, mpi->fmt.xs[n]);
         mpi->plane_h[n] = mp_chroma_div_up(mpi->h, mpi->fmt.ys[n]);
@@ -189,21 +192,27 @@ void mp_image_set_size(struct mp_image *mpi, int w, int h)
     mpi->chroma_height = mpi->plane_h[1];
 }
 
-void mp_image_set_display_size(struct mp_image *mpi, int dw, int dh)
+void mp_image_set_params(struct mp_image *image,
+                         const struct mp_image_params *params)
 {
-    mpi->display_w = dw;
-    mpi->display_h = dh;
+    // possibly initialize other stuff
+    mp_image_setfmt(image, params->imgfmt);
+    mp_image_set_size(image, params->w, params->h);
+    image->params = *params;
 }
 
-struct mp_image *mp_image_alloc(unsigned int imgfmt, int w, int h)
+struct mp_image *mp_image_alloc(int imgfmt, int w, int h)
 {
     struct mp_image *mpi = talloc_zero(NULL, struct mp_image);
     talloc_set_destructor(mpi, mp_image_destructor);
+    mpi->refcount = m_refcount_new();
+
     mp_image_set_size(mpi, w, h);
     mp_image_setfmt(mpi, imgfmt);
-    mp_image_alloc_planes(mpi);
-
-    mpi->refcount = m_refcount_new();
+    if (!mp_image_alloc_planes(mpi)) {
+        talloc_free(mpi);
+        return NULL;
+    }
     mpi->refcount->free = av_free;
     mpi->refcount->arg = mpi->planes[0];
     return mpi;
@@ -212,6 +221,8 @@ struct mp_image *mp_image_alloc(unsigned int imgfmt, int w, int h)
 struct mp_image *mp_image_new_copy(struct mp_image *img)
 {
     struct mp_image *new = mp_image_alloc(img->imgfmt, img->w, img->h);
+    if (!new)
+        return NULL;
     mp_image_copy(new, img);
     mp_image_copy_attributes(new, img);
 
@@ -261,6 +272,7 @@ struct mp_image *mp_image_new_ref(struct mp_image *img)
 // Return a reference counted reference to img. If the reference count reaches
 // 0, call free(free_arg). The data passed by img must not be free'd before
 // that. The new reference will be writeable.
+// On allocation failure, unref the frame and return NULL.
 struct mp_image *mp_image_new_custom_ref(struct mp_image *img, void *free_arg,
                                          void (*free)(void *arg))
 {
@@ -271,6 +283,7 @@ struct mp_image *mp_image_new_custom_ref(struct mp_image *img, void *free_arg,
 // connect to an external refcounting API. It is assumed that the new object
 // has an initial reference to that external API. If free is given, that is
 // called after the last unref. All function pointers are optional.
+// On allocation failure, unref the frame and return NULL.
 struct mp_image *mp_image_new_external_ref(struct mp_image *img, void *arg,
                                            void (*ref)(void *arg),
                                            void (*unref)(void *arg),
@@ -300,15 +313,22 @@ bool mp_image_is_writeable(struct mp_image *img)
 // Make the image data referenced by img writeable. This allocates new data
 // if the data wasn't already writeable, and img->planes[] and img->stride[]
 // will be set to the copy.
-void mp_image_make_writeable(struct mp_image *img)
+// Returns success; if false is returned, the image could not be made writeable.
+bool mp_image_make_writeable(struct mp_image *img)
 {
     if (mp_image_is_writeable(img))
-        return;
+        return true;
 
-    mp_image_steal_data(img, mp_image_new_copy(img));
+    struct mp_image *new = mp_image_new_copy(img);
+    if (!new)
+        return false;
+    mp_image_steal_data(img, new);
     assert(mp_image_is_writeable(img));
+    return true;
 }
 
+// Helper function: unrefs *p_img, and sets *p_img to a new ref of new_value.
+// Only unrefs *p_img and sets it to NULL if out of memory.
 void mp_image_setrefp(struct mp_image **p_img, struct mp_image *new_value)
 {
     if (*p_img != new_value) {
@@ -345,13 +365,14 @@ void mp_image_copy_attributes(struct mp_image *dst, struct mp_image *src)
     dst->qscale_type = src->qscale_type;
     dst->pts = src->pts;
     if (dst->w == src->w && dst->h == src->h) {
-        dst->display_w = src->display_w;
-        dst->display_h = src->display_h;
+        dst->params.d_w = src->params.d_w;
+        dst->params.d_h = src->params.d_h;
     }
     if ((dst->flags & MP_IMGFLAG_YUV) == (src->flags & MP_IMGFLAG_YUV)) {
-        dst->colorspace = src->colorspace;
-        dst->levels = src->levels;
-        dst->chroma_location = src->chroma_location;
+        dst->params.colorspace = src->params.colorspace;
+        dst->params.colorlevels = src->params.colorlevels;
+        dst->params.primaries = src->params.primaries;
+        dst->params.chroma_location = src->params.chroma_location;
     }
     if ((dst->fmt.flags & MP_IMGFLAG_PAL) && (src->fmt.flags & MP_IMGFLAG_PAL)) {
         if (dst->planes[1] && src->planes[1])
@@ -431,42 +452,44 @@ void mp_image_vflip(struct mp_image *img)
     }
 }
 
-bool mp_image_params_equals(const struct mp_image_params *p1,
-                            const struct mp_image_params *p2)
+// Return whether the image parameters are valid.
+// Some non-essential fields are allowed to be unset (like colorspace flags).
+bool mp_image_params_valid(const struct mp_image_params *p)
+{
+    // av_image_check_size has similar checks and triggers around 16000*16000
+    // It's mostly needed to deal with the fact that offsets are sometimes
+    // ints. We also should (for now) do the same as FFmpeg, to be sure large
+    // images don't crash with libswscale or when wrapping with AVFrame and
+    // passing the result to filters.
+    // Unlike FFmpeg, consider 0x0 valid (might be needed for OSD/screenshots).
+    if (p->w < 0 || p->h < 0 || (p->w + 128LL) * (p->h + 128LL) >= INT_MAX / 8)
+        return false;
+
+    if (p->d_w < 0 || p->d_h < 0)
+        return false;
+
+    if (p->rotate < 0 || p->rotate >= 360)
+        return false;
+
+    struct mp_imgfmt_desc desc = mp_imgfmt_get_desc(p->imgfmt);
+    if (!desc.id)
+        return false;
+
+    return true;
+}
+
+bool mp_image_params_equal(const struct mp_image_params *p1,
+                           const struct mp_image_params *p2)
 {
     return p1->imgfmt == p2->imgfmt &&
            p1->w == p2->w && p1->h == p2->h &&
            p1->d_w == p2->d_w && p1->d_h == p2->d_h &&
            p1->colorspace == p2->colorspace &&
            p1->colorlevels == p2->colorlevels &&
-           p1->chroma_location == p2->chroma_location;
-}
-
-void mp_image_params_from_image(struct mp_image_params *params,
-                                const struct mp_image *image)
-{
-    // (Ideally mp_image should use mp_image_params directly instead)
-    *params = (struct mp_image_params) {
-        .imgfmt = image->imgfmt,
-        .w = image->w,
-        .h = image->h,
-        .d_w = image->display_w,
-        .d_h = image->display_h,
-        .colorspace = image->colorspace,
-        .colorlevels = image->levels,
-        .chroma_location = image->chroma_location,
-    };
-}
-
-void mp_image_set_params(struct mp_image *image,
-                         const struct mp_image_params *params)
-{
-    mp_image_setfmt(image, params->imgfmt);
-    mp_image_set_size(image, params->w, params->h);
-    mp_image_set_display_size(image, params->d_w, params->d_h);
-    image->colorspace = params->colorspace;
-    image->levels = params->colorlevels;
-    image->chroma_location = params->chroma_location;
+           p1->outputlevels == p2->outputlevels &&
+           p1->primaries == p2->primaries &&
+           p1->chroma_location == p2->chroma_location &&
+           p1->rotate == p2->rotate;
 }
 
 // Set most image parameters, but not image format or size.
@@ -489,18 +512,6 @@ void mp_image_set_attributes(struct mp_image *image,
     mp_image_set_params(image, &nparams);
 }
 
-void mp_image_set_colorspace_details(struct mp_image *image,
-                                     struct mp_csp_details *csp)
-{
-    struct mp_image_params params;
-    mp_image_params_from_image(&params, image);
-    params.colorspace = csp->format;
-    params.colorlevels = csp->levels_in;
-    mp_image_params_guess_csp(&params);
-    image->colorspace = params.colorspace;
-    image->levels = params.colorlevels;
-}
-
 // If details like params->colorspace/colorlevels are missing, guess them from
 // the other settings. Also, even if they are set, make them consistent with
 // the colorspace as implied by the pixel format.
@@ -512,6 +523,8 @@ void mp_image_params_guess_csp(struct mp_image_params *params)
     if (fmt.flags & MP_IMGFLAG_YUV) {
         if (params->colorspace != MP_CSP_BT_601 &&
             params->colorspace != MP_CSP_BT_709 &&
+            params->colorspace != MP_CSP_BT_2020_NC &&
+            params->colorspace != MP_CSP_BT_2020_C &&
             params->colorspace != MP_CSP_SMPTE_240M &&
             params->colorspace != MP_CSP_YCGCO)
         {
@@ -523,16 +536,48 @@ void mp_image_params_guess_csp(struct mp_image_params *params)
             params->colorspace = mp_csp_guess_colorspace(params->w, params->h);
         if (params->colorlevels == MP_CSP_LEVELS_AUTO)
             params->colorlevels = MP_CSP_LEVELS_TV;
+        if (params->primaries == MP_CSP_PRIM_AUTO) {
+            // Guess based on the colormatrix as a first priority
+            if (params->colorspace == MP_CSP_BT_2020_NC ||
+                params->colorspace == MP_CSP_BT_2020_C) {
+                params->primaries = MP_CSP_PRIM_BT_2020;
+            } else if (params->colorspace == MP_CSP_BT_709) {
+                params->primaries = MP_CSP_PRIM_BT_709;
+            } else {
+                // Ambiguous colormatrix for BT.601, guess based on res
+                params->primaries = mp_csp_guess_primaries(params->w, params->h);
+            }
+        }
     } else if (fmt.flags & MP_IMGFLAG_RGB) {
         params->colorspace = MP_CSP_RGB;
         params->colorlevels = MP_CSP_LEVELS_PC;
+
+        // The majority of RGB content is either sRGB or (rarely) some other
+        // color space which we don't even handle, like AdobeRGB or
+        // ProPhotoRGB. The only reasonable thing we can do is assume it's
+        // sRGB and hope for the best, which should usually just work out fine.
+        // Note: sRGB primaries = BT.709 primaries
+        if (params->primaries == MP_CSP_PRIM_AUTO)
+            params->primaries = MP_CSP_PRIM_BT_709;
     } else if (fmt.flags & MP_IMGFLAG_XYZ) {
         params->colorspace = MP_CSP_XYZ;
         params->colorlevels = MP_CSP_LEVELS_PC;
+
+        // The default XYZ matrix converts it to BT.709 color space
+        // since that's the most likely scenario. Proper VOs should ignore
+        // this field as well as the matrix and treat XYZ input as absolute,
+        // but for VOs which use the matrix (and hence, consult this field)
+        // this is the correct parameter. This doubles as a reasonable output
+        // gamut for VOs which *do* use the specialized XYZ matrix but don't
+        // know any better output gamut other than whatever the source is
+        // tagged with.
+        if (params->primaries == MP_CSP_PRIM_AUTO)
+            params->primaries = MP_CSP_PRIM_BT_709;
     } else {
         // We have no clue.
         params->colorspace = MP_CSP_AUTO;
         params->colorlevels = MP_CSP_LEVELS_AUTO;
+        params->primaries = MP_CSP_PRIM_AUTO;
     }
 }
 
@@ -561,10 +606,6 @@ void mp_image_copy_fields_from_av_frame(struct mp_image *dst,
 
 #if HAVE_AVUTIL_QP_API
     dst->qscale = av_frame_get_qp_table(src, &dst->qstride, &dst->qscale_type);
-#else
-    dst->qscale = src->qscale_table;
-    dst->qstride = src->qstride;
-    dst->qscale_type = src->qscale_type;
 #endif
 }
 
@@ -595,12 +636,10 @@ void mp_image_copy_fields_to_av_frame(struct AVFrame *dst,
         dst->repeat_pict = 1;
 
 #if HAVE_AVFRAME_COLORSPACE
-    dst->colorspace = mp_csp_to_avcol_spc(src->colorspace);
-    dst->color_range = mp_csp_levels_to_avcol_range(src->levels);
+    dst->colorspace = mp_csp_to_avcol_spc(src->params.colorspace);
+    dst->color_range = mp_csp_levels_to_avcol_range(src->params.colorlevels);
 #endif
 }
-
-#if HAVE_AVUTIL_REFCOUNTING
 
 static void frame_free(void *p)
 {
@@ -619,7 +658,7 @@ struct mp_image *mp_image_from_av_frame(struct AVFrame *av_frame)
 {
     AVFrame *new_ref = av_frame_clone(av_frame);
     if (!new_ref)
-        abort(); // OOM
+        return NULL;
     struct mp_image t = {0};
     mp_image_copy_fields_from_av_frame(&t, new_ref);
     return mp_image_new_external_ref(&t, new_ref, NULL, NULL, frame_is_unique,
@@ -637,10 +676,13 @@ static void free_img(void *opaque, uint8_t *data)
 //          mp_image_from_av_frame(). It's done this way to allow marking the
 //          resulting AVFrame as writeable if img is the only reference (in
 //          other words, it's an optimization).
+// On failure, img is only unreffed.
 struct AVFrame *mp_image_to_av_frame_and_unref(struct mp_image *img)
 {
     struct mp_image *new_ref = mp_image_new_ref(img); // ensure it's refcounted
     talloc_free(img);
+    if (!new_ref)
+        return NULL;
     AVFrame *frame = av_frame_alloc();
     mp_image_copy_fields_to_av_frame(frame, new_ref);
     // Caveat: if img has shared references, and all other references disappear
@@ -652,6 +694,8 @@ struct AVFrame *mp_image_to_av_frame_and_unref(struct mp_image *img)
         // Make it so that the actual image data is freed only if _all_ buffers
         // are unreferenced.
         struct mp_image *dummy_ref = mp_image_new_ref(new_ref);
+        if (!dummy_ref)
+            abort(); // out of memory (for the ref, not real image data)
         void *ptr = new_ref->planes[n];
         size_t size = new_ref->stride[n] * new_ref->h;
         frame->buf[n] = av_buffer_create(ptr, size, free_img, dummy_ref, flags);
@@ -659,5 +703,3 @@ struct AVFrame *mp_image_to_av_frame_and_unref(struct mp_image *img)
     talloc_free(new_ref);
     return frame;
 }
-
-#endif /* HAVE_AVUTIL_REFCOUNTING */

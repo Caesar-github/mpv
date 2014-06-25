@@ -22,16 +22,15 @@
 #include <inttypes.h>
 #include <errno.h>
 #include <assert.h>
+#include <libpostproc/postprocess.h>
 
 #include "config.h"
 #include "common/msg.h"
-#include "common/cpudetect.h"
 #include "options/m_option.h"
 
 #include "video/img_format.h"
 #include "video/mp_image.h"
 #include "vf.h"
-#include "libpostproc/postprocess.h"
 
 struct vf_priv_s {
     int pp;
@@ -44,11 +43,8 @@ struct vf_priv_s {
 
 static int config(struct vf_instance *vf,
         int width, int height, int d_width, int d_height,
-	unsigned int voflags, unsigned int outfmt){
-    int flags=
-          (gCpuCaps.hasMMX   ? PP_CPU_CAPS_MMX   : 0)
-	| (gCpuCaps.hasMMX2  ? PP_CPU_CAPS_MMX2  : 0);
-
+        unsigned int voflags, unsigned int outfmt){
+    int flags= PP_CPU_CAPS_AUTO;
     switch(outfmt){
     case IMGFMT_444P: flags|= PP_FORMAT_444; break;
     case IMGFMT_422P: flags|= PP_FORMAT_422; break;
@@ -66,7 +62,7 @@ static void uninit(struct vf_instance *vf){
     int i;
     for(i=0; i<=PP_QUALITY_MAX; i++){
         if(vf->priv->ppMode[i])
-	    pp_free_mode(vf->priv->ppMode[i]);
+            pp_free_mode(vf->priv->ppMode[i]);
     }
     if(vf->priv->context) pp_free_context(vf->priv->context);
 }
@@ -77,7 +73,7 @@ static int query_format(struct vf_instance *vf, unsigned int fmt){
     case IMGFMT_422P:
     case IMGFMT_420P:
     case IMGFMT_411P: ;
-	return vf_next_query_format(vf,fmt);
+        return vf_next_query_format(vf,fmt);
     }
     return 0;
 }
@@ -93,23 +89,21 @@ static struct mp_image *filter(struct vf_instance *vf, struct mp_image *mpi)
     struct mp_image *dmpi = mpi;
     if (!mp_image_is_writeable(mpi) || non_local) {
         dmpi = vf_alloc_out_image(vf);
+        if (!dmpi)
+            return NULL;
         mp_image_copy_attributes(dmpi, mpi);
     }
 
     // apparently this is required
     assert(mpi->stride[0] >= ((mpi->w+7)&(~7)));
 
-	// do the postprocessing! (or copy if no DR)
-	pp_postprocess((const uint8_t **)mpi->planes, mpi->stride,
-		    dmpi->planes,dmpi->stride,
-		    (mpi->w+7)&(~7),mpi->h,
-		    mpi->qscale, mpi->qstride,
-		    vf->priv->ppMode[ vf->priv->pp ], vf->priv->context,
-#ifdef PP_PICT_TYPE_QP2
-		    mpi->pict_type | (mpi->qscale_type ? PP_PICT_TYPE_QP2 : 0));
-#else
-		    mpi->pict_type);
-#endif
+        // do the postprocessing! (or copy if no DR)
+        pp_postprocess((const uint8_t **)mpi->planes, mpi->stride,
+                    dmpi->planes,dmpi->stride,
+                    (mpi->w+7)&(~7),mpi->h,
+                    mpi->qscale, mpi->qstride,
+                    vf->priv->ppMode[ vf->priv->pp ], vf->priv->context,
+                    mpi->pict_type | (mpi->qscale_type ? PP_PICT_TYPE_QP2 : 0));
 
     if (dmpi != mpi)
         talloc_free(mpi);
@@ -124,7 +118,7 @@ static int vf_open(vf_instance_t *vf){
     vf->filter=filter;
     vf->uninit=uninit;
 
-	for(i=0; i<=PP_QUALITY_MAX; i++){
+        for(i=0; i<=PP_QUALITY_MAX; i++){
             vf->priv->ppMode[i]= pp_get_mode_by_name_and_quality(vf->priv->arg, i);
             if(vf->priv->ppMode[i]==NULL) return -1;
         }

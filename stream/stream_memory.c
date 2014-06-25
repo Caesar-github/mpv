@@ -43,20 +43,23 @@ static int control(stream_t *s, int cmd, void *arg)
 {
     struct priv *p = s->priv;
     switch(cmd) {
+    case STREAM_CTRL_GET_SIZE:
+        *(int64_t *)arg = p->data.len;
+        return 1;
     case STREAM_CTRL_SET_CONTENTS: ;
         bstr *data = (bstr *)arg;
         talloc_free(p->data.start);
         p->data = bstrdup(s, *data);
-        s->end_pos = p->data.len;
         return 1;
     }
     return STREAM_UNSUPPORTED;
 }
 
-static int open_f(stream_t *stream, int mode)
+static int open_f(stream_t *stream)
 {
     stream->fill_buffer = fill_buffer;
     stream->seek = seek;
+    stream->seekable = true;
     stream->control = control;
     stream->read_chunk = 1024 * 1024;
 
@@ -74,5 +77,5 @@ static int open_f(stream_t *stream, int mode)
 const stream_info_t stream_info_memory = {
     .name = "memory",
     .open = open_f,
-    .protocols = (const char*[]){ "memory", NULL },
+    .protocols = (const char*const[]){ "memory", NULL },
 };

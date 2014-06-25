@@ -195,8 +195,7 @@ bool video_init_best_codec(struct dec_video *d_video, char* video_decoders)
         d_video->decoder_desc =
             talloc_asprintf(d_video, "%s [%s:%s]", decoder->desc, decoder->family,
                             decoder->decoder);
-        MP_INFO(d_video, "Selected video codec: %s\n",
-                d_video->decoder_desc);
+        MP_VERBOSE(d_video, "Selected video codec: %s\n", d_video->decoder_desc);
     } else {
         MP_ERR(d_video, "Failed to initialize a video decoder for codec '%s'.\n",
                d_video->header->codec ? d_video->header->codec : "<unknown>");
@@ -311,9 +310,11 @@ struct mp_image *video_decode(struct dec_video *d_video,
     double prev_codec_pts = d_video->codec_pts;
     double prev_codec_dts = d_video->codec_dts;
 
+    MP_STATS(d_video, "start decode video");
+
     struct mp_image *mpi = d_video->vd_driver->decode(d_video, packet, drop_frame);
 
-    //------------------------ frame decoded. --------------------
+    MP_STATS(d_video, "end decode video");
 
     if (!mpi || drop_frame) {
         talloc_free(mpi);
@@ -386,8 +387,8 @@ int video_reconfig_filters(struct dec_video *d_video,
     struct sh_video *sh = d_video->header->video;
 
     MP_VERBOSE(d_video, "VIDEO:  %dx%d  %5.3f fps  %5.1f kbps (%4.1f kB/s)\n",
-               p.w, p.h, sh->fps, sh->i_bps * 0.008,
-               sh->i_bps / 1000.0);
+               p.w, p.h, sh->fps, sh->bitrate / 1000.0,
+               sh->bitrate / 8000.0);
 
     MP_VERBOSE(d_video, "VDec: vo config request - %d x %d (%s)\n",
                p.w, p.h, vo_format_name(p.imgfmt));
@@ -416,7 +417,6 @@ int video_reconfig_filters(struct dec_video *d_video,
     if (abs(p.d_w - p.w) >= 4 || abs(p.d_h - p.h) >= 4) {
         MP_VERBOSE(d_video, "Aspect ratio is %.2f:1 - "
                    "scaling to correct movie aspect.\n", sh->aspect);
-        MP_SMODE(d_video, "ID_VIDEO_ASPECT=%1.4f\n", sh->aspect);
     } else {
         p.d_w = p.w;
         p.d_h = p.h;
@@ -428,6 +428,8 @@ int video_reconfig_filters(struct dec_video *d_video,
     if (opts->requested_input_range != MP_CSP_LEVELS_AUTO)
         p.colorlevels = opts->requested_input_range;
     p.outputlevels = opts->requested_output_range;
+    if (opts->requested_primaries != MP_CSP_PRIM_AUTO)
+        p.primaries = opts->requested_primaries;
 
     // Detect colorspace from resolution.
     // Make sure the user-overrides are consistent (no RGB csp for YUV, etc.).
@@ -437,12 +439,10 @@ int video_reconfig_filters(struct dec_video *d_video,
     MP_VERBOSE(d_video, "VO Config (%dx%d->%dx%d,0x%X)\n",
                p.w, p.h, p.d_w, p.d_h, p.imgfmt);
 
-    if (vf_reconfig(d_video->vfilter, &p) < 0) {
-        MP_WARN(d_video, "FATAL: Cannot initialize video driver.\n");
+    if (vf_reconfig(d_video->vfilter, params, &p) < 0) {
+        MP_FATAL(d_video, "Cannot initialize video filters.\n");
         return -1;
     }
-
-    d_video->vf_input = p;
 
     return 0;
 }

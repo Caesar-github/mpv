@@ -24,6 +24,7 @@
 
 
 #include "config.h"
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
@@ -32,10 +33,12 @@
 #include "input/keycodes.h"
 #include "input/input.h"
 #include "terminal.h"
+#include "osdep/w32_keyboard.h"
 
-int screen_width = 80;
+int screen_width = 79;
 int screen_height = 24;
-char *erase_to_end_of_line = NULL;
+char *terminal_erase_to_end_of_line = "";
+char *terminal_cursor_up = "";
 
 #define hSTDOUT GetStdHandle(STD_OUTPUT_HANDLE)
 #define hSTDERR GetStdHandle(STD_ERROR_HANDLE)
@@ -119,52 +122,24 @@ static int getch2_internal(void)
     /*filter out keyevents*/
     for (i = 0; i < retval; i++) {
         switch (eventbuffer[i].EventType) {
-        case KEY_EVENT:
+        case KEY_EVENT: {
+            KEY_EVENT_RECORD *record = &eventbuffer[i].Event.KeyEvent;
+
             /*only a pressed key is interresting for us*/
-            if (eventbuffer[i].Event.KeyEvent.bKeyDown == TRUE) {
-                /*check for special keys*/
-                switch (eventbuffer[i].Event.KeyEvent.wVirtualKeyCode) {
-                case VK_HOME:
-                    return MP_KEY_HOME;
-                case VK_END:
-                    return MP_KEY_END;
-                case VK_DELETE:
-                    return MP_KEY_DEL;
-                case VK_INSERT:
-                    return MP_KEY_INS;
-                case VK_BACK:
-                    return MP_KEY_BS;
-                case VK_PRIOR:
-                    return MP_KEY_PGUP;
-                case VK_NEXT:
-                    return MP_KEY_PGDWN;
-                case VK_RETURN:
-                    return MP_KEY_ENTER;
-                case VK_ESCAPE:
-                    return MP_KEY_ESC;
-                case VK_LEFT:
-                    return MP_KEY_LEFT;
-                case VK_UP:
-                    return MP_KEY_UP;
-                case VK_RIGHT:
-                    return MP_KEY_RIGHT;
-                case VK_DOWN:
-                    return MP_KEY_DOWN;
-                case VK_SHIFT:
-                    continue;
-                }
-                /*check for function keys*/
-                if (0x87 >= eventbuffer[i].Event.KeyEvent.wVirtualKeyCode &&
-                    eventbuffer[i].Event.KeyEvent.wVirtualKeyCode >= 0x70)
-                    return MP_KEY_F + 1 +
-                           eventbuffer[i].Event.KeyEvent.wVirtualKeyCode - 0x70;
+            if (record->bKeyDown) {
+                UINT vkey = record->wVirtualKeyCode;
+                bool ext = record->dwControlKeyState & ENHANCED_KEY;
+
+                int mpkey = mp_w32_vkey_to_mpkey(vkey, ext);
+                if (mpkey)
+                    return mpkey;
 
                 /*only characters should be remaining*/
                 //printf("getch2: YOU PRESSED \"%c\" \n",eventbuffer[i].Event.KeyEvent.uChar.AsciiChar);
-                return eventbuffer[i].Event.KeyEvent.uChar.AsciiChar;
+                return eventbuffer[i].Event.KeyEvent.uChar.UnicodeChar;
             }
             break;
-
+        }
         case MOUSE_EVENT:
         case WINDOW_BUFFER_SIZE_EVENT:
         case FOCUS_EVENT:
@@ -237,6 +212,22 @@ void terminal_set_foreground_color(FILE *stream, int c)
 
 int terminal_init(void)
 {
+    if (AttachConsole(ATTACH_PARENT_PROCESS)) {
+        // We have been started by something with a console window.
+        // Redirect output streams to that console's low-level handles,
+        // so we can actually use WriteConsole later on.
+
+        int hConHandle;
+
+        hConHandle = _open_osfhandle((intptr_t)hSTDOUT, _O_TEXT);
+        *stdout = *_fdopen(hConHandle, "w");
+        setvbuf(stdout, NULL, _IONBF, 0);
+
+        hConHandle = _open_osfhandle((intptr_t)hSTDERR, _O_TEXT);
+        *stderr = *_fdopen(hConHandle, "w");
+        setvbuf(stderr, NULL, _IONBF, 0);
+    }
+
     CONSOLE_SCREEN_BUFFER_INFO cinfo;
     DWORD cmode = 0;
     GetConsoleMode(hSTDOUT, &cmode);

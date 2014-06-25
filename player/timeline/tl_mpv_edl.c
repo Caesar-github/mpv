@@ -35,6 +35,8 @@
 struct tl_part {
     char *filename;             // what is stream_open()ed
     double offset;              // offset into the source file
+    bool offset_set;
+    bool chapter_ts;
     double length;              // length of the part (-1 if rest of the file)
 };
 
@@ -99,9 +101,13 @@ static struct tl_parts *parse_edl(bstr str)
             } else if (bstr_equals0(name, "start")) {
                 if (!parse_time(val, &p.offset))
                     goto error;
+                p.offset_set = true;
             } else if (bstr_equals0(name, "length")) {
                 if (!parse_time(val, &p.length))
                     goto error;
+            } else if (bstr_equals0(name, "timestamps")) {
+                if (bstr_equals0(val, "chapters"))
+                    p.chapter_ts = true;
             }
             nparam++;
             if (!bstr_eatstart0(&str, ","))
@@ -125,11 +131,7 @@ static struct demuxer *open_file(char *filename, struct MPContext *mpctx)
     struct demuxer *d = NULL;
     struct stream *s = stream_open(filename, mpctx->global);
     if (s) {
-        stream_enable_cache_percent(&s,
-                                    opts->stream_cache_size,
-                                    opts->stream_cache_def_size,
-                                    opts->stream_cache_min_percent,
-                                    opts->stream_cache_seek_min_percent);
+        stream_enable_cache(&s, &opts->stream_cache);
         d = demux_open(s, NULL, NULL, mpctx->global);
     }
     if (!d) {
@@ -153,19 +155,25 @@ static struct demuxer *open_source(struct MPContext *mpctx, char *filename)
     return d;
 }
 
+static double demuxer_chapter_time(struct demuxer *demuxer, int n)
+{
+    if (n < 0 || n >= demuxer->num_chapters)
+        return -1;
+    return demuxer->chapters[n].start / 1e9;
+}
+
 // Append all chapters from src to the chapters array.
 // Ignore chapters outside of the given time range.
 static void copy_chapters(struct chapter **chapters, int *num_chapters,
                           struct demuxer *src, double start, double len,
                           double dest_offset)
 {
-    int count = demuxer_chapter_count(src);
-    for (int n = 0; n < count; n++) {
+    for (int n = 0; n < src->num_chapters; n++) {
         double time = demuxer_chapter_time(src, n);
         if (time >= start && time <= start + len) {
             struct chapter ch = {
                 .start = dest_offset + time - start,
-                .name = talloc_steal(*chapters, demuxer_chapter_name(src, n)),
+                .name = talloc_strdup(*chapters, src->chapters[n].name),
             };
             MP_TARRAY_APPEND(NULL, *chapters, *num_chapters, ch);
         }
@@ -182,6 +190,23 @@ static double source_get_length(struct demuxer *demuxer)
     return time;
 }
 
+static void resolve_timestamps(struct tl_part *part, struct demuxer *demuxer)
+{
+    if (part->chapter_ts) {
+        double start = demuxer_chapter_time(demuxer, part->offset);
+        double length = part->length;
+        double end = length;
+        if (end >= 0)
+            end = demuxer_chapter_time(demuxer, part->offset + part->length);
+        if (end >= 0 && start >= 0)
+            length = end - start;
+        part->offset = start;
+        part->length = length;
+    }
+    if (!part->offset_set)
+        part->offset = demuxer_get_start_time(demuxer);
+}
+
 static void build_timeline(struct MPContext *mpctx, struct tl_parts *parts)
 {
     struct chapter *chapters = talloc_new(NULL);
@@ -195,8 +220,12 @@ static void build_timeline(struct MPContext *mpctx, struct tl_parts *parts)
         if (!source)
             goto error;
 
+        resolve_timestamps(part, source);
+
         double len = source_get_length(source);
-        if (len <= 0) {
+        if (len > 0) {
+            len += demuxer_get_start_time(source);
+        } else {
             MP_WARN(mpctx, "EDL: source file '%s' has unknown duration.\n",
                    part->filename);
         }

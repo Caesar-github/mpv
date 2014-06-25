@@ -32,11 +32,9 @@
 enum streamtype {
     STREAMTYPE_GENERIC = 0,
     STREAMTYPE_FILE,
-    STREAMTYPE_RADIO,
     STREAMTYPE_DVB,
     STREAMTYPE_DVD,
     STREAMTYPE_BLURAY,
-    STREAMTYPE_PVR,
     STREAMTYPE_TV,
     STREAMTYPE_MF,
     STREAMTYPE_EDL,
@@ -57,12 +55,6 @@ enum streamtype {
 // flags for stream_open_ext (this includes STREAM_READ and STREAM_WRITE)
 #define STREAM_NO_FILTERS 2
 
-// stream->flags
-#define MP_STREAM_FAST_SKIPPING 1 // allow forward seeks by skipping
-#define MP_STREAM_SEEK_BW  2
-#define MP_STREAM_SEEK_FW  4
-#define MP_STREAM_SEEK  (MP_STREAM_SEEK_BW | MP_STREAM_SEEK_FW)
-
 #define STREAM_NO_MATCH -2
 #define STREAM_UNSUPPORTED -1
 #define STREAM_ERROR 0
@@ -70,8 +62,6 @@ enum streamtype {
 
 enum stream_ctrl {
     STREAM_CTRL_GET_TIME_LENGTH = 1,
-    STREAM_CTRL_SEEK_TO_CHAPTER,
-    STREAM_CTRL_GET_CURRENT_CHAPTER,
     STREAM_CTRL_GET_NUM_CHAPTERS,
     STREAM_CTRL_GET_CURRENT_TIME,
     STREAM_CTRL_SEEK_TO_TIME,
@@ -85,6 +75,7 @@ enum stream_ctrl {
     STREAM_CTRL_GET_CURRENT_TITLE,
     STREAM_CTRL_SET_CURRENT_TITLE,
     STREAM_CTRL_GET_CACHE_SIZE,
+    STREAM_CTRL_SET_CACHE_SIZE,
     STREAM_CTRL_GET_CACHE_FILL,
     STREAM_CTRL_GET_CACHE_IDLE,
     STREAM_CTRL_RESUME_CACHE,
@@ -99,6 +90,19 @@ enum stream_ctrl {
     STREAM_CTRL_GET_BASE_FILENAME,
     STREAM_CTRL_GET_NAV_EVENT,          // struct mp_nav_event**
     STREAM_CTRL_NAV_CMD,                // struct mp_nav_cmd*
+    STREAM_CTRL_GET_DISC_NAME,
+    STREAM_CTRL_TV_SET_SCAN,
+    STREAM_CTRL_SET_TV_FREQ,
+    STREAM_CTRL_GET_TV_FREQ,
+    STREAM_CTRL_SET_TV_COLORS,
+    STREAM_CTRL_GET_TV_COLORS,
+    STREAM_CTRL_TV_SET_NORM,
+    STREAM_CTRL_TV_STEP_NORM,
+    STREAM_CTRL_TV_SET_CHAN,
+    STREAM_CTRL_TV_STEP_CHAN,
+    STREAM_CTRL_TV_LAST_CHAN,
+    STREAM_CTRL_DVB_SET_CHANNEL,
+    STREAM_CTRL_DVB_STEP_CHANNEL,
 };
 
 struct stream_lang_req {
@@ -112,17 +116,25 @@ struct stream_dvd_info_req {
     int num_subs;
 };
 
+// for STREAM_CTRL_SET_TV_COLORS
+#define TV_COLOR_BRIGHTNESS     1
+#define TV_COLOR_HUE            2
+#define TV_COLOR_SATURATION     3
+#define TV_COLOR_CONTRAST       4
+
 struct stream;
 typedef struct stream_info_st {
     const char *name;
     // opts is set from ->opts
-    int (*open)(struct stream *st, int mode);
-    const char **protocols;
+    int (*open)(struct stream *st);
+    const char *const *protocols;
     int priv_size;
     const void *priv_defaults;
+    void *(*get_defaults)(struct stream *st);
     const struct m_option *options;
-    const char **url_options;
+    const char *const *url_options;
     bool stream_filter;
+    bool can_write;
 } stream_info_t;
 
 typedef struct stream {
@@ -143,11 +155,11 @@ typedef struct stream {
 
     enum streamtype type; // see STREAMTYPE_*
     enum streamtype uncached_type; // if stream is cache, type of wrapped str.
-    int flags; // MP_STREAM_SEEK_* or'ed flags
     int sector_size; // sector size (seek will be aligned on this size if non 0)
     int read_chunk; // maximum amount of data to read at once to limit latency
     unsigned int buf_pos, buf_len;
-    int64_t pos, start_pos, end_pos;
+    int64_t pos;
+    uint64_t end_pos; // static size; use STREAM_CTRL_GET_SIZE instead
     int eof;
     int mode; //STREAM_READ or STREAM_WRITE
     bool streaming;     // known to be a network stream if true
@@ -157,8 +169,10 @@ typedef struct stream {
     char *mime_type; // when HTTP streaming is used
     char *demuxer; // request demuxer to be used
     char *lavf_type; // name of expected demuxer type for lavf
-    bool safe_origin; // used for playlists that can be opened safely
-    bool allow_caching; // stream cache makes sense
+    bool seekable : 1; // presence of general byte seeking support
+    bool fast_skip : 1; // consider stream fast enough to fw-seek by skipping
+    bool safe_origin : 1; // used for playlists that can be opened safely
+    bool allow_caching : 1; // stream cache makes sense
     struct mp_log *log;
     struct MPOpts *opts;
     struct mpv_global *global;
@@ -177,14 +191,15 @@ int stream_fill_buffer(stream_t *s);
 
 void stream_set_capture_file(stream_t *s, const char *filename);
 
-int stream_enable_cache_percent(stream_t **stream, int64_t stream_cache_size,
-                                int64_t stream_cache_def_size,
-                                float stream_cache_min_percent,
-                                float stream_cache_seek_min_percent);
+struct mp_cache_opts;
+bool stream_wants_cache(stream_t *stream, struct mp_cache_opts *opts);
+int stream_enable_cache(stream_t **stream, struct mp_cache_opts *opts);
 
 // Internal
-int stream_cache_init(stream_t *cache, stream_t *stream, int64_t size,
-                      int64_t min, int64_t seek_limit);
+int stream_cache_init(stream_t *cache, stream_t *stream,
+                      struct mp_cache_opts *opts);
+int stream_file_cache_init(stream_t *cache, stream_t *stream,
+                           struct mp_cache_opts *opts);
 
 int stream_write_buffer(stream_t *s, unsigned char *buf, int len);
 
@@ -192,30 +207,6 @@ inline static int stream_read_char(stream_t *s)
 {
     return (s->buf_pos < s->buf_len) ? s->buffer[s->buf_pos++] :
            (stream_fill_buffer(s) ? s->buffer[s->buf_pos++] : -256);
-}
-
-inline static unsigned int stream_read_dword(stream_t *s)
-{
-    unsigned int y;
-    y = stream_read_char(s);
-    y = (y << 8) | stream_read_char(s);
-    y = (y << 8) | stream_read_char(s);
-    y = (y << 8) | stream_read_char(s);
-    return y;
-}
-
-inline static uint64_t stream_read_qword(stream_t *s)
-{
-    uint64_t y;
-    y = stream_read_char(s);
-    y = (y << 8) | stream_read_char(s);
-    y = (y << 8) | stream_read_char(s);
-    y = (y << 8) | stream_read_char(s);
-    y = (y << 8) | stream_read_char(s);
-    y = (y << 8) | stream_read_char(s);
-    y = (y << 8) | stream_read_char(s);
-    y = (y << 8) | stream_read_char(s);
-    return y;
 }
 
 unsigned char *stream_read_line(stream_t *s, unsigned char *mem, int max,
@@ -244,42 +235,20 @@ struct mpv_global;
 struct bstr stream_read_complete(struct stream *s, void *talloc_ctx,
                                  int max_size);
 int stream_control(stream_t *s, int cmd, void *arg);
-void stream_update_size(stream_t *s);
 void free_stream(stream_t *s);
 struct stream *stream_create(const char *url, int flags, struct mpv_global *global);
 struct stream *stream_open(const char *filename, struct mpv_global *global);
 stream_t *open_output_stream(const char *filename, struct mpv_global *global);
 stream_t *open_memory_stream(void *data, int len);
-struct demux_stream;
 
-/// Set the callback to be used by libstream to check for user
-/// interruption during long blocking operations (cache filling, etc).
-struct input_ctx;
-void stream_set_interrupt_callback(int (*cb)(struct input_ctx *, int),
-                                   struct input_ctx *ctx);
-/// Call the interrupt checking callback if there is one and
-/// wait for time milliseconds
-int stream_check_interrupt(int time);
+bool stream_check_interrupt(struct stream *s);
 
 bool stream_manages_timeline(stream_t *s);
 
-/* stream/stream_dvd.c */
-extern int dvd_title;
-extern int dvd_angle;
-extern int dvd_speed;
-extern char *dvd_device, *cdrom_device;
-
-extern int bluray_angle;
-extern char *bluray_device;
-
-typedef struct {
-    int id; // 0 - 31 mpeg; 128 - 159 ac3; 160 - 191 pcm
-    int language;
-    int type;
-    int channels;
-} stream_language_t;
-
 void mp_url_unescape_inplace(char *buf);
 char *mp_url_escape(void *talloc_ctx, const char *s, const char *ok);
+
+// stream_file.c
+char *mp_file_url_to_filename(void *talloc_ctx, bstr url);
 
 #endif /* MPLAYER_STREAM_H */

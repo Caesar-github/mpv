@@ -185,27 +185,27 @@ static int filter(struct af_instance* af, struct mp_audio* audio, int flags)
         }
         in_frame.samples = s->in_samples;
 
-        AVFrame *frame = avcodec_alloc_frame();
+        AVFrame *frame = av_frame_alloc();
         if (!frame) {
-            MP_FATAL(af, "[libaf] Could not allocate memory \n");
+            MP_FATAL(af, "Could not allocate memory \n");
             return -1;
         }
         frame->nb_samples = s->in_samples;
         frame->format = s->lavc_actx->sample_fmt;
         frame->channel_layout = s->lavc_actx->channel_layout;
         assert(in_frame.num_planes <= AV_NUM_DATA_POINTERS);
+        frame->extended_data = frame->data;
         for (int n = 0; n < in_frame.num_planes; n++)
             frame->data[n] = in_frame.planes[n];
         frame->linesize[0] = s->in_samples * audio->sstride;
 
         int ok;
         ret = avcodec_encode_audio2(s->lavc_actx, &s->pkt, frame, &ok);
+        av_frame_free(&frame);
         if (ret < 0 || !ok) {
-            MP_FATAL(af, "[lavac3enc] Encode failed.\n");
+            MP_FATAL(af, "Encode failed.\n");
             return -1;
         }
-
-        avcodec_free_frame(&frame);
 
         mp_audio_buffer_skip(s->pending, consumed_pending);
 
@@ -305,7 +305,7 @@ static int af_open(struct af_instance* af){
 
 #define OPT_BASE_STRUCT struct af_ac3enc_s
 
-struct af_info af_info_lavcac3enc = {
+const struct af_info af_info_lavcac3enc = {
     .info = "runtime encode to ac3 using libavcodec",
     .name = "lavcac3enc",
     .open = af_open,

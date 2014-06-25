@@ -1,58 +1,44 @@
+import re
+
 def _add_rst_manual_dependencies(ctx):
     manpage_sources_basenames = """
         options.rst ao.rst vo.rst af.rst vf.rst encode.rst
         input.rst osc.rst lua.rst changes.rst""".split()
 
-    manpage_sources = ['DOCS/man/en/'+x for x in manpage_sources_basenames]
+    manpage_sources = ['DOCS/man/'+x for x in manpage_sources_basenames]
 
     for manpage_source in manpage_sources:
         ctx.add_manual_dependency(
-            ctx.path.find_node('DOCS/man/en/mpv.rst'),
+            ctx.path.find_node('DOCS/man/mpv.rst'),
             ctx.path.find_node(manpage_source))
 
 def _build_man(ctx):
     ctx(
         name         = 'rst2man',
-        target       = 'DOCS/man/en/mpv.1',
-        source       = 'DOCS/man/en/mpv.rst',
+        target       = 'DOCS/man/mpv.1',
+        source       = 'DOCS/man/mpv.rst',
         rule         = '${RST2MAN} ${SRC} ${TGT}',
         install_path = ctx.env.MANDIR + '/man1')
 
     _add_rst_manual_dependencies(ctx)
 
 def _build_pdf(ctx):
-    from waflib import TaskGen
+    ctx(
+        name         = 'rst2pdf',
+        target       = 'DOCS/man/mpv.pdf',
+        source       = 'DOCS/man/mpv.rst',
+        rule         = '${RST2PDF} -c --repeat-table-rows ${SRC} -o ${TGT}',
+        install_path = ctx.env.DOCDIR)
 
-    TaskGen.declare_chain(
-        name    = 'rst2latex',
-        rule    = '${RST2LATEX} ${RST2LATEX_FLAGS} ${SRC} ${TGT}',
-        ext_in  = '.rst',
-        ext_out = '.tex' )
-
-    TaskGen.declare_chain(
-        name    = 'pdflatex',
-        rule    = '${PDFLATEX} ${PDFLATEX_FLAGS} ${SRC}; ' * 2,
-        ext_in  = '.tex',
-        ext_out = '.pdf',
-        shell   = True )
-
-    ctx.env.RST2LATEX_FLAGS = [
-        '--config=' + ctx.srcnode.abspath() + '/DOCS/man/docutils.conf'
-    ]
-
-    ctx.env.PDFLATEX_FLAGS = [
-        '--interaction=batchmode',
-        '--output-directory=DOCS/man/en/',
-        '--jobname=mpv'
-    ]
-
-    ctx(source = 'DOCS/man/en/mpv.rst')
     _add_rst_manual_dependencies(ctx)
-    ctx.install_files(ctx.env.DOCDIR, ['DOCS/man/en/mpv.pdf'])
 
 def build(ctx):
     ctx.load('waf_customizations')
     ctx.load('generators.sources')
+
+    ctx.file2string(
+        source = "TOOLS/osxbundle/mpv.app/Contents/Resources/icon.icns",
+        target = "osdep/macosx_icon.inc")
 
     ctx.file2string(
         source = "video/out/x11_icon.bin",
@@ -77,6 +63,10 @@ def build(ctx):
     ctx.file2string(
         source = "player/lua/assdraw.lua",
         target = "player/lua/assdraw.inc")
+
+    ctx.file2string(
+        source = "player/lua/options.lua",
+        target = "player/lua/options.inc")
 
     ctx.file2string(
         source = "player/lua/osc.lua",
@@ -108,7 +98,6 @@ def build(ctx):
         ( "audio/fmt-conversion.c" ),
         ( "audio/format.c" ),
         ( "audio/mixer.c" ),
-        ( "audio/reorder_ch.c" ),
         ( "audio/decode/ad_lavc.c" ),
         ( "audio/decode/ad_mpg123.c",            "mpg123" ),
         ( "audio/decode/ad_spdif.c" ),
@@ -130,7 +119,7 @@ def build(ctx):
         ( "audio/filter/af_karaoke.c" ),
         ( "audio/filter/af_ladspa.c",            "ladspa" ),
         ( "audio/filter/af_lavcac3enc.c" ),
-        ( "audio/filter/af_lavfi.c",             "af-lavfi" ),
+        ( "audio/filter/af_lavfi.c",             "libavfilter" ),
         ( "audio/filter/af_lavrresample.c" ),
         ( "audio/filter/af_pan.c" ),
         ( "audio/filter/af_scaletempo.c" ),
@@ -157,26 +146,27 @@ def build(ctx):
         ( "audio/out/ao_portaudio.c",            "portaudio" ),
         ( "audio/out/ao_pulse.c",                "pulse" ),
         ( "audio/out/ao_rsound.c",               "rsound" ),
-        ( "audio/out/ao_sdl.c",                  "sdl" ),
+        ( "audio/out/ao_sdl.c",                  "sdl1" ),
         ( "audio/out/ao_sdl.c",                  "sdl2" ),
         ( "audio/out/ao_sndio.c",                "sndio" ),
         ( "audio/out/ao_wasapi.c",               "wasapi" ),
+        ( "audio/out/ao_wasapi_utils.c",         "wasapi" ),
+        ( "audio/out/pull.c" ),
+        ( "audio/out/push.c" ),
 
         ## Bstr
         ( "bstr/bstr.c" ),
 
         ## Core
-        ( "common/asxparser.c" ),
         ( "common/av_common.c" ),
         ( "common/av_log.c" ),
         ( "common/av_opts.c" ),
         ( "common/codecs.c" ),
-        ( "common/cpudetect.c" ),
         ( "common/encode_lavc.c",                "encoding" ),
         ( "common/common.c" ),
+        ( "common/tags.c" ),
         ( "common/msg.c" ),
         ( "common/playlist.c" ),
-        ( "common/playlist_parser.c" ),
         ( "common/version.c" ),
 
         ## Demuxers
@@ -197,14 +187,16 @@ def build(ctx):
         ## Input
         ( "input/cmd_list.c" ),
         ( "input/cmd_parse.c" ),
+        ( "input/event.c" ),
         ( "input/input.c" ),
         ( "input/keycodes.c" ),
         ( "input/joystick.c",                    "joystick" ),
         ( "input/lirc.c",                        "lirc" ),
 
         ## Misc
-        ( "misc/ring.c" ),
         ( "misc/charset_conv.c" ),
+        ( "misc/dispatch.c" ),
+        ( "misc/ring.c" ),
 
         ## Options
         ( "options/m_config.c" ),
@@ -217,9 +209,10 @@ def build(ctx):
 
         ## Player
         ( "player/audio.c" ),
+        ( "player/client.c" ),
         ( "player/command.c" ),
         ( "player/configfiles.c" ),
-        ( "player/dvdnav.c" ),
+        ( "player/discnav.c" ),
         ( "player/loadfile.c" ),
         ( "player/main.c" ),
         ( "player/misc.c" ),
@@ -227,6 +220,7 @@ def build(ctx):
         ( "player/osd.c" ),
         ( "player/playloop.c" ),
         ( "player/screenshot.c" ),
+        ( "player/scripting.c" ),
         ( "player/sub.c" ),
         ( "player/timeline/tl_cue.c" ),
         ( "player/timeline/tl_mpv_edl.c" ),
@@ -239,6 +233,7 @@ def build(ctx):
         ( "stream/ai_sndio.c",                   "sndio" ),
         ( "stream/audio_in.c",                   "audio-input" ),
         ( "stream/cache.c" ),
+        ( "stream/cache_file.c" ),
         ( "stream/cookies.c" ),
         ( "stream/dvb_tune.c",                   "dvbin" ),
         ( "stream/frequencies.c",                "tv" ),
@@ -258,11 +253,9 @@ def build(ctx):
         ( "stream/stream_mf.c" ),
         ( "stream/stream_null.c" ),
         ( "stream/stream_pvr.c",                 "pvr" ),
-        ( "stream/stream_radio.c",               "radio" ),
         ( "stream/stream_rar.c" ),
         ( "stream/stream_smb.c",                 "libsmbclient" ),
         ( "stream/stream_tv.c",                  "tv" ),
-        ( "stream/stream_vcd.c",                 "vcd" ),
         ( "stream/tv.c",                         "tv" ),
         ( "stream/tvi_dummy.c",                  "tv" ),
         ( "stream/tvi_v4l2.c",                   "tv-v4l2"),
@@ -284,9 +277,7 @@ def build(ctx):
         ( "sub/sd_lavf_srt.c" ),
         ( "sub/sd_microdvd.c" ),
         ( "sub/sd_movtext.c" ),
-        ( "sub/sd_spu.c" ),
         ( "sub/sd_srt.c" ),
-        ( "sub/spudec.c" ),
 
         ## Video
         ( "video/csputils.c" ),
@@ -298,13 +289,12 @@ def build(ctx):
         ( "video/sws_utils.c" ),
         ( "video/vaapi.c",                       "vaapi" ),
         ( "video/vdpau.c",                       "vdpau" ),
+        ( "video/vdpau_mixer.c",                 "vdpau" ),
         ( "video/decode/dec_video.c"),
-        ( "video/decode/lavc_dr1.c",             "!avutil-refcounting" ),
         ( "video/decode/vaapi.c",                "vaapi-hwaccel" ),
         ( "video/decode/vd_lavc.c" ),
         ( "video/decode/vda.c",                  "vda-hwaccel" ),
         ( "video/decode/vdpau.c",                "vdpau-hwaccel" ),
-        ( "video/decode/vdpau_old.c",            "vdpau-decoder" ),
         ( "video/filter/pullup.c" ),
         ( "video/filter/vf.c" ),
         ( "video/filter/vf_crop.c" ),
@@ -319,7 +309,7 @@ def build(ctx):
         ( "video/filter/vf_gradfun.c" ),
         ( "video/filter/vf_hqdn3d.c" ),
         ( "video/filter/vf_ilpack.c" ),
-        ( "video/filter/vf_lavfi.c",             "vf-lavfi"),
+        ( "video/filter/vf_lavfi.c",             "libavfilter"),
         ( "video/filter/vf_mirror.c" ),
         ( "video/filter/vf_noformat.c" ),
         ( "video/filter/vf_noise.c" ),
@@ -334,7 +324,9 @@ def build(ctx):
         ( "video/filter/vf_sub.c" ),
         ( "video/filter/vf_swapuv.c" ),
         ( "video/filter/vf_unsharp.c" ),
+        ( "video/filter/vf_vapoursynth.c",       "vapoursynth" ),
         ( "video/filter/vf_vavpp.c",             "vaapi-vpp"),
+        ( "video/filter/vf_vdpaupp.c",           "vdpau" ),
         ( "video/filter/vf_yadif.c" ),
         ( "video/out/aspect.c" ),
         ( "video/out/bitmap_packer.c" ),
@@ -373,6 +365,7 @@ def build(ctx):
         ( "video/out/vo_xv.c",                   "xv" ),
         ( "video/out/w32_common.c",              "gdi" ),
         ( "video/out/wayland_common.c",          "wayland" ),
+        ( "video/out/win_state.c"),
         ( "video/out/x11_common.c",              "x11" ),
 
         ## osdep
@@ -391,7 +384,8 @@ def build(ctx):
         ( "osdep/path-win.c",                    "os-win32" ),
         ( "osdep/path-win.c",                    "os-cygwin" ),
         ( "osdep/glob-win.c",                    "glob-win32-replacement" ),
-        ( "osdep/priority.c",                    "priority" ),
+        ( "osdep/w32_keyboard.c",                "os-win32" ),
+        ( "osdep/w32_keyboard.c",                "os-cygwin" ),
         ( "osdep/mpv.rc",                        "win32-executable" ),
 
         ## tree_allocator
@@ -437,7 +431,7 @@ def build(ctx):
 
     ctx(
         target       = "mpv",
-        source       = ctx.filtered_sources(sources),
+        source       = ctx.filtered_sources(sources) + ["player/main_fn.c"],
         use          = ctx.dependencies_use(),
         includes     = [ctx.bldnode.abspath(), ctx.srcnode.abspath()] + \
                        ctx.dependencies_includes(),
@@ -445,6 +439,80 @@ def build(ctx):
         install_path = ctx.env.BINDIR,
         **cprog_kwargs
     )
+
+    build_shared = ctx.dependency_satisfied('libmpv-shared')
+    build_static = ctx.dependency_satisfied('libmpv-static')
+    if build_shared or build_static:
+        if build_shared:
+            ctx.load("syms")
+        vnum = int(re.search('^#define MPV_CLIENT_API_VERSION 0x(.*)UL$',
+                             ctx.path.find_node("libmpv/client.h").read(),
+                             re.M)
+                   .group(1), 16)
+        libversion = str(vnum >> 16) + '.' + str(vnum & 0xffff) + '.0'
+
+        def _build_libmpv(shared):
+            features = "c "
+            if shared:
+                features += "cshlib syms"
+            else:
+                features += "cstlib"
+            ctx(
+                target       = "mpv",
+                source       = ctx.filtered_sources(sources),
+                use          = ctx.dependencies_use(),
+                includes     = [ctx.bldnode.abspath(), ctx.srcnode.abspath()] + \
+                                ctx.dependencies_includes(),
+                features     = features,
+                export_symbols_regex = 'mpv_.*',
+                install_path = ctx.env.LIBDIR,
+                vnum         = libversion,
+            )
+        if build_shared:
+            _build_libmpv(True)
+        if build_static:
+            _build_libmpv(False)
+
+        ctx(
+            target       = 'libmpv/mpv.pc',
+            source       = 'libmpv/mpv.pc.in',
+            features     = 'subst',
+            PREFIX       = ctx.env.PREFIX,
+            LIBDIR       = ctx.env.LIBDIR,
+            INCDIR       = ctx.env.INCDIR,
+            VERSION      = libversion,
+        )
+
+        headers = ["client.h"]
+        for f in headers:
+            ctx.install_as(ctx.env.INCDIR + '/mpv/' + f, 'libmpv/' + f)
+
+        ctx.install_as(ctx.env.LIBDIR + '/pkgconfig/mpv.pc', 'libmpv/mpv.pc')
+
+    if ctx.dependency_satisfied('client-api-examples'):
+        # This assumes all examples are single-file (as examples should be)
+        for f in ["simple"]:
+            ctx(
+                target       = f,
+                source       = "DOCS/client_api_examples/" + f + ".c",
+                includes     = [ctx.bldnode.abspath(), ctx.srcnode.abspath()],
+                use          = "mpv",
+                features     = "c cprogram",
+                install_path = None
+            )
+
+    if ctx.env.DEST_OS == 'win32':
+        wrapctx = ctx(
+            target       = "mpv",
+            source       = ['osdep/win32-console-wrapper.c'],
+            features     = "c cprogram",
+            install_path = ctx.env.BINDIR
+        )
+
+        wrapctx.env.cprogram_PATTERN = "%s.com"
+        wrapflags = ['-municode', '-mconsole']
+        wrapctx.env.CFLAGS = wrapflags
+        wrapctx.env.LAST_LINKFLAGS = wrapflags
 
     if ctx.dependency_satisfied('macosx-bundle'):
         from waflib import Utils
@@ -467,6 +535,12 @@ def build(ctx):
 
     if ctx.dependency_satisfied('pdf-build'):
         _build_pdf(ctx)
+
+    if ctx.dependency_satisfied('zsh-comp'):
+        ctx.zshcomp(target = "etc/_mpv")
+        ctx.install_files(
+            ctx.env.DATADIR + '/zsh/vendor-completions',
+            ['etc/_mpv'])
 
     ctx.install_files(
         ctx.env.DATADIR + '/applications',

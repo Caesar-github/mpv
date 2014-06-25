@@ -21,47 +21,216 @@
 #include <assert.h>
 #include <windows.h>
 #include <windowsx.h>
+#include <ole2.h>
 
 #include "options/options.h"
 #include "input/keycodes.h"
 #include "input/input.h"
+#include "input/event.h"
 #include "common/msg.h"
 #include "common/common.h"
 #include "vo.h"
-#include "aspect.h"
+#include "win_state.h"
 #include "w32_common.h"
-#include "input/input.h"
 #include "osdep/io.h"
+#include "osdep/w32_keyboard.h"
 #include "talloc.h"
 
 #define WIN_ID_TO_HWND(x) ((HWND)(intptr_t)(x))
 
 static const wchar_t classname[] = L"mpv";
 
-static const struct mp_keymap vk_map[] = {
-    // special keys
-    {VK_ESCAPE, MP_KEY_ESC}, {VK_BACK, MP_KEY_BS}, {VK_TAB, MP_KEY_TAB},
-    {VK_RETURN, MP_KEY_ENTER}, {VK_PAUSE, MP_KEY_PAUSE}, {VK_SNAPSHOT, MP_KEY_PRINT},
+typedef struct tagDropTarget {
+    IDropTarget iface;
+    ULONG refCnt;
+    DWORD lastEffect;
+    IDataObject* dataObj;
+    struct vo *vo;
+} DropTarget;
 
-    // cursor keys
-    {VK_LEFT, MP_KEY_LEFT}, {VK_UP, MP_KEY_UP}, {VK_RIGHT, MP_KEY_RIGHT}, {VK_DOWN, MP_KEY_DOWN},
+static FORMATETC fmtetc_file = { CF_HDROP, 0, DVASPECT_CONTENT, -1, TYMED_HGLOBAL };
+static FORMATETC fmtetc_url = { 0, NULL, DVASPECT_CONTENT, -1, TYMED_HGLOBAL };
 
-    // navigation block
-    {VK_INSERT, MP_KEY_INSERT}, {VK_DELETE, MP_KEY_DELETE}, {VK_HOME, MP_KEY_HOME}, {VK_END, MP_KEY_END},
-    {VK_PRIOR, MP_KEY_PAGE_UP}, {VK_NEXT, MP_KEY_PAGE_DOWN},
+static void DropTarget_Destroy(DropTarget* This)
+{
+    if (This->dataObj != NULL) {
+        This->dataObj->lpVtbl->Release(This->dataObj);
+        This->dataObj->lpVtbl = NULL;
+    }
 
-    // F-keys
-    {VK_F1, MP_KEY_F+1}, {VK_F2, MP_KEY_F+2}, {VK_F3, MP_KEY_F+3}, {VK_F4, MP_KEY_F+4},
-    {VK_F5, MP_KEY_F+5}, {VK_F6, MP_KEY_F+6}, {VK_F7, MP_KEY_F+7}, {VK_F8, MP_KEY_F+8},
-    {VK_F9, MP_KEY_F+9}, {VK_F10, MP_KEY_F+10}, {VK_F11, MP_KEY_F+11}, {VK_F12, MP_KEY_F+12},
-    // numpad
-    {VK_NUMPAD0, MP_KEY_KP0}, {VK_NUMPAD1, MP_KEY_KP1}, {VK_NUMPAD2, MP_KEY_KP2},
-    {VK_NUMPAD3, MP_KEY_KP3}, {VK_NUMPAD4, MP_KEY_KP4}, {VK_NUMPAD5, MP_KEY_KP5},
-    {VK_NUMPAD6, MP_KEY_KP6}, {VK_NUMPAD7, MP_KEY_KP7}, {VK_NUMPAD8, MP_KEY_KP8},
-    {VK_NUMPAD9, MP_KEY_KP9}, {VK_DECIMAL, MP_KEY_KPDEC},
+    talloc_free(This);
+}
 
-    {0, 0}
-};
+static HRESULT STDMETHODCALLTYPE DropTarget_QueryInterface(IDropTarget* This,
+                                                           REFIID riid,
+                                                           void** ppvObject)
+{
+    if (!IsEqualGUID(riid, &IID_IUnknown) ||
+        !IsEqualGUID(riid, &IID_IDataObject)) {
+        *ppvObject = NULL;
+        return E_NOINTERFACE;
+    }
+
+    *ppvObject = This;
+    This->lpVtbl->AddRef(This);
+    return S_OK;
+}
+
+static ULONG STDMETHODCALLTYPE DropTarget_AddRef(IDropTarget* This)
+{
+    DropTarget* t = (DropTarget*)This;
+    return ++(t->refCnt);
+}
+
+static ULONG STDMETHODCALLTYPE DropTarget_Release(IDropTarget* This)
+{
+    DropTarget* t = (DropTarget*)This;
+    ULONG cRef = --(t->refCnt);
+
+    if (cRef == 0) {
+        DropTarget_Destroy(t);
+    }
+
+    return cRef;
+}
+
+static HRESULT STDMETHODCALLTYPE DropTarget_DragEnter(IDropTarget* This,
+                                                      IDataObject* pDataObj,
+                                                      DWORD grfKeyState,
+                                                      POINTL pt,
+                                                      DWORD* pdwEffect)
+{
+    DropTarget* t = (DropTarget*)This;
+
+    pDataObj->lpVtbl->AddRef(pDataObj);
+    if (pDataObj->lpVtbl->QueryGetData(pDataObj, &fmtetc_file) != S_OK &&
+        pDataObj->lpVtbl->QueryGetData(pDataObj, &fmtetc_url) != S_OK) {
+
+        *pdwEffect = DROPEFFECT_NONE;
+    }
+
+    if (t->dataObj != NULL) {
+        t->dataObj->lpVtbl->Release(t->dataObj);
+    }
+
+    t->dataObj = pDataObj;
+    t->lastEffect = *pdwEffect;
+    return S_OK;
+}
+
+static HRESULT STDMETHODCALLTYPE DropTarget_DragOver(IDropTarget* This,
+                                                     DWORD grfKeyState,
+                                                     POINTL pt,
+                                                     DWORD* pdwEffect)
+{
+    DropTarget* t = (DropTarget*)This;
+
+    *pdwEffect = t->lastEffect;
+    return S_OK;
+}
+
+static HRESULT STDMETHODCALLTYPE DropTarget_DragLeave(IDropTarget* This)
+{
+    DropTarget* t = (DropTarget*)This;
+
+    if (t->dataObj != NULL) {
+        t->dataObj->lpVtbl->Release(t->dataObj);
+        t->dataObj = NULL;
+    }
+
+    return S_OK;
+}
+
+static HRESULT STDMETHODCALLTYPE DropTarget_Drop(IDropTarget* This,
+                                                 IDataObject* pDataObj,
+                                                 DWORD grfKeyState, POINTL pt,
+                                                 DWORD* pdwEffect)
+{
+    DropTarget* t = (DropTarget*)This;
+
+    STGMEDIUM medium;
+
+    if (t->dataObj != NULL) {
+        t->dataObj->lpVtbl->Release(t->dataObj);
+        t->dataObj = NULL;
+    }
+
+    pDataObj->lpVtbl->AddRef(pDataObj);
+
+    if (pDataObj->lpVtbl->GetData(pDataObj, &fmtetc_file, &medium) == S_OK) {
+        if (GlobalLock(medium.hGlobal) != NULL) {
+            HDROP hDrop = (HDROP)medium.hGlobal;
+
+            UINT numFiles = DragQueryFileW(hDrop, 0xFFFFFFFF, NULL, 0);
+            char** files = talloc_zero_array(NULL, char*, numFiles);
+
+            UINT nrecvd_files = 0;
+            for (UINT i = 0; i < numFiles; i++) {
+                UINT len = DragQueryFileW(hDrop, i, NULL, 0);
+                wchar_t* buf = talloc_array(NULL, wchar_t, len + 1);
+
+                if (DragQueryFileW(hDrop, i, buf, len + 1) == len) {
+                    char* fname = mp_to_utf8(files, buf);
+                    files[nrecvd_files++] = fname;
+
+                    MP_VERBOSE(t->vo, "win32: received dropped file: %s\n",
+                               fname);
+                } else {
+                    MP_ERR(t->vo, "win32: error getting dropped file name\n");
+                }
+
+                talloc_free(buf);
+            }
+
+            GlobalUnlock(medium.hGlobal);
+            mp_event_drop_files(t->vo->input_ctx, nrecvd_files, files);
+
+            talloc_free(files);
+        }
+
+        ReleaseStgMedium(&medium);
+    } else if (pDataObj->lpVtbl->GetData(pDataObj,
+                                         &fmtetc_url, &medium) == S_OK) {
+        // get the URL encoded in US-ASCII
+        char* url = (char*)GlobalLock(medium.hGlobal);
+        if (url != NULL) {
+            if (mp_event_drop_mime_data(t->vo->input_ctx, "text/uri-list",
+                                        bstr0(url)) > 0) {
+                MP_VERBOSE(t->vo, "win32: received dropped URL: %s\n", url);
+            } else {
+                MP_ERR(t->vo, "win32: error getting dropped URL\n");
+            }
+
+            GlobalUnlock(medium.hGlobal);
+        }
+
+        ReleaseStgMedium(&medium);
+    }
+    else {
+        t->lastEffect = DROPEFFECT_NONE;
+    }
+
+    pDataObj->lpVtbl->Release(pDataObj);
+    *pdwEffect = t->lastEffect;
+    return S_OK;
+}
+
+
+static void DropTarget_Init(DropTarget* This, struct vo *vo)
+{
+    IDropTargetVtbl* vtbl = talloc(This, IDropTargetVtbl);
+    *vtbl = (IDropTargetVtbl){
+        DropTarget_QueryInterface, DropTarget_AddRef, DropTarget_Release,
+        DropTarget_DragEnter, DropTarget_DragOver, DropTarget_DragLeave,
+        DropTarget_Drop
+    };
+
+    This->iface.lpVtbl = vtbl;
+    This->refCnt = 0;
+    This->lastEffect = 0;
+    This->dataObj = NULL;
+    This->vo = vo;
+}
 
 static void add_window_borders(HWND hwnd, RECT *rc)
 {
@@ -81,7 +250,8 @@ static void subtract_window_borders(HWND hwnd, RECT *rc)
 
 // turn a WMSZ_* input value in v into the border that should be resized
 // returns: 0=left, 1=top, 2=right, 3=bottom, -1=undefined
-static int get_resize_border(int v) {
+static int get_resize_border(int v)
+{
     switch (v) {
     case WMSZ_LEFT: return 3;
     case WMSZ_TOP: return 2;
@@ -103,13 +273,174 @@ static bool key_state(struct vo *vo, int vk)
 static int mod_state(struct vo *vo)
 {
     int res = 0;
-    if (key_state(vo, VK_CONTROL))
+
+    // AltGr is represented as LCONTROL+RMENU on Windows
+    bool alt_gr = mp_input_use_alt_gr(vo->input_ctx) &&
+        key_state(vo, VK_RMENU) && key_state(vo, VK_LCONTROL);
+
+    if (key_state(vo, VK_RCONTROL) || (key_state(vo, VK_LCONTROL) && !alt_gr))
         res |= MP_KEY_MODIFIER_CTRL;
     if (key_state(vo, VK_SHIFT))
         res |= MP_KEY_MODIFIER_SHIFT;
-    if (key_state(vo, VK_MENU))
+    if (key_state(vo, VK_LMENU) || (key_state(vo, VK_RMENU) && !alt_gr))
         res |= MP_KEY_MODIFIER_ALT;
     return res;
+}
+
+static int decode_surrogate_pair(wchar_t lead, wchar_t trail)
+{
+    return 0x10000 + ((lead & 0x3ff) << 10) | (trail & 0x3ff);
+}
+
+static int decode_utf16(struct vo *vo, wchar_t c)
+{
+    struct vo_w32_state *w32 = vo->w32;
+
+    // Decode UTF-16, keeping state in w32->high_surrogate
+    if (IS_HIGH_SURROGATE(c)) {
+        w32->high_surrogate = c;
+        return 0;
+    }
+    if (IS_LOW_SURROGATE(c)) {
+        if (!w32->high_surrogate) {
+            MP_ERR(vo, "Invalid UTF-16 input\n");
+            return 0;
+        }
+        int codepoint = decode_surrogate_pair(w32->high_surrogate, c);
+        w32->high_surrogate = 0;
+        return codepoint;
+    }
+    if (w32->high_surrogate != 0) {
+        w32->high_surrogate = 0;
+        MP_ERR(vo, "Invalid UTF-16 input\n");
+        return 0;
+    }
+
+    return c;
+}
+
+static void clear_keyboard_buffer(void)
+{
+    static const UINT vkey = VK_DECIMAL;
+    static const BYTE keys[256] = { 0 };
+    UINT scancode = MapVirtualKey(vkey, MAPVK_VK_TO_VSC);
+    wchar_t buf[10];
+    int ret = 0;
+
+    // Use the method suggested by Michael Kaplan to clear any pending dead
+    // keys from the current keyboard layout. See:
+    // https://web.archive.org/web/20101004154432/http://blogs.msdn.com/b/michkap/archive/2006/04/06/569632.aspx
+    // https://web.archive.org/web/20100820152419/http://blogs.msdn.com/b/michkap/archive/2007/10/27/5717859.aspx
+    do {
+        ret = ToUnicode(vkey, scancode, keys, buf, MP_ARRAY_SIZE(buf), 0);
+    } while (ret < 0);
+}
+
+static int to_unicode(UINT vkey, UINT scancode, const BYTE keys[256])
+{
+    // This wraps ToUnicode to be stateless and to return only one character
+
+    // Make the buffer 10 code units long to be safe, same as here:
+    // https://web.archive.org/web/20101013215215/http://blogs.msdn.com/b/michkap/archive/2006/03/24/559169.aspx
+    wchar_t buf[10] = { 0 };
+
+    // Dead keys aren't useful for key shortcuts, so clear the keyboard state
+    clear_keyboard_buffer();
+
+    int len = ToUnicode(vkey, scancode, keys, buf, MP_ARRAY_SIZE(buf), 0);
+
+    // Return the last complete UTF-16 code point. A negative return value
+    // indicates a dead key, however there should still be a non-combining
+    // version of the key in the buffer.
+    if (len < 0)
+        len = -len;
+    if (len >= 2 && IS_SURROGATE_PAIR(buf[len - 2], buf[len - 1]))
+        return decode_surrogate_pair(buf[len - 2], buf[len - 1]);
+    if (len >= 1)
+        return buf[len - 1];
+
+    return 0;
+}
+
+static int decode_key(struct vo *vo, UINT vkey, UINT scancode)
+{
+    BYTE keys[256];
+    GetKeyboardState(keys);
+
+    // If mp_input_use_alt_gr is false, detect and remove AltGr so normal
+    // characters are generated. Note that AltGr is represented as
+    // LCONTROL+RMENU on Windows.
+    if ((keys[VK_RMENU] & 0x80) && (keys[VK_LCONTROL] & 0x80) &&
+        !mp_input_use_alt_gr(vo->input_ctx))
+    {
+        keys[VK_RMENU] = keys[VK_LCONTROL] = 0;
+        keys[VK_MENU] = keys[VK_LMENU];
+        keys[VK_CONTROL] = keys[VK_RCONTROL];
+    }
+
+    int c = to_unicode(vkey, scancode, keys);
+
+    // Some shift states prevent ToUnicode from working or cause it to produce
+    // control characters. If this is detected, remove modifiers until it
+    // starts producing normal characters.
+    if (c < 0x20 && (keys[VK_MENU] & 0x80)) {
+        keys[VK_LMENU] = keys[VK_RMENU] = keys[VK_MENU] = 0;
+        c = to_unicode(vkey, scancode, keys);
+    }
+    if (c < 0x20 && (keys[VK_CONTROL] & 0x80)) {
+        keys[VK_LCONTROL] = keys[VK_RCONTROL] = keys[VK_CONTROL] = 0;
+        c = to_unicode(vkey, scancode, keys);
+    }
+    if (c < 0x20)
+        return 0;
+
+    // Decode lone UTF-16 surrogates (VK_PACKET can generate these)
+    if (c < 0x10000)
+        return decode_utf16(vo, c);
+    return c;
+}
+
+static void handle_key_down(struct vo *vo, UINT vkey, UINT scancode)
+{
+    // Ignore key repeat
+    if (scancode & KF_REPEAT)
+        return;
+
+    int mpkey = mp_w32_vkey_to_mpkey(vkey, scancode & KF_EXTENDED);
+    if (!mpkey) {
+        mpkey = decode_key(vo, vkey, scancode & (0xff | KF_EXTENDED));
+        if (!mpkey)
+            return;
+    }
+
+    mp_input_put_key(vo->input_ctx, mpkey | mod_state(vo) | MP_KEY_STATE_DOWN);
+}
+
+static void handle_key_up(struct vo *vo, UINT vkey, UINT scancode)
+{
+    switch (vkey) {
+    case VK_MENU:
+    case VK_CONTROL:
+    case VK_SHIFT:
+        break;
+    default:
+        // Releasing all keys on key-up is simpler and ensures no keys can be
+        // get "stuck." This matches the behaviour of other VOs.
+        mp_input_put_key(vo->input_ctx, MP_INPUT_RELEASE_ALL);
+    }
+}
+
+static bool handle_char(struct vo *vo, wchar_t wc)
+{
+    int c = decode_utf16(vo, wc);
+
+    if (c == 0)
+        return true;
+    if (c < 0x20)
+        return false;
+
+    mp_input_put_key(vo->input_ctx, c | mod_state(vo));
+    return true;
 }
 
 static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam,
@@ -127,192 +458,142 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam,
     int mouse_button = 0;
 
     switch (message) {
-        case WM_ERASEBKGND: // no need to erase background seperately
-            return 1;
-        case WM_PAINT:
-            w32->event_flags |= VO_EVENT_EXPOSE;
-            break;
-        case WM_MOVE: {
-            POINT p = {0};
-            ClientToScreen(w32->window, &p);
-            w32->window_x = p.x;
-            w32->window_y = p.y;
-            MP_VERBOSE(vo, "move window: %d:%d\n",
-                   w32->window_x, w32->window_y);
-            break;
+    case WM_ERASEBKGND: // no need to erase background seperately
+        return 1;
+    case WM_PAINT:
+        w32->event_flags |= VO_EVENT_EXPOSE;
+        break;
+    case WM_MOVE: {
+        POINT p = {0};
+        ClientToScreen(w32->window, &p);
+        w32->window_x = p.x;
+        w32->window_y = p.y;
+        MP_VERBOSE(vo, "move window: %d:%d\n",
+                w32->window_x, w32->window_y);
+        break;
+    }
+    case WM_SIZE: {
+        w32->event_flags |= VO_EVENT_RESIZE;
+        RECT r;
+        GetClientRect(w32->window, &r);
+        vo->dwidth = r.right;
+        vo->dheight = r.bottom;
+        MP_VERBOSE(vo, "resize window: %d:%d\n",
+                vo->dwidth, vo->dheight);
+        break;
+    }
+    case WM_SIZING:
+        if (vo->opts->keepaspect && !vo->opts->fullscreen &&
+            vo->opts->WinID < 0)
+        {
+            RECT *rc = (RECT*)lParam;
+            // get client area of the windows if it had the rect rc
+            // (subtracting the window borders)
+            RECT r = *rc;
+            subtract_window_borders(w32->window, &r);
+            int c_w = r.right - r.left, c_h = r.bottom - r.top;
+            float aspect = w32->o_dwidth / (float) MPMAX(w32->o_dheight, 1);
+            int d_w = c_h * aspect - c_w;
+            int d_h = c_w / aspect - c_h;
+            int d_corners[4] = { d_w, d_h, -d_w, -d_h };
+            int corners[4] = { rc->left, rc->top, rc->right, rc->bottom };
+            int corner = get_resize_border(wParam);
+            if (corner >= 0)
+                corners[corner] -= d_corners[corner];
+            *rc = (RECT) { corners[0], corners[1], corners[2], corners[3] };
+            return TRUE;
         }
-        case WM_SIZE: {
-            w32->event_flags |= VO_EVENT_RESIZE;
-            RECT r;
-            GetClientRect(w32->window, &r);
-            vo->dwidth = r.right;
-            vo->dheight = r.bottom;
-            MP_VERBOSE(vo, "resize window: %d:%d\n",
-                   vo->dwidth, vo->dheight);
-            break;
-        }
-        case WM_SIZING:
-            if (vo->opts->keepaspect && !vo->opts->fullscreen &&
-                vo->opts->WinID < 0)
-            {
-                RECT *rc = (RECT*)lParam;
-                // get client area of the windows if it had the rect rc
-                // (subtracting the window borders)
-                RECT r = *rc;
-                subtract_window_borders(w32->window, &r);
-                int c_w = r.right - r.left, c_h = r.bottom - r.top;
-                float aspect = w32->o_dwidth / (float) MPMAX(w32->o_dheight, 1);
-                int d_w = c_h * aspect - c_w;
-                int d_h = c_w / aspect - c_h;
-                int d_corners[4] = { d_w, d_h, -d_w, -d_h };
-                int corners[4] = { rc->left, rc->top, rc->right, rc->bottom };
-                int corner = get_resize_border(wParam);
-                if (corner >= 0)
-                    corners[corner] -= d_corners[corner];
-                *rc = (RECT) { corners[0], corners[1], corners[2], corners[3] };
-                return TRUE;
+        break;
+    case WM_CLOSE:
+        mp_input_put_key(vo->input_ctx, MP_KEY_CLOSE_WIN);
+        break;
+    case WM_SYSCOMMAND:
+        switch (wParam) {
+        case SC_SCREENSAVE:
+        case SC_MONITORPOWER:
+            if (w32->disable_screensaver) {
+                MP_VERBOSE(vo, "win32: killing screensaver\n");
+                return 0;
             }
             break;
-        case WM_CLOSE:
-            mp_input_put_key(vo->input_ctx, MP_KEY_CLOSE_WIN);
-            break;
-        case WM_DROPFILES: {
-            HDROP hDrop = (HDROP)wParam;
-            UINT nfiles = DragQueryFileW(hDrop, 0xFFFFFFFF, NULL, 0);
-
-            for (UINT i; i < nfiles; i++) {
-                UINT len = DragQueryFileW(hDrop, i, NULL, 0);
-                wchar_t *buf = talloc_array(NULL, wchar_t, len + 1);
-
-                if (DragQueryFileW(hDrop, i, buf, len + 1) == len) {
-                    char *fname = mp_to_utf8(NULL, buf);
-
-                    const char *cmd[] = {
-                        "raw",
-                        "loadfile",
-                        fname,
-                        /* Start playing the dropped files right away */
-                        (i == 0) ? "replace" : "append"
-                    };
-
-                    MP_VERBOSE(vo, "win32: received dropped file: %s\n", fname);
-                    mp_cmd_t *cmdt = mp_input_parse_cmd_strv(vo->log,
-                                                             MP_ON_OSD_AUTO,
-                                                             cmd, "<win32>");
-                    mp_input_queue_cmd(vo->input_ctx, cmdt);
-
-                    talloc_free(fname);
-                } else {
-                    MP_ERR(vo, "win32: error getting dropped file name\n");
-                }
-
-                talloc_free(buf);
-            }
-
-            DragFinish(hDrop);
+        }
+        break;
+    case WM_SYSKEYDOWN:
+    case WM_KEYDOWN:
+        handle_key_down(vo, wParam, HIWORD(lParam));
+        if (wParam == VK_F10)
             return 0;
+        break;
+    case WM_SYSKEYUP:
+    case WM_KEYUP:
+        handle_key_up(vo, wParam, HIWORD(lParam));
+        if (wParam == VK_F10)
+            return 0;
+        break;
+    case WM_CHAR:
+    case WM_SYSCHAR:
+        if (handle_char(vo, wParam))
+            return 0;
+        break;
+    case WM_KILLFOCUS:
+        mp_input_put_key(vo->input_ctx, MP_INPUT_RELEASE_ALL);
+        break;
+    case WM_SETCURSOR:
+        if (LOWORD(lParam) == HTCLIENT && !w32->cursor_visible) {
+            SetCursor(NULL);
+            return TRUE;
         }
-        case WM_SYSCOMMAND:
-            switch (wParam) {
-            case SC_SCREENSAVE:
-            case SC_MONITORPOWER:
-                if (w32->disable_screensaver) {
-                    MP_VERBOSE(vo, "win32: killing screensaver\n");
-                    return 0;
-                }
-                break;
-            }
-            break;
-        case WM_KEYDOWN:
-        case WM_SYSKEYDOWN: {
-            int mpkey = lookup_keymap_table(vk_map, wParam);
-            if (mpkey)
-                mp_input_put_key(vo->input_ctx, mpkey | mod_state(vo));
-            if (wParam == VK_F10)
-                return 0;
-            break;
+        break;
+    case WM_MOUSELEAVE:
+        w32->tracking = FALSE;
+        mp_input_put_key(vo->input_ctx, MP_KEY_MOUSE_LEAVE);
+        break;
+    case WM_MOUSEMOVE: {
+        if (!w32->tracking)
+            w32->tracking = TrackMouseEvent(&w32->trackEvent);
+        // Windows can send spurious mouse events, which would make the mpv
+        // core unhide the mouse cursor on completely unrelated events. See:
+        //  https://blogs.msdn.com/b/oldnewthing/archive/2003/10/01/55108.aspx
+        int x = GET_X_LPARAM(lParam);
+        int y = GET_Y_LPARAM(lParam);
+        if (x != w32->mouse_x || y != w32->mouse_y) {
+            w32->mouse_x = x;
+            w32->mouse_y = y;
+            vo_mouse_movement(vo, x, y);
         }
-        case WM_CHAR:
-        case WM_SYSCHAR: {
-            int mods = mod_state(vo);
-            int code = wParam;
-            // Windows enables Ctrl+Alt when AltGr (VK_RMENU) is pressed.
-            // E.g. AltGr+9 on a German keyboard would yield Ctrl+Alt+[
-            // Warning: wine handles this differently. Don't test this on wine!
-            if (key_state(vo, VK_RMENU) && mp_input_use_alt_gr(vo->input_ctx))
-                mods &= ~(MP_KEY_MODIFIER_CTRL | MP_KEY_MODIFIER_ALT);
-            // Apparently Ctrl+A to Ctrl+Z is special cased, and produces
-            // character codes from 1-26. Work it around.
-            // Also, enter/return (including the keypad variant) and CTRL+J both
-            // map to wParam==10. As a workaround, check VK_RETURN to
-            // distinguish these two key combinations.
-            if ((mods & MP_KEY_MODIFIER_CTRL) && code >= 1 && code <= 26
-                && !key_state(vo, VK_RETURN))
-                code = code - 1 + (mods & MP_KEY_MODIFIER_SHIFT ? 'A' : 'a');
-            if (code >= 32 && code < (1<<21)) {
-                mp_input_put_key(vo->input_ctx, code | mods);
-                // At least with Alt+char, not calling DefWindowProcW stops
-                // Windows from emitting a beep.
-                return 0;
-            }
-            break;
-        }
-        case WM_SETCURSOR:
-            if (LOWORD(lParam) == HTCLIENT && !w32->cursor_visible) {
-                SetCursor(NULL);
-                return TRUE;
-            }
-            break;
-        case WM_MOUSELEAVE:
-            w32->tracking = FALSE;
-            mp_input_put_key(vo->input_ctx, MP_KEY_MOUSE_LEAVE);
-            break;
-        case WM_MOUSEMOVE: {
-            if (!w32->tracking)
-                w32->tracking = TrackMouseEvent(&w32->trackEvent);
-            // Windows can send spurious mouse events, which would make the mpv
-            // core unhide the mouse cursor on completely unrelated events. See:
-            //  https://blogs.msdn.com/b/oldnewthing/archive/2003/10/01/55108.aspx
-            int x = GET_X_LPARAM(lParam);
-            int y = GET_Y_LPARAM(lParam);
-            if (x != w32->mouse_x || y != w32->mouse_y) {
-                w32->mouse_x = x;
-                w32->mouse_y = y;
-                vo_mouse_movement(vo, x, y);
-            }
-            break;
-        }
-        case WM_LBUTTONDOWN:
-            mouse_button = MP_MOUSE_BTN0 | MP_KEY_STATE_DOWN;
-            break;
-        case WM_LBUTTONUP:
-            mouse_button = MP_MOUSE_BTN0 | MP_KEY_STATE_UP;
-            break;
-        case WM_MBUTTONDOWN:
-            mouse_button = MP_MOUSE_BTN1 | MP_KEY_STATE_DOWN;
-            break;
-        case WM_MBUTTONUP:
-            mouse_button = MP_MOUSE_BTN1 | MP_KEY_STATE_UP;
-            break;
-        case WM_RBUTTONDOWN:
-            mouse_button = MP_MOUSE_BTN2 | MP_KEY_STATE_DOWN;
-            break;
-        case WM_RBUTTONUP:
-            mouse_button = MP_MOUSE_BTN2 | MP_KEY_STATE_UP;
-            break;
-        case WM_MOUSEWHEEL: {
-            int x = GET_WHEEL_DELTA_WPARAM(wParam);
-            mouse_button = x > 0 ? MP_MOUSE_BTN3 : MP_MOUSE_BTN4;
-            break;
-        }
-        case WM_XBUTTONDOWN:
-            mouse_button = HIWORD(wParam) == 1 ? MP_MOUSE_BTN5 : MP_MOUSE_BTN6;
-            mouse_button |= MP_KEY_STATE_DOWN;
-            break;
-        case WM_XBUTTONUP:
-            mouse_button = HIWORD(wParam) == 1 ? MP_MOUSE_BTN5 : MP_MOUSE_BTN6;
-            mouse_button |= MP_KEY_STATE_UP;
-            break;
+        break;
+    }
+    case WM_LBUTTONDOWN:
+        mouse_button = MP_MOUSE_BTN0 | MP_KEY_STATE_DOWN;
+        break;
+    case WM_LBUTTONUP:
+        mouse_button = MP_MOUSE_BTN0 | MP_KEY_STATE_UP;
+        break;
+    case WM_MBUTTONDOWN:
+        mouse_button = MP_MOUSE_BTN1 | MP_KEY_STATE_DOWN;
+        break;
+    case WM_MBUTTONUP:
+        mouse_button = MP_MOUSE_BTN1 | MP_KEY_STATE_UP;
+        break;
+    case WM_RBUTTONDOWN:
+        mouse_button = MP_MOUSE_BTN2 | MP_KEY_STATE_DOWN;
+        break;
+    case WM_RBUTTONUP:
+        mouse_button = MP_MOUSE_BTN2 | MP_KEY_STATE_UP;
+        break;
+    case WM_MOUSEWHEEL: {
+        int x = GET_WHEEL_DELTA_WPARAM(wParam);
+        mouse_button = x > 0 ? MP_MOUSE_BTN3 : MP_MOUSE_BTN4;
+        break;
+    }
+    case WM_XBUTTONDOWN:
+        mouse_button = HIWORD(wParam) == 1 ? MP_MOUSE_BTN5 : MP_MOUSE_BTN6;
+        mouse_button |= MP_KEY_STATE_DOWN;
+        break;
+    case WM_XBUTTONUP:
+        mouse_button = HIWORD(wParam) == 1 ? MP_MOUSE_BTN5 : MP_MOUSE_BTN6;
+        mouse_button |= MP_KEY_STATE_UP;
+        break;
     }
 
     if (mouse_button) {
@@ -345,6 +626,12 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam,
     return DefWindowProcW(hWnd, message, wParam, lParam);
 }
 
+static bool is_key_message(UINT msg)
+{
+    return msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN ||
+           msg == WM_KEYUP || msg == WM_SYSKEYUP;
+}
+
 /**
  * \brief Dispatch incoming window events and handle them.
  *
@@ -363,30 +650,41 @@ int vo_w32_check_events(struct vo *vo)
     struct vo_w32_state *w32 = vo->w32;
     MSG msg;
     w32->event_flags = 0;
+
     while (PeekMessageW(&msg, 0, 0, 0, PM_REMOVE)) {
-        TranslateMessage(&msg);
+        // Only send IME messages to TranslateMessage
+        if (is_key_message(msg.message) && msg.wParam == VK_PROCESSKEY)
+            TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
+
     if (vo->opts->WinID >= 0) {
         BOOL res;
         RECT r;
         POINT p;
         res = GetClientRect(w32->window, &r);
+
         if (res && (r.right != vo->dwidth || r.bottom != vo->dheight)) {
             vo->dwidth = r.right; vo->dheight = r.bottom;
             w32->event_flags |= VO_EVENT_RESIZE;
         }
+
         p.x = 0; p.y = 0;
         ClientToScreen(w32->window, &p);
+
         if (p.x != w32->window_x || p.y != w32->window_y) {
             w32->window_x = p.x; w32->window_y = p.y;
         }
+
         res = GetClientRect(WIN_ID_TO_HWND(vo->opts->WinID), &r);
+
         if (res && (r.right != vo->dwidth || r.bottom != vo->dheight))
             MoveWindow(w32->window, 0, 0, r.right, r.bottom, FALSE);
-        if (!IsWindow(WIN_ID_TO_HWND(vo->opts->WinID)))
+
+        if (!IsWindow(WIN_ID_TO_HWND(vo->opts->WinID))) {
             // Window has probably been closed, e.g. due to program crash
             mp_input_put_key(vo->input_ctx, MP_KEY_CLOSE_WIN);
+        }
     }
 
     return w32->event_flags;
@@ -397,75 +695,67 @@ static BOOL CALLBACK mon_enum(HMONITOR hmon, HDC hdc, LPRECT r, LPARAM p)
     struct vo *vo = (void*)p;
     struct vo_w32_state *w32 = vo->w32;
     // this defaults to the last screen if specified number does not exist
-    vo->xinerama_x = r->left;
-    vo->xinerama_y = r->top;
-    vo->opts->screenwidth = r->right - r->left;
-    vo->opts->screenheight = r->bottom - r->top;
+    w32->screenrc = (struct mp_rect){r->left, r->top, r->right, r->bottom};
+
     if (w32->mon_cnt == w32->mon_id)
         return FALSE;
+
     w32->mon_cnt++;
     return TRUE;
 }
 
-/**
- * \brief Update screen information.
- *
- * This function should be called in libvo's "control" callback
- * with parameter VOCTRL_UPDATE_SCREENINFO.
- * Note that this also enables the new API where geometry and aspect
- * calculations are done in video_out.c:config_video_out
- *
- * Global libvo variables changed:
- * xinerama_x
- * xinerama_y
- * vo_screenwidth
- * vo_screenheight
- */
 static void w32_update_xinerama_info(struct vo *vo)
 {
     struct vo_w32_state *w32 = vo->w32;
     struct mp_vo_opts *opts = vo->opts;
     int screen = opts->fullscreen ? opts->fsscreen_id : opts->screen_id;
-    vo->xinerama_x = vo->xinerama_y = 0;
+
     if (opts->fullscreen && screen == -2) {
-        int tmp;
-        vo->xinerama_x = GetSystemMetrics(SM_XVIRTUALSCREEN);
-        vo->xinerama_y = GetSystemMetrics(SM_YVIRTUALSCREEN);
-        tmp = GetSystemMetrics(SM_CXVIRTUALSCREEN);
-        if (tmp) vo->opts->screenwidth = tmp;
-        tmp = GetSystemMetrics(SM_CYVIRTUALSCREEN);
-        if (tmp) vo->opts->screenheight = tmp;
+        struct mp_rect rc = {
+            GetSystemMetrics(SM_XVIRTUALSCREEN),
+            GetSystemMetrics(SM_YVIRTUALSCREEN),
+            GetSystemMetrics(SM_CXVIRTUALSCREEN),
+            GetSystemMetrics(SM_CYVIRTUALSCREEN),
+        };
+        if (!rc.x1 || !rc.y1) {
+            rc.x0 = rc.y0 = 0;
+            rc.x1 = w32->screenrc.x1;
+            rc.y1 = w32->screenrc.y1;
+        }
+        rc.x1 += rc.x0;
+        rc.y1 += rc.y0;
+        w32->screenrc = rc;
     } else if (screen == -1) {
         MONITORINFO mi;
         HMONITOR m = MonitorFromWindow(w32->window, MONITOR_DEFAULTTOPRIMARY);
         mi.cbSize = sizeof(mi);
         GetMonitorInfoW(m, &mi);
-        vo->xinerama_x = mi.rcMonitor.left;
-        vo->xinerama_y = mi.rcMonitor.top;
-        vo->opts->screenwidth = mi.rcMonitor.right - mi.rcMonitor.left;
-        vo->opts->screenheight = mi.rcMonitor.bottom - mi.rcMonitor.top;
+        w32->screenrc = (struct mp_rect){
+            mi.rcMonitor.left, mi.rcMonitor.top,
+            mi.rcMonitor.right, mi.rcMonitor.bottom,
+        };
     } else if (screen >= 0) {
         w32->mon_cnt = 0;
         w32->mon_id = screen;
         EnumDisplayMonitors(NULL, NULL, mon_enum, (LONG_PTR)vo);
     }
-    aspect_save_screenres(vo, vo->opts->screenwidth,
-                          vo->opts->screenheight);
 }
 
 static void updateScreenProperties(struct vo *vo)
 {
+    struct vo_w32_state *w32 = vo->w32;
+
     DEVMODE dm;
     dm.dmSize = sizeof dm;
     dm.dmDriverExtra = 0;
     dm.dmFields = DM_BITSPERPEL | DM_PELSWIDTH | DM_PELSHEIGHT;
+
     if (!EnumDisplaySettings(0, ENUM_CURRENT_SETTINGS, &dm)) {
         MP_ERR(vo, "win32: unable to enumerate display settings!\n");
         return;
     }
 
-    vo->opts->screenwidth = dm.dmPelsWidth;
-    vo->opts->screenheight = dm.dmPelsHeight;
+    w32->screenrc = (struct mp_rect){0, 0, dm.dmPelsWidth, dm.dmPelsHeight};
     w32_update_xinerama_info(vo);
 }
 
@@ -509,10 +799,11 @@ static int reinit_window_state(struct vo *vo)
             MP_VERBOSE(vo, "save window bounds: %d:%d:%d:%d\n",
                    w32->prev_x, w32->prev_y, w32->prev_width, w32->prev_height);
         }
-        vo->dwidth = vo->opts->screenwidth;
-        vo->dheight = vo->opts->screenheight;
-        w32->window_x = vo->xinerama_x;
-        w32->window_y = vo->xinerama_y;
+
+        w32->window_x = w32->screenrc.x0;
+        w32->window_y = w32->screenrc.y0;
+        vo->dwidth = w32->screenrc.x1 - w32->screenrc.x0;
+        vo->dheight = w32->screenrc.y1 - w32->screenrc.y0;
         style &= ~WS_OVERLAPPEDWINDOW;
     } else {
         if (toggle_fs) {
@@ -559,8 +850,7 @@ static int reinit_window_state(struct vo *vo)
  *
  * \return 1 - Success, 0 - Failure
  */
-int vo_w32_config(struct vo *vo, uint32_t width, uint32_t height,
-                  uint32_t flags)
+int vo_w32_config(struct vo *vo, uint32_t flags)
 {
     struct vo_w32_state *w32 = vo->w32;
     PIXELFORMATDESCRIPTOR pfd;
@@ -571,12 +861,15 @@ int vo_w32_config(struct vo *vo, uint32_t width, uint32_t height,
     pfd.nSize = sizeof pfd;
     pfd.nVersion = 1;
     pfd.dwFlags = PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER;
+
     if (flags & VOFLAG_STEREO)
         pfd.dwFlags |= PFD_STEREO;
+
     pfd.iPixelType = PFD_TYPE_RGBA;
     pfd.cColorBits = 24;
     pfd.iLayerType = PFD_MAIN_PLANE;
     pf = ChoosePixelFormat(vo_hdc, &pfd);
+
     if (!pf) {
         MP_ERR(vo, "win32: unable to select a valid pixel format!\n");
         ReleaseDC(w32->window, vo_hdc);
@@ -590,10 +883,14 @@ int vo_w32_config(struct vo *vo, uint32_t width, uint32_t height,
     if (flags & VOFLAG_HIDDEN)
         return 1;
 
-    bool reset_size = !(w32->o_dwidth == width && w32->o_dheight == height);
+    struct vo_win_geometry geo;
+    vo_calc_window_geometry(vo, &w32->screenrc, &geo);
+    vo_apply_window_geometry(vo, &geo);
 
-    w32->o_dwidth = width;
-    w32->o_dheight = height;
+    bool reset_size = w32->o_dwidth != vo->dwidth || w32->o_dheight != vo->dheight;
+
+    w32->o_dwidth = vo->dwidth;
+    w32->o_dheight = vo->dheight;
 
     // the desired size is ignored in wid mode, it always matches the window size.
     if (vo->opts->WinID < 0) {
@@ -605,19 +902,15 @@ int vo_w32_config(struct vo *vo, uint32_t width, uint32_t height,
             vo->dwidth = r.right;
             vo->dheight = r.bottom;
         } else {
-            // first vo_config call; vo_config() will always set vo_dx/dy so
-            // that the window is centered on the screen, and this is the only
-            // time we actually want to use vo_dy/dy (this is not sane, and
-            // vo.h should provide a function to query the initial
-            // window position instead)
             w32->window_bounds_initialized = true;
             reset_size = true;
-            w32->window_x = w32->prev_x = vo->dx;
-            w32->window_y = w32->prev_y = vo->dy;
+            w32->window_x = w32->prev_x = geo.win.x0;
+            w32->window_y = w32->prev_y = geo.win.y0;
         }
+
         if (reset_size) {
-            w32->prev_width = vo->dwidth = width;
-            w32->prev_height = vo->dheight = height;
+            w32->prev_width = vo->dwidth = w32->o_dwidth;
+            w32->prev_height = vo->dheight = w32->o_dheight;
         }
     } else {
         RECT r;
@@ -637,11 +930,6 @@ int vo_w32_config(struct vo *vo, uint32_t width, uint32_t height,
  * It also initializes the framework's internal variables. The function should
  * be called after your own preinit initialization and you shouldn't do any
  * window management on your own.
- *
- * Global libvo variables changed:
- * vo_w32_window
- * vo_screenwidth
- * vo_screenheight
  *
  * \return 1 = Success, 0 = Failure
  */
@@ -692,7 +980,12 @@ int vo_w32_init(struct vo *vo)
         return 0;
     }
 
-    DragAcceptFiles(w32->window, TRUE);
+    if (OleInitialize(NULL) == S_OK) {
+        fmtetc_url.cfFormat = (CLIPFORMAT)RegisterClipboardFormat(TEXT("UniformResourceLocator"));
+        DropTarget* dropTarget = talloc(NULL, DropTarget);
+        DropTarget_Init(dropTarget, vo);
+        RegisterDragDrop(w32->window, &dropTarget->iface);
+    }
 
     w32->tracking   = FALSE;
     w32->trackEvent = (TRACKMOUSEEVENT){
@@ -703,15 +996,13 @@ int vo_w32_init(struct vo *vo)
 
     if (vo->opts->WinID >= 0)
         EnableWindow(w32->window, 0);
+
     w32->cursor_visible = true;
 
     // we don't have proper event handling
     vo->wakeup_period = 0.02;
 
     updateScreenProperties(vo);
-
-    MP_VERBOSE(vo, "win32: running at %dx%d\n",
-           vo->opts->screenwidth, vo->opts->screenheight);
 
     return 1;
 }
@@ -778,19 +1069,19 @@ int vo_w32_control(struct vo *vo, int *events, int request, void *arg)
         vo_w32_border(vo);
         *events |= VO_EVENT_RESIZE;
         return VO_TRUE;
-    case VOCTRL_UPDATE_SCREENINFO:
-        w32_update_xinerama_info(vo);
-        return VO_TRUE;
     case VOCTRL_GET_WINDOW_SIZE: {
         int *s = arg;
+
         if (!w32->window_bounds_initialized)
             return VO_FALSE;
+
         s[0] = w32->current_fs ? w32->prev_width : vo->dwidth;
         s[1] = w32->current_fs ? w32->prev_height : vo->dheight;
         return VO_TRUE;
     }
     case VOCTRL_SET_WINDOW_SIZE: {
         int *s = arg;
+
         if (!w32->window_bounds_initialized)
             return VO_FALSE;
         if (w32->current_fs) {
@@ -800,6 +1091,7 @@ int vo_w32_control(struct vo *vo, int *events, int request, void *arg)
             vo->dwidth = s[0];
             vo->dheight = s[1];
         }
+
         reinit_window_state(vo);
         *events |= VO_EVENT_RESIZE;
         return VO_TRUE;
@@ -843,8 +1135,12 @@ void vo_w32_uninit(struct vo *vo)
 {
     struct vo_w32_state *w32 = vo->w32;
     MP_VERBOSE(vo, "win32: uninit\n");
+
     if (!w32)
         return;
+
+    RevokeDragDrop(w32->window);
+    OleUninitialize();
     SetThreadExecutionState(ES_CONTINUOUS);
     DestroyWindow(w32->window);
     UnregisterClassW(classname, 0);

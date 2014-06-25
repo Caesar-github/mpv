@@ -51,14 +51,28 @@ struct priv {
 static void uninit(struct dec_audio *da);
 static int decode_new_packet(struct dec_audio *da);
 
-#define OPT_BASE_STRUCT struct MPOpts
+#define OPT_BASE_STRUCT struct ad_lavc_params
+struct ad_lavc_params {
+    float ac3drc;
+    int downmix;
+    int threads;
+    char *avopt;
+};
 
-const m_option_t ad_lavc_decode_opts_conf[] = {
-    OPT_FLOATRANGE("ac3drc", ad_lavc_param.ac3drc, 0, 0, 2),
-    OPT_FLAG("downmix", ad_lavc_param.downmix, 0),
-    OPT_INTRANGE("threads", ad_lavc_param.threads, 0, 1, 16),
-    OPT_STRING("o", ad_lavc_param.avopt, 0),
-    {0}
+const struct m_sub_options ad_lavc_conf = {
+    .opts = (const m_option_t[]) {
+        OPT_FLOATRANGE("ac3drc", ac3drc, 0, 0, 2),
+        OPT_FLAG("downmix", downmix, 0),
+        OPT_INTRANGE("threads", threads, 0, 1, 16),
+        OPT_STRING("o", avopt, 0),
+        {0}
+    },
+    .size = sizeof(struct ad_lavc_params),
+    .defaults = &(const struct ad_lavc_params){
+        .ac3drc = 1.,
+        .downmix = 1,
+        .threads = 1,
+    },
 };
 
 struct pcm_map
@@ -179,7 +193,7 @@ static void set_from_wf(AVCodecContext *avctx, MP_WAVEFORMATEX *wf)
 static int init(struct dec_audio *da, const char *decoder)
 {
     struct MPOpts *mpopts = da->opts;
-    struct ad_lavc_param *opts = &mpopts->ad_lavc_param;
+    struct ad_lavc_params *opts = mpopts->ad_lavc_params;
     AVCodecContext *lavc_context;
     AVCodec *lavc_codec;
     struct sh_stream *sh = da->header;
@@ -205,17 +219,14 @@ static int init(struct dec_audio *da, const char *decoder)
 
     lavc_context = avcodec_alloc_context3(lavc_codec);
     ctx->avctx = lavc_context;
-    ctx->avframe = avcodec_alloc_frame();
+    ctx->avframe = av_frame_alloc();
+    lavc_context->refcounted_frames = 1;
     lavc_context->codec_type = AVMEDIA_TYPE_AUDIO;
     lavc_context->codec_id = lavc_codec->id;
 
     if (opts->downmix) {
         lavc_context->request_channel_layout =
             mp_chmap_to_lavc(&mpopts->audio_output_channels);
-        // Compatibility for Libav 9
-        av_opt_set_int(lavc_context, "request_channels",
-                       mpopts->audio_output_channels.num,
-                       AV_OPT_SEARCH_CHILDREN);
     }
 
     // Always try to set - option only exists for AC3 at the moment
@@ -232,7 +243,7 @@ static int init(struct dec_audio *da, const char *decoder)
 
     lavc_context->codec_tag = sh->format;
     lavc_context->sample_rate = sh_audio->samplerate;
-    lavc_context->bit_rate = sh_audio->i_bps * 8;
+    lavc_context->bit_rate = sh_audio->bitrate;
     lavc_context->channel_layout = mp_chmap_to_lavc(&sh_audio->channels);
 
     if (sh_audio->wf)
@@ -273,9 +284,10 @@ static int init(struct dec_audio *da, const char *decoder)
         }
     }
 
-    da->i_bps = lavc_context->bit_rate / 8;
-    if (sh_audio->wf && sh_audio->wf->nAvgBytesPerSec)
-        da->i_bps = sh_audio->wf->nAvgBytesPerSec;
+    if (lavc_context->bit_rate != 0)
+        da->bitrate = lavc_context->bit_rate;
+    else if (sh_audio->wf && sh_audio->wf->nAvgBytesPerSec)
+        da->bitrate = sh_audio->wf->nAvgBytesPerSec * 8;
 
     return 1;
 }
@@ -293,7 +305,7 @@ static void uninit(struct dec_audio *da)
         av_freep(&lavc_context->extradata);
         av_freep(&lavc_context);
     }
-    avcodec_free_frame(&ctx->avframe);
+    av_frame_free(&ctx->avframe);
 }
 
 static int control(struct dec_audio *da, int cmd, void *arg)
@@ -335,6 +347,7 @@ static int decode_new_packet(struct dec_audio *da)
     }
 
     int got_frame = 0;
+    av_frame_unref(priv->avframe);
     int ret = avcodec_decode_audio4(avctx, priv->avframe, &got_frame, &pkt);
     if (mpkt) {
         // At least "shorten" decodes sub-frames, instead of the whole packet.

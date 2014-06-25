@@ -21,6 +21,7 @@
 #include <string.h>
 #include <math.h>
 #include <assert.h>
+#include <pthread.h>
 
 #include "config.h"
 #include "demux/demux.h"
@@ -30,33 +31,34 @@
 #include "common/global.h"
 #include "common/msg.h"
 #include "misc/charset_conv.h"
+#include "osdep/threads.h"
 
 extern const struct sd_functions sd_ass;
 extern const struct sd_functions sd_lavc;
-extern const struct sd_functions sd_spu;
 extern const struct sd_functions sd_movtext;
 extern const struct sd_functions sd_srt;
 extern const struct sd_functions sd_microdvd;
 extern const struct sd_functions sd_lavf_srt;
 extern const struct sd_functions sd_lavc_conv;
 
-static const struct sd_functions *sd_list[] = {
+static const struct sd_functions *const sd_list[] = {
 #if HAVE_LIBASS
     &sd_ass,
 #endif
     &sd_lavc,
-    &sd_spu,
     &sd_movtext,
     &sd_srt,
-    &sd_microdvd,
     &sd_lavf_srt,
     &sd_lavc_conv,
+    &sd_microdvd,
     NULL
 };
 
 #define MAX_NUM_SD 3
 
 struct dec_sub {
+    pthread_mutex_t lock;
+
     struct mp_log *log;
     struct MPOpts *opts;
     struct sd init_sd;
@@ -73,11 +75,28 @@ struct packet_list {
     int num_packets;
 };
 
+
+void sub_lock(struct dec_sub *sub)
+{
+    pthread_mutex_lock(&sub->lock);
+}
+
+void sub_unlock(struct dec_sub *sub)
+{
+    pthread_mutex_unlock(&sub->lock);
+}
+
+// Thread-safety of the returned object: all functions are thread-safe,
+// except sub_get_bitmaps() and sub_get_text(). Decoder backends (sd_*)
+// do not need to acquire locks.
 struct dec_sub *sub_create(struct mpv_global *global)
 {
     struct dec_sub *sub = talloc_zero(NULL, struct dec_sub);
     sub->log = mp_log_new(sub, global->log, "sub");
     sub->opts = global->opts;
+
+    mpthread_mutex_init_recursive(&sub->lock);
+
     return sub;
 }
 
@@ -97,12 +116,16 @@ void sub_destroy(struct dec_sub *sub)
     if (!sub)
         return;
     sub_uninit(sub);
+    pthread_mutex_destroy(&sub->lock);
     talloc_free(sub);
 }
 
 bool sub_is_initialized(struct dec_sub *sub)
 {
-    return !!sub->num_sd;
+    pthread_mutex_lock(&sub->lock);
+    bool r = !!sub->num_sd;
+    pthread_mutex_unlock(&sub->lock);
+    return r;
 }
 
 static struct sd *sub_get_last_sd(struct dec_sub *sub)
@@ -112,26 +135,34 @@ static struct sd *sub_get_last_sd(struct dec_sub *sub)
 
 void sub_set_video_res(struct dec_sub *sub, int w, int h)
 {
+    pthread_mutex_lock(&sub->lock);
     sub->init_sd.sub_video_w = w;
     sub->init_sd.sub_video_h = h;
+    pthread_mutex_unlock(&sub->lock);
 }
 
 void sub_set_video_fps(struct dec_sub *sub, double fps)
 {
+    pthread_mutex_lock(&sub->lock);
     sub->video_fps = fps;
+    pthread_mutex_unlock(&sub->lock);
 }
 
 void sub_set_extradata(struct dec_sub *sub, void *data, int data_len)
 {
+    pthread_mutex_lock(&sub->lock);
     sub->init_sd.extradata = data_len ? talloc_memdup(sub, data, data_len) : NULL;
     sub->init_sd.extradata_len = data_len;
+    pthread_mutex_unlock(&sub->lock);
 }
 
 void sub_set_ass_renderer(struct dec_sub *sub, struct ass_library *ass_library,
                           struct ass_renderer *ass_renderer)
 {
+    pthread_mutex_lock(&sub->lock);
     sub->init_sd.ass_library = ass_library;
     sub->init_sd.ass_renderer = ass_renderer;
+    pthread_mutex_unlock(&sub->lock);
 }
 
 static void print_chain(struct dec_sub *sub)
@@ -170,11 +201,12 @@ void sub_init_from_sh(struct dec_sub *sub, struct sh_stream *sh)
     assert(!sub->num_sd);
     assert(sh && sh->sub);
 
+    pthread_mutex_lock(&sub->lock);
+
     if (sh->sub->extradata && !sub->init_sd.extradata)
         sub_set_extradata(sub, sh->sub->extradata, sh->sub->extradata_len);
     struct sd init_sd = sub->init_sd;
     init_sd.codec = sh->codec;
-    init_sd.ass_track = sh->sub->track;
     init_sd.sub_stream_w = sh->sub->w;
     init_sd.sub_stream_h = sh->sub->h;
 
@@ -191,6 +223,7 @@ void sub_init_from_sh(struct dec_sub *sub, struct sh_stream *sh)
         // Try adding new converters until a decoder is reached
         if (sd->driver->get_bitmaps || sd->driver->get_text) {
             print_chain(sub);
+            pthread_mutex_unlock(&sub->lock);
             return;
         }
         init_sd = (struct sd) {
@@ -206,6 +239,7 @@ void sub_init_from_sh(struct dec_sub *sub, struct sh_stream *sh)
     sub_uninit(sub);
     MP_ERR(sub, "Could not find subtitle decoder for format '%s'.\n",
            sh->codec ? sh->codec : "<unknown>");
+    pthread_mutex_unlock(&sub->lock);
 }
 
 static struct demux_packet *get_decoded_packet(struct sd *sd)
@@ -264,7 +298,9 @@ static void decode_chain_recode(struct dec_sub *sub, struct sd **sd, int num_sd,
 
 void sub_decode(struct dec_sub *sub, struct demux_packet *packet)
 {
+    pthread_mutex_lock(&sub->lock);
     decode_chain_recode(sub, sub->sd, sub->num_sd, packet);
+    pthread_mutex_unlock(&sub->lock);
 }
 
 static const char *guess_sub_cp(struct mp_log *log, struct packet_list *subs,
@@ -375,8 +411,12 @@ bool sub_read_all_packets(struct dec_sub *sub, struct sh_stream *sh)
     assert(sh && sh->sub);
     struct MPOpts *opts = sub->opts;
 
-    if (!sub_accept_packets_in_advance(sub) || sh->sub->track || sub->num_sd < 1)
+    pthread_mutex_lock(&sub->lock);
+
+    if (!sub_accept_packets_in_advance(sub) || sub->num_sd < 1) {
+        pthread_mutex_unlock(&sub->lock);
         return false;
+    }
 
     struct packet_list *subs = talloc_zero(NULL, struct packet_list);
 
@@ -420,9 +460,11 @@ bool sub_read_all_packets(struct dec_sub *sub, struct sh_stream *sh)
 
     double sub_speed = 1.0;
 
-    // 23.976 FPS is used as default timebase for frame based formats
-    if (sub->video_fps && sh->sub->frame_based)
-        sub_speed *= 23.976 / sub->video_fps;
+    if (sub->video_fps && sh->sub->frame_based > 0) {
+        MP_VERBOSE(sub, "Frame based format, dummy FPS: %f, video FPS: %f\n",
+                   sh->sub->frame_based, sub->video_fps);
+        sub_speed *= sh->sub->frame_based / sub->video_fps;
+    }
 
     if (opts->sub_fps && sub->video_fps)
         sub_speed *= opts->sub_fps / sub->video_fps;
@@ -432,7 +474,7 @@ bool sub_read_all_packets(struct dec_sub *sub, struct sh_stream *sh)
     if (sub_speed != 1.0)
         multiply_timings(subs, sub_speed);
 
-    if (!opts->suboverlap_enabled)
+    if (opts->sub_fix_timing)
         fix_overlaps_and_gaps(subs);
 
     if (sh->codec && strcmp(sh->codec, "microdvd") == 0) {
@@ -448,17 +490,24 @@ bool sub_read_all_packets(struct dec_sub *sub, struct sh_stream *sh)
 
     add_sub_list(sub, preprocess, subs);
 
+    pthread_mutex_unlock(&sub->lock);
     talloc_free(subs);
     return true;
 }
 
 bool sub_accept_packets_in_advance(struct dec_sub *sub)
 {
+    pthread_mutex_lock(&sub->lock);
     // Converters are assumed to always accept packets in advance
     struct sd *sd = sub_get_last_sd(sub);
-    return sd && sd->driver->accept_packets_in_advance;
+    bool r = sd && sd->driver->accept_packets_in_advance;
+    pthread_mutex_unlock(&sub->lock);
+    return r;
 }
 
+// You must call sub_lock/sub_unlock if more than 1 thread access sub.
+// The issue is that *res will contain decoder allocated data, which might
+// be deallocated on the next decoder access.
 void sub_get_bitmaps(struct dec_sub *sub, struct mp_osd_res dim, double pts,
                      struct sub_bitmaps *res)
 {
@@ -474,12 +523,17 @@ void sub_get_bitmaps(struct dec_sub *sub, struct mp_osd_res dim, double pts,
 
 bool sub_has_get_text(struct dec_sub *sub)
 {
+    pthread_mutex_lock(&sub->lock);
     struct sd *sd = sub_get_last_sd(sub);
-    return sd && sd->driver->get_text;
+    bool r = sd && sd->driver->get_text;
+    pthread_mutex_unlock(&sub->lock);
+    return r;
 }
 
+// See sub_get_bitmaps() for locking requirements.
 char *sub_get_text(struct dec_sub *sub, double pts)
 {
+    pthread_mutex_lock(&sub->lock);
     struct MPOpts *opts = sub->opts;
     struct sd *sd = sub_get_last_sd(sub);
     char *text = NULL;
@@ -487,27 +541,33 @@ char *sub_get_text(struct dec_sub *sub, double pts)
         if (sd->driver->get_text)
             text = sd->driver->get_text(sd, pts);
     }
+    pthread_mutex_unlock(&sub->lock);
     return text;
 }
 
 void sub_reset(struct dec_sub *sub)
 {
+    pthread_mutex_lock(&sub->lock);
     for (int n = 0; n < sub->num_sd; n++) {
         if (sub->sd[n]->driver->reset)
             sub->sd[n]->driver->reset(sub->sd[n]);
     }
+    pthread_mutex_unlock(&sub->lock);
 }
 
 int sub_control(struct dec_sub *sub, enum sd_ctrl cmd, void *arg)
 {
+    int r = CONTROL_UNKNOWN;
+    pthread_mutex_lock(&sub->lock);
     for (int n = 0; n < sub->num_sd; n++) {
         if (sub->sd[n]->driver->control) {
-            int r = sub->sd[n]->driver->control(sub->sd[n], cmd, arg);
+            r = sub->sd[n]->driver->control(sub->sd[n], cmd, arg);
             if (r != CONTROL_UNKNOWN)
-                return r;
+                break;
         }
     }
-    return CONTROL_UNKNOWN;
+    pthread_mutex_unlock(&sub->lock);
+    return r;
 }
 
 #define MAX_PACKETS 10

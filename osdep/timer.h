@@ -38,4 +38,17 @@ uint64_t mp_raw_time_us(void);
 // Sleep in microseconds.
 void mp_sleep_us(int64_t us);
 
+// Return the amount of time that has passed since the last call, in
+// microseconds. *t is used to calculate the time that has passed by storing
+// the current time in it. If *t is 0, the call will return 0. (So that the
+// first call will return 0, instead of the absolute current time.)
+int64_t mp_time_relative_us(int64_t *t);
+
+// Add a time in seconds to the given time in microseconds, and return it.
+// Takes care of possible overflows. Never returns a negative or 0 time.
+int64_t mp_add_timeout(int64_t time_us, double timeout_sec);
+
+// Convert the mp time in microseconds to a timespec using CLOCK_REALTIME.
+struct timespec mp_time_us_to_timespec(int64_t time_us);
+
 #endif /* MPLAYER_TIMER_H */

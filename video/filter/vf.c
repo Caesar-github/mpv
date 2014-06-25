@@ -69,6 +69,8 @@ extern const vf_info_t vf_info_stereo3d;
 extern const vf_info_t vf_info_dlopen;
 extern const vf_info_t vf_info_lavfi;
 extern const vf_info_t vf_info_vaapi;
+extern const vf_info_t vf_info_vapoursynth;
+extern const vf_info_t vf_info_vdpaupp;
 
 // list of available filters:
 static const vf_info_t *const filter_list[] = {
@@ -84,7 +86,7 @@ static const vf_info_t *const filter_list[] = {
 #if HAVE_LIBPOSTPROC
     &vf_info_pp,
 #endif
-#if HAVE_VF_LAVFI
+#if HAVE_LIBAVFILTER
     &vf_info_lavfi,
 #endif
 
@@ -109,8 +111,14 @@ static const vf_info_t *const filter_list[] = {
 #if HAVE_DLOPEN
     &vf_info_dlopen,
 #endif
+#if HAVE_VAPOURSYNTH
+    &vf_info_vapoursynth,
+#endif
 #if HAVE_VAAPI_VPP
     &vf_info_vaapi,
+#endif
+#if HAVE_VDPAU
+    &vf_info_vdpaupp,
 #endif
     NULL
 };
@@ -154,6 +162,25 @@ int vf_control_any(struct vf_chain *c, int cmd, void *arg)
     return CONTROL_UNKNOWN;
 }
 
+int vf_control_by_label(struct vf_chain *c,int cmd, void *arg, bstr label)
+{
+    char *label_str = bstrdup0(NULL, label);
+    struct vf_instance *cur = vf_find_by_label(c, label_str);
+    talloc_free(label_str);
+    if (cur)
+        return cur->control(cur, cmd, arg);
+    else
+        return CONTROL_UNKNOWN;
+}
+
+static void vf_control_all(struct vf_chain *c, int cmd, void *arg)
+{
+    for (struct vf_instance *cur = c->first; cur; cur = cur->next) {
+        if (cur->control)
+            cur->control(cur, cmd, arg);
+    }
+}
+
 static void vf_fix_img_params(struct mp_image *img, struct mp_image_params *p)
 {
     // Filters must absolutely set these correctly.
@@ -163,10 +190,7 @@ static void vf_fix_img_params(struct mp_image *img, struct mp_image_params *p)
     // If --colormatrix is used, decoder and filter chain disagree too.
     // In general, it's probably more convenient to force these here,
     // instead of requiring filters to set these correctly.
-    img->colorspace = p->colorspace;
-    img->levels = p->colorlevels;
-    img->chroma_location = p->chroma_location;
-    mp_image_set_display_size(img, p->d_w, p->d_h);
+    img->params = *p;
 }
 
 // Get a new image for filter output, with size and pixel format according to
@@ -176,17 +200,19 @@ struct mp_image *vf_alloc_out_image(struct vf_instance *vf)
     struct mp_image_params *p = &vf->fmt_out;
     assert(p->imgfmt);
     struct mp_image *img = mp_image_pool_get(vf->out_pool, p->imgfmt, p->w, p->h);
-    vf_fix_img_params(img, p);
+    if (img)
+        vf_fix_img_params(img, p);
     return img;
 }
 
-void vf_make_out_image_writeable(struct vf_instance *vf, struct mp_image *img)
+// Returns false on failure; then the image can't be written to.
+bool vf_make_out_image_writeable(struct vf_instance *vf, struct mp_image *img)
 {
     struct mp_image_params *p = &vf->fmt_out;
     assert(p->imgfmt);
     assert(p->imgfmt == img->imgfmt);
     assert(p->w == img->w && p->h == img->h);
-    mp_image_pool_make_writeable(vf->out_pool, img);
+    return mp_image_pool_make_writeable(vf->out_pool, img);
 }
 
 //============================================================================
@@ -206,19 +232,32 @@ static void print_fmt(struct mp_log *log, int msglevel, struct mp_image_params *
         mp_msg(log, msglevel, " %s", mp_imgfmt_to_name(p->imgfmt));
         mp_msg(log, msglevel, " %s/%s", mp_csp_names[p->colorspace],
                    mp_csp_levels_names[p->colorlevels]);
+        mp_msg(log, msglevel, " CL=%d", (int)p->chroma_location);
+        if (p->outputlevels)
+            mp_msg(log, msglevel, " out=%s", mp_csp_levels_names[p->outputlevels]);
+        if (p->rotate)
+            mp_msg(log, msglevel, " rot=%d", p->rotate);
     } else {
         mp_msg(log, msglevel, "???");
     }
 }
 
-void vf_print_filter_chain(struct vf_chain *c, int msglevel)
+void vf_print_filter_chain(struct vf_chain *c, int msglevel,
+                           struct vf_instance *vf)
 {
     if (!mp_msg_test(c->log, msglevel))
         return;
 
+    mp_msg(c->log, msglevel, " [vd] ");
+    print_fmt(c->log, msglevel, &c->input_params);
+    mp_msg(c->log, msglevel, "\n");
     for (vf_instance_t *f = c->first; f; f = f->next) {
         mp_msg(c->log, msglevel, " [%s] ", f->info->name);
         print_fmt(c->log, msglevel, &f->fmt_out);
+        if (f->autoinserted)
+            mp_msg(c->log, msglevel, " [a]");
+        if (f == vf)
+            mp_msg(c->log, msglevel, "   <---");
         mp_msg(c->log, msglevel, "\n");
     }
 }
@@ -238,6 +277,7 @@ static struct vf_instance *vf_open(struct vf_chain *c, const char *name,
         .hwdec = c->hwdec,
         .query_format = vf_default_query_format,
         .out_pool = talloc_steal(vf, mp_image_pool_new(16)),
+        .chain = c,
     };
     struct m_config *config = m_config_from_obj_desc(vf, vf->log, &desc);
     if (m_config_apply_defaults(config, name, c->opts->vf_defs) < 0)
@@ -305,8 +345,19 @@ int vf_append_filter_list(struct vf_chain *c, struct m_obj_settings *list)
         struct vf_instance *vf =
             vf_append_filter(c, list[n].name, list[n].attribs);
         if (vf) {
-            if (list[n].label)
+            if (list[n].label) {
                 vf->label = talloc_strdup(vf, list[n].label);
+            } else {
+                for (int i = 0; i < 100; i++) {
+                    char* label = talloc_asprintf(vf, "%s.%02d", list[n].name, i);
+                    if (vf_find_by_label(c, label)) {
+                        talloc_free(label);
+                    } else {
+                        vf->label = label;
+                        break;
+                    }
+                }
+            }
         }
     }
     return 0;
@@ -335,14 +386,20 @@ static struct mp_image *vf_dequeue_output_frame(struct vf_instance *vf)
 static int vf_do_filter(struct vf_instance *vf, struct mp_image *img)
 {
     assert(vf->fmt_in.imgfmt);
-    vf_fix_img_params(img, &vf->fmt_in);
+    if (img)
+        assert(mp_image_params_equal(&img->params, &vf->fmt_in));
 
     if (vf->filter_ext) {
-        return vf->filter_ext(vf, img);
+        int r = vf->filter_ext(vf, img);
+        if (r < 0)
+            MP_ERR(vf, "Error filtering frame.\n");
+        return r;
     } else {
-        if (vf->filter)
-            img = vf->filter(vf, img);
-        vf_add_output_frame(vf, img);
+        if (img) {
+            if (vf->filter)
+                img = vf->filter(vf, img);
+            vf_add_output_frame(vf, img);
+        }
         return 0;
     }
 }
@@ -351,31 +408,60 @@ static int vf_do_filter(struct vf_instance *vf, struct mp_image *img)
 // Return >= 0 on success, < 0 on failure (even if output frames were produced)
 int vf_filter_frame(struct vf_chain *c, struct mp_image *img)
 {
+    assert(img);
     if (c->initialized < 1) {
         talloc_free(img);
         return -1;
     }
+    assert(mp_image_params_equal(&img->params, &c->input_params));
+    vf_fix_img_params(img, &c->override_params);
     return vf_do_filter(c->first, img);
 }
 
 // Output the next queued image (if any) from the full filter chain.
-struct mp_image *vf_output_queued_frame(struct vf_chain *c)
+// The frame can be retrieved with vf_read_output_frame().
+//  eof: if set, assume there's no more input i.e. vf_filter_frame() will
+//       not be called (until reset) - flush all internally delayed frames
+//  returns: -1: error, 0: no output, 1: output available
+int vf_output_frame(struct vf_chain *c, bool eof)
 {
+    if (c->output)
+        return 1;
     if (c->initialized < 1)
-        return NULL;
+        return -1;
     while (1) {
         struct vf_instance *last = NULL;
         for (struct vf_instance * cur = c->first; cur; cur = cur->next) {
+            // Flush remaining frames on EOF, but do that only if the previous
+            // filters have been flushed (i.e. they have no more output).
+            if (eof && !last) {
+                int r = vf_do_filter(cur, NULL);
+                if (r < 0)
+                    return r;
+            }
             if (cur->num_out_queued)
                 last = cur;
         }
         if (!last)
-            return NULL;
+            return 0;
         struct mp_image *img = vf_dequeue_output_frame(last);
-        if (!last->next)
-            return img;
-        vf_do_filter(last->next, img);
+        if (!last->next) {
+            c->output = img;
+            return !!c->output;
+        }
+        int r = vf_do_filter(last->next, img);
+        if (r < 0)
+            return r;
     }
+}
+
+struct mp_image *vf_read_output_frame(struct vf_chain *c)
+{
+    if (!c->output)
+        vf_output_frame(c, false);
+    struct mp_image *res = c->output;
+    c->output = NULL;
+    return res;
 }
 
 static void vf_forget_frames(struct vf_instance *vf)
@@ -385,30 +471,29 @@ static void vf_forget_frames(struct vf_instance *vf)
     vf->num_out_queued = 0;
 }
 
+static void vf_chain_forget_frames(struct vf_chain *c)
+{
+    for (struct vf_instance *cur = c->first; cur; cur = cur->next)
+        vf_forget_frames(cur);
+    mp_image_unrefp(&c->output);
+}
+
 void vf_seek_reset(struct vf_chain *c)
 {
-    for (struct vf_instance *cur = c->first; cur; cur = cur->next) {
-        if (cur->control)
-            cur->control(cur, VFCTRL_SEEK_RESET, NULL);
-        vf_forget_frames(cur);
-    }
+    vf_control_all(c, VFCTRL_SEEK_RESET, NULL);
+    vf_chain_forget_frames(c);
 }
 
 int vf_next_config(struct vf_instance *vf,
                    int width, int height, int d_width, int d_height,
                    unsigned int voflags, unsigned int outfmt)
 {
-    vf->fmt_out = (struct mp_image_params) {
-        .imgfmt = outfmt,
-        .w = width,
-        .h = height,
-        .d_w = d_width,
-        .d_h = d_height,
-        .colorspace = vf->fmt_in.colorspace,
-        .colorlevels = vf->fmt_in.colorlevels,
-        .chroma_location = vf->fmt_in.chroma_location,
-        .outputlevels = vf->fmt_in.outputlevels,
-    };
+    vf->fmt_out = vf->fmt_in;
+    vf->fmt_out.imgfmt = outfmt;
+    vf->fmt_out.w = width;
+    vf->fmt_out.h = height;
+    vf->fmt_out.d_w = d_width;
+    vf->fmt_out.d_h = d_height;
     return 1;
 }
 
@@ -483,6 +568,9 @@ static int vf_reconfig_wrapper(struct vf_instance *vf,
 
     vf->fmt_out = vf->fmt_in = *p;
 
+    if (!mp_image_params_valid(&vf->fmt_in))
+        return -2;
+
     int r;
     if (vf->reconfig) {
         r = vf->reconfig(vf, &vf->fmt_in, &vf->fmt_out);
@@ -492,7 +580,10 @@ static int vf_reconfig_wrapper(struct vf_instance *vf,
         r = 0;
     }
 
-    if (!mp_image_params_equals(&vf->fmt_in, p))
+    if (!mp_image_params_equal(&vf->fmt_in, p))
+        r = -2;
+
+    if (!mp_image_params_valid(&vf->fmt_out))
         r = -2;
 
     // Fix csp in case of pixel format change
@@ -502,33 +593,46 @@ static int vf_reconfig_wrapper(struct vf_instance *vf,
     return r;
 }
 
-int vf_reconfig(struct vf_chain *c, const struct mp_image_params *params)
+// override_params is used to forcibly change the parameters of input images,
+// while params has to match the input images exactly.
+int vf_reconfig(struct vf_chain *c, const struct mp_image_params *params,
+                const struct mp_image_params *override_params)
 {
-    struct mp_image_params cur = *params;
     int r = 0;
+    vf_chain_forget_frames(c);
     for (struct vf_instance *vf = c->first; vf; ) {
         struct vf_instance *next = vf->next;
         if (vf->autoinserted)
             vf_remove_filter(c, vf);
         vf = next;
     }
-    c->first->fmt_in = *params;
+    c->input_params = *params;
+    c->first->fmt_in = *override_params;
+    c->override_params = *override_params;
+    struct mp_image_params cur = c->override_params;
+
     uint8_t unused[IMGFMT_END - IMGFMT_START];
     update_formats(c, c->first, unused);
+    struct vf_instance *failing = NULL;
     for (struct vf_instance *vf = c->first; vf; vf = vf->next) {
         r = vf_reconfig_wrapper(vf, &cur);
-        if (r < 0)
+        if (r < 0) {
+            failing = vf;
             break;
+        }
         cur = vf->fmt_out;
     }
-    if (r >= 0)
-        c->output_params = cur;
+    c->output_params = cur;
     c->initialized = r < 0 ? -1 : 1;
     int loglevel = r < 0 ? MSGL_WARN : MSGL_V;
     if (r == -2)
         MP_ERR(c, "Image formats incompatible.\n");
     mp_msg(c->log, loglevel, "Video filter chain:\n");
-    vf_print_filter_chain(c, loglevel);
+    vf_print_filter_chain(c, loglevel, failing);
+    if (r < 0) {
+        c->input_params = c->override_params = c->output_params =
+            (struct mp_image_params){0};
+    }
     return r;
 }
 
@@ -600,6 +704,7 @@ void vf_destroy(struct vf_chain *c)
         c->first = vf->next;
         vf_uninit_filter(vf);
     }
+    vf_chain_forget_frames(c);
     talloc_free(c);
 }
 

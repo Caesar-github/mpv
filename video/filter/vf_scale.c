@@ -113,12 +113,12 @@ static const unsigned int outfmt_list[] = {
     IMGFMT_GBRP,
     IMGFMT_RGB48_LE,
     IMGFMT_RGB48_BE,
-    IMGFMT_BGR16,
-    IMGFMT_RGB16,
-    IMGFMT_BGR15,
-    IMGFMT_RGB15,
-    IMGFMT_BGR12,
-    IMGFMT_RGB12,
+    IMGFMT_BGR565,
+    IMGFMT_RGB565,
+    IMGFMT_BGR555,
+    IMGFMT_RGB555,
+    IMGFMT_BGR444,
+    IMGFMT_RGB444,
     IMGFMT_Y8,
     IMGFMT_BGR8,
     IMGFMT_RGB8,
@@ -137,7 +137,7 @@ static const unsigned int outfmt_list[] = {
  * or to stop vf_scale from choosing a conversion that has no
  * fast assembler implementation.
  */
-static int preferred_conversions[][2] = {
+static const int preferred_conversions[][2] = {
     {IMGFMT_YUYV, IMGFMT_UYVY},
     {IMGFMT_YUYV, IMGFMT_422P},
     {IMGFMT_UYVY, IMGFMT_YUYV},
@@ -317,7 +317,7 @@ static int reconfig(struct vf_instance *vf, struct mp_image_params *in,
     }
     mp_image_params_guess_csp(out);
 
-    mp_sws_set_from_cmdline(vf->priv->sws);
+    mp_sws_set_from_cmdline(vf->priv->sws, vf->chain->opts->vo.sws_opts);
     vf->priv->sws->flags |= vf->priv->v_chr_drop << SWS_SRC_V_CHR_DROP_SHIFT;
     vf->priv->sws->flags |= vf->priv->accurate_rnd * SWS_ACCURATE_RND;
     vf->priv->sws->src = *in;
@@ -334,6 +334,8 @@ static int reconfig(struct vf_instance *vf, struct mp_image_params *in,
 static struct mp_image *filter(struct vf_instance *vf, struct mp_image *mpi)
 {
     struct mp_image *dmpi = vf_alloc_out_image(vf);
+    if (!dmpi)
+        return NULL;
     mp_image_copy_attributes(dmpi, mpi);
 
     mp_sws_scale(vf->priv->sws, dmpi, mpi);

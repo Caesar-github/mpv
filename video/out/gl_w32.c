@@ -39,15 +39,11 @@ static void *w32gpa(const GLubyte *procName)
 
 static bool create_context_w32_old(struct MPGLContext *ctx)
 {
-    GL *gl = ctx->gl;
-
     struct w32_context *w32_ctx = ctx->priv;
     HGLRC *context = &w32_ctx->context;
 
-    if (*context) {
-        gl->Finish();   // supposedly to prevent flickering
+    if (*context)
         return true;
-    }
 
     HWND win = ctx->vo->w32->window;
     HDC windc = GetDC(win);
@@ -168,10 +164,9 @@ out:
     return false;
 }
 
-static bool config_window_w32(struct MPGLContext *ctx, uint32_t d_width,
-                              uint32_t d_height, uint32_t flags)
+static bool config_window_w32(struct MPGLContext *ctx, int flags)
 {
-    if (!vo_w32_config(ctx->vo, d_width, d_height, flags))
+    if (!vo_w32_config(ctx->vo, flags))
         return false;
 
     bool success = false;

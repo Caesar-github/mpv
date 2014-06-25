@@ -35,9 +35,12 @@
 #include <libavutil/common.h>
 #include <libavutil/avstring.h>
 
+#include "libmpv/client.h"
+
 #include "talloc.h"
 #include "common/common.h"
 #include "common/msg.h"
+#include "common/msg_control.h"
 #include "m_option.h"
 #include "m_config.h"
 
@@ -111,9 +114,9 @@ static void copy_opt(const m_option_t *opt, void *dst, const void *src)
 
 static int clamp_flag(const m_option_t *opt, void *val)
 {
-    if (VAL(val) == opt->min || VAL(val) == opt->max)
+    if (VAL(val) == 0 || VAL(val) == 1)
         return 0;
-    VAL(val) = opt->min;
+    VAL(val) = 0;
     return M_OPT_OUT_OF_RANGE;
 }
 
@@ -123,12 +126,12 @@ static int parse_flag(struct mp_log *log, const m_option_t *opt,
     if (param.len) {
         if (!bstrcmp0(param, "yes")) {
             if (dst)
-                VAL(dst) = opt->max;
+                VAL(dst) = 1;
             return 1;
         }
         if (!bstrcmp0(param, "no")) {
             if (dst)
-                VAL(dst) = opt->min;
+                VAL(dst) = 0;
             return 1;
         }
         mp_err(log, "Invalid parameter for %.*s flag: %.*s\n",
@@ -136,26 +139,39 @@ static int parse_flag(struct mp_log *log, const m_option_t *opt,
         return M_OPT_INVALID;
     } else {
         if (dst)
-            VAL(dst) = opt->max;
+            VAL(dst) = 1;
         return 0;
     }
 }
 
 static char *print_flag(const m_option_t *opt, const void *val)
 {
-    if (VAL(val) == opt->min)
-        return talloc_strdup(NULL, "no");
-    else
-        return talloc_strdup(NULL, "yes");
+    return talloc_strdup(NULL, VAL(val) ? "yes" : "no");
 }
 
 static void add_flag(const m_option_t *opt, void *val, double add, bool wrap)
 {
     if (fabs(add) < 0.5)
         return;
-    bool state = VAL(val) != opt->min;
+    bool state = !!VAL(val);
     state = wrap ? !state : add > 0;
-    VAL(val) = state ? opt->max : opt->min;
+    VAL(val) = state ? 1 : 0;
+}
+
+static int flag_set(const m_option_t *opt, void *dst, struct mpv_node *src)
+{
+    if (src->format != MPV_FORMAT_FLAG)
+        return M_OPT_UNKNOWN;
+    VAL(dst) = !!src->u.flag;
+    return 1;
+}
+
+static int flag_get(const m_option_t *opt, void *ta_parent,
+                    struct mpv_node *dst, void *src)
+{
+    dst->format = MPV_FORMAT_FLAG;
+    dst->u.flag = !!VAL(src);
+    return 1;
 }
 
 const m_option_type_t m_option_type_flag = {
@@ -168,6 +184,8 @@ const m_option_type_t m_option_type_flag = {
     .copy  = copy_opt,
     .add = add_flag,
     .clamp = clamp_flag,
+    .set   = flag_set,
+    .get   = flag_get,
 };
 
 // Single-value, write-only flag
@@ -175,7 +193,7 @@ const m_option_type_t m_option_type_flag = {
 static int parse_store(struct mp_log *log, const m_option_t *opt,
                        struct bstr name, struct bstr param, void *dst)
 {
-    if (param.len == 0 || bstrcmp0(param, "yes") == 0) {
+    if (param.len == 0) {
         if (dst)
             VAL(dst) = opt->max;
         return 0;
@@ -186,6 +204,16 @@ static int parse_store(struct mp_log *log, const m_option_t *opt,
     }
 }
 
+static int store_set(const m_option_t *opt, void *dst, struct mpv_node *src)
+{
+    if (src->format != MPV_FORMAT_FLAG)
+        return M_OPT_UNKNOWN;
+    if (!src->u.flag)
+        return M_OPT_INVALID;
+    VAL(dst) = opt->max;
+    return 1;
+}
+
 const m_option_type_t m_option_type_store = {
     // can only be activated
     .name  = "Flag",
@@ -193,6 +221,7 @@ const m_option_type_t m_option_type_store = {
     .flags = M_OPT_TYPE_OPTIONAL_PARAM,
     .parse = parse_store,
     .copy  = copy_opt,
+    .set   = store_set,
 };
 
 // Same for float types
@@ -203,7 +232,7 @@ const m_option_type_t m_option_type_store = {
 static int parse_store_float(struct mp_log *log, const m_option_t *opt,
                              struct bstr name, struct bstr param, void *dst)
 {
-    if (param.len == 0 || bstrcmp0(param, "yes") == 0) {
+    if (param.len == 0) {
         if (dst)
             VAL(dst) = opt->max;
         return 0;
@@ -214,6 +243,16 @@ static int parse_store_float(struct mp_log *log, const m_option_t *opt,
     }
 }
 
+static int store_float_set(const m_option_t *opt, void *dst, struct mpv_node *src)
+{
+    if (src->format != MPV_FORMAT_FLAG)
+        return M_OPT_UNKNOWN;
+    if (!src->u.flag)
+        return M_OPT_INVALID;
+    VAL(dst) = opt->max;
+    return 1;
+}
+
 const m_option_type_t m_option_type_float_store = {
     // can only be activated
     .name  = "Flag",
@@ -221,6 +260,7 @@ const m_option_type_t m_option_type_float_store = {
     .flags = M_OPT_TYPE_OPTIONAL_PARAM,
     .parse = parse_store_float,
     .copy  = copy_opt,
+    .set   = store_float_set,
 };
 
 // Integer
@@ -367,6 +407,47 @@ static void multiply_int(const m_option_t *opt, void *val, double f)
     *(int *)val = MPCLAMP(tmp, INT_MIN, INT_MAX);
 }
 
+static int int64_set(const m_option_t *opt, void *dst, struct mpv_node *src)
+{
+    if (src->format != MPV_FORMAT_INT64)
+        return M_OPT_UNKNOWN;
+    int64_t val = src->u.int64;
+    if ((opt->flags & M_OPT_MIN) && val < opt->min)
+        return M_OPT_OUT_OF_RANGE;
+    if ((opt->flags & M_OPT_MAX) && val > opt->max)
+        return M_OPT_OUT_OF_RANGE;
+    *(int64_t *)dst = val;
+    return 1;
+}
+
+static int int_set(const m_option_t *opt, void *dst, struct mpv_node *src)
+{
+    int64_t val;
+    int r = int64_set(opt, &val, src);
+    if (r >= 0) {
+        if (val < INT_MIN || val > INT_MAX)
+            return M_OPT_OUT_OF_RANGE;
+        *(int *)dst = val;
+    }
+    return r;
+}
+
+static int int64_get(const m_option_t *opt, void *ta_parent,
+                     struct mpv_node *dst, void *src)
+{
+    dst->format = MPV_FORMAT_INT64;
+    dst->u.int64 = *(int64_t *)src;
+    return 1;
+}
+
+static int int_get(const m_option_t *opt, void *ta_parent,
+                   struct mpv_node *dst, void *src)
+{
+    dst->format = MPV_FORMAT_INT64;
+    dst->u.int64 = *(int *)src;
+    return 1;
+}
+
 const m_option_type_t m_option_type_int = {
     .name  = "Integer",
     .size  = sizeof(int),
@@ -376,6 +457,8 @@ const m_option_type_t m_option_type_int = {
     .add = add_int,
     .multiply = multiply_int,
     .clamp = clamp_int,
+    .set   = int_set,
+    .get   = int_get,
 };
 
 const m_option_type_t m_option_type_int64 = {
@@ -387,6 +470,8 @@ const m_option_type_t m_option_type_int64 = {
     .add = add_int64,
     .multiply = multiply_int64,
     .clamp = clamp_int64,
+    .set   = int64_set,
+    .get   = int64_get,
 };
 
 static int parse_intpair(struct mp_log *log, const struct m_option *opt,
@@ -481,20 +566,6 @@ static int parse_choice(struct mp_log *log, const struct m_option *opt,
     return 1;
 }
 
-static char *print_choice(const m_option_t *opt, const void *val)
-{
-    int v = *(int *)val;
-    struct m_opt_choice_alternatives *alt;
-    for (alt = opt->priv; alt->name; alt++)
-        if (alt->value == v)
-            return talloc_strdup(NULL, alt->name);
-    if ((opt->flags & M_OPT_MIN) && (opt->flags & M_OPT_MAX)) {
-        if (v >= opt->min && v <= opt->max)
-            return talloc_asprintf(NULL, "%d", v);
-    }
-    abort();
-}
-
 static void choice_get_min_max(const struct m_option *opt, int *min, int *max)
 {
     assert(opt->type == &m_option_type_choice);
@@ -556,6 +627,73 @@ static void add_choice(const m_option_t *opt, void *val, double add, bool wrap)
     *(int *)val = best;
 }
 
+static int choice_set(const m_option_t *opt, void *dst, struct mpv_node *src)
+{
+    char buf[80];
+    char *src_str = NULL;
+    if (src->format == MPV_FORMAT_INT64) {
+        snprintf(buf, sizeof(buf), "%" PRId64, src->u.int64);
+        src_str = buf;
+    } else if (src->format == MPV_FORMAT_STRING) {
+        src_str = src->u.string;
+    }
+    if (!src_str)
+        return M_OPT_UNKNOWN;
+    int val = 0;
+    int r = parse_choice(mp_null_log, opt, (bstr){0}, bstr0(src_str), &val);
+    if (r >= 0)
+        *(int *)dst = val;
+    return r;
+}
+
+static struct m_opt_choice_alternatives *get_choice(const m_option_t *opt,
+                                                    const void *val, int *out_val)
+{
+    int v = *(int *)val;
+    struct m_opt_choice_alternatives *alt;
+    for (alt = opt->priv; alt->name; alt++) {
+        if (alt->value == v)
+            return alt;
+    }
+    if ((opt->flags & M_OPT_MIN) && (opt->flags & M_OPT_MAX)) {
+        if (v >= opt->min && v <= opt->max) {
+            *out_val = v;
+            return NULL;
+        }
+    }
+    abort();
+}
+
+static int choice_get(const m_option_t *opt, void *ta_parent,
+                      struct mpv_node *dst, void *src)
+{
+    int ival = 0;
+    struct m_opt_choice_alternatives *alt = get_choice(opt, src, &ival);
+    // If a choice string looks like a number, return it as number
+    if (alt) {
+        char *end = NULL;
+        ival = strtol(alt->name, &end, 10);
+        if (end && !end[0])
+            alt = NULL;
+    }
+    if (alt) {
+        dst->format = MPV_FORMAT_STRING;
+        dst->u.string = talloc_strdup(ta_parent, alt->name);
+    } else {
+        dst->format = MPV_FORMAT_INT64;
+        dst->u.int64 = ival;
+    }
+    return 1;
+}
+
+static char *print_choice(const m_option_t *opt, const void *val)
+{
+    int ival = 0;
+    struct m_opt_choice_alternatives *alt = get_choice(opt, val, &ival);
+    return alt ? talloc_strdup(NULL, alt->name)
+               : talloc_asprintf(NULL, "%d", ival);
+}
+
 const struct m_option_type m_option_type_choice = {
     .name  = "String",  // same as arbitrary strings in option list for now
     .size  = sizeof(int),
@@ -564,6 +702,8 @@ const struct m_option_type m_option_type_choice = {
     .copy  = copy_opt,
     .add = add_choice,
     .clamp = clamp_choice,
+    .set   = choice_set,
+    .get   = choice_get,
 };
 
 // Float
@@ -668,6 +808,35 @@ static void multiply_double(const m_option_t *opt, void *val, double f)
     clamp_double(opt, val);
 }
 
+static int double_set(const m_option_t *opt, void *dst, struct mpv_node *src)
+{
+    double val;
+    if (src->format == MPV_FORMAT_INT64) {
+        // Can't always be represented exactly, but don't care.
+        val = src->u.int64;
+    } else if (src->format == MPV_FORMAT_DOUBLE) {
+        val = src->u.double_;
+    } else {
+        return M_OPT_UNKNOWN;
+    }
+    if ((opt->flags & M_OPT_MIN) && val < opt->min)
+        return M_OPT_OUT_OF_RANGE;
+    if ((opt->flags & M_OPT_MAX) && val > opt->max)
+        return M_OPT_OUT_OF_RANGE;
+    if (!isfinite(val))
+        return M_OPT_OUT_OF_RANGE;
+    *(double *)dst = val;
+    return 1;
+}
+
+static int double_get(const m_option_t *opt, void *ta_parent,
+                      struct mpv_node *dst, void *src)
+{
+    dst->format = MPV_FORMAT_DOUBLE;
+    dst->u.double_ = *(double *)src;
+    return 1;
+}
+
 const m_option_type_t m_option_type_double = {
     // double precision float or ratio (numerator[:/]denominator)
     .name  = "Double",
@@ -679,6 +848,8 @@ const m_option_type_t m_option_type_double = {
     .clamp = clamp_double,
     .add = add_double,
     .multiply = multiply_double,
+    .set   = double_set,
+    .get   = double_get,
 };
 
 #undef VAL
@@ -726,6 +897,23 @@ static void multiply_float(const m_option_t *opt, void *val, double f)
     VAL(val) = tmp;
 }
 
+static int float_set(const m_option_t *opt, void *dst, struct mpv_node *src)
+{
+    double tmp;
+    int r = double_set(opt, &tmp, src);
+    if (r >= 0)
+        VAL(dst) = tmp;
+    return r;
+}
+
+static int float_get(const m_option_t *opt, void *ta_parent,
+                     struct mpv_node *dst, void *src)
+{
+    dst->format = MPV_FORMAT_DOUBLE;
+    dst->u.double_ = VAL(src);
+    return 1;
+}
+
 const m_option_type_t m_option_type_float = {
     // floating point number or ratio (numerator[:/]denominator)
     .name  = "Float",
@@ -737,45 +925,14 @@ const m_option_type_t m_option_type_float = {
     .add = add_float,
     .multiply = multiply_float,
     .clamp = clamp_float,
+    .set   = float_set,
+    .get   = float_get,
 };
 
 ///////////// String
 
 #undef VAL
 #define VAL(x) (*(char **)(x))
-
-static char *unescape_string(void *talloc_ctx, bstr str)
-{
-    char *res = talloc_strdup(talloc_ctx, "");
-    while (str.len) {
-        bstr rest;
-        bool esc = bstr_split_tok(str, "\\", &str, &rest);
-        res = talloc_strndup_append_buffer(res, str.start, str.len);
-        if (esc) {
-            if (!mp_parse_escape(&rest, &res)) {
-                talloc_free(res);
-                return NULL;
-            }
-        }
-        str = rest;
-    }
-    return res;
-}
-
-static char *escape_string(char *str0)
-{
-    char *res = talloc_strdup(NULL, "");
-    bstr str = bstr0(str0);
-    while (str.len) {
-        bstr rest;
-        bool esc = bstr_split_tok(str, "\\", &str, &rest);
-        res = talloc_strndup_append_buffer(res, str.start, str.len);
-        if (esc)
-            res = talloc_strdup_append_buffer(res, "\\\\");
-        str = rest;
-    }
-    return res;
-}
 
 static int clamp_str(const m_option_t *opt, void *val)
 {
@@ -791,43 +948,26 @@ static int clamp_str(const m_option_t *opt, void *val)
 static int parse_str(struct mp_log *log, const m_option_t *opt,
                      struct bstr name, struct bstr param, void *dst)
 {
-    int r = 1;
-    void *tmp = talloc_new(NULL);
-
-    if (param.start == NULL) {
-        r = M_OPT_MISSING_PARAM;
-        goto exit;
-    }
+    if (param.start == NULL)
+        return M_OPT_MISSING_PARAM;
 
     m_opt_string_validate_fn validate = opt->priv;
     if (validate) {
-        r = validate(log, opt, name, param);
+        int r = validate(log, opt, name, param);
         if (r < 0)
-            goto exit;
-    }
-
-    if (opt->flags & M_OPT_PARSE_ESCAPES) {
-        char *res = unescape_string(tmp, param);
-        if (!res) {
-            mp_err(log, "Parameter has broken escapes: %.*s\n", BSTR_P(param));
-            r = M_OPT_INVALID;
-            goto exit;
-        }
-        param = bstr0(res);
+            return r;
     }
 
     if ((opt->flags & M_OPT_MIN) && (param.len < opt->min)) {
         mp_err(log, "Parameter must be >= %d chars: %.*s\n",
                (int) opt->min, BSTR_P(param));
-        r = M_OPT_OUT_OF_RANGE;
-        goto exit;
+        return M_OPT_OUT_OF_RANGE;
     }
 
     if ((opt->flags & M_OPT_MAX) && (param.len > opt->max)) {
         mp_err(log, "Parameter must be <= %d chars: %.*s\n",
                (int) opt->max, BSTR_P(param));
-        r = M_OPT_OUT_OF_RANGE;
-        goto exit;
+        return M_OPT_OUT_OF_RANGE;
     }
 
     if (dst) {
@@ -835,16 +975,12 @@ static int parse_str(struct mp_log *log, const m_option_t *opt,
         VAL(dst) = bstrdup0(NULL, param);
     }
 
-exit:
-    talloc_free(tmp);
-    return r;
+    return 0;
 }
 
 static char *print_str(const m_option_t *opt, const void *val)
 {
-    bool need_escape = opt->flags & M_OPT_PARSE_ESCAPES;
-    char *s = val ? VAL(val) : NULL;
-    return s ? (need_escape ? escape_string(s) : talloc_strdup(NULL, s)) : NULL;
+    return talloc_strdup(NULL, VAL(val) ? VAL(val) : "");
 }
 
 static void copy_str(const m_option_t *opt, void *dst, const void *src)
@@ -853,6 +989,25 @@ static void copy_str(const m_option_t *opt, void *dst, const void *src)
         talloc_free(VAL(dst));
         VAL(dst) = talloc_strdup(NULL, VAL(src));
     }
+}
+
+static int str_set(const m_option_t *opt, void *dst, struct mpv_node *src)
+{
+    if (src->format != MPV_FORMAT_STRING)
+        return M_OPT_UNKNOWN;
+    char *s = src->u.string;
+    int r = s ? clamp_str(opt, &s) : M_OPT_INVALID;
+    if (r >= 0)
+        copy_str(opt, dst, &s);
+    return r;
+}
+
+static int str_get(const m_option_t *opt, void *ta_parent,
+                   struct mpv_node *dst, void *src)
+{
+    dst->format = MPV_FORMAT_STRING;
+    dst->u.string = talloc_strdup(ta_parent, VAL(src) ? VAL(src) : "");
+    return 1;
 }
 
 static void free_str(void *src)
@@ -872,6 +1027,8 @@ const m_option_type_t m_option_type_string = {
     .copy  = copy_str,
     .free  = free_str,
     .clamp = clamp_str,
+    .set   = str_set,
+    .get   = str_get,
 };
 
 //////////// String list
@@ -1006,9 +1163,8 @@ static int parse_str_list(struct mp_log *log, const m_option_t *opt,
 {
     char **res;
     int op = OP_NONE;
-    int len = strlen(opt->name);
-    if (opt->name[len - 1] == '*' && (name.len > len - 1)) {
-        struct bstr suffix = bstr_cut(name, len - 1);
+    if (bstr_endswith0(bstr0(opt->name), "*")) {
+        struct bstr suffix = bstr_cut(name, strlen(opt->name) - 1);
         if (bstrcmp0(suffix, "-add") == 0)
             op = OP_ADD;
         else if (bstrcmp0(suffix, "-pre") == 0)
@@ -1017,6 +1173,8 @@ static int parse_str_list(struct mp_log *log, const m_option_t *opt,
             op = OP_DEL;
         else if (bstrcmp0(suffix, "-clr") == 0)
             op = OP_CLR;
+        else if (suffix.len == 0)
+            op = OP_NONE;
         else
             return M_OPT_UNKNOWN;
     }
@@ -1118,7 +1276,7 @@ static char *print_str_list(const m_option_t *opt, const void *src)
     char *ret = NULL;
 
     if (!(src && VAL(src)))
-        return NULL;
+        return talloc_strdup(NULL, "");
     lst = VAL(src);
 
     for (int i = 0; lst[i]; i++) {
@@ -1127,6 +1285,40 @@ static char *print_str_list(const m_option_t *opt, const void *src)
         ret = talloc_strdup_append_buffer(ret, lst[i]);
     }
     return ret;
+}
+
+static int str_list_set(const m_option_t *opt, void *dst, struct mpv_node *src)
+{
+    if (src->format != MPV_FORMAT_NODE_ARRAY)
+        return M_OPT_UNKNOWN;
+    struct mpv_node_list *srclist = src->u.list;
+    for (int n = 0; n < srclist->num; n++) {
+        if (srclist->values[n].format != MPV_FORMAT_STRING)
+            return M_OPT_INVALID;
+    }
+    free_str_list(dst);
+    if (srclist->num > 0) {
+        VAL(dst) = talloc_array(NULL, char*, srclist->num + 1);
+        for (int n = 0; n < srclist->num; n++)
+            VAL(dst)[n] = talloc_strdup(NULL, srclist->values[n].u.string);
+        VAL(dst)[srclist->num] = NULL;
+    }
+    return 1;
+}
+
+static int str_list_get(const m_option_t *opt, void *ta_parent,
+                        struct mpv_node *dst, void *src)
+{
+    dst->format = MPV_FORMAT_NODE_ARRAY;
+    dst->u.list = talloc_zero(ta_parent, struct mpv_node_list);
+    struct mpv_node_list *list = dst->u.list;
+    for (int n = 0; VAL(src) && VAL(src)[n]; n++) {
+        struct mpv_node node;
+        node.format = MPV_FORMAT_STRING;
+        node.u.string = talloc_strdup(list, VAL(src)[n]);
+        MP_TARRAY_APPEND(list, list->values, list->num, node);
+    }
+    return 1;
 }
 
 const m_option_type_t m_option_type_string_list = {
@@ -1145,8 +1337,154 @@ const m_option_type_t m_option_type_string_list = {
     .print = print_str_list,
     .copy  = copy_str_list,
     .free  = free_str_list,
+    .get   = str_list_get,
+    .set   = str_list_set,
 };
 
+static void str_list_append(void *dst, bstr s)
+{
+    if (!dst)
+        return;
+    char **list= VAL(dst);
+    int len = 0;
+    while (list && list[len])
+        len++;
+    MP_TARRAY_APPEND(NULL, list, len, bstrto0(NULL, s));
+    MP_TARRAY_APPEND(NULL, list, len, NULL);
+    VAL(dst) = list;
+}
+
+static int parse_str_append_list(struct mp_log *log, const m_option_t *opt,
+                                 struct bstr name, struct bstr param, void *dst)
+{
+    if (param.len == 0)
+        return M_OPT_MISSING_PARAM;
+
+    str_list_append(dst, param);
+
+    return 1;
+}
+
+const m_option_type_t m_option_type_string_append_list = {
+    .name  = "String list",
+    .size  = sizeof(char **),
+    .flags = M_OPT_TYPE_DYNAMIC,
+    .parse = parse_str_append_list,
+    .print = print_str_list,
+    .copy  = copy_str_list,
+    .free  = free_str_list,
+    .get   = str_list_get,
+    .set   = str_list_set,
+};
+
+static int read_subparam(struct mp_log *log, bstr optname,
+                         bstr *str, bstr *out_subparam);
+
+static int parse_keyvalue_list(struct mp_log *log, const m_option_t *opt,
+                               struct bstr name, struct bstr param, void *dst)
+{
+    char **lst = NULL;
+    int num = 0;
+    int r = 0;
+
+    while (param.len) {
+        bstr key, val;
+        r = read_subparam(log, name, &param, &key);
+        if (r < 0)
+            break;
+        if (!bstr_eatstart0(&param, "=")) {
+            mp_err(log, "Expected '=' and a value.\n");
+            r = M_OPT_INVALID;
+            break;
+        }
+        r = read_subparam(log, name, &param, &val);
+        if (r < 0)
+            break;
+        MP_TARRAY_APPEND(NULL, lst, num, bstrto0(NULL, key));
+        MP_TARRAY_APPEND(NULL, lst, num, bstrto0(NULL, val));
+
+        if (!bstr_eatstart0(&param, ","))
+            break;
+    }
+    MP_TARRAY_APPEND(NULL, lst, num, NULL);
+
+    if (param.len) {
+        mp_err(log, "Unparseable garbage at end of option value: '%.*s'\n",
+               BSTR_P(param));
+        r = M_OPT_INVALID;
+    }
+
+    VAL(dst) = lst;
+    if (r < 0)
+        free_str_list(dst);
+    return r;
+}
+
+static char *print_keyvalue_list(const m_option_t *opt, const void *src)
+{
+    char **lst = VAL(src);
+    char *ret = talloc_strdup(NULL, "");
+    for (int n = 0; lst && lst[n] && lst[n + 1]; n += 2) {
+        if (ret[0])
+            ret = talloc_strdup_append(ret, ",");
+        ret = talloc_asprintf_append(ret, "%s=%s", lst[n], lst[n + 1]);
+    }
+    return ret;
+}
+
+static int keyvalue_list_set(const m_option_t *opt, void *dst,
+                             struct mpv_node *src)
+{
+    if (src->format != MPV_FORMAT_NODE_MAP)
+        return M_OPT_UNKNOWN;
+    struct mpv_node_list *srclist = src->u.list;
+    for (int n = 0; n < srclist->num; n++) {
+        if (srclist->values[n].format != MPV_FORMAT_STRING)
+            return M_OPT_INVALID;
+    }
+    free_str_list(dst);
+    if (srclist->num > 0) {
+        VAL(dst) = talloc_array(NULL, char*, (srclist->num + 1) * 2);
+        for (int n = 0; n < srclist->num; n++) {
+            VAL(dst)[n * 2 + 0] = talloc_strdup(NULL, srclist->keys[n]);
+            VAL(dst)[n * 2 + 1] = talloc_strdup(NULL, srclist->values[n].u.string);
+        }
+        VAL(dst)[srclist->num * 2 + 0] = NULL;
+        VAL(dst)[srclist->num * 2 + 1] = NULL;
+    }
+    return 1;
+}
+
+static int keyvalue_list_get(const m_option_t *opt, void *ta_parent,
+                             struct mpv_node *dst, void *src)
+{
+    dst->format = MPV_FORMAT_NODE_MAP;
+    dst->u.list = talloc_zero(ta_parent, struct mpv_node_list);
+    struct mpv_node_list *list = dst->u.list;
+    for (int n = 0; VAL(src) && VAL(src)[n * 2 + 0]; n++) {
+        MP_TARRAY_GROW(list, list->values, list->num);
+        MP_TARRAY_GROW(list, list->keys, list->num);
+        list->keys[list->num] = talloc_strdup(list, VAL(src)[n * 2 + 0]);
+        list->values[list->num] = (struct mpv_node){
+            .format = MPV_FORMAT_STRING,
+            .u.string = talloc_strdup(list, VAL(src)[n * 2 + 1]),
+        };
+        list->num++;
+    }
+    return 1;
+}
+
+const m_option_type_t m_option_type_keyvalue_list = {
+    .name  = "Key/value list",
+    .size  = sizeof(char **),
+    .flags = M_OPT_TYPE_DYNAMIC,
+    .parse = parse_keyvalue_list,
+    .print = print_keyvalue_list,
+    .copy  = copy_str_list,
+    .free  = free_str_list,
+    .get   = keyvalue_list_get,
+    .set   = keyvalue_list_set,
+};
 
 /////////////////// Print
 
@@ -1278,15 +1616,8 @@ static int parse_subconf(struct mp_log *log, const m_option_t *opt,
 }
 
 const m_option_type_t m_option_type_subconfig = {
-    // The syntax is -option opt1=foo:flag:opt2=blah
     .name = "Subconfig",
     .flags = M_OPT_TYPE_HAS_CHILD,
-    .parse = parse_subconf,
-};
-
-const m_option_type_t m_option_type_subconfig_struct = {
-    .name = "Subconfig",
-    .flags = M_OPT_TYPE_HAS_CHILD | M_OPT_TYPE_USE_SUBSTRUCT,
     .parse = parse_subconf,
 };
 
@@ -1348,6 +1679,28 @@ const m_option_type_t m_option_type_msglevels = {
 
 #undef VAL
 
+// Split the string on the given split character.
+// out_arr is at least max entries long.
+// Return number of out_arr entries filled.
+static int split_char(bstr str, unsigned char split, int max, bstr *out_arr)
+{
+    if (max < 1)
+        return 0;
+
+    int count = 0;
+    while (1) {
+        int next = bstrchr(str, split);
+        if (next >= 0 && max - count > 1) {
+            out_arr[count++] = bstr_splice(str, 0, next);
+            str = bstr_cut(str, next + 1);
+        } else {
+            out_arr[count++] = str;
+            break;
+        }
+    }
+    return count;
+}
+
 static int parse_color(struct mp_log *log, const m_option_t *opt,
                        struct bstr name, struct bstr param, void *dst)
 {
@@ -1372,7 +1725,24 @@ static int parse_color(struct mp_log *log, const m_option_t *opt,
             has_alpha ? (c >> 24) & 0xFF : 0xFF,
         };
     } else {
-        goto error;
+        bstr comp_str[5];
+        int num = split_char(param, '/', 5, comp_str);
+        if (num < 1 || num > 4)
+            goto error;
+        double comp[4] = {0, 0, 0, 1};
+        for (int n = 0; n < num; n++) {
+            bstr rest;
+            double d = bstrtod(comp_str[n], &rest);
+            if (rest.len || !comp_str[n].len || d < 0 || d > 1 || !isfinite(d))
+                goto error;
+            comp[n] = d;
+        }
+        if (num == 2)
+            comp[3] = comp[1];
+        if (num < 3)
+            comp[2] = comp[1] = comp[0];
+        color = (struct m_color) { comp[0] * 0xFF, comp[1] * 0xFF,
+                                   comp[2] * 0xFF, comp[3] * 0xFF };
     }
 
     if (dst)
@@ -1383,7 +1753,9 @@ static int parse_color(struct mp_log *log, const m_option_t *opt,
 error:
     mp_err(log, "Option %.*s: invalid color: '%.*s'\n",
            BSTR_P(name), BSTR_P(param));
-    mp_err(log, "Valid colors must be in the form #RRRGGBB or #AARRGGBB (in hex)\n");
+    mp_err(log, "Valid colors must be in the form #RRGGBB or #AARRGGBB (in hex)\n"
+                "Or in the form 'r/g/b/a', where each component is a value in the\n"
+                "range 0.0-1.0. (Also allowed: 'gray', 'gray/a', 'r/g/b'.\n");
     return M_OPT_INVALID;
 }
 
@@ -1578,9 +1950,11 @@ static int parse_imgfmt(struct mp_log *log, const m_option_t *opt,
 
     if (!bstrcmp0(param, "help")) {
         mp_info(log, "Available formats:");
-        for (int i = 0; mp_imgfmt_list[i].name; i++)
-            mp_info(log, " %s", mp_imgfmt_list[i].name);
+        char **list = mp_imgfmt_name_list();
+        for (int i = 0; list[i]; i++)
+            mp_info(log, " %s", list[i]);
         mp_info(log, "\n");
+        talloc_free(list);
         return M_OPT_EXIT - 1;
     }
 
@@ -1698,8 +2072,8 @@ static int parse_chmap(struct mp_log *log, const m_option_t *opt,
         return M_OPT_INVALID;
     }
 
-    if ((min_ch > 0 && !mp_chmap_is_valid(&res)) ||
-        (min_ch >= 0 && mp_chmap_is_empty(&res)))
+    if ((min_ch >= 0 && !mp_chmap_is_valid(&res)) &&
+        !(min_ch == 0 && mp_chmap_is_empty(&res)))
     {
         mp_err(log, "Invalid channel layout: %.*s\n", BSTR_P(param));
         return M_OPT_INVALID;
@@ -1772,6 +2146,8 @@ const m_option_type_t m_option_type_time = {
     .copy  = copy_opt,
     .add = add_double,
     .clamp = clamp_double,
+    .set   = double_set,
+    .get   = double_get,
 };
 
 
@@ -2275,7 +2651,6 @@ static int parse_obj_settings_del(struct mp_log *log, struct bstr opt_name,
 static int parse_obj_settings_list(struct mp_log *log, const m_option_t *opt,
                                    struct bstr name, struct bstr param, void *dst)
 {
-    int len = strlen(opt->name);
     m_obj_settings_t *res = NULL;
     int op = OP_NONE;
     bool *mark_del = NULL;
@@ -2284,8 +2659,8 @@ static int parse_obj_settings_list(struct mp_log *log, const m_option_t *opt,
 
     assert(opt->priv);
 
-    if (opt->name[len - 1] == '*' && (name.len > len - 1)) {
-        struct bstr suffix = bstr_cut(name, len - 1);
+    if (bstr_endswith0(bstr0(opt->name), "*")) {
+        struct bstr suffix = bstr_cut(name, strlen(opt->name) - 1);
         if (bstrcmp0(suffix, "-add") == 0)
             op = OP_ADD;
         else if (bstrcmp0(suffix, "-set") == 0)
@@ -2298,10 +2673,12 @@ static int parse_obj_settings_list(struct mp_log *log, const m_option_t *opt,
             op = OP_CLR;
         else if (bstrcmp0(suffix, "-toggle") == 0)
             op = OP_TOGGLE;
+        else if (suffix.len == 0)
+            op = OP_NONE;
         else {
-            char prefix[len];
-            strncpy(prefix, opt->name, len - 1);
-            prefix[len - 1] = '\0';
+            char pre[80];
+            snprintf(pre, sizeof(pre), "%.*s", (int)(strlen(opt->name) - 1),
+                     opt->name);
             mp_err(log, "Option %.*s: unknown postfix %.*s\n"
                    "Supported postfixes are:\n"
                    "  %s-set\n"
@@ -2316,7 +2693,7 @@ static int parse_obj_settings_list(struct mp_log *log, const m_option_t *opt,
                    " Filter names work as well.\n\n"
                    "  %s-clr\n"
                    " Clear the current list.\n",
-                   BSTR_P(name), BSTR_P(suffix), prefix, prefix, prefix, prefix, prefix);
+                   BSTR_P(name), BSTR_P(suffix), pre, pre, pre, pre, pre);
 
             return M_OPT_UNKNOWN;
         }
@@ -2477,6 +2854,105 @@ static char *print_obj_settings_list(const m_option_t *opt, const void *val)
     return res;
 }
 
+static int set_obj_settings_list(const m_option_t *opt, void *dst,
+                                 struct mpv_node *src)
+{
+    if (src->format != MPV_FORMAT_NODE_ARRAY)
+        return M_OPT_INVALID;
+    m_obj_settings_t *entries =
+        talloc_zero_array(NULL, m_obj_settings_t, src->u.list->num + 1);
+    for (int n = 0; n < src->u.list->num; n++) {
+        m_obj_settings_t *entry = &entries[n];
+        if (src->u.list->values[n].format != MPV_FORMAT_NODE_MAP)
+            goto error;
+        struct mpv_node_list *src_entry = src->u.list->values[n].u.list;
+        for (int i = 0; i < src_entry->num; i++) {
+            const char *key = src_entry->keys[i];
+            struct mpv_node *val = &src_entry->values[i];
+            if (strcmp(key, "name") == 0) {
+                if (val->format != MPV_FORMAT_STRING)
+                    goto error;
+                entry->name = talloc_strdup(NULL, val->u.string);
+            } else if (strcmp(key, "label") == 0) {
+                if (val->format != MPV_FORMAT_STRING)
+                    goto error;
+                entry->label = talloc_strdup(NULL, val->u.string);
+            } else if (strcmp(key, "params") == 0) {
+                if (val->format != MPV_FORMAT_NODE_MAP)
+                    goto error;
+                struct mpv_node_list *src_params = val->u.list;
+                entry->attribs =
+                    talloc_zero_array(NULL, char*, (src_params->num + 1) * 2);
+                for (int x = 0; x < src_params->num; x++) {
+                    if (src_params->values[x].format != MPV_FORMAT_STRING)
+                        goto error;
+                    entry->attribs[x * 2 + 0] =
+                        talloc_strdup(NULL, src_params->keys[x]);
+                    entry->attribs[x * 2 + 1] =
+                        talloc_strdup(NULL, src_params->values[x].u.string);
+                }
+            }
+        }
+    }
+    free_obj_settings_list(dst);
+    VAL(dst) = entries;
+    return 0;
+error:
+    free_obj_settings_list(&entries);
+    return M_OPT_INVALID;
+}
+
+static struct mpv_node *add_array_entry(struct mpv_node *dst)
+{
+    struct mpv_node_list *list = dst->u.list;
+    assert(dst->format == MPV_FORMAT_NODE_ARRAY&& dst->u.list);
+    MP_TARRAY_GROW(list, list->values, list->num);
+    return &list->values[list->num++];
+}
+
+static struct mpv_node *add_map_entry(struct mpv_node *dst, const char *key)
+{
+    struct mpv_node_list *list = dst->u.list;
+    assert(dst->format == MPV_FORMAT_NODE_MAP && dst->u.list);
+    MP_TARRAY_GROW(list, list->values, list->num);
+    MP_TARRAY_GROW(list, list->keys, list->num);
+    list->keys[list->num] = talloc_strdup(list, key);
+    return &list->values[list->num++];
+}
+
+static void add_map_string(struct mpv_node *dst, const char *key, const char *val)
+{
+    struct mpv_node *entry = add_map_entry(dst, key);
+    entry->format = MPV_FORMAT_STRING;
+    entry->u.string = talloc_strdup(dst->u.list, val);
+}
+
+static int get_obj_settings_list(const m_option_t *opt, void *ta_parent,
+                                 struct mpv_node *dst, void *val)
+{
+    m_obj_settings_t *list = VAL(val);
+    dst->format = MPV_FORMAT_NODE_ARRAY;
+    dst->u.list = talloc_zero(ta_parent, struct mpv_node_list);
+    ta_parent = dst->u.list;
+    for (int n = 0; list && list[n].name; n++) {
+        m_obj_settings_t *entry = &list[n];
+        struct mpv_node *nentry = add_array_entry(dst);
+        nentry->format = MPV_FORMAT_NODE_MAP;
+        nentry->u.list = talloc_zero(ta_parent, struct mpv_node_list);
+        add_map_string(nentry, "name", entry->name);
+        if (entry->label && entry->label[0])
+            add_map_string(nentry, "label", entry->label);
+        struct mpv_node *params = add_map_entry(nentry, "params");
+        params->format = MPV_FORMAT_NODE_MAP;
+        params->u.list = talloc_zero(ta_parent, struct mpv_node_list);
+        for (int i = 0; entry->attribs && entry->attribs[i * 2 + 0]; i++) {
+            add_map_string(params, entry->attribs[i * 2 + 0],
+                                   entry->attribs[i * 2 + 1]);
+        }
+    }
+    return 1;
+}
+
 const m_option_type_t m_option_type_obj_settings_list = {
     .name  = "Object settings list",
     .size  = sizeof(m_obj_settings_t *),
@@ -2485,4 +2961,122 @@ const m_option_type_t m_option_type_obj_settings_list = {
     .print = print_obj_settings_list,
     .copy  = copy_obj_settings_list,
     .free  = free_obj_settings_list,
+    .set   = set_obj_settings_list,
+    .get   = get_obj_settings_list,
+};
+
+#undef VAL
+#define VAL(x) (*(struct mpv_node *)(x))
+
+static int parse_node(struct mp_log *log, const m_option_t *opt,
+                      struct bstr name, struct bstr param, void *dst)
+{
+    // Maybe use JSON?
+    mp_err(log, "option type doesn't accept strings");
+    return M_OPT_INVALID;
+}
+
+static char *print_node(const m_option_t *opt, const void *val)
+{
+    return NULL;
+}
+
+static void dup_node(void *ta_parent, struct mpv_node *node)
+{
+    switch (node->format) {
+    case MPV_FORMAT_STRING:
+        node->u.string = talloc_strdup(ta_parent, node->u.string);
+        break;
+    case MPV_FORMAT_NODE_ARRAY:
+    case MPV_FORMAT_NODE_MAP: {
+        struct mpv_node_list *oldlist = node->u.list;
+        struct mpv_node_list *new = talloc_zero(ta_parent, struct mpv_node_list);
+        node->u.list = new;
+        if (oldlist->num > 0) {
+            *new = *oldlist;
+            new->values = talloc_array(new, struct mpv_node, new->num);
+            for (int n = 0; n < new->num; n++) {
+                new->values[n] = oldlist->values[n];
+                dup_node(new, &new->values[n]);
+            }
+            if (node->format == MPV_FORMAT_NODE_MAP) {
+                new->keys = talloc_array(new, char*, new->num);
+                for (int n = 0; n < new->num; n++)
+                    new->keys[n] = talloc_strdup(new, oldlist->keys[n]);
+            }
+        }
+        break;
+    }
+    case MPV_FORMAT_NONE:
+    case MPV_FORMAT_FLAG:
+    case MPV_FORMAT_INT64:
+    case MPV_FORMAT_DOUBLE:
+        break;
+    default:
+        // unknown entry - mark as invalid
+        node->format = (mpv_format)-1;
+    }
+}
+
+static void copy_node(const m_option_t *opt, void *dst, const void *src)
+{
+    assert(sizeof(struct mpv_node) <= sizeof(union m_option_value));
+
+    if (!(dst && src))
+        return;
+
+    opt->type->free(dst);
+    VAL(dst) = VAL(src);
+    dup_node(NULL, &VAL(dst));
+}
+
+static void *node_get_alloc(struct mpv_node *node)
+{
+    // Assume it was allocated with copy_node(), which allocates all
+    // sub-nodes with the parent node as talloc parent.
+    switch (node->format) {
+    case MPV_FORMAT_STRING:
+        return node->u.string;
+    case MPV_FORMAT_NODE_ARRAY:
+    case MPV_FORMAT_NODE_MAP:
+        return node->u.list;
+    default:
+        return NULL;
+    }
+}
+
+static void free_node(void *src)
+{
+    if (src) {
+        struct mpv_node *node = &VAL(src);
+        talloc_free(node_get_alloc(node));
+        *node = (struct mpv_node){{0}};
+    }
+}
+
+// idempotent functions for convenience
+static int node_set(const m_option_t *opt, void *dst, struct mpv_node *src)
+{
+    copy_node(opt, dst, src);
+    return 1;
+}
+
+static int node_get(const m_option_t *opt, void *ta_parent,
+                    struct mpv_node *dst, void *src)
+{
+    *dst = VAL(src);
+    dup_node(ta_parent, dst);
+    return 1;
+}
+
+const m_option_type_t m_option_type_node = {
+    .name  = "Complex",
+    .size  = sizeof(struct mpv_node),
+    .flags = M_OPT_TYPE_DYNAMIC,
+    .parse = parse_node,
+    .print = print_node,
+    .copy  = copy_node,
+    .free  = free_node,
+    .set   = node_set,
+    .get   = node_get,
 };

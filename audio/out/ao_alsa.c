@@ -46,8 +46,8 @@
 #include <alsa/asoundlib.h>
 
 #include "ao.h"
+#include "internal.h"
 #include "audio/format.h"
-#include "audio/reorder_ch.h"
 
 struct priv {
     snd_pcm_t *alsa;
@@ -66,7 +66,7 @@ struct priv {
     int cfg_resample;
 };
 
-#define BUFFER_TIME 500000  // 0.5 s
+#define BUFFER_TIME 250000  // 250ms
 #define FRAGCOUNT 16
 
 #define CHECK_ALSA_ERROR(message) \
@@ -78,7 +78,7 @@ struct priv {
     } while (0)
 
 static float get_delay(struct ao *ao);
-static void uninit(struct ao *ao, bool immed);
+static void uninit(struct ao *ao);
 
 /* to set/get/query special features/parameters */
 static int control(struct ao *ao, enum aocontrol cmd, void *arg)
@@ -244,7 +244,7 @@ static int find_alsa_format(int af_format)
 // The second item must be resolvable with mp_chmap_from_str().
 // Source: http://www.alsa-project.org/main/index.php/DeviceNames
 // (Speaker names are slightly different from mpv's.)
-static const char *device_channel_layouts[][2] = {
+static const char *const device_channel_layouts[][2] = {
     {"default",         "fc"},
     {"default",         "fl-fr"},
     {"rear",            "bl-br"},
@@ -353,9 +353,6 @@ static int init(struct ao *ao)
 
     struct priv *p = ao->priv;
 
-    p->prepause_frames = 0;
-    p->delay_before_pause = 0;
-
     /* switch for spdif
      * sets opening sequence for SPDIF
      * sets also the playback and other switches 'on the fly'
@@ -378,9 +375,6 @@ static int init(struct ao *ao)
         device = p->cfg_device;
 
     MP_VERBOSE(ao, "using device: %s\n", device);
-
-    p->can_pause = 1;
-
     MP_VERBOSE(ao, "using ALSA version: %s\n", snd_asoundlib_version());
 
     int open_mode = p->cfg_block ? 0 : SND_PCM_NONBLOCK;
@@ -529,21 +523,18 @@ static int init(struct ao *ao)
     return 0;
 
 alsa_error:
-    uninit(ao, true);
+    uninit(ao);
     return -1;
 } // end init
 
 
 /* close audio device */
-static void uninit(struct ao *ao, bool immed)
+static void uninit(struct ao *ao)
 {
     struct priv *p = ao->priv;
 
     if (p->alsa) {
         int err;
-
-        if (!immed)
-            snd_pcm_drain(p->alsa);
 
         err = snd_pcm_close(p->alsa);
         CHECK_ALSA_ERROR("pcm close error");
@@ -553,6 +544,12 @@ static void uninit(struct ao *ao, bool immed)
 
 alsa_error:
     p->alsa = NULL;
+}
+
+static void drain(struct ao *ao)
+{
+    struct priv *p = ao->priv;
+    snd_pcm_drain(p->alsa);
 }
 
 static void audio_pause(struct ao *ao)
@@ -661,7 +658,6 @@ alsa_error:
     return -1;
 }
 
-/* how many byes are free in the buffer */
 static int get_space(struct ao *ao)
 {
     struct priv *p = ao->priv;
@@ -702,6 +698,40 @@ static float get_delay(struct ao *ao)
     return (float)delay / (float)ao->samplerate;
 }
 
+#define MAX_POLL_FDS 20
+static int audio_wait(struct ao *ao, pthread_mutex_t *lock)
+{
+    struct priv *p = ao->priv;
+    int err;
+
+    int num_fds = snd_pcm_poll_descriptors_count(p->alsa);
+    if (num_fds <= 0 || num_fds >= MAX_POLL_FDS)
+        goto alsa_error;
+
+    struct pollfd fds[MAX_POLL_FDS];
+    err = snd_pcm_poll_descriptors(p->alsa, fds, num_fds);
+    CHECK_ALSA_ERROR("cannot get pollfds");
+
+    while (1) {
+        int r = ao_wait_poll(ao, fds, num_fds, lock);
+        if (r)
+            return r;
+
+        unsigned short revents;
+        snd_pcm_poll_descriptors_revents(p->alsa, fds, num_fds, &revents);
+        CHECK_ALSA_ERROR("cannot read poll events");
+
+        if (revents & POLLERR)
+            return -1;
+        if (revents & POLLOUT)
+            return 0;
+    }
+    return 0;
+
+alsa_error:
+    return -1;
+}
+
 #define OPT_BASE_STRUCT struct priv
 
 const struct ao_driver audio_out_alsa = {
@@ -716,6 +746,9 @@ const struct ao_driver audio_out_alsa = {
     .pause     = audio_pause,
     .resume    = audio_resume,
     .reset     = reset,
+    .drain     = drain,
+    .wait      = audio_wait,
+    .wakeup    = ao_wakeup_poll,
     .priv_size = sizeof(struct priv),
     .priv_defaults = &(const struct priv) {
         .cfg_block = 1,

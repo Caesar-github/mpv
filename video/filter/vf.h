@@ -70,6 +70,9 @@ typedef struct vf_instance {
     // Like filter(), but can return an error code ( >= 0 means success). This
     // callback is also more practical when the filter can return multiple
     // output images. Use vf_add_output_frame() to queue output frames.
+    // Warning: this is called with mpi==NULL if there is no more input at
+    //          all (i.e. the video has reached end of file condition). This
+    //          can be used to output delayed or otherwise remaining images.
     int (*filter_ext)(struct vf_instance *vf, struct mp_image *mpi);
 
     void (*uninit)(struct vf_instance *vf);
@@ -90,6 +93,7 @@ typedef struct vf_instance {
     // Caches valid output formats.
     uint8_t last_outfmts[IMGFMT_END - IMGFMT_START];
 
+    struct vf_chain *chain;
     struct vf_instance *next;
 } vf_instance_t;
 
@@ -99,6 +103,8 @@ struct vf_chain {
 
     struct vf_instance *first, *last;
 
+    struct mp_image_params input_params;
+    struct mp_image_params override_params; // input to first filter
     struct mp_image_params output_params;
     uint8_t allowed_output_formats[IMGFMT_END - IMGFMT_START];
 
@@ -106,6 +112,8 @@ struct vf_chain {
     struct MPOpts *opts;
     struct mpv_global *global;
     struct mp_hwdec_info *hwdec;
+
+    struct mp_image *output;
 };
 
 typedef struct vf_seteq {
@@ -121,6 +129,7 @@ enum vf_ctrl {
     VFCTRL_INIT_OSD,         // Filter OSD renderer present?
     VFCTRL_SET_DEINTERLACE,  // Set deinterlacing status
     VFCTRL_GET_DEINTERLACE,  // Get deinterlacing status
+    VFCTRL_GET_METADATA,     // Get frame metadata from lavfi filters (e.g., cropdetect)
     /* Hack to make the OSD state object available to vf_sub which
      * access OSD/subtitle state outside of normal OSD draw time. */
     VFCTRL_SET_OSD_OBJ,
@@ -128,21 +137,25 @@ enum vf_ctrl {
 
 struct vf_chain *vf_new(struct mpv_global *global);
 void vf_destroy(struct vf_chain *c);
-int vf_reconfig(struct vf_chain *c, const struct mp_image_params *params);
+int vf_reconfig(struct vf_chain *c, const struct mp_image_params *params,
+                const struct mp_image_params *override_params);
 int vf_control_any(struct vf_chain *c, int cmd, void *arg);
+int vf_control_by_label(struct vf_chain *c, int cmd, void *arg, bstr label);
 int vf_filter_frame(struct vf_chain *c, struct mp_image *img);
-struct mp_image *vf_output_queued_frame(struct vf_chain *c);
+int vf_output_frame(struct vf_chain *c, bool eof);
+struct mp_image *vf_read_output_frame(struct vf_chain *c);
 void vf_seek_reset(struct vf_chain *c);
 struct vf_instance *vf_append_filter(struct vf_chain *c, const char *name,
                                      char **args);
 void vf_remove_filter(struct vf_chain *c, struct vf_instance *vf);
 int vf_append_filter_list(struct vf_chain *c, struct m_obj_settings *list);
 struct vf_instance *vf_find_by_label(struct vf_chain *c, const char *label);
-void vf_print_filter_chain(struct vf_chain *c, int msglevel);
+void vf_print_filter_chain(struct vf_chain *c, int msglevel,
+                           struct vf_instance *vf);
 
 // Filter internal API
 struct mp_image *vf_alloc_out_image(struct vf_instance *vf);
-void vf_make_out_image_writeable(struct vf_instance *vf, struct mp_image *img);
+bool vf_make_out_image_writeable(struct vf_instance *vf, struct mp_image *img);
 void vf_add_output_frame(struct vf_instance *vf, struct mp_image *img);
 
 // default wrappers:

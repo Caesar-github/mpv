@@ -19,6 +19,7 @@
  */
 
 #include <unistd.h>
+#include <errno.h>
 
 #include "talloc.h"
 
@@ -29,7 +30,7 @@
 // On error, false is returned (and errno set).
 bool mp_set_cloexec(int fd)
 {
-#if defined(FD_CLOEXEC) && defined(F_SETFD)
+#if defined(F_SETFD)
     if (fd >= 0) {
         int flags = fcntl(fd, F_GETFD);
         if (flags == -1)
@@ -40,6 +41,30 @@ bool mp_set_cloexec(int fd)
 #endif
     return true;
 }
+
+#ifdef __MINGW32__
+int mp_make_wakeup_pipe(int pipes[2])
+{
+    pipes[0] = pipes[1] = -1;
+    return -ENOSYS;
+}
+#else
+// create a pipe, and set it to non-blocking (and also set FD_CLOEXEC)
+int mp_make_wakeup_pipe(int pipes[2])
+{
+    if (pipe(pipes) != 0) {
+        pipes[0] = pipes[1] = -1;
+        return -errno;
+    }
+
+    for (int i = 0; i < 2; i++) {
+        mp_set_cloexec(pipes[i]);
+        int val = fcntl(pipes[i], F_GETFL) | O_NONBLOCK;
+        fcntl(pipes[i], F_SETFL, val);
+    }
+    return 0;
+}
+#endif
 
 #ifdef _WIN32
 
@@ -113,56 +138,57 @@ int mp_stat(const char *path, struct stat *buf)
     return res;
 }
 
+static int mp_check_console(HANDLE *wstream)
+{
+    if (wstream != INVALID_HANDLE_VALUE) {
+        unsigned int filetype = GetFileType(wstream);
+
+        if (!((filetype == FILE_TYPE_UNKNOWN) &&
+            (GetLastError() != ERROR_SUCCESS)))
+        {
+            filetype &= ~(FILE_TYPE_REMOTE);
+
+            if (filetype == FILE_TYPE_CHAR) {
+                DWORD ConsoleMode;
+                int ret = GetConsoleMode(wstream, &ConsoleMode);
+
+                if (!(!ret && (GetLastError() == ERROR_INVALID_HANDLE))) {
+                    // This seems to be a console
+                    return 1;
+                }
+            }
+        }
+    }
+
+    return 0;
+}
+
 static int mp_vfprintf(FILE *stream, const char *format, va_list args)
 {
     int done = 0;
 
-    if (stream == stdout || stream == stderr)
-    {
-        HANDLE *wstream = GetStdHandle(stream == stdout ?
-                                       STD_OUTPUT_HANDLE : STD_ERROR_HANDLE);
-        if (wstream != INVALID_HANDLE_VALUE)
-        {
-            // figure out whether we're writing to a console
-            unsigned int filetype = GetFileType(wstream);
-            if (!((filetype == FILE_TYPE_UNKNOWN) &&
-                (GetLastError() != ERROR_SUCCESS)))
-            {
-                int isConsole;
-                filetype &= ~(FILE_TYPE_REMOTE);
-                if (filetype == FILE_TYPE_CHAR)
-                {
-                    DWORD ConsoleMode;
-                    int ret = GetConsoleMode(wstream, &ConsoleMode);
-                    if (!ret && (GetLastError() == ERROR_INVALID_HANDLE))
-                        isConsole = 0;
-                    else
-                        isConsole = 1;
-                }
-                else
-                    isConsole = 0;
+    HANDLE *wstream = INVALID_HANDLE_VALUE;
 
-                if (isConsole)
-                {
-                    int nchars = vsnprintf(NULL, 0, format, args) + 1;
-                    char *buf = talloc_array(NULL, char, nchars);
-                    if (buf)
-                    {
-                        vsnprintf(buf, nchars, format, args);
-                        wchar_t *out = mp_from_utf8(NULL, buf);
-                        size_t nchars = wcslen(out);
-                        talloc_free(buf);
-                        done = WriteConsoleW(wstream, out, nchars, NULL, NULL);
-                        talloc_free(out);
-                    }
-                }
-                else
-                    done = vfprintf(stream, format, args);
-            }
-        }
+    if (stream == stdout || stream == stderr) {
+        wstream = GetStdHandle(stream == stdout ?
+                               STD_OUTPUT_HANDLE : STD_ERROR_HANDLE);
     }
-    else
+
+    if (mp_check_console(wstream)) {
+        size_t len = vsnprintf(NULL, 0, format, args) + 1;
+        char *buf = talloc_array(NULL, char, len);
+
+        if (buf) {
+            vsnprintf(buf, len, format, args);
+            wchar_t *out = mp_from_utf8(NULL, buf);
+            size_t out_len = wcslen(out);
+            talloc_free(buf);
+            done = WriteConsoleW(wstream, out, out_len, NULL, NULL);
+            talloc_free(out);
+        }
+    } else {
         done = vfprintf(stream, format, args);
+    }
 
     return done;
 }
@@ -215,6 +241,16 @@ FILE *mp_fopen(const char *filename, const char *mode)
     talloc_free(wpath);
     return res;
 }
+
+// Windows' MAX_PATH/PATH_MAX/FILENAME_MAX is fixed to 260, but this limit
+// applies to unicode paths encoded with wchar_t (2 bytes on Windows). The UTF-8
+// version could end up bigger in memory. In the worst case each wchar_t is
+// encoded to 3 bytes in UTF-8, so in the worst case we have:
+//      wcslen(wpath) * 3 <= strlen(utf8path)
+// Thus we need MP_PATH_MAX as the UTF-8/char version of PATH_MAX.
+// Also make sure there's free space for the terminating \0.
+// (For codepoints encoded as UTF-16 surrogate pairs, UTF-8 has the same length.)
+#define MP_PATH_MAX (FILENAME_MAX * 3 + 1)
 
 struct mp_dir {
     DIR crap;   // must be first member

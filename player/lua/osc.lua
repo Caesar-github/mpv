@@ -1,14 +1,13 @@
--- osc.lua
-
 local assdraw = require 'mp.assdraw'
 local msg = require 'mp.msg'
+local opt = require 'mp.options'
 
 --
 -- Parameters
 --
 
 -- default user option values
--- do not touch, change them in plugin_osc.conf
+-- do not touch, change them in osc.conf
 local user_opts = {
     showwindowed = true,                    -- show OSC when windowed?
     showfullscreen = true,                  -- show OSC when fullscreen?
@@ -23,9 +22,12 @@ local user_opts = {
     fadeduration = 200,                     -- duration of fade out in ms, 0 = no fade
     deadzonesize = 0,                       -- size of deadzone
     minmousemove = 3,                       -- minimum amount of pixels the mouse has to move between ticks to make the OSC show up
-    seektooltip = false,                    -- display tooltip over the seekbar indicating time at mouse position
+    seektooltip = true,                     -- display tooltip over the seekbar indicating time at mouse position
     iamaprogrammer = false,                 -- use native mpv values and disable OSC internal playlist management (and some functions that depend on it)
 }
+
+-- read options from config and command-line
+read_options(user_opts, "osc")
 
 local osc_param = {
     osc_w = 550,                            -- width, height, corner-radius, padding of the OSC box
@@ -43,7 +45,7 @@ local osc_param = {
 local osc_styles = {
     bigButtons = "{\\blur0\\bord0\\1c&HFFFFFF\\3c&HFFFFFF\\fs50\\fnmpv-osd-symbols}",
     smallButtonsL = "{\\blur0\\bord0\\1c&HFFFFFF\\3c&HFFFFFF\\fs20\\fnmpv-osd-symbols}",
-    smallButtonsLlabel = "{\\fs17\\fn" .. mp.property_get("options/osd-font") .. "}",
+    smallButtonsLlabel = "{\\fs17\\fn" .. mp.get_property("options/osd-font") .. "}",
     smallButtonsR = "{\\blur0\\bord0\\1c&HFFFFFF\\3c&HFFFFFF\\fs30\\fnmpv-osd-symbols}",
 
     elementDown = "{\\1c&H999999}",
@@ -70,95 +72,10 @@ local state = {
     last_mouseX, last_mouseY,                -- last mouse position, to detect siginificant mouse movement
     message_text,
     message_timeout,
+    fullscreen = false,
 }
 
---
--- User Settings Management
---
 
-function val2str(val)
-    local strval = val
-    if type(val) == "boolean" then
-        if val then strval = "yes" else strval = "no" end
-    end
-
-    return strval
-end
-
--- converts val to type of desttypeval
-function typeconv(desttypeval, val)
-    if type(desttypeval) == "boolean" then
-        if val == "yes" then
-            val = true
-        elseif val == "no" then
-            val = false
-        else
-            msg.error("Error: Can't convert " .. val .. " to boolean!")
-            val = nil
-        end
-    elseif type(desttypeval) == "number" then
-        if not (tonumber(val) == nil) then
-            val = tonumber(val)
-        else
-            msg.error("Error: Can't convert " .. val .. " to number!")
-            val = nil
-        end
-    end
-    return val
-end
-
--- Automagical config handling
--- options:     A table with options setable via config with assigned default values. The type of the default values is important for
---              converting the values read from the config file back. Do not use "nil" as a default value!
--- identifier:  A simple indentifier string for the config file. Make sure this doesn't collide with other scripts.
-
--- How does it work:
--- Existance of the configfile will be checked, if it doesn't exist, the default values from the options table will be written in a new
--- file, commented out. If it exits, the key/value pairs will be read, and values of keys that exist in the options table will overwrite
--- their value. Keys that don't exist in the options table will be ignored, keys that don't exits in the config will keep their default
--- value. The value's types will automatically be converted to the type used in the options table.
-function read_config(options, identifier)
-
-    local conffilename = "plugin_" .. identifier .. ".conf"
-    local conffile = mp.find_config_file(conffilename)
-    local f = io.open(conffile,"r")
-    if f == nil then
-        -- config not found
-    else
-        -- config exists, read values
-        local linecounter = 1
-        for line in f:lines() do
-            if string.find(line, "#") == 1 then
-
-            else
-                local eqpos = string.find(line, "=")
-                if eqpos == nil then
-
-                else
-                    local key = string.sub(line, 1, eqpos-1)
-                    local val = string.sub(line, eqpos+1)
-
-                    -- match found values with defaults
-                    if options[key] == nil then
-                        msg.warn(conffilename..":"..linecounter.." unknown key " .. key .. ", ignoring")
-                    else
-                        local convval = typeconv(options[key], val)
-                        if convval == nil then
-                            msg.error(conffilename..":"..linecounter.." error converting value '" .. val .. "' for key '" .. key .. "'")
-                        else
-                            options[key] = convval
-                        end
-                    end
-                end
-            end
-            linecounter = linecounter + 1
-        end
-        io.close(f)
-    end
-end
-
--- read configfile
-read_config(user_opts, "osc")
 
 
 --
@@ -212,7 +129,7 @@ function limit_range(min, max, val)
 end
 
 function get_slider_value(element)
-    local fill_offsetV = element.metainfo.slider.border + element.metainfo.slider.gap
+    local fill_offsetV = element.metainfo.slider.border
     local paddingH = (element.h - (2*fill_offsetV)) / 2
 
     local b_x1, b_x2 = element.hitbox.x1 + paddingH, element.hitbox.x2 - paddingH
@@ -251,7 +168,7 @@ local nicetypes = {video = "Video", audio = "Audio", sub = "Subtitle"}
 
 -- updates the OSC internal playlists, should be run each time the track-layout changes
 function update_tracklist()
-    local tracktable = mp.get_track_list()
+    local tracktable = mp.get_property_native("track-list", {})
 
     -- by osc_id
     tracks_osc = {}
@@ -260,7 +177,7 @@ function update_tracklist()
     tracks_mpv = {}
     tracks_mpv.video, tracks_mpv.audio, tracks_mpv.sub = {}, {}, {}
     for n = 1, #tracktable do
-        if not (tracktable[n].type == "unkown") then
+        if not (tracktable[n].type == "unknown") then
             local type = tracktable[n].type
             local mpv_id = tonumber(tracktable[n].id)
 
@@ -283,10 +200,10 @@ function get_tracklist(type)
     else
         for n = 1, #tracks_osc[type] do
             local track = tracks_osc[type][n]
-            local lang, title, selected = "unkown", "", "{\\fscx" .. select_scale .. "\\fscy" .. select_scale .. "}○{\\fscx100\\fscy100}"
-            if not(track.language == nil) then lang = track.language end
+            local lang, title, selected = "unknown", "", "{\\fscx" .. select_scale .. "\\fscy" .. select_scale .. "}○{\\fscx100\\fscy100}"
+            if not(track.lang == nil) then lang = track.lang end
             if not(track.title == nil) then title = track.title end
-            if (track.id == tonumber(mp.property_get(type))) then
+            if (track.id == tonumber(mp.get_property(type))) then
                 selected = "{\\fscx" .. select_scale .. "\\fscy" .. select_scale .. "}●{\\fscx100\\fscy100}"
             end
             msg = msg .. "\n" .. selected .. " " .. n .. ": [" .. lang .. "] " .. title
@@ -298,10 +215,10 @@ end
 -- relatively change the track of given <type> by <next> tracks (+1 -> next, -1 -> previous)
 function set_track(type, next)
     local current_track_mpv, current_track_osc
-    if (mp.property_get(type) == "no") then
+    if (mp.get_property(type) == "no") then
         current_track_osc = 0
     else
-        current_track_mpv = tonumber(mp.property_get(type))
+        current_track_mpv = tonumber(mp.get_property(type))
         current_track_osc = tracks_mpv[type][current_track_mpv].osc_id
     end
     local new_track_osc = (current_track_osc + next) % (#tracks_osc[type] + 1)
@@ -312,19 +229,19 @@ function set_track(type, next)
         new_track_mpv = tracks_osc[type][new_track_osc].id
     end
 
-    mp.send_commandv("set", type, new_track_mpv)
+    mp.commandv("set", type, new_track_mpv)
 
         if (new_track_osc == 0) then
         show_message(nicetypes[type] .. " Track: none")
     else
         show_message(nicetypes[type]  .. " Track: " .. new_track_osc .. "/" .. #tracks_osc[type]
-            .. " [" .. (tracks_osc[type][new_track_osc].language or "unkown") .. "] " .. (tracks_osc[type][new_track_osc].title or ""))
+            .. " [" .. (tracks_osc[type][new_track_osc].lang or "unknown") .. "] " .. (tracks_osc[type][new_track_osc].title or ""))
     end
 end
 
 -- get the currently selected track of <type>, OSC-style counted
 function get_track(type)
-    local track = mp.property_get(type)
+    local track = mp.get_property(type)
     if (track == "no" or track == nil) then
         return 0
     else
@@ -380,7 +297,7 @@ function register_element(type, x, y, an, w, h, style, content, eventresponder, 
         local hitbox
         if type == "slider" then
             -- if it's a slider, cut the border and gap off, as those aren't of interest for eventhandling
-            local fill_offset = metainfo.slider.border + metainfo.slider.gap
+            local fill_offset = metainfo.slider.border
             hitbox = {x1 = bX1 + fill_offset, y1 = bY1 + fill_offset, x2 = bX2 - fill_offset, y2 = bY2 - fill_offset}
         else
             hitbox = {x1 = bX1, y1 = bY1, x2 = bX2, y2 = bY2}
@@ -579,9 +496,9 @@ function render_elements(master_ass)
                     local s_min, s_max = element.metainfo.slider.min, element.metainfo.slider.max
 
                     local an = 2
-                    if (sliderpos < (s_min + 10)) then
+                    if (sliderpos < (s_min + 5)) then
                         an = 1
-                    elseif (sliderpos > (s_max - 10)) then
+                    elseif (sliderpos > (s_max - 5)) then
                         an = 3
                     end
 
@@ -615,7 +532,7 @@ end
 function show_message(text, duration)
 
     if duration == nil then
-        duration = tonumber(mp.property_get("options/osd-duration")) / 1000
+        duration = tonumber(mp.get_property("options/osd-duration")) / 1000
     end
 
     -- cut the text short, otherwise the following functions may slow down massively on huge input
@@ -630,7 +547,7 @@ function show_message(text, duration)
     text = string.gsub(text, "_", "_\226\128\139")
 
     -- scale the fontsize for longer multi-line output
-    local fontsize, outline = tonumber(mp.property_get("options/osd-font-size")), tonumber(mp.property_get("options/osd-border-size"))
+    local fontsize, outline = tonumber(mp.get_property("options/osd-font-size")), tonumber(mp.get_property("options/osd-border-size"))
     if lines > 12 then
         fontsize, outline = fontsize / 2, outline / 1.5
     elseif lines > 8 then
@@ -640,11 +557,11 @@ function show_message(text, duration)
     local style = "{\\bord" .. outline .. "\\fs" .. fontsize .. "}"
 
     state.message_text = style .. text
-    state.message_timeout = mp.get_timer() + duration
+    state.message_timeout = mp.get_time() + duration
 end
 
 function render_message(ass)
-    if not(state.message_timeout == nil) and not(state.message_text == nil) and state.message_timeout > mp.get_timer() then
+    if not(state.message_timeout == nil) and not(state.message_text == nil) and state.message_timeout > mp.get_time() then
         ass:new_event()
         ass:append(state.message_text)
     else
@@ -659,6 +576,8 @@ end
 
 -- OSC INIT
 function osc_init()
+    msg.debug("osc_init")
+
     -- kill old Elements
     elements = {}
 
@@ -667,9 +586,9 @@ function osc_init()
     local display_w, display_h, display_aspect = mp.get_screen_size()
     local scale = 1
 
-    if (mp.property_get("video") == "no") then -- dummy/forced window
+    if (mp.get_property("video") == "no") then -- dummy/forced window
         scale = user_opts.scaleforcedwindow
-    elseif (mp.property_get("fullscreen") == "yes") then
+    elseif state.fullscreen then
         scale = user_opts.scalefullscreen
     else
         scale = user_opts.scalewindowed
@@ -719,7 +638,7 @@ function osc_init()
 
     -- title
     local contentF = function (ass)
-        local title = mp.property_get_string("media-title")
+        local title = mp.get_property_osd("media-title")
         if not (title == nil) then
 
             if #title > 80 then
@@ -735,34 +654,34 @@ function osc_init()
     local eventresponder = {}
     eventresponder.mouse_btn0_up = function ()
 
-        local title = mp.property_get("media-title")
-        local pl_count = tonumber(mp.property_get("playlist-count"))
+        local title = mp.get_property("media-title")
+        local pl_count = tonumber(mp.get_property("playlist-count"))
 
         if pl_count > 1 then
-            local playlist_pos = countone(tonumber(mp.property_get("playlist-pos")))
+            local playlist_pos = countone(tonumber(mp.get_property("playlist-pos")))
             title = "[" .. playlist_pos .. "/" .. pl_count .. "] " .. title
         end
 
         show_message(title)
     end
-    eventresponder.mouse_btn2_up = function () show_message(mp.property_get("filename")) end
+    eventresponder.mouse_btn2_up = function () show_message(mp.get_property("filename")) end
 
     register_button(posX, titlerowY, 8, 496, 12, osc_styles.vidtitle, contentF, eventresponder, nil)
 
     -- If we have more than one playlist entry, render playlist navigation buttons
     local metainfo = {}
-    metainfo.visible = (tonumber(mp.property_get("playlist-count")) > 1)
+    metainfo.visible = (tonumber(mp.get_property("playlist-count")) > 1)
 
     -- playlist prev
     local eventresponder = {}
-    eventresponder.mouse_btn0_up = function () mp.send_commandv("playlist_prev", "weak") end
-    eventresponder["shift+mouse_btn0_up"] = function () show_message(mp.property_get("playlist"), 3) end
+    eventresponder.mouse_btn0_up = function () mp.commandv("playlist_prev", "weak") end
+    eventresponder["shift+mouse_btn0_up"] = function () show_message(mp.get_property_osd("playlist"), 3) end
     register_button(posX - pos_offsetX, titlerowY, 7, 12, 12, osc_styles.vidtitle, "◀", eventresponder, metainfo)
 
     -- playlist next
     local eventresponder = {}
-    eventresponder.mouse_btn0_up = function () mp.send_commandv("playlist_next", "weak") end
-    eventresponder["shift+mouse_btn0_up"] = function () show_message(mp.property_get("playlist"), 3) end
+    eventresponder.mouse_btn0_up = function () mp.commandv("playlist_next", "weak") end
+    eventresponder["shift+mouse_btn0_up"] = function () show_message(mp.get_property_osd("playlist"), 3) end
     register_button(posX + pos_offsetX, titlerowY, 9, 12, 12, osc_styles.vidtitle, "▶", eventresponder, metainfo)
 
     --
@@ -774,14 +693,14 @@ function osc_init()
 
     --play/pause
     local contentF = function (ass)
-        if mp.property_get("pause") == "yes" then
+        if mp.get_property("pause") == "yes" then
             ass:append("\238\132\129")
         else
             ass:append("\238\128\130")
         end
     end
     local eventresponder = {}
-    eventresponder.mouse_btn0_up = function () mp.send_commandv("cycle", "pause") end
+    eventresponder.mouse_btn0_up = function () mp.commandv("cycle", "pause") end
     register_button(posX, bigbuttonrowY, 5, 40, 40, osc_styles.bigButtons, contentF, eventresponder, nil)
 
     --skipback
@@ -789,33 +708,33 @@ function osc_init()
     metainfo.softrepeat = true
 
     local eventresponder = {}
-    eventresponder.mouse_btn0_down = function () mp.send_commandv("seek", -5, "relative", "keyframes") end
-    eventresponder["shift+mouse_btn0_down"] = function () mp.send_commandv("frame_back_step") end
-    eventresponder.mouse_btn2_down = function () mp.send_commandv("seek", -30, "relative", "keyframes") end
+    eventresponder.mouse_btn0_down = function () mp.commandv("seek", -5, "relative", "keyframes") end
+    eventresponder["shift+mouse_btn0_down"] = function () mp.commandv("frame_back_step") end
+    eventresponder.mouse_btn2_down = function () mp.commandv("seek", -30, "relative", "keyframes") end
     register_button(posX - bigbuttondistance, bigbuttonrowY, 5, 40, 40, osc_styles.bigButtons, "\238\128\132", eventresponder, metainfo)
 
     --skipfrwd
     local eventresponder = {}
-    eventresponder.mouse_btn0_down = function () mp.send_commandv("seek", 10, "relative", "keyframes") end
-    eventresponder["shift+mouse_btn0_down"] = function () mp.send_commandv("frame_step") end
-    eventresponder.mouse_btn2_down = function () mp.send_commandv("seek", 60, "relative", "keyframes") end
+    eventresponder.mouse_btn0_down = function () mp.commandv("seek", 10, "relative", "keyframes") end
+    eventresponder["shift+mouse_btn0_down"] = function () mp.commandv("frame_step") end
+    eventresponder.mouse_btn2_down = function () mp.commandv("seek", 60, "relative", "keyframes") end
     register_button(posX + bigbuttondistance, bigbuttonrowY, 5, 40, 40, osc_styles.bigButtons, "\238\128\133", eventresponder, metainfo)
 
     --chapters
     -- do we have any?
     local metainfo = {}
-    metainfo.enabled = ((#mp.get_chapter_list()) > 0)
+    metainfo.enabled = ((#mp.get_property_native("chapter-list", {})) > 0)
 
     --prev
     local eventresponder = {}
-    eventresponder.mouse_btn0_up = function () mp.send_commandv("osd-msg", "add", "chapter", -1) end
-    eventresponder["shift+mouse_btn0_up"] = function () show_message(mp.property_get("chapter-list"), 3) end
+    eventresponder.mouse_btn0_up = function () mp.commandv("osd-msg", "add", "chapter", -1) end
+    eventresponder["shift+mouse_btn0_up"] = function () show_message(mp.get_property_osd("chapter-list"), 3) end
     register_button(posX - (bigbuttondistance * 2), bigbuttonrowY, 5, 40, 40, osc_styles.bigButtons, "\238\132\132", eventresponder, metainfo)
 
     --next
     local eventresponder = {}
-    eventresponder.mouse_btn0_up = function () mp.send_commandv("osd-msg", "add", "chapter", 1) end
-    eventresponder["shift+mouse_btn0_up"] = function () show_message(mp.property_get("chapter-list"), 3) end
+    eventresponder.mouse_btn0_up = function () mp.commandv("osd-msg", "add", "chapter", 1) end
+    eventresponder["shift+mouse_btn0_up"] = function () show_message(mp.get_property_osd("chapter-list"), 3) end
     register_button(posX + (bigbuttondistance * 2), bigbuttonrowY, 5, 40, 40, osc_styles.bigButtons, "\238\132\133", eventresponder, metainfo)
 
 
@@ -852,13 +771,13 @@ function osc_init()
     else
         metainfo.enabled = true
         contentF = function (ass)
-            local aid = mp.property_get("audio")
+            local aid = mp.get_property("audio")
 
             ass:append("\238\132\134" .. osc_styles.smallButtonsLlabel .. " " .. aid)
         end
 
-        eventresponder.mouse_btn0_up = function () mp.send_commandv("osd-msg", "add", "audio", 1) end
-        eventresponder.mouse_btn2_up = function () mp.send_commandv("osd-msg", "add", "audio", -1)  end
+        eventresponder.mouse_btn0_up = function () mp.commandv("osd-msg", "add", "audio", 1) end
+        eventresponder.mouse_btn2_up = function () mp.commandv("osd-msg", "add", "audio", -1)  end
     end
 
     register_button(posX - pos_offsetX, bigbuttonrowY, 1, 70, 18, osc_styles.smallButtonsL, contentF, eventresponder, metainfo)
@@ -889,27 +808,27 @@ function osc_init()
     else
         metainfo.enabled = true
         contentF = function (ass)
-            local sid = mp.property_get("sub")
+            local sid = mp.get_property("sub")
 
             ass:append("\238\132\135" .. osc_styles.smallButtonsLlabel .. " " .. sid)
         end
 
-        eventresponder.mouse_btn0_up = function () mp.send_commandv("osd-msg", "add", "sub", 1) end
-        eventresponder.mouse_btn2_up = function () mp.send_commandv("osd-msg", "add", "sub", -1)  end
+        eventresponder.mouse_btn0_up = function () mp.commandv("osd-msg", "add", "sub", 1) end
+        eventresponder.mouse_btn2_up = function () mp.commandv("osd-msg", "add", "sub", -1)  end
     end
     register_button(posX - pos_offsetX, bigbuttonrowY, 7, 70, 18, osc_styles.smallButtonsL, contentF, eventresponder, metainfo)
 
 
     --toggle FS
     local contentF = function (ass)
-        if mp.property_get("fullscreen") == "yes" then
+        if state.fullscreen then
             ass:append("\238\132\137")
         else
             ass:append("\238\132\136")
         end
     end
     local eventresponder = {}
-    eventresponder.mouse_btn0_up = function () mp.send_commandv("cycle", "fullscreen") end
+    eventresponder.mouse_btn0_up = function () mp.commandv("cycle", "fullscreen") end
     register_button(posX+pos_offsetX, bigbuttonrowY, 6, 25, 25, osc_styles.smallButtonsR, contentF, eventresponder, nil)
 
 
@@ -919,11 +838,11 @@ function osc_init()
 
     local markerF = function ()
         local duration = 0
-        if not (mp.property_get("length") == nil) then
-            duration = tonumber(mp.property_get("length"))
+        if not (mp.get_property("length") == nil) then
+            duration = tonumber(mp.get_property("length"))
         end
 
-        local chapters = mp.get_chapter_list()
+        local chapters = mp.get_property_native("chapter-list", {})
         local markers = {}
         for n = 1, #chapters do
             markers[n] = (chapters[n].time / duration * 100)
@@ -932,16 +851,16 @@ function osc_init()
     end
 
     local posF = function ()
-        if mp.property_get("length") == nil then
+        if mp.get_property("percent-pos") == nil then
             return nil
         else
-            return tonumber(mp.property_get("percent-pos"))
+            return tonumber(mp.get_property("percent-pos"))
         end
     end
 
     local tooltipF = function (pos)
-        if not (mp.property_get("length") == nil) then
-            duration = tonumber(mp.property_get("length"))
+        if not (mp.get_property("length") == nil) then
+            duration = tonumber(mp.get_property("length"))
             possec = duration * (pos / 100)
             return mp.format_time(possec)
         else
@@ -952,13 +871,13 @@ function osc_init()
     local metainfo = {}
 
 
-    metainfo.enabled = (not (mp.property_get("length") == nil)) and (tonumber(mp.property_get("length")) > 0)
+    metainfo.enabled = not (mp.get_property("percent-pos") == nil)
     metainfo.styledown = false
     metainfo.slider = {}
     metainfo.slider.border = 1
     metainfo.slider.gap = 1             -- >1 will draw triangle markers
     metainfo.slider.type = "slider"     -- "bar" for old bar-style filling
-    if (user_opts.seektooltip) and (not (mp.property_get("length") == nil)) then
+    if (user_opts.seektooltip) and (not (mp.get_property("length") == nil)) then
         metainfo.slider.tooltipF = tooltipF
     end
 
@@ -967,7 +886,7 @@ function osc_init()
         local seek_to = get_slider_value(element)
         -- ignore identical seeks
         if not(state.last_seek == seek_to) then
-            mp.send_commandv("seek", seek_to, "absolute-percent", "keyframes")
+            mp.commandv("seek", seek_to, "absolute-percent", "keyframes")
             state.last_seek = seek_to
         end
     end
@@ -987,9 +906,9 @@ function osc_init()
 
     local contentF = function (ass)
         if state.tc_ms then
-            ass:append(mp.property_get_string("time-pos/full"))
+            ass:append(mp.get_property_osd("time-pos/full"))
         else
-            ass:append(mp.property_get_string("time-pos"))
+            ass:append(mp.get_property_osd("time-pos"))
         end
     end
 
@@ -1001,9 +920,9 @@ function osc_init()
     local eventresponder = {}
 
     local contentF = function (ass)
-        local cache = mp.property_get("cache")
+        local cache = mp.get_property("cache")
         if not (cache == nil) then
-            cache = tonumber(mp.property_get("cache"))
+            cache = tonumber(mp.get_property("cache"))
             if (cache < 45) then
                 ass:append("Cache: " .. (cache) .."%")
             end
@@ -1015,20 +934,20 @@ function osc_init()
     -- right (total/remaining time)
     -- do we have a usuable duration?
     local metainfo = {}
-    metainfo.visible = (not (mp.property_get("length") == nil)) and (tonumber(mp.property_get("length")) > 0)
+    metainfo.visible = (not (mp.get_property("length") == nil)) and (tonumber(mp.get_property("length")) > 0)
 
     local contentF = function (ass)
         if state.rightTC_trem == true then
             if state.tc_ms then
-                ass:append("-" .. mp.property_get_string("playtime-remaining/full"))
+                ass:append("-" .. mp.get_property_osd("playtime-remaining/full"))
             else
-                ass:append("-" .. mp.property_get_string("playtime-remaining"))
+                ass:append("-" .. mp.get_property_osd("playtime-remaining"))
             end
         else
             if state.tc_ms then
-                ass:append(mp.property_get_string("length/full"))
+                ass:append(mp.get_property_osd("length/full"))
             else
-                ass:append(mp.property_get_string("length"))
+                ass:append(mp.get_property_osd("length"))
             end
         end
     end
@@ -1045,9 +964,9 @@ end
 
 
 function show_osc()
-
+    msg.debug("show_osc")
     --remember last time of invocation (mouse move)
-    state.showtime = mp.get_timer()
+    state.showtime = mp.get_time()
 
     state.osc_visible = true
 
@@ -1058,6 +977,7 @@ function show_osc()
 end
 
 function hide_osc()
+    msg.debug("hide_osc")
     if (user_opts.fadeduration > 0) then
         if not(state.osc_visible == false) then
             state.anitype = "out"
@@ -1078,9 +998,10 @@ function request_init()
 end
 
 function render()
+    msg.debug("rendering")
     local current_screen_sizeX, current_screen_sizeY = mp.get_screen_size()
     local mouseX, mouseY = mp.get_mouse_pos()
-    local now = mp.get_timer()
+    local now = mp.get_time()
 
     -- check if display changed, if so request reinit
     if not (state.mp_screen_sizeX == current_screen_sizeX and state.mp_screen_sizeY == current_screen_sizeY) then
@@ -1245,26 +1166,37 @@ function process_event(source, what)
                 end
             end
         end
+        tick()
     end
 end
 
 -- called by mpv on every frame
 function tick()
-    if (mp.property_get("fullscreen") == "yes" and user_opts.showfullscreen) or (mp.property_get("fullscreen") == "no" and user_opts.showwindowed) then
+    if (state.fullscreen and user_opts.showfullscreen) or (not state.fullscreen and user_opts.showwindowed) then
         render()
     else
         mp.set_osd_ass(osc_param.playresy, osc_param.playresy, "")
     end
 end
 
-function mp_event(name, arg)
-    if name == "tick" then
-        tick()
-    elseif name == "start" or name == "track-layout" then
-        request_init()
-    elseif name == "end" then
+function enable_osc(enable)
+    if enable then
+        mp.enable_key_bindings("showhide")
+        show_osc()
+    else
+        hide_osc()
+        mp.disable_key_bindings("showhide")
     end
 end
+
+mp.register_event("tick", tick)
+mp.register_event("start-file", request_init)
+mp.register_event("tracks-changed", request_init)
+
+mp.register_script_message("enable-osc", function() enable_osc(true) end)
+mp.register_script_message("disable-osc", function() enable_osc(false) end)
+
+mp.observe_property("fullscreen", "bool", function(name, val) state.fullscreen = val end)
 
 -- mouse show/hide bindings
 mp.set_key_bindings({
@@ -1284,5 +1216,6 @@ mp.set_key_bindings({
     {"mouse_btn0_dbl",          "ignore"},
     {"shift+mouse_btn0_dbl",    "ignore"},
     {"mouse_btn2_dbl",          "ignore"},
-}, "input")
+    {"del",                     function() enable_osc(false) end}
+}, "input", "force")
 mp.enable_key_bindings("input")

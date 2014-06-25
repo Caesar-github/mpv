@@ -28,6 +28,8 @@
 #include <assert.h>
 #include <stdbool.h>
 
+#include "libmpv/client.h"
+
 #include "talloc.h"
 
 #include "m_config.h"
@@ -35,6 +37,8 @@
 #include "common/msg.h"
 
 static const union m_option_value default_value;
+
+static const char *const replaced_opts;
 
 // Profiles allow to predefine some sets of options that can then
 // be applied later on with the internal -profile option.
@@ -298,7 +302,7 @@ static void add_negation_option(struct m_config *config,
     const struct m_option *opt = orig->opt;
     int value;
     if (opt->type == CONF_TYPE_FLAG) {
-        value = opt->min;
+        value = 0;
     } else if (opt->type == CONF_TYPE_CHOICE) {
         // Find out whether there's a "no" choice.
         // m_option_parse() should be used for this, but it prints
@@ -319,8 +323,6 @@ static void add_negation_option(struct m_config *config,
         .name = opt->name,
         .type = CONF_TYPE_STORE,
         .flags = opt->flags & (M_OPT_NOCFG | M_OPT_GLOBAL | M_OPT_PRE_PARSE),
-        .is_new_option = opt->is_new_option,
-        .p = opt->p,
         .offset = opt->offset,
         .max = value,
     };
@@ -367,14 +369,11 @@ static void m_config_add_option(struct m_config *config,
         .name = arg->name,
     };
 
-    if (arg->is_new_option) {
+    if (arg->offset >= 0) {
         if (optstruct)
             co.data = (char *)optstruct + arg->offset;
         if (optstruct_def)
             co.default_data = (char *)optstruct_def + arg->offset;
-    } else {
-        co.data = arg->p;
-        co.default_data = arg->p;
     }
 
     if (arg->defval)
@@ -392,25 +391,20 @@ static void m_config_add_option(struct m_config *config,
 
     // Option with children -> add them
     if (arg->type->flags & M_OPT_TYPE_HAS_CHILD) {
-        if (arg->type->flags & M_OPT_TYPE_USE_SUBSTRUCT) {
-            const struct m_sub_options *subopts = arg->priv;
+        const struct m_sub_options *subopts = arg->priv;
 
-            void *new_optstruct = NULL;
-            if (co.data) {
-                new_optstruct = m_config_alloc_struct(config, subopts);
-                substruct_write_ptr(co.data, new_optstruct);
-            }
-
-            const void *new_optstruct_def = substruct_read_ptr(co.default_data);
-            if (!new_optstruct_def)
-                new_optstruct_def = subopts->defaults;
-
-            add_options(config, co.name, new_optstruct,
-                        new_optstruct_def, subopts->opts);
-        } else {
-            const struct m_option *sub = arg->p;
-            add_options(config, co.name, optstruct, optstruct_def, sub);
+        void *new_optstruct = NULL;
+        if (co.data) {
+            new_optstruct = m_config_alloc_struct(config, subopts);
+            substruct_write_ptr(co.data, new_optstruct);
         }
+
+        const void *new_optstruct_def = substruct_read_ptr(co.default_data);
+        if (!new_optstruct_def)
+            new_optstruct_def = subopts->defaults;
+
+        add_options(config, co.name, new_optstruct,
+                    new_optstruct_def, subopts->opts);
     } else {
         // Initialize options
         if (co.data && co.default_data) {
@@ -467,6 +461,80 @@ const char *m_config_get_positional_option(const struct m_config *config, int p)
     return NULL;
 }
 
+// return: <0: M_OPT_ error, 0: skip, 1: check, 2: set
+static int handle_set_opt_flags(struct m_config *config,
+                                struct m_config_option *co, int flags)
+{
+    int optflags = co->opt->flags;
+    bool set = !(flags & M_SETOPT_CHECK_ONLY);
+
+    if ((flags & M_SETOPT_PRE_PARSE_ONLY) && !(optflags & M_OPT_PRE_PARSE))
+        return 0;
+
+    if ((flags & M_SETOPT_PRESERVE_CMDLINE) && co->is_set_from_cmdline)
+        set = false;
+
+    if ((flags & M_SETOPT_NO_FIXED) && (optflags & M_OPT_FIXED))
+        return M_OPT_INVALID;
+
+    if ((flags & M_SETOPT_NO_PRE_PARSE) && (optflags & M_OPT_PRE_PARSE))
+        return M_OPT_INVALID;
+
+    // Check if this option isn't forbidden in the current mode
+    if ((flags & M_SETOPT_FROM_CONFIG_FILE) && (optflags & M_OPT_NOCFG)) {
+        MP_ERR(config, "The %s option can't be used in a config file.\n",
+               co->name);
+        return M_OPT_INVALID;
+    }
+    if (flags & M_SETOPT_BACKUP) {
+        if (optflags & M_OPT_GLOBAL) {
+            MP_ERR(config, "The %s option is global and can't be set per-file.\n",
+                   co->name);
+            return M_OPT_INVALID;
+        }
+        if (set)
+            ensure_backup(config, co);
+    }
+
+    return set ? 2 : 1;
+}
+
+static void handle_set_from_cmdline(struct m_config *config,
+                                    struct m_config_option *co)
+{
+    co->is_set_from_cmdline = true;
+    // Mark aliases too
+    if (co->data) {
+        for (int n = 0; n < config->num_opts; n++) {
+            struct m_config_option *co2 = &config->opts[n];
+            if (co2->data == co->data)
+                co2->is_set_from_cmdline = true;
+        }
+    }
+}
+
+// The type data points to is as in: m_config_get_co(config, name)->opt
+int m_config_set_option_raw(struct m_config *config, struct m_config_option *co,
+                            void *data, int flags)
+{
+    if (!co)
+        return M_OPT_UNKNOWN;
+
+    // This affects some special options like "include", "profile". Maybe these
+    // should work, or maybe not. For now they would require special code.
+    if (!co->data)
+        return M_OPT_UNKNOWN;
+
+    int r = handle_set_opt_flags(config, co, flags);
+    if (r <= 1)
+        return r;
+
+    m_option_copy(co->opt, co->data, data);
+    if (flags & M_SETOPT_FROM_CMDLINE)
+        handle_set_from_cmdline(config, co);
+    return 0;
+}
+
 static int parse_subopts(struct m_config *config, char *name, char *prefix,
                          struct bstr param, int flags);
 
@@ -475,40 +543,32 @@ static int m_config_parse_option(struct m_config *config, struct bstr name,
 {
     assert(config != NULL);
     assert(name.len != 0);
-    bool set = !(flags & M_SETOPT_CHECK_ONLY);
 
     struct m_config_option *co = m_config_get_co(config, name);
-    if (!co)
+    if (!co) {
+        char s[80];
+        snprintf(s, sizeof(s), "|%.*s#", BSTR_P(name));
+        char *msg = strstr(replaced_opts, s);
+        if (msg) {
+            msg += strlen(s);
+            char *end = strchr(msg, '|');
+            MP_FATAL(config, "The --%.*s option was renamed or replaced: %.*s\n",
+                     BSTR_P(name), (int)(end - msg), msg);
+        }
         return M_OPT_UNKNOWN;
+    }
 
     // This is the only mandatory function
     assert(co->opt->type->parse);
 
-    if ((flags & M_SETOPT_PRE_PARSE_ONLY) && !(co->opt->flags & M_OPT_PRE_PARSE))
-        return 0;
-
-    if ((flags & M_SETOPT_PRESERVE_CMDLINE) && co->is_set_from_cmdline)
-        set = false;
+    int r = handle_set_opt_flags(config, co, flags);
+    if (r <= 0)
+        return r;
+    bool set = r == 2;
 
     if (set) {
         MP_VERBOSE(config, "Setting option '%.*s' = '%.*s' (flags = %d)\n",
                    BSTR_P(name), BSTR_P(param), flags);
-    }
-
-    // Check if this option isn't forbidden in the current mode
-    if ((flags & M_SETOPT_FROM_CONFIG_FILE) && (co->opt->flags & M_OPT_NOCFG)) {
-        MP_ERR(config, "The %.*s option can't be used in a config file.\n",
-                BSTR_P(name));
-        return M_OPT_INVALID;
-    }
-    if (flags & M_SETOPT_BACKUP) {
-        if (co->opt->flags & M_OPT_GLOBAL) {
-            MP_ERR(config, "The %.*s option is global and can't be set per-file.\n",
-                    BSTR_P(name));
-            return M_OPT_INVALID;
-        }
-        if (set)
-            ensure_backup(config, co);
     }
 
     if (config->includefunc && bstr_equals0(name, "include"))
@@ -528,20 +588,10 @@ static int m_config_parse_option(struct m_config *config, struct bstr name,
         return parse_subopts(config, (char *)co->name, prefix, param, flags);
     }
 
-    int r = m_option_parse(config->log, co->opt, name, param,
-                           set ? co->data : NULL);
+    r = m_option_parse(config->log, co->opt, name, param, set ? co->data : NULL);
 
-    if (r >= 0 && set && (flags & M_SETOPT_FROM_CMDLINE)) {
-        co->is_set_from_cmdline = true;
-        // Mark aliases too
-        if (co->data) {
-            for (int n = 0; n < config->num_opts; n++) {
-                struct m_config_option *co2 = &config->opts[n];
-                if (co2->data == co->data)
-                    co2->is_set_from_cmdline = true;
-            }
-        }
-    }
+    if (r >= 0 && set && (flags & M_SETOPT_FROM_CMDLINE))
+        handle_set_from_cmdline(config, co);
 
     return r;
 }
@@ -606,6 +656,33 @@ int m_config_set_option(struct m_config *config, struct bstr name,
     return m_config_set_option_ext(config, name, param, 0);
 }
 
+int m_config_set_option_node(struct m_config *config, bstr name,
+                             struct mpv_node *data, int flags)
+{
+    struct m_config_option *co = m_config_get_co(config, name);
+    if (!co)
+        return M_OPT_UNKNOWN;
+
+    int r;
+
+    // Do this on an "empty" type to make setting the option strictly overwrite
+    // the old value, as opposed to e.g. appending to lists.
+    union m_option_value val = {0};
+
+    if (data->format == MPV_FORMAT_STRING) {
+        bstr param = bstr0(data->u.string);
+        r = m_option_parse(mp_null_log, co->opt, name, param, &val);
+    } else {
+        r = m_option_set_node(co->opt, &val, data);
+    }
+
+    if (r >= 0)
+        r = m_config_set_option_raw(config, co, &val, flags);
+
+    m_option_free(co->opt, &val);
+    return r;
+}
+
 const struct m_option *m_config_get_option(const struct m_config *config,
                                            struct bstr name)
 {
@@ -626,15 +703,27 @@ int m_config_option_requires_param(struct m_config *config, bstr name)
     return M_OPT_UNKNOWN;
 }
 
+static int sort_opt_compare(const void *pa, const void *pb)
+{
+    const struct m_config_option *a = pa;
+    const struct m_config_option *b = pb;
+    return strcasecmp(a->name, b->name);
+}
+
 void m_config_print_option_list(const struct m_config *config)
 {
     char min[50], max[50];
     int count = 0;
     const char *prefix = config->is_toplevel ? "--" : "";
 
+    struct m_config_option *sorted =
+        talloc_memdup(NULL, config->opts, config->num_opts * sizeof(sorted[0]));
+    if (config->is_toplevel)
+        qsort(sorted, config->num_opts, sizeof(sorted[0]), sort_opt_compare);
+
     MP_INFO(config, "Options:\n\n");
     for (int i = 0; i < config->num_opts; i++) {
-        struct m_config_option *co = &config->opts[i];
+        struct m_config_option *co = &sorted[i];
         const struct m_option *opt = co->opt;
         if (opt->type->flags & M_OPT_TYPE_HAS_CHILD)
             continue;
@@ -667,14 +756,35 @@ void m_config_print_option_list(const struct m_config *config)
             MP_INFO(config, " (default: %s)", def);
             talloc_free(def);
         }
-        if (opt->flags & CONF_GLOBAL)
+        if (opt->flags & M_OPT_GLOBAL)
             MP_INFO(config, " [global]");
-        if (opt->flags & CONF_NOCFG)
+        if (opt->flags & M_OPT_NOCFG)
             MP_INFO(config, " [nocfg]");
         MP_INFO(config, "\n");
         count++;
     }
     MP_INFO(config, "\nTotal: %d options\n", count);
+    talloc_free(sorted);
+}
+
+char **m_config_list_options(void *ta_parent, const struct m_config *config)
+{
+    char **list = talloc_new(ta_parent);
+    int count = 0;
+    for (int i = 0; i < config->num_opts; i++) {
+        struct m_config_option *co = &config->opts[i];
+        const struct m_option *opt = co->opt;
+        if (opt->type->flags & M_OPT_TYPE_HAS_CHILD)
+            continue;
+        if (co->is_generated)
+            continue;
+        // For use with CONF_TYPE_STRING_LIST, it's important not to set list
+        // as allocation parent.
+        char *s = talloc_strdup(ta_parent, co->name);
+        MP_TARRAY_APPEND(ta_parent, list, count, s);
+    }
+    MP_TARRAY_APPEND(ta_parent, list, count, NULL);
+    return list;
 }
 
 struct m_profile *m_config_get_profile(const struct m_config *config, bstr name)
@@ -694,6 +804,8 @@ struct m_profile *m_config_get_profile0(const struct m_config *config,
 
 struct m_profile *m_config_add_profile(struct m_config *config, char *name)
 {
+    if (!name || !name[0] || strcmp(name, "default") == 0)
+        return NULL; // never a real profile
     struct m_profile *p = m_config_get_profile0(config, name);
     if (p)
         return p;
@@ -751,3 +863,115 @@ void *m_config_alloc_struct(void *talloc_ctx,
         memcpy(substruct, subopts->defaults, subopts->size);
     return substruct;
 }
+
+struct dtor_info {
+    const struct m_sub_options *opts;
+    void *ptr;
+};
+
+static void free_substruct(void *ptr)
+{
+    struct dtor_info *d = ptr;
+    for (int n = 0; d->opts->opts && d->opts->opts[n].type; n++) {
+        const struct m_option *opt = &d->opts->opts[n];
+        void *dst = (char *)d->ptr + opt->offset;
+        m_option_free(opt, dst);
+    }
+}
+
+void *m_sub_options_copy(void *talloc_ctx, const struct m_sub_options *opts,
+                         const void *ptr)
+{
+    void *new = talloc_zero_size(talloc_ctx, opts->size);
+    struct dtor_info *dtor = talloc_ptrtype(new, dtor);
+    *dtor = (struct dtor_info){opts, new};
+    talloc_set_destructor(dtor, free_substruct);
+    // also fill/initialize members not described by opts
+    if (opts->defaults)
+        memcpy(new, opts->defaults, opts->size);
+    for (int n = 0; opts->opts && opts->opts[n].type; n++) {
+        const struct m_option *opt = &opts->opts[n];
+        // not implemented, because it adds lots of complexity
+        assert(!(opt->type->flags  & M_OPT_TYPE_HAS_CHILD));
+        void *src = (char *)ptr + opt->offset;
+        void *dst = (char *)new + opt->offset;
+        memset(dst, 0, opt->type->size);
+        m_option_copy(opt, dst, src);
+    }
+    return new;
+}
+
+// This is used for printing error messages on unknown options.
+static const char *const replaced_opts =
+    "|a52drc#--ad-lavc-ac3drc=level"
+    "|afm#--ad"
+    "|aspect#--video-aspect"
+    "|ass-bottom-margin#--vf=sub=bottom:top"
+    "|ass#--sub-ass"
+    "|audiofile#--audio-file"
+    "|benchmark#--untimed (no stats)"
+    "|capture#--stream-capture=<filename>"
+    "|channels#--audio-channels (changed semantics)"
+    "|cursor-autohide-delay#--cursor-autohide"
+    "|delay#--audio-delay"
+    "|dumpstream#--stream-dump=<filename>"
+    "|dvdangle#--dvd-angle"
+    "|endpos#--length"
+    "|font#--osd-font"
+    "|forcedsubsonly#--sub-forced-only"
+    "|format#--audio-format"
+    "|fstype#--x11-fstype"
+    "|hardframedrop#--framedrop=hard"
+    "|identify#removed; use TOOLS/mpv_identify.sh"
+    "|lavdopts#--vd-lavc-..."
+    "|lavfdopts#--demuxer-lavf-..."
+    "|lircconf#--input-lirc-conf"
+    "|mixer-channel#AO suboptions (alsa, oss)"
+    "|mixer#AO suboptions (alsa, oss)"
+    "|mouse-movements#--input-cursor"
+    "|msgcolor#--msg-color"
+    "|msglevel#--msg-level (changed semantics)"
+    "|msgmodule#--msg-module"
+    "|name#--x11-name"
+    "|noar#--no-input-appleremote"
+    "|noautosub#--no-sub-auto"
+    "|noconsolecontrols#--no-input-terminal"
+    "|nojoystick#--no-input-joystick"
+    "|nosound#--no-audio"
+    "|osdlevel#--osd-level"
+    "|panscanrange#--video-zoom, --video-pan-x/y"
+    "|playing-msg#--term-playing-msg"
+    "|pp#'--vf=pp=[...]'"
+    "|pphelp#--vf=pp:help"
+    "|rawaudio#--demuxer-rawaudio-..."
+    "|rawvideo#--demuxer-rawvideo-..."
+    "|spugauss#--sub-gauss"
+    "|srate#--audio-samplerate"
+    "|ss#--start"
+    "|stop-xscreensaver#--stop-screensaver"
+    "|sub-fuzziness#--sub-auto"
+    "|sub#--sub-file"
+    "|subcp#--sub-codepage"
+    "|subdelay#--sub-delay"
+    "|subfile#--sub"
+    "|subfont-text-scale#--sub-scale"
+    "|subfont#--sub-text-font"
+    "|subfps#--sub-fps"
+    "|subpos#--sub-pos"
+    "|tvscan#--tv-scan"
+    "|use-filename-title#--title='${filename}'"
+    "|vc#--vd=..., --hwdec=..."
+    "|vobsub#--sub (pass the .idx file)"
+    "|xineramascreen#--screen (different values)"
+    "|xy#--autofit"
+    "|zoom#Inverse available as ``--video-unscaled"
+    "|media-keys#--input-media-keys"
+    "|lirc#--input-lirc"
+    "|right-alt-gr#--input-right-alt-gr"
+    "|autosub#--sub-auto"
+    "|native-fs#--fs-missioncontrol"
+    "|status-msg#--term-status-msg"
+    "|idx#--index"
+    "|forceidx#--index"
+    "|"
+;

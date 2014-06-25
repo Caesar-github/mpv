@@ -27,8 +27,7 @@
 #include <ass/ass.h>
 #include <ass/ass_types.h>
 
-#include <libavutil/common.h>
-
+#include "common/common.h"
 #include "common/global.h"
 #include "common/msg.h"
 #include "options/path.h"
@@ -57,6 +56,16 @@ void mp_ass_set_style(ASS_Style *style, double res_y,
     style->FontSize = opts->font_size * scale;
     style->PrimaryColour = MP_ASS_COLOR(opts->color);
     style->SecondaryColour = style->PrimaryColour;
+#if LIBASS_VERSION >= 0x01102001
+    style->OutlineColour = MP_ASS_COLOR(opts->border_color);
+    if (opts->back_color.a) {
+        style->BackColour = MP_ASS_COLOR(opts->back_color);
+        style->BorderStyle = 4; // opaque box
+    } else {
+        style->BackColour = MP_ASS_COLOR(opts->shadow_color);
+        style->BorderStyle = 1; // outline
+    }
+#else
     if (opts->back_color.a) {
         style->OutlineColour = MP_ASS_COLOR(opts->back_color);
         style->BorderStyle = 3; // opaque box
@@ -65,6 +74,7 @@ void mp_ass_set_style(ASS_Style *style, double res_y,
         style->BorderStyle = 1; // outline
     }
     style->BackColour = MP_ASS_COLOR(opts->shadow_color);
+#endif
     style->Outline = opts->border_size * scale;
     style->Shadow = opts->shadow_offset * scale;
     style->Spacing = opts->spacing * scale;
@@ -128,14 +138,20 @@ void mp_ass_configure(ASS_Renderer *priv, struct MPOpts *opts,
     float set_line_spacing = 0;
     float set_font_scale = 1;
     int set_hinting = 0;
+    int set_force_override = 0;
     if (opts->ass_style_override) {
         set_use_margins = opts->ass_use_margins;
 #if LIBASS_VERSION >= 0x01010000
         set_sub_pos = 100 - opts->sub_pos;
 #endif
         set_line_spacing = opts->ass_line_spacing;
-        set_font_scale = opts->sub_scale;
         set_hinting = opts->ass_hinting;
+        set_force_override = opts->ass_style_override == 3;
+        set_font_scale = opts->sub_scale;
+        if (opts->sub_scale_with_window) {
+            int vidh = dim->h - (dim->mt + dim->mb);
+            set_font_scale *= dim->h / (float)MPMAX(vidh, 1);
+        }
     }
 
     ass_set_use_margins(priv, set_use_margins);
@@ -144,6 +160,13 @@ void mp_ass_configure(ASS_Renderer *priv, struct MPOpts *opts,
 #endif
 #if LIBASS_VERSION >= 0x01000000
     ass_set_shaper(priv, opts->ass_shaper);
+#endif
+#if LIBASS_VERSION >= 0x01103000
+    ass_set_selective_style_override_enabled(priv, set_force_override);
+    ASS_Style style = {0};
+    mp_ass_set_style(&style, 288, opts->sub_text_style);
+    ass_set_selective_style_override(priv, &style);
+    free(style.FontName);
 #endif
     ass_set_font_scale(priv, set_font_scale);
     ass_set_hinting(priv, set_hinting);
@@ -185,7 +208,7 @@ void mp_ass_render_frame(ASS_Renderer *renderer, ASS_Track *track, double time,
         if (img->w == 0 || img->h == 0)
             continue;
         if (res->num_parts >= num_parts_alloc) {
-            num_parts_alloc = FFMAX(num_parts_alloc * 2, 32);
+            num_parts_alloc = MPMAX(num_parts_alloc * 2, 32);
             res->parts = talloc_realloc(NULL, res->parts, struct sub_bitmap,
                                         num_parts_alloc);
         }
@@ -202,7 +225,7 @@ void mp_ass_render_frame(ASS_Renderer *renderer, ASS_Track *track, double time,
     *parts = res->parts;
 }
 
-static int map_ass_level[] = {
+static const int map_ass_level[] = {
     MSGL_ERR,           // 0 "FATAL errors"
     MSGL_WARN,
     MSGL_INFO,

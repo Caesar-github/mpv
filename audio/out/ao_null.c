@@ -31,9 +31,11 @@
 #include "config.h"
 #include "osdep/timer.h"
 #include "options/m_option.h"
+#include "common/common.h"
 #include "common/msg.h"
 #include "audio/format.h"
 #include "ao.h"
+#include "internal.h"
 
 struct priv {
     bool paused;
@@ -44,6 +46,10 @@ struct priv {
 
     int untimed;
     float bufferlen;    // seconds
+    float speed;        // multiplier
+    float latency_sec;  // seconds
+    float latency;      // samples
+    int broken_eof;
 
     // Minimal unit of audio samples that can be written at once. If play() is
     // called with sizes not aligned to this, a rounded size will be returned.
@@ -65,7 +71,7 @@ static void drain(struct ao *ao)
 
     double now = mp_time_sec();
     if (priv->buffered > 0) {
-        priv->buffered -= (now - priv->last_time) * ao->samplerate;
+        priv->buffered -= (now - priv->last_time) * ao->samplerate * priv->speed;
         if (priv->buffered < 0) {
             if (!priv->playing_final)
                 MP_ERR(ao, "buffer underrun\n");
@@ -86,9 +92,11 @@ static int init(struct ao *ao)
     if (!ao_chmap_sel_adjust(ao, &sel, &ao->channels))
         return -1;
 
+    priv->latency = priv->latency_sec * ao->samplerate;
+
     // A "buffer" for this many seconds of audio
     int bursts = (int)(ao->samplerate * priv->bufferlen + 1) / priv->outburst;
-    priv->buffersize = priv->outburst * bursts;
+    priv->buffersize = priv->outburst * bursts + priv->latency;
 
     priv->last_time = mp_time_sec();
 
@@ -96,11 +104,16 @@ static int init(struct ao *ao)
 }
 
 // close audio device
-static void uninit(struct ao *ao, bool cut_audio)
+static void uninit(struct ao *ao)
+{
+}
+
+static void wait_drain(struct ao *ao)
 {
     struct priv *priv = ao->priv;
-    if (!cut_audio && !priv->paused)
-        mp_sleep_us(1000.0 * 1000.0 * priv->buffered / ao->samplerate);
+    drain(ao);
+    if (!priv->paused)
+        mp_sleep_us(1000000.0 * priv->buffered / ao->samplerate / priv->speed);
 }
 
 // stop playing and empty buffers (for seeking/pause)
@@ -135,7 +148,7 @@ static int get_space(struct ao *ao)
     struct priv *priv = ao->priv;
 
     drain(ao);
-    return priv->buffersize - priv->buffered;
+    return priv->buffersize - priv->latency - priv->buffered;
 }
 
 static int play(struct ao *ao, void **data, int samples, int flags)
@@ -144,6 +157,9 @@ static int play(struct ao *ao, void **data, int samples, int flags)
     int accepted;
 
     resume(ao);
+
+    if (priv->buffered <= 0)
+        priv->buffered = priv->latency; // emulate fixed latency
 
     priv->playing_final = flags & AOPLAY_FINAL_CHUNK;
     if (priv->playing_final) {
@@ -164,7 +180,17 @@ static float get_delay(struct ao *ao)
     struct priv *priv = ao->priv;
 
     drain(ao);
-    return priv->buffered / (double)ao->samplerate;
+
+    // Note how get_delay returns the delay in audio device time (instead of
+    // adjusting for speed), since most AOs seem to also do that.
+    double delay = priv->buffered;
+
+    // Drivers with broken EOF handling usually always report the same device-
+    // level delay that is additional to the buffer time.
+    if (priv->broken_eof && priv->buffered < priv->latency)
+        delay = priv->latency;
+
+    return delay  / (double)ao->samplerate;
 }
 
 #define OPT_BASE_STRUCT struct priv
@@ -180,15 +206,21 @@ const struct ao_driver audio_out_null = {
     .get_delay = get_delay,
     .pause     = pause,
     .resume    = resume,
+    .drain     = wait_drain,
     .priv_size = sizeof(struct priv),
     .priv_defaults = &(const struct priv) {
         .bufferlen = 0.2,
+        .latency_sec = 0.5,
         .outburst = 256,
+        .speed = 1,
     },
     .options = (const struct m_option[]) {
         OPT_FLAG("untimed", untimed, 0),
         OPT_FLOATRANGE("buffer", bufferlen, 0, 0, 100),
         OPT_INTRANGE("outburst", outburst, 0, 1, 100000),
+        OPT_FLOATRANGE("speed", speed, 0, 0, 10000),
+        OPT_FLOATRANGE("latency", latency_sec, 0, 0, 100),
+        OPT_FLAG("broken-eof", broken_eof, 0),
         {0}
     },
 };

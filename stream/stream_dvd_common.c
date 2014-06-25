@@ -47,8 +47,6 @@
 const char * const dvd_audio_stream_types[8] = { "ac3","unknown","mpeg1","mpeg2ext","lpcm","unknown","dts" };
 const char * const dvd_audio_stream_channels[6] = { "mono", "stereo", "unknown", "unknown", "5.1/6.1", "5.1" };
 
-int dvd_speed=0; /* 0 => don't touch speed */
-
 void dvd_set_speed(stream_t *stream, char *device, unsigned speed)
 {
 #if defined(__linux__) && defined(SG_IO) && defined(GPCMD_SET_STREAMING)
@@ -68,7 +66,6 @@ void dvd_set_speed(stream_t *stream, char *device, unsigned speed)
   case 0: /* don't touch speed setting */
     return;
   case -1: /* restore default value */
-    if (dvd_speed == 0) return; /* we haven't touched the speed setting */
     MP_INFO(stream, "Restoring DVD speed... ");
     break;
   default: /* limit to <speed> KB/s */
@@ -128,7 +125,7 @@ void dvd_set_speed(stream_t *stream, char *device, unsigned speed)
 */
 int mp_dvdtimetomsec(dvd_time_t *dt)
 {
-  static int framerates[4] = {0, 2500, 0, 2997};
+  int framerates[4] = {0, 2500, 0, 2997};
   int framerate = framerates[(dt->frame_u & 0xc0) >> 6];
   int msec = (((dt->hour & 0xf0) >> 3) * 5 + (dt->hour & 0x0f)) * 3600000;
   msec += (((dt->minute & 0xf0) >> 3) * 5 + (dt->minute & 0x0f)) * 60000;

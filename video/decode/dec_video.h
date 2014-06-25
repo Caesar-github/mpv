@@ -40,11 +40,9 @@ struct dec_video {
 
     char *decoder_desc;
 
-    struct mp_image_params decoder_output; // last output of the decoder
-    struct mp_image_params vf_input; // video filter input params
-
-    // Used temporarily during format changes
+    // Used temporarily during decoding (important for format changes)
     struct mp_image *waiting_decoded_mpi;
+    struct mp_image_params decoder_output; // last output of the decoder
 
     void *priv; // for free use by vd_driver
 
@@ -75,7 +73,7 @@ struct dec_video {
     double decoded_pts;
 
     float stream_aspect;  // aspect ratio in media headers (DVD IFO files)
-    int i_bps;            // == bitrate  (compressed bytes/sec)
+    int bitrate;          // compressed bits/sec
     float fps;            // FPS from demuxer or from user override
     float initial_decoder_aspect;
 

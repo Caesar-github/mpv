@@ -32,8 +32,8 @@
 
 #include "options/m_option.h"
 #include "audio/format.h"
-#include "audio/reorder_ch.h"
 #include "ao.h"
+#include "internal.h"
 #include "common/msg.h"
 
 #ifdef __MINGW32__
@@ -143,14 +143,14 @@ static int init(struct ao *ao)
     if (!ao_chmap_sel_adjust(ao, &sel, &ao->channels))
         return -1;
 
-    ao->bps = ao->channels.num * ao->samplerate * (af_fmt2bits(ao->format) / 8);
+    ao->bps = ao->channels.num * ao->samplerate * af_fmt2bps(ao->format);
 
     MP_INFO(ao, "File: %s (%s)\nPCM: Samplerate: %d Hz Channels: %d Format: %s\n",
             priv->outputfilename,
             priv->waveheader ? "WAVE" : "RAW PCM", ao->samplerate,
             ao->channels.num, af_fmt_to_str(ao->format));
-    MP_INFO(ao, "Info: Faster dumping is achieved with -no-video\n");
-    MP_INFO(ao, "Info: To write WAVE files use -ao pcm:waveheader (default).\n");
+    MP_INFO(ao, "Info: Faster dumping is achieved with --no-video\n");
+    MP_INFO(ao, "Info: To write WAVE files use --ao=pcm:waveheader (default).\n");
 
     priv->fp = fopen(priv->outputfilename, "wb");
     if (!priv->fp) {
@@ -165,7 +165,7 @@ static int init(struct ao *ao)
 }
 
 // close audio device
-static void uninit(struct ao *ao, bool cut_audio)
+static void uninit(struct ao *ao)
 {
     struct priv *priv = ao->priv;
 

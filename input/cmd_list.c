@@ -70,7 +70,7 @@ const struct mp_cmd_def mp_cmds[] = {
   },
   { MP_CMD_REVERT_SEEK, "revert_seek", },
   { MP_CMD_QUIT, "quit", { OARG_INT(0) } },
-  { MP_CMD_QUIT_WATCH_LATER, "quit_watch_later", },
+  { MP_CMD_QUIT_WATCH_LATER, "quit_watch_later", { OARG_INT(0) } },
   { MP_CMD_STOP, "stop", },
   { MP_CMD_FRAME_STEP, "frame_step", .allow_auto_repeat = true },
   { MP_CMD_FRAME_BACK_STEP, "frame_back_step", .allow_auto_repeat = true },
@@ -93,17 +93,7 @@ const struct mp_cmd_def mp_cmds[] = {
   { MP_CMD_SUB_REMOVE, "sub_remove", { OARG_INT(-1) } },
   { MP_CMD_SUB_RELOAD, "sub_reload", { OARG_INT(-1) } },
 
-  { MP_CMD_TV_START_SCAN, "tv_start_scan", },
-  { MP_CMD_TV_STEP_CHANNEL, "tv_step_channel", { ARG_INT } },
-  { MP_CMD_TV_STEP_NORM, "tv_step_norm", },
-  { MP_CMD_TV_STEP_CHANNEL_LIST, "tv_step_chanlist", },
-  { MP_CMD_TV_SET_CHANNEL, "tv_set_channel", { ARG_STRING } },
   { MP_CMD_TV_LAST_CHANNEL, "tv_last_channel", },
-  { MP_CMD_TV_SET_FREQ, "tv_set_freq", { ARG_FLOAT } },
-  { MP_CMD_TV_STEP_FREQ, "tv_step_freq", { ARG_FLOAT } },
-  { MP_CMD_TV_SET_NORM, "tv_set_norm", { ARG_STRING } },
-
-  { MP_CMD_DVB_SET_CHANNEL, "dvb_set_channel", { ARG_INT, ARG_INT } },
 
   { MP_CMD_SCREENSHOT, "screenshot", {
       OARG_CHOICE(2, ({"video", 0},
@@ -122,6 +112,7 @@ const struct mp_cmd_def mp_cmds[] = {
       ARG_STRING,
       OARG_CHOICE(0, ({"replace", 0},          {"0", 0},
                       {"append", 1},           {"1", 1})),
+      OPT_KEYVALUELIST(ARG(str_list), MP_CMD_OPT_ARG),
   }},
   { MP_CMD_LOADLIST, "loadlist", {
       ARG_STRING,
@@ -158,7 +149,7 @@ const struct mp_cmd_def mp_cmds[] = {
   }},
   { MP_CMD_DISABLE_INPUT_SECTION, "disable_section", { ARG_STRING } },
 
-  { MP_CMD_DVDNAV, "dvdnav", { ARG_STRING } },
+  { MP_CMD_DISCNAV, "discnav", { ARG_STRING } },
 
   { MP_CMD_AF, "af", { ARG_STRING, ARG_STRING } },
 
@@ -167,11 +158,16 @@ const struct mp_cmd_def mp_cmds[] = {
   { MP_CMD_VO_CMDLINE, "vo_cmdline", { ARG_STRING } },
 
   { MP_CMD_SCRIPT_DISPATCH, "script_dispatch", { ARG_STRING, ARG_INT } },
+  { MP_CMD_SCRIPT_MESSAGE, "script_message", { ARG_STRING }, .vararg = true },
+  { MP_CMD_SCRIPT_MESSAGE_TO, "script_message_to", { ARG_STRING, ARG_STRING },
+    .vararg = true },
 
   { MP_CMD_OVERLAY_ADD, "overlay_add",
       { ARG_INT, ARG_INT, ARG_INT, ARG_STRING, ARG_INT, ARG_STRING, ARG_INT,
         ARG_INT, ARG_INT }},
   { MP_CMD_OVERLAY_REMOVE, "overlay_remove", { ARG_INT } },
+
+  { MP_CMD_WRITE_WATCH_LATER_CONFIG, "write_watch_later_config", },
 
   {0}
 };
@@ -230,6 +226,7 @@ static const struct legacy_cmd legacy_cmds[] = {
     {"show_tracks",             "show_text ${track-list}"},
     {"show_playlist",           "show_text ${playlist}"},
     {"speed_mult",              "multiply speed"},
+    {"dvdnav",                  "discnav"},
 
     // Approximate (can fail if user added additional whitespace)
     {"pt_step 1",               "playlist_next"},

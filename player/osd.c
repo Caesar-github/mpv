@@ -27,6 +27,7 @@
 #include "talloc.h"
 
 #include "common/msg.h"
+#include "common/msg_control.h"
 #include "options/options.h"
 #include "common/common.h"
 #include "options/m_property.h"
@@ -56,30 +57,91 @@ static void sadd_percentage(char **buf, int percent) {
         *buf = talloc_asprintf_append(*buf, " (%d%%)", percent);
 }
 
-static int get_term_width(void)
+static char *join_lines(void *ta_ctx, char **parts, int num_parts)
 {
-    get_screen_size();
-    int width = screen_width > 0 ? screen_width : 80;
-#if defined(__MINGW32__) || defined(__CYGWIN__)
-    /* Windows command line is broken (MinGW's rxvt works, but we
-     * should not depend on that). */
-    width--;
-#endif
-    return width;
+    char *res = talloc_strdup(ta_ctx, "");
+    for (int n = 0; n < num_parts; n++)
+        res = talloc_asprintf_append(res, "%s%s", n ? "\n" : "", parts[n]);
+    return res;
 }
 
-void write_status_line(struct MPContext *mpctx, const char *line)
+static void term_osd_update(struct MPContext *mpctx)
+{
+    int num_parts = 0;
+    char *parts[3] = {0};
+
+    if (!mpctx->opts->use_terminal)
+        return;
+
+    if (mpctx->term_osd_subs && mpctx->term_osd_subs[0])
+        parts[num_parts++] = mpctx->term_osd_subs;
+    if (mpctx->term_osd_text && mpctx->term_osd_text[0])
+        parts[num_parts++] = mpctx->term_osd_text;
+    if (mpctx->term_osd_status && mpctx->term_osd_status[0])
+        parts[num_parts++] = mpctx->term_osd_status;
+
+    char *s = join_lines(mpctx, parts, num_parts);
+
+    if (strcmp(mpctx->term_osd_contents, s) == 0 &&
+        mp_msg_has_status_line(mpctx->global))
+    {
+        talloc_free(s);
+    } else {
+        talloc_free(mpctx->term_osd_contents);
+        mpctx->term_osd_contents = s;
+        mp_msg(mpctx->statusline, MSGL_STATUS, "%s", s);
+    }
+}
+
+static void term_osd_set_subs(struct MPContext *mpctx, const char *text)
+{
+    if (mpctx->video_out || !text)
+        text = ""; // disable
+    if (strcmp(mpctx->term_osd_subs ? mpctx->term_osd_subs : "", text) == 0)
+        return;
+    talloc_free(mpctx->term_osd_subs);
+    mpctx->term_osd_subs = talloc_strdup(mpctx, text);
+    term_osd_update(mpctx);
+}
+
+static void term_osd_set_text(struct MPContext *mpctx, const char *text)
+{
+    if (mpctx->video_out && mpctx->opts->term_osd != 1)
+        text = ""; // disable
+    talloc_free(mpctx->term_osd_text);
+    mpctx->term_osd_text = talloc_strdup(mpctx, text);
+    term_osd_update(mpctx);
+}
+
+static void term_osd_set_status(struct MPContext *mpctx, const char *text)
+{
+    talloc_free(mpctx->term_osd_status);
+    mpctx->term_osd_status = talloc_strdup(mpctx, text);
+    term_osd_update(mpctx);
+}
+
+static void add_term_osd_bar(struct MPContext *mpctx, char **line, int width)
 {
     struct MPOpts *opts = mpctx->opts;
-    if (opts->slave_mode) {
-        mp_msg(mpctx->statusline, MSGL_STATUS, "%s\n", line);
-    } else if (erase_to_end_of_line) {
-        mp_msg(mpctx->statusline, MSGL_STATUS, "%s%s\r", line, erase_to_end_of_line);
-    } else {
-        int pos = strlen(line);
-        int width = get_term_width() - pos;
-        mp_msg(mpctx->statusline, MSGL_STATUS, "%s%*s\r", line, width, "");
-    }
+
+    if (width < 5)
+        return;
+
+    int pos = get_current_pos_ratio(mpctx, false) * (width - 3);
+    pos = MPCLAMP(pos, 0, width - 3);
+
+    bstr chars = bstr0(opts->term_osd_bar_chars);
+    bstr parts[5];
+    for (int n = 0; n < 5; n++)
+        parts[n] = bstr_split_utf8(chars, &chars);
+
+    saddf(line, "\r%.*s", BSTR_P(parts[0]));
+    for (int n = 0; n < pos; n++)
+        saddf(line, "%.*s", BSTR_P(parts[1]));
+    saddf(line, "%.*s", BSTR_P(parts[2]));
+    for (int n = 0; n < width - 3 - pos; n++)
+        saddf(line, "%.*s", BSTR_P(parts[3]));
+    saddf(line, "%.*s", BSTR_P(parts[4]));
 }
 
 void print_status(struct MPContext *mpctx)
@@ -88,12 +150,17 @@ void print_status(struct MPContext *mpctx)
 
     update_window_title(mpctx, false);
 
-    if (opts->quiet)
+    if (!opts->use_terminal)
         return;
 
+    if (opts->quiet || !(mpctx->initialized_flags & INITIALIZED_PLAYBACK)) {
+        term_osd_set_status(mpctx, "");
+        return;
+    }
+
     if (opts->status_msg) {
-        char *r = mp_property_expand_string(mpctx, opts->status_msg);
-        write_status_line(mpctx, r);
+        char *r = mp_property_expand_escaped_string(mpctx, opts->status_msg);
+        term_osd_set_status(mpctx, r);
         talloc_free(r);
         return;
     }
@@ -159,18 +226,22 @@ void print_status(struct MPContext *mpctx)
     if (cache >= 0)
         saddf(&line, " Cache: %d%%", cache);
 
+    if (opts->term_osd_bar) {
+        saddf(&line, "\n");
+        get_screen_size();
+        add_term_osd_bar(mpctx, &line, screen_width);
+    }
+
     // end
-    write_status_line(mpctx, line);
+    term_osd_set_status(mpctx, line);
     talloc_free(line);
 }
 
 typedef struct mp_osd_msg mp_osd_msg_t;
 struct mp_osd_msg {
-    /// Previous message on the stack.
-    mp_osd_msg_t *prev;
     /// Message text.
     char *msg;
-    int id, level, started;
+    int started;
     /// Display duration in seconds.
     double time;
     // Show full OSD for duration of message instead of msg
@@ -179,62 +250,37 @@ struct mp_osd_msg {
 };
 
 // time is in ms
-static mp_osd_msg_t *add_osd_msg(struct MPContext *mpctx, int id, int level,
-                                 int time)
+static mp_osd_msg_t *add_osd_msg(struct MPContext *mpctx, int level, int time)
 {
-    rm_osd_msg(mpctx, id);
-    mp_osd_msg_t *msg = talloc_struct(mpctx, mp_osd_msg_t, {
-        .prev = mpctx->osd_msg_stack,
+    struct MPOpts *opts = mpctx->opts;
+    if (level > opts->osd_level)
+        return NULL;
+
+    talloc_free(mpctx->osd_msg_stack);
+    mpctx->osd_msg_stack = talloc_struct(mpctx, mp_osd_msg_t, {
         .msg = "",
-        .id = id,
-        .level = level,
         .time = time / 1000.0,
     });
-    mpctx->osd_msg_stack = msg;
-    return msg;
+    return mpctx->osd_msg_stack;
 }
 
-static void set_osd_msg_va(struct MPContext *mpctx, int id, int level, int time,
+static void set_osd_msg_va(struct MPContext *mpctx, int level, int time,
                            const char *fmt, va_list ap)
 {
     if (level == OSD_LEVEL_INVISIBLE)
         return;
-    mp_osd_msg_t *msg = add_osd_msg(mpctx, id, level, time);
-    msg->msg = talloc_vasprintf(msg, fmt, ap);
+    mp_osd_msg_t *msg = add_osd_msg(mpctx, level, time);
+    if (msg)
+        msg->msg = talloc_vasprintf(msg, fmt, ap);
 }
 
-void set_osd_msg(struct MPContext *mpctx, int id, int level, int time,
+void set_osd_msg(struct MPContext *mpctx, int level, int time,
                  const char *fmt, ...)
 {
     va_list ap;
     va_start(ap, fmt);
-    set_osd_msg_va(mpctx, id, level, time, fmt, ap);
+    set_osd_msg_va(mpctx, level, time, fmt, ap);
     va_end(ap);
-}
-
-/**
- *  \brief Remove a message from the OSD stack
- *
- *  This function can be used to get rid of a message right away.
- *
- */
-
-void rm_osd_msg(struct MPContext *mpctx, int id)
-{
-    mp_osd_msg_t *msg, *last = NULL;
-
-    // Search for the msg
-    for (msg = mpctx->osd_msg_stack; msg && msg->id != id;
-         last = msg, msg = msg->prev) ;
-    if (!msg)
-        return;
-
-    // Detach it from the stack and free it
-    if (last)
-        last->prev = msg->prev;
-    else
-        mpctx->osd_msg_stack = msg->prev;
-    talloc_free(msg);
 }
 
 /**
@@ -247,16 +293,13 @@ void rm_osd_msg(struct MPContext *mpctx, int id)
 
 static mp_osd_msg_t *get_osd_msg(struct MPContext *mpctx)
 {
-    struct MPOpts *opts = mpctx->opts;
-    mp_osd_msg_t *msg, *prev, *last = NULL;
     double now = mp_time_sec();
     double diff;
-    char hidden_dec_done = 0;
 
     if (mpctx->osd_visible && now >= mpctx->osd_visible) {
         mpctx->osd_visible = 0;
-        mpctx->osd->progbar_type = -1; // disable
-        osd_changed(mpctx->osd, OSDTYPE_PROGBAR);
+        mpctx->osd_progbar.type = -1; // disable
+        osd_set_progbar(mpctx->osd, &mpctx->osd_progbar);
     }
     if (mpctx->osd_function_visible && now >= mpctx->osd_function_visible) {
         mpctx->osd_function_visible = 0;
@@ -269,33 +312,19 @@ static mp_osd_msg_t *get_osd_msg(struct MPContext *mpctx)
 
     mpctx->osd_last_update = now;
 
-    // Look for the first message in the stack with high enough level.
-    for (msg = mpctx->osd_msg_stack; msg; last = msg, msg = prev) {
-        prev = msg->prev;
-        if (msg->level > opts->osd_level && hidden_dec_done)
-            continue;
-        // The message has a high enough level or it is the first hidden one
-        // in both cases we decrement the timer or kill it.
+    mp_osd_msg_t *msg = mpctx->osd_msg_stack;
+    if (msg) {
         if (!msg->started || msg->time > diff) {
             if (msg->started)
                 msg->time -= diff;
             else
                 msg->started = 1;
             // display it
-            if (msg->level <= opts->osd_level)
-                return msg;
-            hidden_dec_done = 1;
-            continue;
+            return msg;
         }
         // kill the message
         talloc_free(msg);
-        if (last) {
-            last->prev = prev;
-            msg = last;
-        } else {
-            mpctx->osd_msg_stack = prev;
-            msg = NULL;
-        }
+        mpctx->osd_msg_stack = NULL;
     }
     // Nothing found
     return NULL;
@@ -303,8 +332,8 @@ static mp_osd_msg_t *get_osd_msg(struct MPContext *mpctx)
 
 // type: mp_osd_font_codepoints, ASCII, or OSD_BAR_*
 // name: fallback for terminal OSD
-void set_osd_bar(struct MPContext *mpctx, int type, const char *name,
-                 double min, double max, double val)
+void set_osd_bar(struct MPContext *mpctx, int type, const char* name,
+                 double min, double max, double neutral, double val)
 {
     struct MPOpts *opts = mpctx->opts;
     if (opts->osd_level < 1 || !opts->osd_bar_visible)
@@ -312,14 +341,19 @@ void set_osd_bar(struct MPContext *mpctx, int type, const char *name,
 
     if (mpctx->video_out && opts->term_osd != 1) {
         mpctx->osd_visible = mp_time_sec() + opts->osd_duration / 1000.0;
-        mpctx->osd->progbar_type = type;
-        mpctx->osd->progbar_value = (val - min) / (max - min);
-        mpctx->osd->progbar_num_stops = 0;
-        osd_changed(mpctx->osd, OSDTYPE_PROGBAR);
+        mpctx->osd_progbar.type = type;
+        mpctx->osd_progbar.value = (val - min) / (max - min);
+        mpctx->osd_progbar.num_stops = 0;
+        if (neutral > min && neutral < max) {
+            float pos = (neutral - min) / (max - min);
+            MP_TARRAY_APPEND(mpctx, mpctx->osd_progbar.stops,
+                             mpctx->osd_progbar.num_stops, pos);
+        }
+        osd_set_progbar(mpctx->osd, &mpctx->osd_progbar);
         return;
     }
 
-    set_osd_msg(mpctx, OSD_MSG_BAR, 1, opts->osd_duration, "%s: %d %%",
+    set_osd_msg(mpctx, 1, opts->osd_duration, "%s: %d %%",
                 name, ROUND(100 * (val - min) / (max - min)));
 }
 
@@ -328,20 +362,19 @@ void set_osd_bar(struct MPContext *mpctx, int type, const char *name,
 static void update_osd_bar(struct MPContext *mpctx, int type,
                            double min, double max, double val)
 {
-    if (mpctx->osd->progbar_type == type) {
+    if (mpctx->osd_progbar.type == type) {
         float new_value = (val - min) / (max - min);
-        if (new_value != mpctx->osd->progbar_value) {
-            mpctx->osd->progbar_value = new_value;
-            osd_changed(mpctx->osd, OSDTYPE_PROGBAR);
+        if (new_value != mpctx->osd_progbar.value) {
+            mpctx->osd_progbar.value = new_value;
+            osd_set_progbar(mpctx->osd, &mpctx->osd_progbar);
         }
     }
 }
 
 static void set_osd_bar_chapters(struct MPContext *mpctx, int type)
 {
-    struct osd_state *osd = mpctx->osd;
-    osd->progbar_num_stops = 0;
-    if (osd->progbar_type == type) {
+    mpctx->osd_progbar.num_stops = 0;
+    if (mpctx->osd_progbar.type == type) {
         double len = get_time_length(mpctx);
         if (len > 0) {
             int num = get_chapter_count(mpctx);
@@ -349,12 +382,13 @@ static void set_osd_bar_chapters(struct MPContext *mpctx, int type)
                 double time = chapter_start_time(mpctx, n);
                 if (time >= 0) {
                     float pos = time / len;
-                    MP_TARRAY_APPEND(osd, osd->progbar_stops,
-                                     osd->progbar_num_stops, pos);
+                    MP_TARRAY_APPEND(mpctx, mpctx->osd_progbar.stops,
+                                     mpctx->osd_progbar.num_stops, pos);
                 }
             }
         }
     }
+    osd_set_progbar(mpctx->osd, &mpctx->osd_progbar);
 }
 
 // osd_function is the symbol appearing in the video status, such as OSD_PLAY
@@ -371,18 +405,8 @@ void set_osd_function(struct MPContext *mpctx, int osd_function)
  */
 void set_osd_subtitle(struct MPContext *mpctx, const char *text)
 {
-    if (!text)
-        text = "";
-    if (strcmp(mpctx->osd->objs[OSDTYPE_SUB]->sub_text, text) != 0) {
-        osd_set_sub(mpctx->osd, mpctx->osd->objs[OSDTYPE_SUB], text);
-        if (!mpctx->video_out) {
-            rm_osd_msg(mpctx, OSD_MSG_SUB_BASE);
-            if (text && text[0])
-                set_osd_msg(mpctx, OSD_MSG_SUB_BASE, 1, INT_MAX, "%s", text);
-        }
-    }
-    if (!text[0])
-        rm_osd_msg(mpctx, OSD_MSG_SUB_BASE);
+    osd_set_text(mpctx->osd, OSDTYPE_SUB, text);
+    term_osd_set_subs(mpctx, text);
 }
 
 // sym == mpctx->osd_function
@@ -409,7 +433,7 @@ static void sadd_osd_status(char **buffer, struct MPContext *mpctx, bool full)
     saddf_osd_function_sym(buffer, sym);
     char *custom_msg = mpctx->opts->osd_status_msg;
     if (custom_msg && full) {
-        char *text = mp_property_expand_string(mpctx, custom_msg);
+        char *text = mp_property_expand_escaped_string(mpctx, custom_msg);
         *buffer = talloc_strdup_append(*buffer, text);
         talloc_free(text);
     } else {
@@ -431,27 +455,27 @@ static void add_seek_osd_messages(struct MPContext *mpctx)
 {
     if (mpctx->add_osd_seek_info & OSD_SEEK_INFO_BAR) {
         double pos = get_current_pos_ratio(mpctx, false);
-        set_osd_bar(mpctx, OSD_BAR_SEEK, "Position", 0, 1, MPCLAMP(pos, 0, 1));
+        set_osd_bar(mpctx, OSD_BAR_SEEK, "Position", 0, 1, 0, MPCLAMP(pos, 0, 1));
         set_osd_bar_chapters(mpctx, OSD_BAR_SEEK);
     }
     if (mpctx->add_osd_seek_info & OSD_SEEK_INFO_TEXT) {
         // Never in term-osd mode
         if (mpctx->video_out && mpctx->opts->term_osd != 1) {
-            mp_osd_msg_t *msg = add_osd_msg(mpctx, OSD_MSG_TEXT, 1,
-                                            mpctx->opts->osd_duration);
-            msg->show_position = true;
+            mp_osd_msg_t *msg = add_osd_msg(mpctx, 1, mpctx->opts->osd_duration);
+            if (msg)
+                msg->show_position = true;
         }
     }
     if (mpctx->add_osd_seek_info & OSD_SEEK_INFO_CHAPTER_TEXT) {
         char *chapter = chapter_display_name(mpctx, get_current_chapter(mpctx));
-        set_osd_msg(mpctx, OSD_MSG_TEXT, 1, mpctx->opts->osd_duration,
+        set_osd_msg(mpctx, 1, mpctx->opts->osd_duration,
                      "Chapter: %s", chapter);
         talloc_free(chapter);
     }
     if ((mpctx->add_osd_seek_info & OSD_SEEK_INFO_EDITION)
         && mpctx->master_demuxer)
     {
-        set_osd_msg(mpctx, OSD_MSG_TEXT, 1, mpctx->opts->osd_duration,
+        set_osd_msg(mpctx, 1, mpctx->opts->osd_duration,
                      "Playing edition %d of %d.",
                      mpctx->master_demuxer->edition + 1,
                      mpctx->master_demuxer->num_editions);
@@ -477,22 +501,13 @@ void update_osd_msg(struct MPContext *mpctx)
     double pos = get_current_pos_ratio(mpctx, false);
     update_osd_bar(mpctx, OSD_BAR_SEEK, 0, 1, MPCLAMP(pos, 0, 1));
 
+    print_status(mpctx);
+
     // Look if we have a msg
     mp_osd_msg_t *msg = get_osd_msg(mpctx);
     if (msg && !msg->show_position) {
-        if (mpctx->video_out && opts->term_osd != 1) {
-            osd_set_text(osd, msg->msg);
-        } else if (opts->term_osd) {
-            if (strcmp(mpctx->terminal_osd_text, msg->msg)) {
-                talloc_free(mpctx->terminal_osd_text);
-                mpctx->terminal_osd_text = talloc_strdup(mpctx, msg->msg);
-                // Multi-line message => clear what will be the second line
-                write_status_line(mpctx, "");
-                mp_msg(mpctx->statusline, MSGL_STATUS,
-                       "%s%s\n", opts->term_osd_esc, mpctx->terminal_osd_text);
-                print_status(mpctx);
-            }
-        }
+        osd_set_text(osd, OSDTYPE_OSD, msg->msg);
+        term_osd_set_text(mpctx, msg->msg);
         return;
     }
 
@@ -500,21 +515,15 @@ void update_osd_msg(struct MPContext *mpctx)
     if (msg && msg->show_position)
         osd_level = 3;
 
-    if (mpctx->video_out && opts->term_osd != 1) {
-        // fallback on the timer
-        char *text = NULL;
+    // clear, or if OSD level demands it, show the status
+    char *text = NULL;
 
-        if (osd_level >= 2)
-            sadd_osd_status(&text, mpctx, osd_level == 3);
+    if (osd_level >= 2)
+        sadd_osd_status(&text, mpctx, osd_level == 3);
 
-        osd_set_text(osd, text);
-        talloc_free(text);
-        return;
-    }
+    osd_set_text(osd, OSDTYPE_OSD, text);
+    talloc_free(text);
 
-    // Clear the term osd line
-    if (opts->term_osd && mpctx->terminal_osd_text[0]) {
-        mpctx->terminal_osd_text[0] = '\0';
-        mp_msg(mpctx->statusline, MSGL_STATUS, "%s\n", opts->term_osd_esc);
-    }
+    // always clear (term-osd has separate status line)
+    term_osd_set_text(mpctx, "");
 }

@@ -140,28 +140,7 @@ static bool is_software_gl(GL *gl)
            strcmp(renderer, "Mesa X11") == 0;
 }
 
-#if HAVE_LIBDL
-#include <dlfcn.h>
-#endif
-
-void *mp_getdladdr(const char *s)
-{
-    void *ret = NULL;
-#if HAVE_LIBDL
-    void *handle = dlopen(NULL, RTLD_LAZY);
-    if (!handle)
-        return NULL;
-    ret = dlsym(handle, s);
-    dlclose(handle);
-#endif
-    return ret;
-}
-
 #define FN_OFFS(name) offsetof(GL, name)
-
-// Define the function with a "hard" reference to the function as fallback.
-// (This requires linking with a compatible OpenGL library.)
-#define DEF_FN_HARD(name)       {FN_OFFS(name), {"gl" # name}, gl ## name}
 
 #define DEF_FN(name)            {FN_OFFS(name), {"gl" # name}}
 #define DEF_FN_NAMES(name, ...) {FN_OFFS(name), {__VA_ARGS__}}
@@ -169,7 +148,6 @@ void *mp_getdladdr(const char *s)
 struct gl_function {
     ptrdiff_t offset;
     char *funcnames[7];
-    void *fallback;
 };
 
 struct gl_functions {
@@ -178,47 +156,47 @@ struct gl_functions {
     int ver_core;               // introduced as required function
     int ver_removed;            // removed as required function (no replacement)
     bool partial_ok;            // loading only some functions is ok
-    struct gl_function *functions;
+    const struct gl_function *functions;
 };
 
 #define MAX_FN_COUNT 50         // max functions per gl_functions section
 
-struct gl_functions gl_functions[] = {
+static const struct gl_functions gl_functions[] = {
     // GL functions which are always available anywhere at least since 1.1
     {
         .ver_core = MPGL_VER(1, 1),
         .provides = MPGL_CAP_GL,
-        .functions = (struct gl_function[]) {
-            DEF_FN_HARD(Viewport),
-            DEF_FN_HARD(Clear),
-            DEF_FN_HARD(GenTextures),
-            DEF_FN_HARD(DeleteTextures),
-            DEF_FN_HARD(TexEnvi),
-            DEF_FN_HARD(ClearColor),
-            DEF_FN_HARD(Enable),
-            DEF_FN_HARD(Disable),
-            DEF_FN_HARD(DrawBuffer),
-            DEF_FN_HARD(DepthMask),
-            DEF_FN_HARD(BlendFunc),
-            DEF_FN_HARD(Flush),
-            DEF_FN_HARD(Finish),
-            DEF_FN_HARD(PixelStorei),
-            DEF_FN_HARD(TexImage1D),
-            DEF_FN_HARD(TexImage2D),
-            DEF_FN_HARD(TexSubImage2D),
-            DEF_FN_HARD(GetTexImage),
-            DEF_FN_HARD(TexParameteri),
-            DEF_FN_HARD(TexParameterf),
-            DEF_FN_HARD(TexParameterfv),
-            DEF_FN_HARD(GetIntegerv),
-            DEF_FN_HARD(GetBooleanv),
-            DEF_FN_HARD(ColorMask),
-            DEF_FN_HARD(ReadPixels),
-            DEF_FN_HARD(ReadBuffer),
-            DEF_FN_HARD(DrawArrays),
-            DEF_FN_HARD(GetString),
-            DEF_FN_HARD(GetError),
-            DEF_FN_HARD(GetTexLevelParameteriv),
+        .functions = (const struct gl_function[]) {
+            DEF_FN(Viewport),
+            DEF_FN(Clear),
+            DEF_FN(GenTextures),
+            DEF_FN(DeleteTextures),
+            DEF_FN(TexEnvi),
+            DEF_FN(ClearColor),
+            DEF_FN(Enable),
+            DEF_FN(Disable),
+            DEF_FN(DrawBuffer),
+            DEF_FN(DepthMask),
+            DEF_FN(BlendFunc),
+            DEF_FN(Flush),
+            DEF_FN(Finish),
+            DEF_FN(PixelStorei),
+            DEF_FN(TexImage1D),
+            DEF_FN(TexImage2D),
+            DEF_FN(TexSubImage2D),
+            DEF_FN(GetTexImage),
+            DEF_FN(TexParameteri),
+            DEF_FN(TexParameterf),
+            DEF_FN(TexParameterfv),
+            DEF_FN(GetIntegerv),
+            DEF_FN(GetBooleanv),
+            DEF_FN(ColorMask),
+            DEF_FN(ReadPixels),
+            DEF_FN(ReadBuffer),
+            DEF_FN(DrawArrays),
+            DEF_FN(GetString),
+            DEF_FN(GetError),
+            DEF_FN(GetTexLevelParameteriv),
             {0}
         },
     },
@@ -226,7 +204,7 @@ struct gl_functions gl_functions[] = {
     {
         .ver_core = MPGL_VER(2, 0),
         .provides = MPGL_CAP_GL2,
-        .functions = (struct gl_function[]) {
+        .functions = (const struct gl_function[]) {
             DEF_FN(GenBuffers),
             DEF_FN(DeleteBuffers),
             DEF_FN(BindBuffer),
@@ -270,7 +248,7 @@ struct gl_functions gl_functions[] = {
     {
         .ver_core = MPGL_VER(2, 1),
         .provides = MPGL_CAP_GL21,
-        .functions = (struct gl_function[]) {
+        .functions = (const struct gl_function[]) {
             DEF_FN(UniformMatrix4x3fv),
             {0}
         },
@@ -279,7 +257,7 @@ struct gl_functions gl_functions[] = {
     {
         .ver_core = MPGL_VER(3, 0),
         .provides = MPGL_CAP_GL3 | MPGL_CAP_SRGB_TEX | MPGL_CAP_SRGB_FB,
-        .functions = (struct gl_function[]) {
+        .functions = (const struct gl_function[]) {
             DEF_FN(GetStringi),
             {0}
         },
@@ -289,7 +267,7 @@ struct gl_functions gl_functions[] = {
         .ver_core = MPGL_VER(3, 0),
         .extension = "GL_ARB_framebuffer_object",
         .provides = MPGL_CAP_FB,
-        .functions = (struct gl_function[]) {
+        .functions = (const struct gl_function[]) {
             DEF_FN(BindFramebuffer),
             DEF_FN(GenFramebuffers),
             DEF_FN(DeleteFramebuffers),
@@ -303,7 +281,7 @@ struct gl_functions gl_functions[] = {
         .ver_removed = MPGL_VER(3, 0), // don't touch these fn names in 3.x
         .extension = "GL_EXT_framebuffer_object",
         .provides = MPGL_CAP_FB,
-        .functions = (struct gl_function[]) {
+        .functions = (const struct gl_function[]) {
             DEF_FN_NAMES(BindFramebuffer, "glBindFramebufferEXT"),
             DEF_FN_NAMES(GenFramebuffers, "glGenFramebuffersEXT"),
             DEF_FN_NAMES(DeleteFramebuffers, "glDeleteFramebuffersEXT"),
@@ -317,7 +295,7 @@ struct gl_functions gl_functions[] = {
         .ver_core = MPGL_VER(3, 0),
         .extension = "GL_ARB_vertex_array_object",
         .provides = MPGL_CAP_VAO,
-        .functions = (struct gl_function[]) {
+        .functions = (const struct gl_function[]) {
             DEF_FN(GenVertexArrays),
             DEF_FN(BindVertexArray),
             DEF_FN(DeleteVertexArrays),
@@ -329,33 +307,33 @@ struct gl_functions gl_functions[] = {
         .ver_core = MPGL_VER(3, 0),
         .extension = "GL_EXT_texture_sRGB",
         .provides = MPGL_CAP_SRGB_TEX,
-        .functions = (struct gl_function[]) {{0}},
+        .functions = (const struct gl_function[]) {{0}},
     },
     // sRGB framebuffers, extension in GL 2.x, core in GL 3.x core.
     {
         .ver_core = MPGL_VER(3, 0),
         .extension = "GL_EXT_framebuffer_sRGB",
         .provides = MPGL_CAP_SRGB_FB,
-        .functions = (struct gl_function[]) {{0}},
+        .functions = (const struct gl_function[]) {{0}},
     },
     // Float textures, extension in GL 2.x, core in GL 3.x core.
     {
         .ver_core = MPGL_VER(3, 0),
         .extension = "GL_ARB_texture_float",
         .provides = MPGL_CAP_FLOAT_TEX,
-        .functions = (struct gl_function[]) {{0}},
+        .functions = (const struct gl_function[]) {{0}},
     },
     // GL_RED / GL_RG textures, extension in GL 2.x, core in GL 3.x core.
     {
         .ver_core = MPGL_VER(3, 0),
         .extension = "GL_ARB_texture_rg",
         .provides = MPGL_CAP_TEX_RG,
-        .functions = (struct gl_function[]) {{0}},
+        .functions = (const struct gl_function[]) {{0}},
     },
     // Swap control, always an OS specific extension
     {
         .extension = "_swap_control",
-        .functions = (struct gl_function[]) {
+        .functions = (const struct gl_function[]) {
             DEF_FN_NAMES(SwapInterval, "glXSwapIntervalSGI", "glXSwapInterval",
                          "wglSwapIntervalSGI", "wglSwapInterval",
                          "wglSwapIntervalEXT"),
@@ -367,32 +345,32 @@ struct gl_functions gl_functions[] = {
         .ver_core = MPGL_VER(1, 1),
         .ver_removed = MPGL_VER(3, 0),
         .provides = MPGL_CAP_GL_LEGACY,
-        .functions = (struct gl_function[]) {
-            DEF_FN_HARD(Begin),
-            DEF_FN_HARD(End),
-            DEF_FN_HARD(MatrixMode),
-            DEF_FN_HARD(LoadIdentity),
-            DEF_FN_HARD(Translated),
-            DEF_FN_HARD(Scaled),
-            DEF_FN_HARD(Ortho),
-            DEF_FN_HARD(PushMatrix),
-            DEF_FN_HARD(PopMatrix),
-            DEF_FN_HARD(GenLists),
-            DEF_FN_HARD(DeleteLists),
-            DEF_FN_HARD(NewList),
-            DEF_FN_HARD(EndList),
-            DEF_FN_HARD(CallList),
-            DEF_FN_HARD(CallLists),
-            DEF_FN_HARD(Color4ub),
-            DEF_FN_HARD(Color4f),
-            DEF_FN_HARD(TexCoord2f),
-            DEF_FN_HARD(TexCoord2fv),
-            DEF_FN_HARD(Vertex2f),
-            DEF_FN_HARD(VertexPointer),
-            DEF_FN_HARD(ColorPointer),
-            DEF_FN_HARD(TexCoordPointer),
-            DEF_FN_HARD(EnableClientState),
-            DEF_FN_HARD(DisableClientState),
+        .functions = (const struct gl_function[]) {
+            DEF_FN(Begin),
+            DEF_FN(End),
+            DEF_FN(MatrixMode),
+            DEF_FN(LoadIdentity),
+            DEF_FN(Translated),
+            DEF_FN(Scaled),
+            DEF_FN(Ortho),
+            DEF_FN(PushMatrix),
+            DEF_FN(PopMatrix),
+            DEF_FN(GenLists),
+            DEF_FN(DeleteLists),
+            DEF_FN(NewList),
+            DEF_FN(EndList),
+            DEF_FN(CallList),
+            DEF_FN(CallLists),
+            DEF_FN(Color4ub),
+            DEF_FN(Color4f),
+            DEF_FN(TexCoord2f),
+            DEF_FN(TexCoord2fv),
+            DEF_FN(Vertex2f),
+            DEF_FN(VertexPointer),
+            DEF_FN(ColorPointer),
+            DEF_FN(TexCoordPointer),
+            DEF_FN(EnableClientState),
+            DEF_FN(DisableClientState),
             {0}
         },
     },
@@ -403,7 +381,7 @@ struct gl_functions gl_functions[] = {
     {
         .ver_removed = MPGL_VER(2, 1),
         .partial_ok = true,
-        .functions = (struct gl_function[]) {
+        .functions = (const struct gl_function[]) {
             DEF_FN_NAMES(GenBuffers, "glGenBuffers", "glGenBuffersARB"),
             DEF_FN_NAMES(DeleteBuffers, "glDeleteBuffers", "glDeleteBuffersARB"),
             DEF_FN_NAMES(BindBuffer, "glBindBuffer", "glBindBufferARB"),
@@ -421,7 +399,7 @@ struct gl_functions gl_functions[] = {
     {
         .extension = "_program",
         .ver_removed = MPGL_VER(3, 0),
-        .functions = (struct gl_function[]) {
+        .functions = (const struct gl_function[]) {
             DEF_FN_NAMES(GenPrograms, "glGenProgramsARB"),
             DEF_FN_NAMES(DeletePrograms, "glDeleteProgramsARB"),
             DEF_FN_NAMES(BindProgram, "glBindProgramARB"),
@@ -435,7 +413,7 @@ struct gl_functions gl_functions[] = {
     {
         .extension = "ATI_fragment_shader",
         .ver_removed = MPGL_VER(3, 0),
-        .functions = (struct gl_function[]) {
+        .functions = (const struct gl_function[]) {
             DEF_FN_NAMES(BeginFragmentShader, "glBeginFragmentShaderATI"),
             DEF_FN_NAMES(EndFragmentShader, "glEndFragmentShaderATI"),
             DEF_FN_NAMES(SampleMap, "glSampleMapATI"),
@@ -450,7 +428,7 @@ struct gl_functions gl_functions[] = {
     {
         .extension = "GL_NV_vdpau_interop",
         .provides = MPGL_CAP_VDPAU,
-        .functions = (struct gl_function[]) {
+        .functions = (const struct gl_function[]) {
             // (only functions needed by us)
             DEF_FN(VDPAUInitNV),
             DEF_FN(VDPAUFiniNV),
@@ -468,7 +446,7 @@ struct gl_functions gl_functions[] = {
     {
         .extension = "GL_APPLE_rgb_422",
         .provides = MPGL_CAP_APPLE_RGB_422,
-        .functions = (struct gl_function[]) {
+        .functions = (const struct gl_function[]) {
             {0}
         },
     },
@@ -495,24 +473,23 @@ void mpgl_load_functions(GL *gl, void *(*getProcAddress)(const GLubyte *),
         .extensions = talloc_strdup(gl, ext2 ? ext2 : ""),
     };
 
-    if (!getProcAddress)
-        getProcAddress = (void *)mp_getdladdr;
-
-    gl->GetString = getProcAddress("glGetString");
-    if (!gl->GetString)
-        gl->GetString = glGetString;
+    gl->GetString = getProcAddress ? getProcAddress("glGetString") : NULL;
+    if (!gl->GetString) {
+        mp_err(log, "Can't load OpenGL functions.\n");
+        return;
+    }
 
     int major = 0, minor = 0;
     const char *version = gl->GetString(GL_VERSION);
     sscanf(version, "%d.%d", &major, &minor);
     gl->version = MPGL_VER(major, minor);
-    mp_msg(log, MSGL_V, "Detected OpenGL %d.%d.\n", major, minor);
+    mp_verbose(log, "Detected OpenGL %d.%d.\n", major, minor);
 
-    mp_msg(log, MSGL_V, "GL_VENDOR='%s'\n",   gl->GetString(GL_VENDOR));
-    mp_msg(log, MSGL_V, "GL_RENDERER='%s'\n", gl->GetString(GL_RENDERER));
-    mp_msg(log, MSGL_V, "GL_VERSION='%s'\n",  gl->GetString(GL_VERSION));
-    mp_msg(log, MSGL_V, "GL_SHADING_LANGUAGE_VERSION='%s'\n",
-                            gl->GetString(GL_SHADING_LANGUAGE_VERSION));
+    mp_verbose(log, "GL_VENDOR='%s'\n",   gl->GetString(GL_VENDOR));
+    mp_verbose(log, "GL_RENDERER='%s'\n", gl->GetString(GL_RENDERER));
+    mp_verbose(log, "GL_VERSION='%s'\n",  gl->GetString(GL_VERSION));
+    mp_verbose(log, "GL_SHADING_LANGUAGE_VERSION='%s'\n",
+                    gl->GetString(GL_SHADING_LANGUAGE_VERSION));
 
     // Note: This code doesn't handle CONTEXT_FORWARD_COMPATIBLE_BIT_ARB
     //       on OpenGL 3.0 correctly. Apparently there's no way to detect this
@@ -548,12 +525,11 @@ void mpgl_load_functions(GL *gl, void *(*getProcAddress)(const GLubyte *),
     }
 
     if (has_legacy)
-        mp_msg(log, MSGL_V, "OpenGL legacy compat. found.\n");
-    mp_msg(log, MSGL_DEBUG, "Combined OpenGL extensions string:\n%s\n",
-           gl->extensions);
+        mp_verbose(log, "OpenGL legacy compat. found.\n");
+    mp_dbg(log, "Combined OpenGL extensions string:\n%s\n", gl->extensions);
 
     for (int n = 0; n < sizeof(gl_functions) / sizeof(gl_functions[0]); n++) {
-        struct gl_functions *section = &gl_functions[n];
+        const struct gl_functions *section = &gl_functions[n];
 
         // With has_legacy, the legacy functions are still available, and
         // functions are never actually removed. (E.g. the context could be at
@@ -582,15 +558,13 @@ void mpgl_load_functions(GL *gl, void *(*getProcAddress)(const GLubyte *),
         bool all_loaded = true;
 
         for (int i = 0; section->functions[i].funcnames[0]; i++) {
-            struct gl_function *fn = &section->functions[i];
+            const struct gl_function *fn = &section->functions[i];
             void *ptr = NULL;
             for (int x = 0; fn->funcnames[x]; x++) {
                 ptr = getProcAddress((const GLubyte *)fn->funcnames[x]);
                 if (ptr)
                     break;
             }
-            if (!ptr)
-                ptr = fn->fallback;
             if (!ptr) {
                 all_loaded = false;
                 if (!section->partial_ok) {
@@ -609,7 +583,7 @@ void mpgl_load_functions(GL *gl, void *(*getProcAddress)(const GLubyte *),
         if (all_loaded || section->partial_ok) {
             gl->mpgl_caps |= section->provides;
             for (int i = 0; section->functions[i].funcnames[0]; i++) {
-                struct gl_function *fn = &section->functions[i];
+                const struct gl_function *fn = &section->functions[i];
                 void **funcptr = (void**)(((char*)gl) + fn->offset);
                 if (loaded[i])
                     *funcptr = loaded[i];
@@ -632,7 +606,7 @@ void mpgl_load_functions(GL *gl, void *(*getProcAddress)(const GLubyte *),
     if (!is_software_gl(gl))
         gl->mpgl_caps |= MPGL_CAP_NO_SW;
 
-    mp_msg(log, MSGL_V, "Detected OpenGL features:");
+    mp_verbose(log, "Detected OpenGL features:");
     list_features(gl->mpgl_caps, log, MSGL_V, false);
 }
 
@@ -859,6 +833,8 @@ mp_image_t *glGetWindowScreenshot(GL *gl)
     GLint vp[4]; //x, y, w, h
     gl->GetIntegerv(GL_VIEWPORT, vp);
     mp_image_t *image = mp_image_alloc(IMGFMT_RGB24, vp[2], vp[3]);
+    if (!image)
+        return NULL;
     gl->BindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
     gl->PixelStorei(GL_PACK_ALIGNMENT, 1);
     gl->PixelStorei(GL_PACK_ROW_LENGTH, 0);
@@ -879,7 +855,7 @@ struct backend {
     MPGLSetBackendFn init;
 };
 
-static struct backend backends[] = {
+static const struct backend backends[] = {
 #if HAVE_GL_COCOA
     {"cocoa", mpgl_set_backend_cocoa},
 #endif
@@ -957,15 +933,14 @@ MPGLContext *mpgl_init(struct vo *vo, const char *backend_name)
     return ctx;
 }
 
-bool mpgl_config_window(struct MPGLContext *ctx, int gl_caps, uint32_t d_width,
-                        uint32_t d_height, uint32_t flags)
+bool mpgl_config_window(struct MPGLContext *ctx, int gl_caps, int flags)
 {
     gl_caps |= MPGL_CAP_GL;
 
     ctx->requested_gl_version = (gl_caps & MPGL_CAP_GL_LEGACY)
                                 ? MPGL_VER(2, 1) : MPGL_VER(3, 0);
 
-    if (ctx->config_window(ctx, d_width, d_height, flags)) {
+    if (ctx->config_window(ctx, flags)) {
         int missing = (ctx->gl->mpgl_caps & gl_caps) ^ gl_caps;
         if (!missing)
             return true;
@@ -1041,7 +1016,7 @@ extern const struct gl_hwdec_driver gl_hwdec_vaglx;
 extern const struct gl_hwdec_driver gl_hwdec_vda;
 extern const struct gl_hwdec_driver gl_hwdec_vdpau;
 
-const struct gl_hwdec_driver *mpgl_hwdec_drivers[] = {
+const struct gl_hwdec_driver *const mpgl_hwdec_drivers[] = {
 #if HAVE_VAAPI_GLX
     &gl_hwdec_vaglx,
 #endif

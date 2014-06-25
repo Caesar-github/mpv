@@ -27,6 +27,7 @@
 
 #include "audio/format.h"
 #include "ao.h"
+#include "internal.h"
 
 struct priv {
     struct sio_hdl *hdl;
@@ -215,7 +216,7 @@ error:
 /*
  * close device
  */
-static void uninit(struct ao *ao, bool immed)
+static void uninit(struct ao *ao)
 {
     struct priv *p = ao->priv;
 

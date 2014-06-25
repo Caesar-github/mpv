@@ -57,14 +57,14 @@ static int control(struct af_instance* af, int cmd, void* arg)
 #if 0
     if (((struct mp_audio*)arg)->format == AF_FORMAT_FLOAT)
     {
-	af->data->format = AF_FORMAT_FLOAT;
-	af->data->bps = 4;
-	af->play = play_float;
+        af->data->format = AF_FORMAT_FLOAT;
+        af->data->bps = 4;
+        af->play = play_float;
     }// else
 #endif
     {
         mp_audio_set_format(af->data, AF_FORMAT_S16);
-	af->filter = play_s16;
+        af->filter = play_s16;
     }
 
     return af_test_output(af,(struct mp_audio*)arg);
@@ -78,8 +78,8 @@ static int play_s16(struct af_instance* af, struct mp_audio* data, int f)
 {
   af_sinesuppress_t *s = af->priv;
   register int i = 0;
-  int16_t *a = (int16_t*)data->planes[0];	// Audio data
-  int len = data->samples*data->nch;		// Number of samples
+  int16_t *a = (int16_t*)data->planes[0];       // Audio data
+  int len = data->samples*data->nch;            // Number of samples
 
   for (i = 0; i < len; i++)
   {
@@ -99,7 +99,7 @@ static int play_s16(struct af_instance* af, struct mp_audio* data, int f)
     s->pos += 2 * M_PI * s->freq / data->rate;
   }
 
-   MP_VERBOSE(af, "[sinesuppress] f:%8.2f: amp:%8.2f\n", s->freq, sqrt(s->real*s->real + s->imag*s->imag) / s->ref);
+   MP_VERBOSE(af, "f:%8.2f: amp:%8.2f\n", s->freq, sqrt(s->real*s->real + s->imag*s->imag) / s->ref);
 
   return 0;
 }
@@ -109,8 +109,8 @@ static struct mp_audio* play_float(struct af_instance* af, struct mp_audio* data
 {
   af_sinesuppress_t *s = af->setup;
   register int i = 0;
-  float *a = (float*)data->audio;	// Audio data
-  int len = data->len/4;		// Number of samples
+  float *a = (float*)data->audio;       // Audio data
+  int len = data->len/4;                // Number of samples
   float avg, l, r;
 
   for (i = 0; i < len; i+=2)
@@ -136,7 +136,7 @@ static int af_open(struct af_instance* af){
 }
 
 #define OPT_BASE_STRUCT af_sinesuppress_t
-struct af_info af_info_sinesuppress = {
+const struct af_info af_info_sinesuppress = {
     .info = "Sine Suppress",
     .name = "sinesuppress",
     .open = af_open,

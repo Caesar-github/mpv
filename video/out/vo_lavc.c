@@ -56,7 +56,7 @@ struct priv {
     AVRational worst_time_base;
     int worst_time_base_is_stream;
 
-    struct mp_csp_details colorspace;
+    struct mp_image_params real_colorspace;
 };
 
 static int preinit(struct vo *vo)
@@ -69,40 +69,43 @@ static int preinit(struct vo *vo)
     vo->priv = talloc_zero(vo, struct priv);
     vc = vo->priv;
     vc->harddup = vo->encode_lavc_ctx->options->harddup;
-    vc->colorspace = (struct mp_csp_details) MP_CSP_DETAILS_DEFAULTS;
     vo->untimed = true;
     return 0;
 }
 
-static void draw_image(struct vo *vo, mp_image_t *mpi);
+static void draw_image_unlocked(struct vo *vo, mp_image_t *mpi);
 static void uninit(struct vo *vo)
 {
     struct priv *vc = vo->priv;
     if (!vc)
         return;
 
+    pthread_mutex_lock(&vo->encode_lavc_ctx->lock);
+
     if (vc->lastipts >= 0 && vc->stream)
-        draw_image(vo, NULL);
+        draw_image_unlocked(vo, NULL);
 
     mp_image_unrefp(&vc->lastimg);
 
-    vo->priv = NULL;
+    pthread_mutex_unlock(&vo->encode_lavc_ctx->lock);
 }
 
-static int config(struct vo *vo, uint32_t width, uint32_t height,
-                  uint32_t d_width, uint32_t d_height, uint32_t flags,
-                  uint32_t format)
+static int reconfig(struct vo *vo, struct mp_image_params *params, int flags)
 {
     struct priv *vc = vo->priv;
-    enum AVPixelFormat pix_fmt = imgfmt2pixfmt(format);
+    enum AVPixelFormat pix_fmt = imgfmt2pixfmt(params->imgfmt);
     AVRational display_aspect_ratio, image_aspect_ratio;
     AVRational aspect;
+    uint32_t width = params->w;
+    uint32_t height = params->h;
 
     if (!vc)
         return -1;
 
-    display_aspect_ratio.num = d_width;
-    display_aspect_ratio.den = d_height;
+    pthread_mutex_lock(&vo->encode_lavc_ctx->lock);
+
+    display_aspect_ratio.num = params->d_w;
+    display_aspect_ratio.den = params->d_h;
     image_aspect_ratio.num = width;
     image_aspect_ratio.den = height;
     aspect = av_div_q(display_aspect_ratio, image_aspect_ratio);
@@ -123,7 +126,7 @@ static int config(struct vo *vo, uint32_t width, uint32_t height,
                        vc->stream->codec->sample_aspect_ratio.den,
                        aspect.num, aspect.den);
             }
-            return 0;
+            goto done;
         }
 
         /* FIXME Is it possible with raw video? */
@@ -131,13 +134,13 @@ static int config(struct vo *vo, uint32_t width, uint32_t height,
         goto error;
     }
 
-    vc->lastipts = MP_NOPTS_VALUE;
-    vc->lastframeipts = MP_NOPTS_VALUE;
-    vc->lastencodedipts = MP_NOPTS_VALUE;
+    vc->lastipts = AV_NOPTS_VALUE;
+    vc->lastframeipts = AV_NOPTS_VALUE;
+    vc->lastencodedipts = AV_NOPTS_VALUE;
 
     if (pix_fmt == AV_PIX_FMT_NONE) {
         MP_FATAL(vo, "Format %s not supported by lavc.\n",
-                 mp_imgfmt_to_name(format));
+                 mp_imgfmt_to_name(params->imgfmt));
         goto error;
     }
 
@@ -149,14 +152,16 @@ static int config(struct vo *vo, uint32_t width, uint32_t height,
     vc->stream->codec->height = height;
     vc->stream->codec->pix_fmt = pix_fmt;
 
-    encode_lavc_set_csp(vo->encode_lavc_ctx, vc->stream, vc->colorspace.format);
-    encode_lavc_set_csp_levels(vo->encode_lavc_ctx, vc->stream, vc->colorspace.levels_out);
+    encode_lavc_set_csp(vo->encode_lavc_ctx, vc->stream, params->colorspace);
+    encode_lavc_set_csp_levels(vo->encode_lavc_ctx, vc->stream, params->colorlevels);
 
     if (encode_lavc_open_codec(vo->encode_lavc_ctx, vc->stream) < 0)
         goto error;
 
-    vc->colorspace.format = encode_lavc_get_csp(vo->encode_lavc_ctx, vc->stream);
-    vc->colorspace.levels_out = encode_lavc_get_csp_levels(vo->encode_lavc_ctx, vc->stream);
+    vc->real_colorspace.colorspace =
+        encode_lavc_get_csp(vo->encode_lavc_ctx, vc->stream);
+    vc->real_colorspace.colorlevels =
+        encode_lavc_get_csp_levels(vo->encode_lavc_ctx, vc->stream);
 
     vc->buffer_size = 6 * width * height + 200;
     if (vc->buffer_size < FF_MIN_BUFFER_SIZE)
@@ -168,9 +173,12 @@ static int config(struct vo *vo, uint32_t width, uint32_t height,
 
     mp_image_unrefp(&vc->lastimg);
 
+done:
+    pthread_mutex_unlock(&vo->encode_lavc_ctx->lock);
     return 0;
 
 error:
+    pthread_mutex_unlock(&vo->encode_lavc_ctx->lock);
     uninit(vo);
     return -1;
 }
@@ -182,14 +190,12 @@ static int query_format(struct vo *vo, uint32_t format)
     if (!vo->encode_lavc_ctx)
         return 0;
 
-    if (!encode_lavc_supports_pixfmt(vo->encode_lavc_ctx, pix_fmt))
-        return 0;
-
-    return
-        VFCAP_CSP_SUPPORTED |
-            // we can do it
-        VFCAP_CSP_SUPPORTED_BY_HW;
-            // we don't convert colorspaces here
+    pthread_mutex_lock(&vo->encode_lavc_ctx->lock);
+    int flags = 0;
+    if (encode_lavc_supports_pixfmt(vo->encode_lavc_ctx, pix_fmt))
+        flags = VFCAP_CSP_SUPPORTED | VFCAP_CSP_SUPPORTED_BY_HW;
+    pthread_mutex_unlock(&vo->encode_lavc_ctx->lock);
+    return flags;
 }
 
 static void write_packet(struct vo *vo, int size, AVPacket *packet)
@@ -273,12 +279,11 @@ static int encode_video(struct vo *vo, AVFrame *frame, AVPacket *packet)
     }
 }
 
-static void draw_image(struct vo *vo, mp_image_t *mpi)
+static void draw_image_unlocked(struct vo *vo, mp_image_t *mpi)
 {
     struct priv *vc = vo->priv;
     struct encode_lavc_context *ectx = vo->encode_lavc_ctx;
     int size;
-    AVFrame *frame;
     AVCodecContext *avc;
     int64_t frameipts;
     double nextpts;
@@ -286,10 +291,10 @@ static void draw_image(struct vo *vo, mp_image_t *mpi)
     double pts = mpi ? mpi->pts : MP_NOPTS_VALUE;
 
     if (!vc)
-        return;
+        goto done;
     if (!encode_lavc_start(ectx)) {
         MP_WARN(vo, "NOTE: skipped initial video frame (probably because audio is not there yet)\n");
-        return;
+        goto done;
     }
     if (pts == MP_NOPTS_VALUE) {
         if (mpi)
@@ -402,8 +407,7 @@ static void draw_image(struct vo *vo, mp_image_t *mpi)
         }
     }
 
-    if (vc->lastipts != MP_NOPTS_VALUE) {
-        frame = avcodec_alloc_frame();
+    if (vc->lastipts != AV_NOPTS_VALUE) {
 
         // we have a valid image in lastimg
         while (vc->lastipts < frameipts) {
@@ -413,14 +417,14 @@ static void draw_image(struct vo *vo, mp_image_t *mpi)
             // we will ONLY encode this frame if it can be encoded at at least
             // vc->mindeltapts after the last encoded frame!
             int64_t skipframes =
-                (vc->lastencodedipts == MP_NOPTS_VALUE)
+                (vc->lastencodedipts == AV_NOPTS_VALUE)
                     ? 0
                     : vc->lastencodedipts + vc->mindeltapts - vc->lastipts;
             if (skipframes < 0)
                 skipframes = 0;
 
             if (thisduration > skipframes) {
-                avcodec_get_frame_defaults(frame);
+                AVFrame *frame = av_frame_alloc();
 
                 // this is a nop, unless the worst time base is the STREAM time base
                 frame->pts = av_rescale_q(vc->lastipts + skipframes,
@@ -440,12 +444,12 @@ static void draw_image(struct vo *vo, mp_image_t *mpi)
                 write_packet(vo, size, &packet);
                 ++vc->lastdisplaycount;
                 vc->lastencodedipts = vc->lastipts + skipframes;
+
+                av_frame_free(&frame);
             }
 
             vc->lastipts += thisduration;
         }
-
-        avcodec_free_frame(&frame);
     }
 
     if (!mpi) {
@@ -460,10 +464,12 @@ static void draw_image(struct vo *vo, mp_image_t *mpi)
         } while (size > 0);
     } else {
         if (frameipts >= vc->lastframeipts) {
-            if (vc->lastframeipts != MP_NOPTS_VALUE && vc->lastdisplaycount != 1)
+            if (vc->lastframeipts != AV_NOPTS_VALUE && vc->lastdisplaycount != 1)
                 MP_INFO(vo, "Frame at pts %d got displayed %d times\n",
                         (int) vc->lastframeipts, vc->lastdisplaycount);
-            mp_image_setrefp(&vc->lastimg, mpi);
+            talloc_free(vc->lastimg);
+            vc->lastimg = mpi;
+            mpi = NULL;
             vc->lastimg_wants_osd = true;
 
             vc->lastframeipts = vc->lastipts = frameipts;
@@ -478,65 +484,54 @@ static void draw_image(struct vo *vo, mp_image_t *mpi)
             vc->lastimg_wants_osd = false;
         }
     }
+
+    if (vc->lastimg && vc->lastimg_wants_osd && vo->params) {
+        struct mp_osd_res dim = osd_res_from_image_params(vo->params);
+
+        osd_draw_on_image(vo->osd, dim, vc->lastimg->pts, OSD_DRAW_SUB_ONLY,
+                          vc->lastimg);
+    }
+
+done:
+    talloc_free(mpi);
+}
+
+static void draw_image(struct vo *vo, mp_image_t *mpi)
+{
+    pthread_mutex_lock(&vo->encode_lavc_ctx->lock);
+    draw_image_unlocked(vo, mpi);
+    pthread_mutex_unlock(&vo->encode_lavc_ctx->lock);
 }
 
 static void flip_page_timed(struct vo *vo, int64_t pts_us, int duration)
 {
 }
 
-static void draw_osd(struct vo *vo, struct osd_state *osd)
-{
-    struct priv *vc = vo->priv;
-
-    if (vc->lastimg && vc->lastimg_wants_osd) {
-        struct aspect_data asp = vo->aspdat;
-        double sar = (double)asp.orgw / asp.orgh;
-        double dar = (double)asp.prew / asp.preh;
-
-        struct mp_osd_res dim = {
-            .w = asp.orgw,
-            .h = asp.orgh,
-            .display_par = sar / dar,
-        };
-
-        mp_image_set_colorspace_details(vc->lastimg, &vc->colorspace);
-
-        osd_draw_on_image(osd, dim, osd->vo_pts, OSD_DRAW_SUB_ONLY, vc->lastimg);
-    }
-}
-
 static int control(struct vo *vo, uint32_t request, void *data)
 {
     struct priv *vc = vo->priv;
+    int r = VO_NOTIMPL;
+    pthread_mutex_lock(&vo->encode_lavc_ctx->lock);
     switch (request) {
-    case VOCTRL_SET_YUV_COLORSPACE:
-        vc->colorspace = *(struct mp_csp_details *)data;
-        if (vc->stream) {
-            encode_lavc_set_csp(vo->encode_lavc_ctx, vc->stream, vc->colorspace.format);
-            encode_lavc_set_csp_levels(vo->encode_lavc_ctx, vc->stream, vc->colorspace.levels_out);
-            vc->colorspace.format = encode_lavc_get_csp(vo->encode_lavc_ctx, vc->stream);
-            vc->colorspace.levels_out = encode_lavc_get_csp_levels(vo->encode_lavc_ctx, vc->stream);
-        }
-        return 1;
-    case VOCTRL_GET_YUV_COLORSPACE:
-        *(struct mp_csp_details *)data = vc->colorspace;
-        return 1;
+    case VOCTRL_GET_COLORSPACE:
+        *(struct mp_image_params *)data = vc->real_colorspace;
+        r = 1;
+        break;
     }
-    return VO_NOTIMPL;
+    pthread_mutex_unlock(&vo->encode_lavc_ctx->lock);
+    return r;
 }
 
 const struct vo_driver video_out_lavc = {
-    .buffer_frames = false,
     .encode = true,
     .description = "video encoding using libavcodec",
     .name = "lavc",
     .preinit = preinit,
     .query_format = query_format,
-    .config = config,
+    .reconfig = reconfig,
     .control = control,
     .uninit = uninit,
     .draw_image = draw_image,
-    .draw_osd = draw_osd,
     .flip_page_timed = flip_page_timed,
 };
 

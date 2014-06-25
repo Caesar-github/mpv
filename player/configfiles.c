@@ -31,6 +31,8 @@
 
 #include "osdep/io.h"
 
+#include "common/global.h"
+#include "common/encode.h"
 #include "common/msg.h"
 #include "options/path.h"
 #include "options/m_config.h"
@@ -44,7 +46,7 @@
 #include "core.h"
 #include "command.h"
 
-#define DEF_CONFIG "# Write your default config options here!\n\n\n"
+#define SECT_ENCODE "encoding"
 
 bool mp_parse_cfgfiles(struct MPContext *mpctx)
 {
@@ -56,33 +58,38 @@ bool mp_parse_cfgfiles(struct MPContext *mpctx)
     void *tmp = talloc_new(NULL);
     bool r = true;
     char *conffile;
+    char *section = NULL;
+    bool encoding = opts->encode_opts &&
+        opts->encode_opts->file && opts->encode_opts->file[0];
+    // In encoding mode, we don't want to apply normal config options.
+    // So we "divert" normal options into a separate section, and the diverted
+    // section is never used - unless maybe it's explicitly referenced from an
+    // encoding profile.
+    if (encoding)
+        section = "playback-default";
 
     // The #if is a stupid hack to avoid errors if libavfilter is not available.
-#if HAVE_VF_LAVFI && HAVE_ENCODING
+#if HAVE_LIBAVFILTER && HAVE_ENCODING
     conffile = mp_find_config_file(tmp, mpctx->global, "encoding-profiles.conf");
     if (conffile && mp_path_exists(conffile))
-        m_config_parse_config_file(mpctx->mconfig, conffile, 0);
+        m_config_parse_config_file(mpctx->mconfig, conffile, SECT_ENCODE, 0);
 #endif
 
-    if (m_config_parse_config_file(conf, MPLAYER_CONFDIR "/mpv.conf", 0) < 0) {
+    conffile = mp_find_global_config_file(tmp, mpctx->global, "mpv.conf");
+    if (conffile && m_config_parse_config_file(conf, conffile, section, 0) < 0) {
         r = false;
         goto done;
     }
     mp_mk_config_dir(mpctx->global, NULL);
     if (!(conffile = mp_find_user_config_file(tmp, mpctx->global, "config")))
         MP_ERR(mpctx, "mp_find_user_config_file(\"config\") problem\n");
-    else {
-        int fd = open(conffile, O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC, 0666);
-        if (fd != -1) {
-            MP_INFO(mpctx, "Creating config file: %s\n", conffile);
-            write(fd, DEF_CONFIG, sizeof(DEF_CONFIG) - 1);
-            close(fd);
-        }
-        if (m_config_parse_config_file(conf, conffile, 0) < 0) {
-            r = false;
-            goto done;
-        }
+    else if (m_config_parse_config_file(conf, conffile, section, 0) < 0) {
+        r = false;
+        goto done;
     }
+
+    if (encoding)
+        m_config_set_profile(conf, m_config_add_profile(conf, SECT_ENCODE), 0);
 
 done:
     talloc_free(tmp);
@@ -94,7 +101,7 @@ static int try_load_config(struct MPContext *mpctx, const char *file, int flags)
     if (!mp_path_exists(file))
         return 0;
     MP_INFO(mpctx, "Loading config '%s'\n", file);
-    m_config_parse_config_file(mpctx->mconfig, file, flags);
+    m_config_parse_config_file(mpctx->mconfig, file, NULL, flags);
     return 1;
 }
 
@@ -171,6 +178,7 @@ void mp_load_auto_profiles(struct MPContext *mpctx)
 static char *mp_get_playback_resume_config_filename(struct mpv_global *global,
                                                     const char *fname)
 {
+    struct MPOpts *opts = global->opts;
     char *res = NULL;
     void *tmp = talloc_new(NULL);
     const char *realpath = fname;
@@ -181,15 +189,11 @@ static char *mp_get_playback_resume_config_filename(struct mpv_global *global,
             goto exit;
         realpath = mp_path_join(tmp, bstr0(cwd), bstr0(fname));
     }
-#if HAVE_DVDREAD || HAVE_DVDNAV
     if (bstr_startswith0(bfname, "dvd://"))
-        realpath = talloc_asprintf(tmp, "%s - %s", realpath, dvd_device);
-#endif
-#if HAVE_LIBBLURAY
+        realpath = talloc_asprintf(tmp, "%s - %s", realpath, opts->dvd_device);
     if (bstr_startswith0(bfname, "br://") || bstr_startswith0(bfname, "bd://") ||
         bstr_startswith0(bfname, "bluray://"))
-        realpath = talloc_asprintf(tmp, "%s - %s", realpath, bluray_device);
-#endif
+        realpath = talloc_asprintf(tmp, "%s - %s", realpath, opts->bluray_device);
     uint8_t md5[16];
     av_md5_sum(md5, realpath, strlen(realpath));
     char *conf = talloc_strdup(tmp, "");
@@ -205,42 +209,59 @@ exit:
     return res;
 }
 
-static const char *backup_properties[] = {
-    "osd-level",
+static const char *const backup_properties[] = {
+    "options/osd-level",
     //"loop",
-    "speed",
-    "edition",
-    "pause",
+    "options/speed",
+    "options/edition",
+    "options/pause",
     "volume-restore-data",
-    "audio-delay",
+    "options/audio-delay",
     //"balance",
-    "fullscreen",
-    "colormatrix",
-    "colormatrix-input-range",
-    "colormatrix-output-range",
-    "ontop",
-    "border",
-    "gamma",
-    "brightness",
-    "contrast",
-    "saturation",
-    "hue",
-    "deinterlace",
-    "vf",
-    "af",
-    "panscan",
-    "aid",
-    "vid",
-    "sid",
-    "sub-delay",
-    "sub-pos",
-    "sub-visibility",
-    "sub-scale",
-    "ass-use-margins",
-    "ass-vsfilter-aspect-compat",
-    "ass-style-override",
+    "options/fullscreen",
+    "options/colormatrix",
+    "options/colormatrix-input-range",
+    "options/colormatrix-output-range",
+    "options/ontop",
+    "options/border",
+    "options/gamma",
+    "options/brightness",
+    "options/contrast",
+    "options/saturation",
+    "options/hue",
+    "options/deinterlace",
+    "options/vf",
+    "options/af",
+    "options/panscan",
+    "options/aid",
+    "options/vid",
+    "options/sid",
+    "options/sub-delay",
+    "options/sub-pos",
+    "options/sub-visibility",
+    "options/sub-scale",
+    "options/ass-use-margins",
+    "options/ass-vsfilter-aspect-compat",
+    "options/ass-style-override",
     0
 };
+
+// Used to retrieve default settings, which should not be stored in the
+// resume config. Uses backup_properties[] meaning/order of values.
+// This explicitly includes values set by config files and command line.
+void mp_get_resume_defaults(struct MPContext *mpctx)
+{
+    char **list =
+        talloc_zero_array(mpctx, char*, MP_ARRAY_SIZE(backup_properties));
+    for (int i = 0; backup_properties[i]; i++) {
+        const char *pname = backup_properties[i];
+        char *val = NULL;
+        int r = mp_property_do(pname, M_PROPERTY_GET_STRING, &val, mpctx);
+        if (r == M_PROPERTY_OK)
+            list[i] = talloc_steal(list, val);
+    }
+    mpctx->resume_defaults = list;
+}
 
 // Should follow what parser-cfg.c does/needs
 static bool needs_config_quoting(const char *s)
@@ -277,17 +298,25 @@ void mp_write_watch_later_conf(struct MPContext *mpctx)
     FILE *file = fopen(conffile, "wb");
     if (!file)
         goto exit;
+    if (mpctx->opts->write_filename_in_watch_later_config)
+        fprintf(file, "# %s\n", mpctx->filename);
     fprintf(file, "start=%f\n", pos);
     for (int i = 0; backup_properties[i]; i++) {
         const char *pname = backup_properties[i];
         char *val = NULL;
         int r = mp_property_do(pname, M_PROPERTY_GET_STRING, &val, mpctx);
         if (r == M_PROPERTY_OK) {
-            if (needs_config_quoting(val)) {
-                // e.g. '%6%STRING'
-                fprintf(file, "%s=%%%d%%%s\n", pname, (int)strlen(val), val);
-            } else {
-                fprintf(file, "%s=%s\n", pname, val);
+            if (strncmp(pname, "options/", 8) == 0)
+                pname += 8;
+            // Only store it if it's different from the initial value.
+            char *prev = mpctx->resume_defaults[i];
+            if (!prev || strcmp(prev, val) != 0) {
+                if (needs_config_quoting(val)) {
+                    // e.g. '%6%STRING'
+                    fprintf(file, "%s=%%%d%%%s\n", pname, (int)strlen(val), val);
+                } else {
+                    fprintf(file, "%s=%s\n", pname, val);
+                }
             }
         }
         talloc_free(val);

@@ -21,6 +21,7 @@
 
 #include "audio/chmap.h"
 #include "audio/audio.h"
+#include "demux/demux.h"
 #include "demux/stheader.h"
 
 struct mp_audio_buffer;
@@ -35,11 +36,13 @@ struct dec_audio {
     struct mp_audio_buffer *decode_buffer;
     struct af_stream *afilter;
     char *decoder_desc;
+    struct mp_tags *metadata;
+    struct replaygain_data *replaygain_data;
     // set by decoder
     struct mp_audio decoded;    // format of decoded audio (no data, temporarily
                                 // different from decode_buffer during format
                                 // changes)
-    int i_bps;                  // input bitrate, can change with VBR sources
+    int bitrate;                // input bitrate, can change with VBR sources
     // last known pts value in output from decoder
     double pts;
     // number of samples output by decoder after last known pts

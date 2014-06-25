@@ -23,6 +23,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <libavutil/common.h>
+
 #include "config.h"
 #include "common/msg.h"
 #include "options/options.h"
@@ -32,7 +34,6 @@
 #include "vf.h"
 #include "options/m_option.h"
 
-#include "libavutil/common.h"
 #include "video/memcpy_pic.h"
 
 #include "vf_lavfi.h"
@@ -293,6 +294,8 @@ static struct mp_image *filter(struct vf_instance *vf, struct mp_image *mpi)
                            vf->priv->in.off_right;
 
         struct mp_image *dmpi = vf_alloc_out_image(vf);
+        if (!dmpi)
+            return NULL;
         mp_image_copy_attributes(dmpi, mpi);
 
         out_off_left   = vf->priv->out.row_left  * dmpi->stride[0] +

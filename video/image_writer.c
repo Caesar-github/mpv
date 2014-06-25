@@ -57,7 +57,7 @@ const struct image_writer_opts image_writer_opts_defaults = {
 #define OPT_BASE_STRUCT struct image_writer_opts
 
 const struct m_sub_options image_writer_conf = {
-    .opts = (m_option_t[]) {
+    .opts = (const m_option_t[]) {
         OPT_INTRANGE("jpeg-quality", jpeg_quality, 0, 0, 100),
         OPT_INTRANGE("jpeg-optimize", jpeg_optimize, 0, 0, 100),
         OPT_INTRANGE("jpeg-smooth", jpeg_smooth, 0, 0, 100),
@@ -82,7 +82,7 @@ struct image_writer_ctx {
 struct img_writer {
     const char *file_ext;
     int (*write)(struct image_writer_ctx *ctx, mp_image_t *image, FILE *fp);
-    int *pixfmts;
+    const int *pixfmts;
     int lavc_codec;
 };
 
@@ -123,10 +123,9 @@ static int write_lavc(struct image_writer_ctx *ctx, mp_image_t *image, FILE *fp)
         goto error_exit;
     }
 
-    pic = avcodec_alloc_frame();
+    pic = av_frame_alloc();
     if (!pic)
         goto error_exit;
-    avcodec_get_frame_defaults(pic);
     for (int n = 0; n < 4; n++) {
         pic->data[n] = image->planes[n];
         pic->linesize[n] = image->stride[n];
@@ -142,7 +141,7 @@ error_exit:
     if (avctx)
         avcodec_close(avctx);
     av_free(avctx);
-    avcodec_free_frame(&pic);
+    av_frame_free(&pic);
     av_free_packet(&pkt);
     return success;
 }
@@ -220,16 +219,16 @@ static const struct img_writer img_writers[] = {
     { "ppm", write_lavc, .lavc_codec = AV_CODEC_ID_PPM },
     { "pgm", write_lavc,
       .lavc_codec = AV_CODEC_ID_PGM,
-      .pixfmts = (int[]) { IMGFMT_Y8, 0 },
+      .pixfmts = (const int[]) { IMGFMT_Y8, 0 },
     },
     { "pgmyuv", write_lavc,
       .lavc_codec = AV_CODEC_ID_PGMYUV,
-      .pixfmts = (int[]) { IMGFMT_420P, 0 },
+      .pixfmts = (const int[]) { IMGFMT_420P, 0 },
     },
     { "tga", write_lavc,
       .lavc_codec = AV_CODEC_ID_TARGA,
-      .pixfmts = (int[]) { IMGFMT_BGR24, IMGFMT_BGRA, IMGFMT_BGR15_LE,
-                           IMGFMT_Y8, 0},
+      .pixfmts = (const int[]) { IMGFMT_BGR24, IMGFMT_BGRA, IMGFMT_RGB555_LE,
+                                 IMGFMT_Y8, 0},
     },
 #if HAVE_JPEG
     { "jpg", write_jpeg },
@@ -265,8 +264,8 @@ int write_image(struct mp_image *image, const struct image_writer_opts *opts,
 {
     struct mp_image *allocated_image = NULL;
     struct image_writer_opts defs = image_writer_opts_defaults;
-    int d_w = image->display_w ? image->display_w : image->w;
-    int d_h = image->display_h ? image->display_h : image->h;
+    int d_w = image->params.d_w;
+    int d_h = image->params.d_h;
     bool is_anamorphic = image->w != d_w || image->h != d_h;
 
     if (!opts)
@@ -278,7 +277,7 @@ int write_image(struct mp_image *image, const struct image_writer_opts *opts,
 
     if (writer->pixfmts) {
         destfmt = writer->pixfmts[0];   // default to first pixel format
-        for (int *fmt = writer->pixfmts; *fmt; fmt++) {
+        for (const int *fmt = writer->pixfmts; *fmt; fmt++) {
             if (*fmt == image->imgfmt) {
                 destfmt = *fmt;
                 break;
@@ -290,6 +289,10 @@ int write_image(struct mp_image *image, const struct image_writer_opts *opts,
     //         it's unclear what colorspace/levels the target wants
     if (image->imgfmt != destfmt || is_anamorphic) {
         struct mp_image *dst = mp_image_alloc(destfmt, d_w, d_h);
+        if (!dst) {
+            mp_err(log, "Out of memory.\n");
+            return 0;
+        }
         mp_image_copy_attributes(dst, image);
 
         mp_image_swscale(dst, image, mp_sws_hq_flags);

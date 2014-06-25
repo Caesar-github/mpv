@@ -67,6 +67,9 @@ typedef struct m_config {
     int (*includefunc)(void *ctx, char *filename, int flags);
     void *includefunc_ctx;
 
+    // For the command line parser
+    int recursion_depth;
+
     void *optstruct; // struct mpopts or other
 } m_config_t;
 
@@ -116,7 +119,12 @@ enum {
     M_SETOPT_FROM_CMDLINE = 8,      // Mark as set by command line
     M_SETOPT_BACKUP = 16,           // Call m_config_backup_opt() before
     M_SETOPT_PRESERVE_CMDLINE = 32, // Don't set if already marked as FROM_CMDLINE
+    M_SETOPT_NO_FIXED = 64,         // Reject M_OPT_FIXED options
+    M_SETOPT_NO_PRE_PARSE = 128,    // Reject M_OPT_PREPARSE options
 };
+
+// Flags for safe option setting during runtime.
+#define M_SETOPT_RUNTIME (M_SETOPT_NO_FIXED | M_SETOPT_NO_PRE_PARSE)
 
 // Set the named option to the given string.
 // flags: combination of M_SETOPT_* flags (0 for normal operation)
@@ -138,6 +146,17 @@ static inline int m_config_set_option0(struct m_config *config,
 {
     return m_config_set_option(config, bstr0(name), bstr0(param));
 }
+
+// Similar to m_config_set_option_ext(), but set as data in its native format.
+// The type data points to is as in co->opt
+int m_config_set_option_raw(struct m_config *config, struct m_config_option *co,
+                            void *data, int flags);
+
+// Similar to m_config_set_option_ext(), but set as data using mpv_node.
+struct mpv_node;
+int m_config_set_option_node(struct m_config *config, bstr name,
+                             struct mpv_node *data, int flags);
+
 
 int m_config_parse_suboptions(struct m_config *config, char *name,
                               char *subopts);
@@ -163,6 +182,9 @@ const char *m_config_get_positional_option(const struct m_config *config, int n)
 // flags (e.g. "--a" is ok, "--a=yes" is also ok).
 // Returns: error code (<0), or number of expected params (0, 1)
 int m_config_option_requires_param(struct m_config *config, bstr name);
+
+// Return all (visible) option names as NULL terminated string list.
+char **m_config_list_options(void *ta_parent, const struct m_config *config);
 
 /*  Print a list of all registered options.
  *  \param config The config object.
@@ -217,5 +239,11 @@ void m_config_set_profile(struct m_config *config, struct m_profile *p,
 
 void *m_config_alloc_struct(void *talloc_ctx,
                             const struct m_sub_options *subopts);
+
+// Create a copy of the struct ptr, described by opts.
+// "opts" must live until the struct is free'd.
+// Freeing the struct frees all members.
+void *m_sub_options_copy(void *talloc_ctx, const struct m_sub_options *opts,
+                         const void *ptr);
 
 #endif /* MPLAYER_M_CONFIG_H */

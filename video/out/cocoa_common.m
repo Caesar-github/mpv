@@ -29,34 +29,36 @@
 
 #include "osdep/macosx_compat.h"
 #include "osdep/macosx_application.h"
+#include "osdep/macosx_application_objc.h"
 #include "osdep/macosx_events.h"
 
 #include "config.h"
 
 #include "options/options.h"
 #include "video/out/vo.h"
-#include "video/out/aspect.h"
+#include "win_state.h"
 
 #include "input/input.h"
 #include "talloc.h"
 
 #include "common/msg.h"
 
+#define CF_RELEASE(a) if ((a) != NULL) CFRelease(a)
+
 static void vo_cocoa_fullscreen(struct vo *vo);
 static void vo_cocoa_ontop(struct vo *vo);
+static void cocoa_change_profile(struct vo *vo, char **store, NSScreen *screen);
+static void cocoa_rm_fs_screen_profile_observer(struct vo *vo);
 
 struct vo_cocoa_state {
     MpvVideoWindow *window;
     MpvVideoView *view;
     NSOpenGLContext *gl_ctx;
-    NSOpenGLPixelFormat *gl_pixfmt;
 
     NSScreen *current_screen;
     NSScreen *fs_screen;
 
     NSInteger window_level;
-
-    struct aspect_data aspdat;
 
     bool did_resize;
     bool skip_next_swap_buffer;
@@ -74,7 +76,26 @@ struct vo_cocoa_state {
 
     uint32_t old_dwidth;
     uint32_t old_dheight;
+
+    bool icc_profile_path_changed;
+    char *icc_wnd_profile_path;
+    char *icc_fs_profile_path;
+    id   fs_icc_changed_ns_observer;
 };
+
+static void dispatch_on_main_thread(struct vo *vo, void(^block)(void))
+{
+    struct vo_cocoa_state *s = vo->cocoa;
+    if (!s->inside_sync_section) {
+        dispatch_sync(dispatch_get_main_queue(), ^{
+            s->inside_sync_section = true;
+            block();
+            s->inside_sync_section = false;
+        });
+    } else {
+        block();
+    }
+}
 
 void *vo_cocoa_glgetaddr(const char *s)
 {
@@ -119,6 +140,7 @@ int vo_cocoa_init(struct vo *vo)
         .lock = [[NSLock alloc] init],
         .enable_resize_redraw = NO,
         .log = mp_log_new(s, vo->log, "cocoa"),
+        .icc_profile_path_changed = false,
     };
     vo->cocoa = s;
     return 1;
@@ -142,6 +164,7 @@ void vo_cocoa_uninit(struct vo *vo)
     dispatch_sync(dispatch_get_main_queue(), ^{
         struct vo_cocoa_state *s = vo->cocoa;
         enable_power_management(vo);
+        cocoa_rm_fs_screen_profile_observer(vo);
         [NSApp setPresentationOptions:NSApplicationPresentationDefault];
 
         // XXX: It looks like there are some circular retain cycles for the
@@ -209,18 +232,16 @@ static void vo_cocoa_update_screens_pointers(struct vo *vo)
     get_screen_handle(vo, opts->fsscreen_id, s->window, &s->fs_screen);
 }
 
-static void vo_cocoa_update_screen_info(struct vo *vo)
+static void vo_cocoa_update_screen_info(struct vo *vo, struct mp_rect *out_rc)
 {
     struct vo_cocoa_state *s = vo->cocoa;
-    struct mp_vo_opts *opts = vo->opts;
 
     vo_cocoa_update_screens_pointers(vo);
 
-    NSRect r = [s->current_screen frame];
-
-    aspect_save_screenres(vo, r.size.width, r.size.height);
-    opts->screenwidth  = r.size.width;
-    opts->screenheight = r.size.height;
+    if (out_rc) {
+        NSRect r = [s->current_screen frame];
+        *out_rc = (struct mp_rect){0, 0, r.size.width, r.size.height};
+    }
 }
 
 static void resize_window(struct vo *vo)
@@ -254,13 +275,13 @@ static void vo_cocoa_ontop(struct vo *vo)
     vo_set_level(vo, opts->ontop);
 }
 
-static void create_window(struct vo *vo, uint32_t d_width, uint32_t d_height,
-                         uint32_t flags)
+static void create_window(struct vo *vo, struct mp_rect *win, int geo_flags)
 {
     struct vo_cocoa_state *s = vo->cocoa;
     struct mp_vo_opts *opts  = vo->opts;
 
-    const NSRect contentRect = NSMakeRect(vo->dx, vo->dy, d_width, d_height);
+    const NSRect contentRect =
+        NSMakeRect(win->x0, win->y0, win->x1 - win->x0, win->y1 - win->y0);
 
     int window_mask = 0;
     if (opts->border) {
@@ -303,45 +324,68 @@ static void create_window(struct vo *vo, uint32_t d_width, uint32_t d_height,
 
     vo_set_level(vo, opts->ontop);
 
-    if (opts->native_fs) {
+    if (opts->fs_missioncontrol) {
         [s->window setCollectionBehavior:
             NSWindowCollectionBehaviorFullScreenPrimary];
-        [NSApp setPresentationOptions:NSFullScreenWindowMask];
     }
 }
 
-static NSOpenGLPixelFormatAttribute get_nsopengl_profile(int gl3profile) {
+static CGLOpenGLProfile cgl_profile(int gl3profile) {
     if (gl3profile) {
-        return NSOpenGLProfileVersion3_2Core;
+        return kCGLOGLPVersion_3_2_Core;
     } else {
-        return NSOpenGLProfileVersionLegacy;
+        return kCGLOGLPVersion_Legacy;
     }
 }
 
 static int create_gl_context(struct vo *vo, int gl3profile)
 {
     struct vo_cocoa_state *s = vo->cocoa;
+    CGLError err;
 
-    NSOpenGLPixelFormatAttribute attr[] = {
-        NSOpenGLPFAOpenGLProfile,
-        get_nsopengl_profile(gl3profile),
-        NSOpenGLPFADoubleBuffer,
+    CGLPixelFormatAttribute attrs[] = {
+        kCGLPFAOpenGLProfile,
+        (CGLPixelFormatAttribute) cgl_profile(gl3profile),
+        kCGLPFADoubleBuffer,
+        kCGLPFAAccelerated,
+        #if MAC_OS_X_VERSION_MIN_REQUIRED >= MAC_OS_X_VERSION_10_8
+        // leave this as the last entry of the array to not break the fallback
+        // code
+        kCGLPFASupportsAutomaticGraphicsSwitching,
+        #endif
         0
     };
 
-    s->gl_pixfmt =
-        [[[NSOpenGLPixelFormat alloc] initWithAttributes:attr] autorelease];
+    CGLPixelFormatObj pix;
+    GLint npix;
 
-    if (!s->gl_pixfmt) {
-        MP_ERR(s, "Trying to build invalid OpenGL pixel format\n");
+    err = CGLChoosePixelFormat(attrs, &pix, &npix);
+    if (err == kCGLBadAttribute) {
+        // kCGLPFASupportsAutomaticGraphicsSwitching is probably not supported
+        // by the current hardware. Falling back to not using it.
+        MP_ERR(vo, "error creating CGL pixel format with automatic GPU "
+                   "switching. falling back\n");
+        attrs[MP_ARRAY_SIZE(attrs) - 2] = 0;
+        err = CGLChoosePixelFormat(attrs, &pix, &npix);
+    }
+
+    if (err != kCGLNoError) {
+        MP_FATAL(s, "error creating CGL pixel format: %s (%d)\n",
+                 CGLErrorString(err), err);
+    }
+
+    CGLContextObj ctx;
+    if ((err = CGLCreateContext(pix, 0, &ctx)) != kCGLNoError) {
+        MP_FATAL(s, "error creating CGL context: %s (%d)\n",
+                 CGLErrorString(err), err);
         return -1;
     }
 
-    s->gl_ctx =
-        [[NSOpenGLContext alloc] initWithFormat:s->gl_pixfmt
-                                   shareContext:nil];
-
+    s->gl_ctx = [[NSOpenGLContext alloc] initWithCGLContextObj:ctx];
     [s->gl_ctx makeCurrentContext];
+
+    CGLReleasePixelFormat(pix);
+    CGLReleaseContext(ctx);
 
     return 0;
 }
@@ -379,16 +423,52 @@ static void vo_cocoa_resize_redraw(struct vo *vo, int width, int height)
     vo_cocoa_set_current_context(vo, false);
 }
 
-int vo_cocoa_config_window(struct vo *vo, uint32_t width, uint32_t height,
-                           uint32_t flags, int gl3profile)
+static void cocoa_rm_fs_screen_profile_observer(struct vo *vo)
+{
+    struct vo_cocoa_state *s = vo->cocoa;
+    [[NSNotificationCenter defaultCenter]
+        removeObserver:s->fs_icc_changed_ns_observer];
+}
+
+static void cocoa_add_fs_screen_profile_observer(struct vo *vo)
+{
+    struct vo_cocoa_state *s = vo->cocoa;
+
+    if (s->fs_icc_changed_ns_observer)
+        cocoa_rm_fs_screen_profile_observer(vo);
+
+    if (vo->opts->fsscreen_id < 0)
+        return;
+
+    void (^nblock)(NSNotification *n) = ^(NSNotification *n) {
+        cocoa_change_profile(vo, &s->icc_fs_profile_path, s->fs_screen);
+        s->icc_profile_path_changed = true;
+    };
+
+    s->fs_icc_changed_ns_observer = [[NSNotificationCenter defaultCenter]
+        addObserverForName:NSScreenColorSpaceDidChangeNotification
+                    object:s->fs_screen
+                     queue:nil
+                usingBlock:nblock];
+}
+
+int vo_cocoa_config_window(struct vo *vo, uint32_t flags, int gl3profile)
 {
     struct vo_cocoa_state *s = vo->cocoa;
     __block int ctxok = 0;
 
-    dispatch_sync(dispatch_get_main_queue(), ^{
-        s->inside_sync_section  = true;
+    dispatch_on_main_thread(vo, ^{
         s->enable_resize_redraw = false;
-        s->aspdat = vo->aspdat;
+
+        struct mp_rect screenrc;
+        vo_cocoa_update_screen_info(vo, &screenrc);
+
+        struct vo_win_geometry geo;
+        vo_calc_window_geometry(vo, &screenrc, &geo);
+        vo_apply_window_geometry(vo, &geo);
+
+        uint32_t width = vo->dwidth;
+        uint32_t height = vo->dheight;
 
         bool reset_size = s->old_dwidth != width || s->old_dheight != height;
         s->old_dwidth  = width;
@@ -413,7 +493,7 @@ int vo_cocoa_config_window(struct vo *vo, uint32_t width, uint32_t height,
             }
 
             if (!s->window)
-                create_window(vo, width, height, flags);
+                create_window(vo, &geo.win, geo.flags);
         }
 
         if (s->window) {
@@ -422,9 +502,9 @@ int vo_cocoa_config_window(struct vo *vo, uint32_t width, uint32_t height,
                 [s->window queueNewVideoSize:NSMakeSize(width, height)];
             cocoa_set_window_title(vo, vo_get_window_title(vo));
             vo_cocoa_fullscreen(vo);
+            cocoa_add_fs_screen_profile_observer(vo);
         }
 
-        s->inside_sync_section  = false;
         s->enable_resize_redraw = true;
     });
 
@@ -477,19 +557,20 @@ int vo_cocoa_check_events(struct vo *vo)
         return VO_EVENT_RESIZE;
     }
 
+    if (s->icc_profile_path_changed) {
+        s->icc_profile_path_changed = false;
+        return VO_EVENT_ICC_PROFILE_PATH_CHANGED;
+    }
+
     return 0;
 }
 
 static void vo_cocoa_fullscreen_sync(struct vo *vo)
 {
-    dispatch_sync(dispatch_get_main_queue(), ^{
-        vo->cocoa->inside_sync_section  = true;
+    dispatch_on_main_thread(vo, ^{
         vo->cocoa->enable_resize_redraw = false;
-
         vo_cocoa_fullscreen(vo);
-
         vo->cocoa->enable_resize_redraw = true;
-        vo->cocoa->inside_sync_section  = false;
     });
 }
 
@@ -498,18 +579,128 @@ static void vo_cocoa_fullscreen(struct vo *vo)
     struct vo_cocoa_state *s = vo->cocoa;
     struct mp_vo_opts *opts  = vo->opts;
 
-    vo_cocoa_update_screen_info(vo);
+    vo_cocoa_update_screen_info(vo, NULL);
 
-    if (opts->native_fs) {
+    if (opts->fs_missioncontrol) {
         [s->window setFullScreen:opts->fullscreen];
     } else {
         [s->view setFullScreen:opts->fullscreen];
     }
 
-    [s->window didChangeFullScreenState];
+    if (s->icc_fs_profile_path != s->icc_wnd_profile_path)
+        s->icc_profile_path_changed = true;
 
     // Make the core aware of the view size change.
     resize_window(vo);
+}
+
+static char *cocoa_get_icc_profile_path(struct vo *vo, NSScreen *screen)
+{
+    assert(screen);
+
+    struct vo_cocoa_state *s = vo->cocoa;
+    char *result = NULL;
+    CFDictionaryRef device_info = NULL;
+
+    CGDirectDisplayID displayID = (CGDirectDisplayID)
+        [[screen deviceDescription][@"NSScreenNumber"] unsignedLongValue];
+
+    CFUUIDRef uuid = CGDisplayCreateUUIDFromDisplayID(displayID);
+    if (CFGetTypeID(uuid) == CFNullGetTypeID()) {
+        MP_ERR(s, "cannot get display UUID.\n");
+        goto get_icc_profile_path_err_out;
+    }
+
+    device_info =
+        ColorSyncDeviceCopyDeviceInfo(kColorSyncDisplayDeviceClass, uuid);
+
+    CFRelease(uuid);
+
+    if (!device_info) {
+        MP_ERR(s, "cannot get display info.\n");
+        goto get_icc_profile_path_err_out;
+    }
+
+    CFDictionaryRef factory_info =
+        CFDictionaryGetValue(device_info, kColorSyncFactoryProfiles);
+    if (!factory_info) {
+        MP_ERR(s, "cannot get display factory settings.\n");
+        goto get_icc_profile_path_err_out;
+    }
+
+    CFStringRef default_profile_id =
+        CFDictionaryGetValue(factory_info, kColorSyncDeviceDefaultProfileID);
+    if (!default_profile_id) {
+        MP_ERR(s, "cannot get display default profile ID.\n");
+        goto get_icc_profile_path_err_out;
+    }
+
+    CFURLRef icc_url;
+    CFDictionaryRef custom_profile_info =
+        CFDictionaryGetValue(device_info, kColorSyncCustomProfiles);
+    if (custom_profile_info) {
+        icc_url = CFDictionaryGetValue(custom_profile_info, default_profile_id);
+        // If icc_url is NULL, the ICC profile URL could not be retrieved
+        // although a custom profile was specified. This points to a
+        // configuration error, so we should not fall back to the factory
+        // profile, but return an error instead.
+        if (!icc_url) {
+            MP_ERR(s, "cannot get display profile URL\n");
+            goto get_icc_profile_path_err_out;
+        }
+    } else {
+        // No custom profile specified; try factory profile for the device
+        CFDictionaryRef factory_profile_info =
+            CFDictionaryGetValue(factory_info, default_profile_id);
+        if (!factory_profile_info) {
+            MP_ERR(s, "cannot get display profile info\n");
+            goto get_icc_profile_path_err_out;
+        }
+
+        icc_url = CFDictionaryGetValue(factory_profile_info,
+                                       kColorSyncDeviceProfileURL);
+        if (!icc_url) {
+            MP_ERR(s, "cannot get display factory profile URL.\n");
+            goto get_icc_profile_path_err_out;
+        }
+    }
+
+   result = talloc_strdup(vo, (char *)[[(NSURL *)icc_url path] UTF8String]);
+   if (!result)
+       MP_ERR(s, "cannot get display profile path.\n");
+
+get_icc_profile_path_err_out:
+    CF_RELEASE(device_info);
+    return result;
+}
+
+static void cocoa_change_profile(struct vo *vo, char **store, NSScreen *screen)
+{
+    if (*store)
+        talloc_free(*store);
+    *store = cocoa_get_icc_profile_path(vo, screen);
+}
+
+static void vo_cocoa_control_get_icc_profile_path(struct vo *vo, void *arg)
+{
+    struct vo_cocoa_state *s = vo->cocoa;
+    char **p = arg;
+
+    vo_cocoa_update_screen_info(vo, NULL);
+
+    NSScreen *screen;
+    char **path;
+
+    if (vo->opts->fullscreen) {
+        screen = s->fs_screen;
+        path   = &s->icc_fs_profile_path;
+    } else {
+        screen = s->current_screen;
+        path   = &s->icc_wnd_profile_path;
+    }
+
+    cocoa_change_profile(vo, path, screen);
+    *p = *path;
 }
 
 int vo_cocoa_control(struct vo *vo, int *events, int request, void *arg)
@@ -525,27 +716,20 @@ int vo_cocoa_control(struct vo *vo, int *events, int request, void *arg)
     case VOCTRL_ONTOP:
         vo_cocoa_ontop(vo);
         return VO_TRUE;
-    case VOCTRL_UPDATE_SCREENINFO:
-        vo_cocoa_update_screen_info(vo);
-        return VO_TRUE;
     case VOCTRL_GET_WINDOW_SIZE: {
         int *s = arg;
-        vo->cocoa->inside_sync_section = true;
-        dispatch_sync(dispatch_get_main_queue(), ^{
+        dispatch_on_main_thread(vo, ^{
             NSSize size = [vo->cocoa->view frame].size;
             s[0] = size.width;
             s[1] = size.height;
         });
-        vo->cocoa->inside_sync_section = false;
         return VO_TRUE;
     }
     case VOCTRL_SET_WINDOW_SIZE: {
-        vo->cocoa->inside_sync_section = true;
-        dispatch_sync(dispatch_get_main_queue(), ^{
+        dispatch_on_main_thread(vo, ^{
             int *s = arg;
-            [vo->cocoa->window queueNewVideoSize:(NSSize){s[0], s[1]}];
+            [vo->cocoa->window queueNewVideoSize:NSMakeSize(s[0], s[1])];
         });
-        vo->cocoa->inside_sync_section = false;
         return VO_TRUE;
     }
     case VOCTRL_SET_CURSOR_VISIBILITY:
@@ -559,6 +743,9 @@ int vo_cocoa_control(struct vo *vo, int *events, int request, void *arg)
         return VO_TRUE;
     case VOCTRL_KILL_SCREENSAVER:
         disable_power_management(vo);
+        return VO_TRUE;
+    case VOCTRL_GET_ICC_PROFILE_PATH:
+        vo_cocoa_control_get_icc_profile_path(vo, arg);
         return VO_TRUE;
     }
     return VO_NOTIMPL;
@@ -633,9 +820,10 @@ int vo_cocoa_cgl_color_size(struct vo *vo)
 
 - (void)putCommand:(char*)cmd
 {
-    mp_cmd_t *cmdt = mp_input_parse_cmd(self.vout->input_ctx, bstr0(cmd), "");
+    char *cmd_ = ta_strdup(NULL, cmd);
+    mp_cmd_t *cmdt = mp_input_parse_cmd(self.vout->input_ctx, bstr0(cmd_), "");
     mp_input_queue_cmd(self.vout->input_ctx, cmdt);
-    ta_free(cmd);
+    ta_free(cmd_);
 }
 
 - (void)performAsyncResize:(NSSize)size {
@@ -646,15 +834,20 @@ int vo_cocoa_cgl_color_size(struct vo *vo)
     return self.vout->opts->fullscreen;
 }
 
-- (NSSize)videoSize {
-    return (NSSize) {
-        .width  = self.vout->cocoa->aspdat.prew,
-        .height = self.vout->cocoa->aspdat.preh,
-    };
-}
-
 - (NSScreen *)fsScreen {
     struct vo_cocoa_state *s = self.vout->cocoa;
     return s->fs_screen;
+}
+
+- (void)handleFilesArray:(NSArray *)files
+{
+    [mpv_shared_app() handleFilesArray:files];
+}
+
+- (void)didChangeWindowedScreenProfile:(NSScreen *)screen
+{
+    struct vo_cocoa_state *s = self.vout->cocoa;
+    cocoa_change_profile(self.vout, &s->icc_wnd_profile_path, screen);
+    s->icc_profile_path_changed = true;
 }
 @end

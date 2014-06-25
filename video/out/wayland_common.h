@@ -77,6 +77,8 @@ struct vo_wayland_state {
         int display_fd;
 
         struct wl_shm *shm;
+
+        struct wl_subcompositor *subcomp;
     } display;
 
     struct {
@@ -95,7 +97,7 @@ struct vo_wayland_state {
         int32_t fs_width;   // fullscreen sizes
         int32_t fs_height;
 
-        struct wl_surface *surface;
+        struct wl_surface *video_surface;
         int32_t mouse_x; // mouse position inside the surface
         int32_t mouse_y;
         struct wl_shell_surface *shell_surface;
@@ -123,12 +125,17 @@ struct vo_wayland_state {
             struct xkb_keymap *keymap;
             struct xkb_state *state;
         } xkb;
+
+        struct wl_data_device_manager *devman;
+        struct wl_data_device *datadev;
+        struct wl_data_offer *offer;
+        int dnd_fd;
     } input;
 };
 
 int vo_wayland_init(struct vo *vo);
 void vo_wayland_uninit(struct vo *vo);
-bool vo_wayland_config(struct vo *vo, uint32_t d_width, uint32_t d_height, uint32_t flags);
+bool vo_wayland_config(struct vo *vo, uint32_t flags);
 int vo_wayland_control(struct vo *vo, int *events, int request, void *arg);
 
 #endif /* MPLAYER_WAYLAND_COMMON_H */

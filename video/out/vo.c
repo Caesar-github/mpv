@@ -47,24 +47,24 @@
 //
 // Externally visible list of all vo drivers
 //
-extern struct vo_driver video_out_x11;
-extern struct vo_driver video_out_vdpau;
-extern struct vo_driver video_out_xv;
-extern struct vo_driver video_out_opengl;
-extern struct vo_driver video_out_opengl_hq;
-extern struct vo_driver video_out_opengl_old;
-extern struct vo_driver video_out_null;
-extern struct vo_driver video_out_image;
-extern struct vo_driver video_out_lavc;
-extern struct vo_driver video_out_caca;
-extern struct vo_driver video_out_direct3d;
-extern struct vo_driver video_out_direct3d_shaders;
-extern struct vo_driver video_out_sdl;
-extern struct vo_driver video_out_corevideo;
-extern struct vo_driver video_out_vaapi;
-extern struct vo_driver video_out_wayland;
+extern const struct vo_driver video_out_x11;
+extern const struct vo_driver video_out_vdpau;
+extern const struct vo_driver video_out_xv;
+extern const struct vo_driver video_out_opengl;
+extern const struct vo_driver video_out_opengl_hq;
+extern const struct vo_driver video_out_opengl_old;
+extern const struct vo_driver video_out_null;
+extern const struct vo_driver video_out_image;
+extern const struct vo_driver video_out_lavc;
+extern const struct vo_driver video_out_caca;
+extern const struct vo_driver video_out_direct3d;
+extern const struct vo_driver video_out_direct3d_shaders;
+extern const struct vo_driver video_out_sdl;
+extern const struct vo_driver video_out_corevideo;
+extern const struct vo_driver video_out_vaapi;
+extern const struct vo_driver video_out_wayland;
 
-const struct vo_driver *video_out_drivers[] =
+const struct vo_driver *const video_out_drivers[] =
 {
 #if HAVE_VDPAU
         &video_out_vdpau,
@@ -112,6 +112,8 @@ const struct vo_driver *video_out_drivers[] =
         NULL
 };
 
+static void forget_frames(struct vo *vo);
+
 static bool get_desc(struct m_obj_desc *dst, int index)
 {
     if (index >= MP_ARRAY_SIZE(video_out_drivers) - 1)
@@ -142,8 +144,15 @@ const struct m_obj_list vo_obj_list = {
     .allow_trailer = true,
 };
 
+static int event_fd_callback(void *ctx, int fd)
+{
+    struct vo *vo = ctx;
+    vo_check_events(vo);
+    return MP_INPUT_NOTHING;
+}
+
 static struct vo *vo_create(struct mpv_global *global,
-                            struct input_ctx *input_ctx,
+                            struct input_ctx *input_ctx, struct osd_state *osd,
                             struct encode_lavc_context *encode_lavc_ctx,
                             char *name, char **args)
 {
@@ -156,19 +165,18 @@ static struct vo *vo_create(struct mpv_global *global,
     };
     struct vo *vo = talloc_ptrtype(NULL, vo);
     *vo = (struct vo) {
-        .vo_log = { .log = talloc_steal(vo, log) },
         .log = mp_log_new(vo, log, name),
         .driver = desc.p,
         .opts = &global->opts->vo,
         .global = global,
         .encode_lavc_ctx = encode_lavc_ctx,
         .input_ctx = input_ctx,
+        .osd = osd,
         .event_fd = -1,
-        .registered_fd = -1,
-        .aspdat = { .monitor_par = 1 },
-        .next_pts = MP_NOPTS_VALUE,
-        .next_pts2 = MP_NOPTS_VALUE,
+        .monitor_par = 1,
+        .max_video_queue = 1,
     };
+    talloc_steal(vo, log);
     if (vo->driver->encode != !!vo->encode_lavc_ctx)
         goto error;
     struct m_config *config = m_config_from_obj_desc(vo, vo->log, &desc);
@@ -179,139 +187,19 @@ static struct vo *vo_create(struct mpv_global *global,
     vo->priv = config->optstruct;
     if (vo->driver->preinit(vo))
         goto error;
+    if (vo->event_fd != -1) {
+        mp_input_add_fd(vo->input_ctx, vo->event_fd, 1, NULL, event_fd_callback,
+                        NULL, vo);
+    }
     return vo;
 error:
     talloc_free(vo);
     return NULL;
 }
 
-int vo_control(struct vo *vo, uint32_t request, void *data)
-{
-    return vo->driver->control(vo, request, data);
-}
-
-void vo_queue_image(struct vo *vo, struct mp_image *mpi)
-{
-    if (!vo->config_ok)
-        return;
-    if (vo->driver->buffer_frames) {
-        vo->driver->draw_image(vo, mpi);
-        return;
-    }
-    vo->frame_loaded = true;
-    vo->next_pts = mpi->pts;
-    vo->next_pts2 = MP_NOPTS_VALUE;
-    assert(!vo->waiting_mpi);
-    vo->waiting_mpi = mp_image_new_ref(mpi);
-}
-
-int vo_redraw_frame(struct vo *vo)
-{
-    if (!vo->config_ok)
-        return -1;
-    if (vo_control(vo, VOCTRL_REDRAW_FRAME, NULL) == true) {
-        vo->want_redraw = false;
-        vo->redrawing = true;
-        return 0;
-    }
-    return -1;
-}
-
-bool vo_get_want_redraw(struct vo *vo)
-{
-    if (!vo->config_ok)
-        return false;
-    return vo->want_redraw;
-}
-
-int vo_get_buffered_frame(struct vo *vo, bool eof)
-{
-    if (!vo->config_ok)
-        return -1;
-    if (vo->frame_loaded)
-        return 0;
-    if (!vo->driver->buffer_frames)
-        return -1;
-    vo->driver->get_buffered_frame(vo, eof);
-    return vo->frame_loaded ? 0 : -1;
-}
-
-void vo_skip_frame(struct vo *vo)
-{
-    vo_control(vo, VOCTRL_SKIPFRAME, NULL);
-    vo->frame_loaded = false;
-    mp_image_unrefp(&vo->waiting_mpi);
-}
-
-void vo_new_frame_imminent(struct vo *vo)
-{
-    if (vo->driver->buffer_frames)
-        vo_control(vo, VOCTRL_NEWFRAME, NULL);
-    else {
-        assert(vo->frame_loaded);
-        assert(vo->waiting_mpi);
-        assert(vo->waiting_mpi->pts == vo->next_pts);
-        vo->driver->draw_image(vo, vo->waiting_mpi);
-        mp_image_unrefp(&vo->waiting_mpi);
-    }
-}
-
-void vo_draw_osd(struct vo *vo, struct osd_state *osd)
-{
-    if (vo->config_ok && vo->driver->draw_osd)
-        vo->driver->draw_osd(vo, osd);
-}
-
-void vo_flip_page(struct vo *vo, int64_t pts_us, int duration)
-{
-    if (!vo->config_ok)
-        return;
-    if (!vo->redrawing) {
-        vo->frame_loaded = false;
-        vo->next_pts = MP_NOPTS_VALUE;
-        vo->next_pts2 = MP_NOPTS_VALUE;
-    }
-    vo->want_redraw = false;
-    vo->redrawing = false;
-    if (vo->driver->flip_page_timed)
-        vo->driver->flip_page_timed(vo, pts_us, duration);
-    else
-        vo->driver->flip_page(vo);
-    vo->hasframe = true;
-}
-
-void vo_check_events(struct vo *vo)
-{
-    if (!vo->config_ok) {
-        if (vo->registered_fd != -1)
-            mp_input_rm_key_fd(vo->input_ctx, vo->registered_fd);
-        vo->registered_fd = -1;
-        return;
-    }
-    vo_control(vo, VOCTRL_CHECK_EVENTS, NULL);
-}
-
-void vo_seek_reset(struct vo *vo)
-{
-    vo_control(vo, VOCTRL_RESET, NULL);
-    vo->frame_loaded = false;
-    vo->next_pts = MP_NOPTS_VALUE;
-    vo->next_pts2 = MP_NOPTS_VALUE;
-    vo->hasframe = false;
-    mp_image_unrefp(&vo->waiting_mpi);
-}
-
-void vo_destroy(struct vo *vo)
-{
-    if (vo->registered_fd != -1)
-        mp_input_rm_key_fd(vo->input_ctx, vo->registered_fd);
-    mp_image_unrefp(&vo->waiting_mpi);
-    vo->driver->uninit(vo);
-    talloc_free(vo);
-}
-
 struct vo *init_best_video_out(struct mpv_global *global,
                                struct input_ctx *input_ctx,
+                               struct osd_state *osd,
                                struct encode_lavc_context *encode_lavc_ctx)
 {
     struct m_obj_settings *vo_list = global->opts->vo.video_driver_list;
@@ -321,7 +209,7 @@ struct vo *init_best_video_out(struct mpv_global *global,
             // Something like "-vo name," allows fallback to autoprobing.
             if (strlen(vo_list[n].name) == 0)
                 goto autoprobe;
-            struct vo *vo = vo_create(global, input_ctx, encode_lavc_ctx,
+            struct vo *vo = vo_create(global, input_ctx, osd, encode_lavc_ctx,
                                       vo_list[n].name, vo_list[n].attribs);
             if (vo)
                 return vo;
@@ -331,7 +219,7 @@ struct vo *init_best_video_out(struct mpv_global *global,
 autoprobe:
     // now try the rest...
     for (int i = 0; video_out_drivers[i]; i++) {
-        struct vo *vo = vo_create(global, input_ctx, encode_lavc_ctx,
+        struct vo *vo = vo_create(global, input_ctx, osd, encode_lavc_ctx,
                                   (char *)video_out_drivers[i]->name, NULL);
         if (vo)
             return vo;
@@ -339,221 +227,153 @@ autoprobe:
     return NULL;
 }
 
-// Fit *w/*h into the size specified by geo.
-static void apply_autofit(int *w, int *h, int scr_w, int scr_h,
-                          struct m_geometry *geo, bool allow_upscale)
+void vo_destroy(struct vo *vo)
 {
-    if (!geo->wh_valid)
-        return;
+    if (vo->event_fd != -1)
+        mp_input_rm_key_fd(vo->input_ctx, vo->event_fd);
+    forget_frames(vo);
+    vo->driver->uninit(vo);
+    talloc_free(vo);
+}
 
-    int dummy;
-    int n_w = *w, n_h = *h;
-    m_geometry_apply(&dummy, &dummy, &n_w, &n_h, scr_w, scr_h, geo);
-
-    if (!allow_upscale && *w <= n_w && *h <= n_h)
-        return;
-
-    // If aspect mismatches, always make the window smaller than the fit box
-    double asp = (double)*w / *h;
-    double n_asp = (double)n_w / n_h;
-    if (n_asp <= asp) {
-        *w = n_w;
-        *h = n_w / asp;
-    } else {
-        *w = n_h * asp;
-        *h = n_h;
+static void check_vo_caps(struct vo *vo)
+{
+    int rot = vo->params->rotate;
+    if (rot) {
+        bool ok = rot % 90 ? false : (vo->driver->caps & VO_CAP_ROTATE90);
+        if (!ok) {
+           MP_WARN(vo, "Video is flagged as rotated by %d degrees, but the "
+                   "video output does not support this.\n", rot);
+        }
     }
-}
-
-// Set window size (vo->dwidth/dheight) and position (vo->dx/dy) according to
-// the video display size d_w/d_h.
-// NOTE: currently, all GUI backends do their own handling of window geometry
-//       additional to this code. This is to deal with initial window placement,
-//       fullscreen handling, avoiding resize on config() with no size change,
-//       multi-monitor stuff, and possibly more.
-static void determine_window_geometry(struct vo *vo, int d_w, int d_h)
-{
-    struct mp_vo_opts *opts = vo->opts;
-
-    int scr_w = opts->screenwidth;
-    int scr_h = opts->screenheight;
-
-    aspect_calc_monitor(vo, &d_w, &d_h);
-
-    apply_autofit(&d_w, &d_h, scr_w, scr_h, &opts->autofit, true);
-    apply_autofit(&d_w, &d_h, scr_w, scr_h, &opts->autofit_larger, false);
-
-    vo->dx = (int)(opts->screenwidth - d_w) / 2;
-    vo->dy = (int)(opts->screenheight - d_h) / 2;
-    m_geometry_apply(&vo->dx, &vo->dy, &d_w, &d_h, scr_w, scr_h,
-                     &opts->geometry);
-
-    vo->dx += vo->xinerama_x;
-    vo->dy += vo->xinerama_y;
-    vo->dwidth = d_w;
-    vo->dheight = d_h;
-}
-
-static int event_fd_callback(void *ctx, int fd)
-{
-    struct vo *vo = ctx;
-    vo_check_events(vo);
-    return MP_INPUT_NOTHING;
 }
 
 int vo_reconfig(struct vo *vo, struct mp_image_params *params, int flags)
 {
-    int d_width = params->d_w;
-    int d_height = params->d_h;
-    aspect_save_videores(vo, params->w, params->h, d_width, d_height);
-
-    if (vo_control(vo, VOCTRL_UPDATE_SCREENINFO, NULL) == VO_TRUE) {
-        determine_window_geometry(vo, params->d_w, params->d_h);
-        d_width = vo->dwidth;
-        d_height = vo->dheight;
-    }
-    vo->dwidth = d_width;
-    vo->dheight = d_height;
+    vo->dwidth = params->d_w;
+    vo->dheight = params->d_h;
 
     talloc_free(vo->params);
-    vo->params = NULL;
+    vo->params = talloc_memdup(vo, params, sizeof(*params));
 
-    struct mp_image_params p2 = *params;
-
-    int ret;
-    if (vo->driver->reconfig) {
-        ret = vo->driver->reconfig(vo, &p2, flags);
-    } else {
-        // Old config() takes window size, while reconfig() takes aspect (!)
-        ret = vo->driver->config(vo, p2.w, p2.h, d_width, d_height, flags,
-                                 p2.imgfmt);
-        ret = ret ? -1 : 0;
-    }
-    vo->config_ok = (ret >= 0);
-    vo->config_count += vo->config_ok;
-    if (vo->config_ok)
-        vo->params = talloc_memdup(vo, &p2, sizeof(p2));
-    if (vo->registered_fd == -1 && vo->event_fd != -1 && vo->config_ok) {
-        mp_input_add_fd(vo->input_ctx, vo->event_fd, 1, NULL, event_fd_callback,
-                        NULL, vo);
-        vo->registered_fd = vo->event_fd;
-    }
-    vo->frame_loaded = false;
-    vo->waiting_mpi = NULL;
-    vo->redrawing = false;
-    vo->hasframe = false;
+    int ret = vo->driver->reconfig(vo, vo->params, flags);
+    vo->config_ok = ret >= 0;
     if (vo->config_ok) {
-        // Legacy
-        struct mp_csp_details csp;
-        if (vo_control(vo, VOCTRL_GET_YUV_COLORSPACE, &csp) > 0) {
-            csp.levels_in = params->colorlevels;
-            csp.levels_out = params->outputlevels;
-            csp.format = params->colorspace;
-            vo_control(vo, VOCTRL_SET_YUV_COLORSPACE, &csp);
-        }
+        check_vo_caps(vo);
+    } else {
+        talloc_free(vo->params);
+        vo->params = NULL;
     }
+    forget_frames(vo);
+    vo->hasframe = false;
     return ret;
 }
 
-/**
- * \brief lookup an integer in a table, table must have 0 as the last key
- * \param key key to search for
- * \result translation corresponding to key or "to" value of last mapping
- *         if not found.
- */
-int lookup_keymap_table(const struct mp_keymap *map, int key) {
-  while (map->from && map->from != key) map++;
-  return map->to;
+int vo_control(struct vo *vo, uint32_t request, void *data)
+{
+    return vo->driver->control(vo, request, data);
 }
 
-static void print_video_rect(struct vo *vo, struct mp_rect src,
-                             struct mp_rect dst, struct mp_osd_res osd)
+static void forget_frames(struct vo *vo)
 {
-    int sw = src.x1 - src.x0, sh = src.y1 - src.y0;
-    int dw = dst.x1 - dst.x0, dh = dst.y1 - dst.y0;
-
-    MP_VERBOSE(&vo->vo_log, "Window size: %dx%d\n",
-               vo->dwidth, vo->dheight);
-    MP_VERBOSE(&vo->vo_log, "Video source: %dx%d (%dx%d)\n",
-               vo->aspdat.orgw, vo->aspdat.orgh,
-               vo->aspdat.prew, vo->aspdat.preh);
-    MP_VERBOSE(&vo->vo_log, "Video display: (%d, %d) %dx%d -> (%d, %d) %dx%d\n",
-               src.x0, src.y0, sw, sh, dst.x0, dst.y0, dw, dh);
-    MP_VERBOSE(&vo->vo_log, "Video scale: %f/%f\n",
-               (double)dw / sw, (double)dh / sh);
-    MP_VERBOSE(&vo->vo_log, "OSD borders: l=%d t=%d r=%d b=%d\n",
-               osd.ml, osd.mt, osd.mr, osd.mb);
-    MP_VERBOSE(&vo->vo_log, "Video borders: l=%d t=%d r=%d b=%d\n",
-               dst.x0, dst.y0, vo->dwidth - dst.x1, vo->dheight - dst.y1);
+    for (int n = 0; n < vo->num_video_queue; n++)
+        talloc_free(vo->video_queue[n]);
+    vo->num_video_queue = 0;
 }
 
-// Clamp [start, end) to range [0, size) with various fallbacks.
-static void clamp_size(int size, int *start, int *end)
+void vo_queue_image(struct vo *vo, struct mp_image *mpi)
 {
-    *start = FFMAX(0, *start);
-    *end = FFMIN(size, *end);
-    if (*start >= *end) {
-        *start = 0;
-        *end = 1;
+    assert(mpi);
+    if (!vo->config_ok)
+        return;
+    assert(mp_image_params_equal(vo->params, &mpi->params));
+    if (vo->driver->filter_image && mpi)
+        mpi = vo->driver->filter_image(vo, mpi);
+    if (!mpi) {
+        MP_ERR(vo, "Could not upload image.\n");
+        return;
     }
+    assert(vo->max_video_queue <= VO_MAX_QUEUE);
+    assert(vo->num_video_queue < vo->max_video_queue);
+    vo->video_queue[vo->num_video_queue++] = mpi;
 }
 
-// Round source to a multiple of 2, this is at least needed for vo_direct3d
-// and ATI cards.
-#define VID_SRC_ROUND_UP(x) (((x) + 1) & ~1)
-
-static void src_dst_split_scaling(int src_size, int dst_size,
-                                  int scaled_src_size, bool unscaled,
-                                  float zoom, float align, float pan,
-                                  int *src_start, int *src_end,
-                                  int *dst_start, int *dst_end,
-                                  int *osd_margin_a, int *osd_margin_b)
+// Return whether vo_queue_image() should be called.
+bool vo_needs_new_image(struct vo *vo)
 {
-    if (unscaled) {
-        scaled_src_size = src_size;
-        zoom = 0.0;
-    }
+    return vo->config_ok && vo->num_video_queue < vo->max_video_queue;
+}
 
-    scaled_src_size += zoom * scaled_src_size;
-    align = (align + 1) / 2;
+// Return whether a frame can be displayed.
+//  eof==true: return true if at least one frame is queued
+//  eof==false: return true if "enough" frames are queued
+bool vo_has_next_frame(struct vo *vo, bool eof)
+{
+    // Normally, buffer 1 image ahead, except if the queue is limited to less
+    // than 2 entries, or if EOF is reached and there aren't enough images left.
+    return eof ? vo->num_video_queue : vo->num_video_queue == vo->max_video_queue;
+}
 
-    *src_start = 0;
-    *src_end = src_size;
-    *dst_start = (dst_size - scaled_src_size) * align + pan * scaled_src_size;
-    *dst_end = *dst_start + scaled_src_size;
+// Return the PTS of a future frame (where index==0 is the next frame)
+double vo_get_next_pts(struct vo *vo, int index)
+{
+    if (index < 0 || index >= vo->num_video_queue)
+        return MP_NOPTS_VALUE;
+    return vo->video_queue[index]->pts;
+}
 
-    // Distance of screen frame to video
-    *osd_margin_a = *dst_start;
-    *osd_margin_b = dst_size - *dst_end;
+bool vo_get_want_redraw(struct vo *vo)
+{
+    return vo->config_ok && vo->want_redraw;
+}
 
-    // Clip to screen
-    int s_src = *src_end - *src_start;
-    int s_dst = *dst_end - *dst_start;
-    if (*dst_start < 0) {
-        int border = -(*dst_start) * s_src / s_dst;
-        *src_start += VID_SRC_ROUND_UP(border);
-        *dst_start = 0;
-    }
-    if (*dst_end > dst_size) {
-        int border = (*dst_end - dst_size) * s_src / s_dst;
-        *src_end -= VID_SRC_ROUND_UP(border);
-        *dst_end = dst_size;
-    }
+// Remove vo->video_queue[0]
+static void shift_queue(struct vo *vo)
+{
+    if (!vo->num_video_queue)
+        return;
+    vo->num_video_queue--;
+    for (int n = 0; n < vo->num_video_queue; n++)
+        vo->video_queue[n] = vo->video_queue[n + 1];
+}
 
-    if (unscaled) {
-        // Force unscaled by reducing the range for src or dst
-        int src_s = *src_end - *src_start;
-        int dst_s = *dst_end - *dst_start;
-        if (src_s > dst_s) {
-            *src_end = *src_start + dst_s;
-        } else if (src_s < dst_s) {
-            *dst_end = *dst_start + src_s;
-        }
-    }
+void vo_new_frame_imminent(struct vo *vo)
+{
+    assert(vo->num_video_queue > 0);
+    struct mp_image *img = vo->video_queue[0];
+    shift_queue(vo);
+    vo->driver->draw_image(vo, img);
+    vo->hasframe = true;
+}
 
-    // For sanity: avoid bothering VOs with corner cases
-    clamp_size(src_size, src_start, src_end);
-    clamp_size(dst_size, dst_start, dst_end);
+void vo_flip_page(struct vo *vo, int64_t pts_us, int duration)
+{
+    if (!vo->config_ok)
+        return;
+    vo->want_redraw = false;
+    if (vo->driver->flip_page_timed)
+        vo->driver->flip_page_timed(vo, pts_us, duration);
+    else
+        vo->driver->flip_page(vo);
+}
+
+void vo_redraw(struct vo *vo)
+{
+    vo->want_redraw = false;
+    if (vo->config_ok && vo_control(vo, VOCTRL_REDRAW_FRAME, NULL) == true)
+        vo_flip_page(vo, 0, -1);
+}
+
+void vo_check_events(struct vo *vo)
+{
+    vo_control(vo, VOCTRL_CHECK_EVENTS, NULL);
+}
+
+void vo_seek_reset(struct vo *vo)
+{
+    vo_control(vo, VOCTRL_RESET, NULL);
+    forget_frames(vo);
+    vo->hasframe = false;
 }
 
 // Calculate the appropriate source and destination rectangle to
@@ -564,34 +384,14 @@ static void src_dst_split_scaling(int src_size, int dst_size,
 void vo_get_src_dst_rects(struct vo *vo, struct mp_rect *out_src,
                           struct mp_rect *out_dst, struct mp_osd_res *out_osd)
 {
-    struct mp_vo_opts *opts = vo->opts;
-    int src_w = vo->aspdat.orgw;
-    int src_h = vo->aspdat.orgh;
-    struct mp_rect dst = {0, 0, vo->dwidth, vo->dheight};
-    struct mp_rect src = {0, 0, src_w,      src_h};
-    struct mp_osd_res osd = {
-        .w = vo->dwidth,
-        .h = vo->dheight,
-        .display_par = vo->aspdat.monitor_par,
-    };
-    if (opts->keepaspect) {
-        int scaled_width, scaled_height;
-        aspect_calc_panscan(vo, &scaled_width, &scaled_height);
-        src_dst_split_scaling(src_w, vo->dwidth, scaled_width, opts->unscaled,
-                              opts->zoom, opts->align_x, opts->pan_x,
-                              &src.x0, &src.x1, &dst.x0, &dst.x1,
-                              &osd.ml, &osd.mr);
-        src_dst_split_scaling(src_h, vo->dheight, scaled_height, opts->unscaled,
-                              opts->zoom, opts->align_y, opts->pan_y,
-                              &src.y0, &src.y1, &dst.y0, &dst.y1,
-                              &osd.mt, &osd.mb);
+    if (!vo->params) {
+        *out_src = *out_dst = (struct mp_rect){0};
+        *out_osd = (struct mp_osd_res){0};
+        return;
     }
-
-    *out_src = src;
-    *out_dst = dst;
-    *out_osd = osd;
-
-    print_video_rect(vo, src, dst, osd);
+    mp_get_src_dst_rects(vo->log, vo->opts, vo->driver->caps, vo->params,
+                         vo->dwidth, vo->dheight, vo->monitor_par,
+                         out_src, out_dst, out_osd);
 }
 
 // Return the window title the VO should set. Always returns a null terminated
@@ -618,4 +418,17 @@ void vo_mouse_movement(struct vo *vo, int posx, int posy)
     float p[2] = {posx, posy};
     vo_control(vo, VOCTRL_WINDOW_TO_OSD_COORDS, p);
     mp_input_set_mouse_pos(vo->input_ctx, p[0], p[1]);
+}
+
+/**
+ * \brief lookup an integer in a table, table must have 0 as the last key
+ * \param key key to search for
+ * \result translation corresponding to key or "to" value of last mapping
+ *         if not found.
+ */
+int lookup_keymap_table(const struct mp_keymap *map, int key)
+{
+    while (map->from && map->from != key)
+        map++;
+    return map->to;
 }

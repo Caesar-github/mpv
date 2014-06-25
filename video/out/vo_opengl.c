@@ -111,17 +111,6 @@ static void flip_page(struct vo *vo)
     mpgl_unlock(p->glctx);
 }
 
-static void draw_osd(struct vo *vo, struct osd_state *osd)
-{
-    struct gl_priv *p = vo->priv;
-
-    mpgl_lock(p->glctx);
-
-    gl_video_draw_osd(p->renderer, osd);
-
-    mpgl_unlock(p->glctx);
-}
-
 static void draw_image(struct vo *vo, mp_image_t *mpi)
 {
     struct gl_priv *p = vo->priv;
@@ -144,8 +133,7 @@ static int query_format(struct vo *vo, uint32_t format)
     return caps;
 }
 
-static bool config_window(struct gl_priv *p, uint32_t d_width,
-                          uint32_t d_height, uint32_t flags)
+static bool config_window(struct gl_priv *p, int flags)
 {
     if (p->renderer_opts->stereo_mode == GL_3D_QUADBUFFER)
         flags |= VOFLAG_STEREO;
@@ -159,7 +147,7 @@ static bool config_window(struct gl_priv *p, uint32_t d_width,
     int mpgl_caps = MPGL_CAP_GL21 | MPGL_CAP_TEX_RG;
     if (!p->allow_sw)
         mpgl_caps |= MPGL_CAP_NO_SW;
-    return mpgl_config_window(p->glctx, mpgl_caps, d_width, d_height, flags);
+    return mpgl_config_window(p->glctx, mpgl_caps, flags);
 }
 
 static void video_resize_redraw_callback(struct vo *vo, int w, int h)
@@ -175,7 +163,7 @@ static int reconfig(struct vo *vo, struct mp_image_params *params, int flags)
 
     mpgl_lock(p->glctx);
 
-    if (!config_window(p, vo->dwidth, vo->dheight, flags)) {
+    if (!config_window(p, flags)) {
         mpgl_unlock(p->glctx);
         return -1;
     }
@@ -262,27 +250,66 @@ static void unload_hwdec_driver(struct gl_priv *p)
     }
 }
 
+static bool update_icc_profile(struct gl_priv *p, struct mp_icc_opts *opts)
+{
+    struct lut3d *lut3d = NULL;
+    if (opts->profile) {
+        lut3d = mp_load_icc(opts, p->vo->log, p->vo->global);
+        if (!lut3d)
+            return false;
+    }
+    gl_video_set_lut3d(p->renderer, lut3d);
+    talloc_free(lut3d);
+    return true;
+}
+
+static bool get_and_update_icc_profile(struct vo *vo,
+                                       struct mp_icc_opts *opts)
+{
+    struct gl_priv *p = vo->priv;
+
+    if (!opts->profile_auto)
+        return update_icc_profile(p, opts);
+
+    char *icc = NULL;
+    int r = p->glctx->vo_control(vo, NULL, VOCTRL_GET_ICC_PROFILE_PATH, &icc);
+    if (r != VO_TRUE)
+        return false;
+
+    if (mp_icc_set_profile(opts, icc))
+        return update_icc_profile(p, opts);
+
+    return true;
+}
+
 static bool reparse_cmdline(struct gl_priv *p, char *args)
 {
     struct m_config *cfg = NULL;
-    struct gl_video_opts *opts = NULL;
+    struct gl_priv *opts = NULL;
     int r = 0;
 
+    // list of options which can be changed at runtime
+#define OPT_BASE_STRUCT struct gl_priv
+    static const struct m_option change_otps[] = {
+        OPT_SUBSTRUCT("", renderer_opts, gl_video_conf, 0),
+        OPT_SUBSTRUCT("", icc_opts, mp_icc_conf, 0),
+        {0}
+    };
+#undef OPT_BASE_STRUCT
+
     if (strcmp(args, "-") == 0) {
-        opts = p->renderer_opts;
+        opts = p;
     } else {
         const struct gl_priv *vodef = p->vo->driver->priv_defaults;
-        const struct gl_video_opts *def =
-            vodef ? vodef->renderer_opts : gl_video_conf.defaults;
-        cfg = m_config_new(NULL, p->vo->log, sizeof(*opts), def,
-                           gl_video_conf.opts);
+        cfg = m_config_new(NULL, p->vo->log, sizeof(*opts), vodef, change_otps);
         opts = cfg->optstruct;
         r = m_config_parse_suboptions(cfg, "opengl", args);
     }
 
     if (r >= 0) {
         mpgl_lock(p->glctx);
-        gl_video_set_options(p->renderer, opts);
+        gl_video_set_options(p->renderer, opts->renderer_opts);
+        update_icc_profile(p, opts->icc_opts);
         resize(p);
         mpgl_unlock(p->glctx);
     }
@@ -320,9 +347,9 @@ static int control(struct vo *vo, uint32_t request, void *data)
             vo->want_redraw = true;
         return r ? VO_TRUE : VO_NOTIMPL;
     }
-    case VOCTRL_GET_YUV_COLORSPACE:
+    case VOCTRL_GET_COLORSPACE:
         mpgl_lock(p->glctx);
-        gl_video_get_csp_override(p->renderer, data);
+        gl_video_get_colorspace(p->renderer, data);
         mpgl_unlock(p->glctx);
         return VO_TRUE;
     case VOCTRL_SCREENSHOT: {
@@ -357,6 +384,10 @@ static int control(struct vo *vo, uint32_t request, void *data)
         resize(p);
     if (events & VO_EVENT_EXPOSE)
         vo->want_redraw = true;
+    if (events & VO_EVENT_ICC_PROFILE_PATH_CHANGED) {
+        get_and_update_icc_profile(vo, p->icc_opts);
+        vo->want_redraw = true;
+    }
     mpgl_unlock(p->glctx);
 
     return r;
@@ -384,7 +415,7 @@ static int preinit(struct vo *vo)
         goto err_out;
     p->gl = p->glctx->gl;
 
-    if (!config_window(p, 320, 200, VOFLAG_HIDDEN))
+    if (!config_window(p, VOFLAG_HIDDEN))
         goto err_out;
 
     mpgl_set_context(p->glctx);
@@ -392,18 +423,12 @@ static int preinit(struct vo *vo)
     if (p->gl->SwapInterval)
         p->gl->SwapInterval(p->swap_interval);
 
-    p->renderer = gl_video_init(p->gl, vo->log);
+    p->renderer = gl_video_init(p->gl, vo->log, vo->osd);
     gl_video_set_output_depth(p->renderer, p->glctx->depth_r, p->glctx->depth_g,
                               p->glctx->depth_b);
     gl_video_set_options(p->renderer, p->renderer_opts);
-
-    if (p->icc_opts->profile) {
-        struct lut3d *lut3d = mp_load_icc(p->icc_opts, vo->log, vo->global);
-        if (!lut3d)
-            goto err_out;
-        gl_video_set_lut3d(p->renderer, lut3d);
-        talloc_free(lut3d);
-    }
+    if (!get_and_update_icc_profile(vo, p->icc_opts))
+        goto err_out;
 
     mpgl_unset_context(p->glctx);
 
@@ -427,15 +452,17 @@ const struct m_option options[] = {
     {0},
 };
 
+#define CAPS VO_CAP_ROTATE90
+
 const struct vo_driver video_out_opengl = {
     .description = "Extended OpenGL Renderer",
     .name = "opengl",
+    .caps = CAPS,
     .preinit = preinit,
     .query_format = query_format,
     .reconfig = reconfig,
     .control = control,
     .draw_image = draw_image,
-    .draw_osd = draw_osd,
     .flip_page = flip_page,
     .uninit = uninit,
     .priv_size = sizeof(struct gl_priv),
@@ -445,12 +472,12 @@ const struct vo_driver video_out_opengl = {
 const struct vo_driver video_out_opengl_hq = {
     .description = "Extended OpenGL Renderer (high quality rendering preset)",
     .name = "opengl-hq",
+    .caps = CAPS,
     .preinit = preinit,
     .query_format = query_format,
     .reconfig = reconfig,
     .control = control,
     .draw_image = draw_image,
-    .draw_osd = draw_osd,
     .flip_page = flip_page,
     .uninit = uninit,
     .priv_size = sizeof(struct gl_priv),

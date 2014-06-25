@@ -20,11 +20,16 @@
 #ifndef MPLAYER_OSDEP_IO
 #define MPLAYER_OSDEP_IO
 
+#include "config.h"
 #include <stdbool.h>
 #include <limits.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+
+#if HAVE_GLOB
+#include <glob.h>
+#endif
 
 #ifndef O_BINARY
 #define O_BINARY 0
@@ -34,8 +39,12 @@
 #ifndef O_CLOEXEC
 #define O_CLOEXEC 0
 #endif
+#ifndef FD_CLOEXEC
+#define FD_CLOEXEC 0
+#endif
 
 bool mp_set_cloexec(int fd);
+int mp_make_wakeup_pipe(int pipes[2]);
 
 #ifdef _WIN32
 #include <wchar.h>
@@ -54,16 +63,6 @@ char *mp_to_utf8(void *talloc_ctx, const wchar_t *s);
 #include <sys/stat.h>
 #include <fcntl.h>
 
-// Windows' MAX_PATH/PATH_MAX/FILENAME_MAX is fixed to 260, but this limit
-// applies to unicode paths encoded with wchar_t (2 bytes on Windows). The UTF-8
-// version could end up bigger in memory. In the worst case each wchar_t is
-// encoded to 3 bytes in UTF-8, so in the worst case we have:
-//      wcslen(wpath) * 3 <= strlen(utf8path)
-// Thus we need MP_PATH_MAX as the UTF-8/char version of PATH_MAX.
-// Also make sure there's free space for the terminating \0.
-// (For codepoints encoded as UTF-16 surrogate pairs, UTF-8 has the same length.)
-#define MP_PATH_MAX (FILENAME_MAX * 3 + 1)
-
 void mp_get_converted_argv(int *argc, char ***argv);
 
 int mp_stat(const char *path, struct stat *buf);
@@ -77,6 +76,18 @@ struct dirent *mp_readdir(DIR *dir);
 int mp_closedir(DIR *dir);
 int mp_mkdir(const char *path, int mode);
 char *mp_getenv(const char *name);
+
+typedef struct {
+    size_t gl_pathc;
+    char **gl_pathv;
+    size_t gl_offs;
+    void *ctx;
+} mp_glob_t;
+
+// glob-win.c
+int mp_glob(const char *restrict pattern, int flags,
+            int (*errfunc)(const char*, int), mp_glob_t *restrict pglob);
+void mp_globfree(mp_glob_t *pglob);
 
 // NOTE: stat is not overridden with mp_stat, because MinGW-w64 defines it as
 //       macro.
@@ -92,9 +103,15 @@ char *mp_getenv(const char *name);
 #define mkdir(...) mp_mkdir(__VA_ARGS__)
 #define getenv(...) mp_getenv(__VA_ARGS__)
 
-#else /* __MINGW32__ */
+#ifndef GLOB_NOMATCH
+#define GLOB_NOMATCH 3
+#endif
 
-#define MP_PATH_MAX PATH_MAX
+#define glob_t mp_glob_t
+#define glob(...) mp_glob(__VA_ARGS__)
+#define globfree(...) mp_globfree(__VA_ARGS__)
+
+#else /* __MINGW32__ */
 
 #define mp_stat(...) stat(__VA_ARGS__)
 

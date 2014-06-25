@@ -11,6 +11,11 @@ def __get_cc_env_vars__(cc):
     except Exception:
         return ""
 
+def __test_and_add_flags__(ctx, flags):
+    for flag in flags:
+        ctx.check_cc(cflags=flag, uselib_store="compiler", mandatory=False)
+    ctx.env.CFLAGS += ctx.env.CFLAGS_compiler
+
 def __add_generic_flags__(ctx):
     ctx.env.CFLAGS += ["-D_ISOC99_SOURCE", "-D_GNU_SOURCE",
                        "-D_LARGEFILE_SOURCE", "-D_FILE_OFFSET_BITS=64",
@@ -21,22 +26,27 @@ def __add_generic_flags__(ctx):
         ctx.env.CFLAGS += ['-g']
 
 def __add_gcc_flags__(ctx):
-    ctx.env.CFLAGS += ["-Wundef", "-Wmissing-prototypes",
+    ctx.env.CFLAGS += ["-Wall", "-Wundef", "-Wmissing-prototypes", "-Wshadow",
                        "-Wno-switch", "-Wno-parentheses", "-Wpointer-arith",
                        "-Wredundant-decls", "-Wno-pointer-sign",
                        "-Werror=implicit-function-declaration",
                        "-Wno-error=deprecated-declarations",
                        "-Wno-error=unused-function" ]
+    __test_and_add_flags__(ctx, ["-Wempty-body"])
+    __test_and_add_flags__(ctx, ["-Wdisabled-optimization"])
+    __test_and_add_flags__(ctx, ["-Wstrict-prototypes"])
 
 def __add_clang_flags__(ctx):
-    ctx.env.CFLAGS += ["-Wno-logical-op-parentheses", "-fcolor-diagnostics"]
+    ctx.env.CFLAGS += ["-Wno-logical-op-parentheses", "-fcolor-diagnostics",
+                       "-Wno-tautological-compare",
+                       "-Wno-tautological-constant-out-of-range-compare" ]
 
 def __add_mingw_flags__(ctx):
     ctx.env.CFLAGS += ['-D__USE_MINGW_ANSI_STDIO=1']
     ctx.env.CFLAGS += ['-DBYTE_ORDER=1234']
     ctx.env.CFLAGS += ['-DLITLE_ENDIAN=1234']
     ctx.env.CFLAGS += ['-DBIG_ENDIAN=4321']
-    ctx.env.LAST_LINKFLAGS += ['-mconsole']
+    ctx.env.LAST_LINKFLAGS += ['-mwindows']
 
 def __add_cygwin_flags__(ctx):
     ctx.env.CFLAGS += ['-mwin32']

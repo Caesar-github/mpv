@@ -33,8 +33,8 @@ static int control(struct af_instance* af, int cmd, void* arg)
   switch(cmd){
   case AF_CONTROL_REINIT: ;
     *af->data = *(struct mp_audio*)arg;
-    MP_VERBOSE(af, "[dummy] Was reinitialized: %iHz/%ich/%s\n",
-	af->data->rate,af->data->nch,af_fmt_to_str(af->data->format));
+    MP_VERBOSE(af, "Was reinitialized: %iHz/%ich/%s\n",
+        af->data->rate,af->data->nch,af_fmt_to_str(af->data->format));
     return AF_OK;
   }
   return AF_UNKNOWN;
@@ -54,7 +54,7 @@ static int af_open(struct af_instance* af){
 }
 
 // Description of this filter
-struct af_info af_info_dummy = {
+const struct af_info af_info_dummy = {
     .info = "dummy",
     .name = "dummy",
     .open = af_open,

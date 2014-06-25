@@ -44,12 +44,9 @@ enum mp_cmd_flags {
     MP_ON_OSD_BAR = 2,          // force a bar, if applicable
     MP_ON_OSD_MSG = 4,          // force a message, if applicable
     MP_EXPAND_PROPERTIES = 8,   // expand strings as properties
-    MP_PAUSING = 16,            // pause after running command
-    MP_PAUSING_TOGGLE = 32,     // toggle pause after running command
 
     MP_ON_OSD_FLAGS = MP_ON_OSD_NO | MP_ON_OSD_AUTO |
                       MP_ON_OSD_BAR | MP_ON_OSD_MSG,
-    MP_PAUSING_FLAGS = MP_PAUSING | MP_PAUSING_TOGGLE,
 };
 
 enum mp_input_section_flags {
@@ -57,10 +54,12 @@ enum mp_input_section_flags {
     // other sections for it (like the default section). Instead, an unbound
     // key warning will be printed.
     MP_INPUT_EXCLUSIVE = 1,
+    // Prefer it to other sections.
+    MP_INPUT_ON_TOP = 2,
     // Let mp_input_test_dragging() return true, even if inside the mouse area.
-    MP_INPUT_ALLOW_VO_DRAGGING = 2,
+    MP_INPUT_ALLOW_VO_DRAGGING = 4,
     // Don't force mouse pointer visible, even if inside the mouse area.
-    MP_INPUT_ALLOW_HIDE_CURSOR = 4,
+    MP_INPUT_ALLOW_HIDE_CURSOR = 8,
 };
 
 struct input_ctx;
@@ -73,6 +72,7 @@ struct mp_cmd_arg {
         float f;
         double d;
         char *s;
+        char **str_list;
         void *p;
     } v;
 };
@@ -203,12 +203,20 @@ void mp_input_uninit(struct input_ctx *ictx);
 // Wake up sleeping input loop from another thread.
 void mp_input_wakeup(struct input_ctx *ictx);
 
+void mp_input_wakeup_nolock(struct input_ctx *ictx);
+
 // Interruptible usleep:  (used by demux)
-int mp_input_check_interrupt(struct input_ctx *ictx, int time);
+bool mp_input_check_interrupt(struct input_ctx *ictx);
 
 // If this returns true, use Right Alt key as Alt Gr to produce special
 // characters. If false, count Right Alt as the modifier Alt key.
 bool mp_input_use_alt_gr(struct input_ctx *ictx);
+
+// Like mp_input_parse_cmd_strv, but also run the command.
+void mp_input_run_cmd(struct input_ctx *ictx, int def_flags, const char **cmd,
+                      const char *location);
+
+void mp_input_set_main_thread(struct input_ctx *ictx);
 
 extern int async_quit_request;
 

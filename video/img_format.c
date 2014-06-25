@@ -28,109 +28,56 @@
 #include "video/mp_image.h"
 #include "video/fmt-conversion.h"
 
-#define FMT(string, id)                                 \
-    {string,            id},
+struct mp_imgfmt_entry {
+    const char *name;
+    int fmt;
+};
 
-#define FMT_ENDIAN(string, id)                          \
-    {string,            id},                            \
-    {string "le",       MP_CONCAT(id, _LE)},            \
-    {string "be",       MP_CONCAT(id, _BE)},            \
-
-struct mp_imgfmt_entry mp_imgfmt_list[] = {
-    FMT("y8",                   IMGFMT_Y8)
-    FMT_ENDIAN("y16",           IMGFMT_Y16)
-    FMT("ya8",                  IMGFMT_YA8)
-    FMT("yuyv",                 IMGFMT_YUYV)
-    FMT("uyvy",                 IMGFMT_UYVY)
-    FMT("nv12",                 IMGFMT_NV12)
-    FMT("nv21",                 IMGFMT_NV21)
-    FMT("444p",                 IMGFMT_444P)
-    FMT("422p",                 IMGFMT_422P)
-    FMT("440p",                 IMGFMT_440P)
-    FMT("420p",                 IMGFMT_420P)
-    FMT("411p",                 IMGFMT_411P)
-    FMT("410p",                 IMGFMT_410P)
-    FMT_ENDIAN("444p16",        IMGFMT_444P16)
-    FMT_ENDIAN("444p14",        IMGFMT_444P14)
-    FMT_ENDIAN("444p12",        IMGFMT_444P12)
-    FMT_ENDIAN("444p10",        IMGFMT_444P10)
-    FMT_ENDIAN("444p9",         IMGFMT_444P9)
-    FMT_ENDIAN("422p16",        IMGFMT_422P16)
-    FMT_ENDIAN("422p14",        IMGFMT_422P14)
-    FMT_ENDIAN("422p12",        IMGFMT_422P12)
-    FMT_ENDIAN("422p10",        IMGFMT_422P10)
-    FMT_ENDIAN("422p9",         IMGFMT_422P9)
-    FMT_ENDIAN("420p16",        IMGFMT_420P16)
-    FMT_ENDIAN("420p14",        IMGFMT_420P14)
-    FMT_ENDIAN("420p12",        IMGFMT_420P12)
-    FMT_ENDIAN("420p10",        IMGFMT_420P10)
-    FMT_ENDIAN("420p9",         IMGFMT_420P9)
-    FMT("444ap",                IMGFMT_444AP)
-    FMT("422ap",                IMGFMT_422AP)
-    FMT("420ap",                IMGFMT_420AP)
-    FMT_ENDIAN("444ap9",        IMGFMT_444AP9)
-    FMT_ENDIAN("444ap10",       IMGFMT_444AP10)
-    FMT_ENDIAN("444ap16",       IMGFMT_444AP16)
-    FMT_ENDIAN("422ap9",        IMGFMT_422AP9)
-    FMT_ENDIAN("422ap10",       IMGFMT_422AP10)
-    FMT_ENDIAN("422ap16",       IMGFMT_422AP16)
-    FMT_ENDIAN("420ap9",        IMGFMT_420AP9)
-    FMT_ENDIAN("420ap10",       IMGFMT_420AP10)
-    FMT_ENDIAN("420ap16",       IMGFMT_420AP16)
-    FMT("argb",                 IMGFMT_ARGB)
-    FMT("0rgb",                 IMGFMT_0RGB)
-    FMT("bgra",                 IMGFMT_BGRA)
-    FMT("bgr0",                 IMGFMT_BGR0)
-    FMT("abgr",                 IMGFMT_ABGR)
-    FMT("0bgr",                 IMGFMT_0BGR)
-    FMT("rgba",                 IMGFMT_RGBA)
-    FMT("rgb0",                 IMGFMT_RGB0)
-    FMT("rgb32",                IMGFMT_RGB32)
-    FMT("bgr32",                IMGFMT_BGR32)
-    FMT("bgr24",                IMGFMT_BGR24)
-    FMT("rgb24",                IMGFMT_RGB24)
-    FMT_ENDIAN("rgb48",         IMGFMT_RGB48)
-    FMT_ENDIAN("rgba64",        IMGFMT_RGBA64)
-    FMT_ENDIAN("bgra64",        IMGFMT_BGRA64)
-    FMT("rgb8",                 IMGFMT_RGB8)
-    FMT("bgr8",                 IMGFMT_BGR8)
-    FMT("rgb4_byte",            IMGFMT_RGB4_BYTE)
-    FMT("bgr4_byte",            IMGFMT_BGR4_BYTE)
-    FMT("rgb4",                 IMGFMT_RGB4)
-    FMT("bgr4",                 IMGFMT_BGR4)
-    FMT("mono",                 IMGFMT_MONO)
-    FMT("mono_w",               IMGFMT_MONO_W)
-    FMT_ENDIAN("rgb12",         IMGFMT_RGB12)
-    FMT_ENDIAN("rgb15",         IMGFMT_RGB15)
-    FMT_ENDIAN("rgb16",         IMGFMT_RGB16)
-    FMT_ENDIAN("bgr12",         IMGFMT_BGR12)
-    FMT_ENDIAN("bgr15",         IMGFMT_BGR15)
-    FMT_ENDIAN("bgr16",         IMGFMT_BGR16)
-    FMT("pal8",                 IMGFMT_PAL8)
-    FMT("gbrp",                 IMGFMT_GBRP)
-    FMT_ENDIAN("gbrp9",         IMGFMT_GBRP9)
-    FMT_ENDIAN("gbrp10",        IMGFMT_GBRP10)
-    FMT_ENDIAN("gbrp12",        IMGFMT_GBRP12)
-    FMT_ENDIAN("gbrp14",        IMGFMT_GBRP14)
-    FMT_ENDIAN("gbrp16",        IMGFMT_GBRP16)
-    FMT_ENDIAN("xyz12",         IMGFMT_XYZ12)
-    FMT("vdpau_mpeg1",          IMGFMT_VDPAU_MPEG1)
-    FMT("vdpau_mpeg2",          IMGFMT_VDPAU_MPEG2)
-    FMT("vdpau_h264",           IMGFMT_VDPAU_H264)
-    FMT("vdpau_wmv3",           IMGFMT_VDPAU_WMV3)
-    FMT("vdpau_vc1",            IMGFMT_VDPAU_VC1)
-    FMT("vdpau_mpeg4",          IMGFMT_VDPAU_MPEG4)
-    FMT("vdpau",                IMGFMT_VDPAU)
-    FMT("vda",                  IMGFMT_VDA)
-    FMT("vaapi",                IMGFMT_VAAPI)
+static const struct mp_imgfmt_entry mp_imgfmt_list[] = {
+    // not in ffmpeg
+    {"vdpau_output",    IMGFMT_VDPAU_OUTPUT},
+    // FFmpeg names have an annoying "_vld" suffix
+    {"vda",             IMGFMT_VDA},
+    {"vaapi",           IMGFMT_VAAPI},
+    // names below this are not preferred over the FFmpeg names
+    // the "none" entry makes mp_imgfmt_to_name prefer FFmpeg names
+    {"none",            0},
+    // endian-specific aliases (not in FFmpeg)
+    {"rgb32",           IMGFMT_RGB32},
+    {"bgr32",           IMGFMT_BGR32},
+    // old names we keep around
+    {"y8",              IMGFMT_Y8},
+    {"420p",            IMGFMT_420P},
+    {"yv12",            IMGFMT_420P},
+    {"420p16",          IMGFMT_420P16},
+    {"420p10",          IMGFMT_420P10},
+    {"444p",            IMGFMT_444P},
+    {"444p9",           IMGFMT_444P9},
+    {"444p10",          IMGFMT_444P10},
+    {"422p",            IMGFMT_422P},
+    {"422p9",           IMGFMT_422P9},
+    {"422p10",          IMGFMT_422P10},
     {0}
 };
 
-unsigned int mp_imgfmt_from_name(bstr name, bool allow_hwaccel)
+char **mp_imgfmt_name_list(void)
+{
+    int count = IMGFMT_END - IMGFMT_START;
+    char **list = talloc_zero_array(NULL, char *, count + 1);
+    int num = 0;
+    for (int n = IMGFMT_START; n < IMGFMT_END; n++) {
+        const char *name = mp_imgfmt_to_name(n);
+        if (strcmp(name, "none") != 0 && strcmp(name, "unknown") != 0)
+            list[num++] = talloc_strdup(list, name);
+    }
+    return list;
+}
+
+int mp_imgfmt_from_name(bstr name, bool allow_hwaccel)
 {
     int img_fmt = 0;
-    for(struct mp_imgfmt_entry *p = mp_imgfmt_list; p->name; ++p) {
-        if(bstr_equals0(name, p->name)) {
+    for (const struct mp_imgfmt_entry *p = mp_imgfmt_list; p->name; ++p) {
+        if (bstr_equals0(name, p->name)) {
             img_fmt = p->fmt;
             break;
         }
@@ -140,21 +87,46 @@ unsigned int mp_imgfmt_from_name(bstr name, bool allow_hwaccel)
         img_fmt = pixfmt2imgfmt(av_get_pix_fmt(t));
         talloc_free(t);
     }
-    if (!img_fmt && bstr_equals0(name, "yv12"))
-        img_fmt = IMGFMT_420P; // old alias for UI
     if (!allow_hwaccel && IMGFMT_IS_HWACCEL(img_fmt))
         return 0;
     return img_fmt;
 }
 
-const char *mp_imgfmt_to_name(unsigned int fmt)
+char *mp_imgfmt_to_name_buf(char *buf, size_t buf_size, int fmt)
 {
-    struct mp_imgfmt_entry *p = mp_imgfmt_list;
-    for(; p->name; ++p) {
-        if(p->fmt == fmt)
-            return p->name;
+    const char *name = NULL;
+    const struct mp_imgfmt_entry *p = mp_imgfmt_list;
+    for (; p->fmt; p++) {
+        if (p->name && p->fmt == fmt) {
+            name = p->name;
+            break;
+        }
     }
-    return NULL;
+    if (!name) {
+        const AVPixFmtDescriptor *pixdesc = av_pix_fmt_desc_get(imgfmt2pixfmt(fmt));
+        if (pixdesc)
+            name = pixdesc->name;
+    }
+    if (!name)
+        name = "unknown";
+    snprintf(buf, buf_size, "%s", name);
+    int len = strlen(buf);
+    if (len > 2 && buf[len - 2] == MP_SELECT_LE_BE('l', 'b') && buf[len - 1] == 'e')
+        buf[len - 2] = '\0';
+    return buf;
+}
+
+static struct mp_imgfmt_desc mp_only_imgfmt_desc(int mpfmt)
+{
+    switch (mpfmt) {
+    case IMGFMT_VDPAU_OUTPUT:
+        return (struct mp_imgfmt_desc) {
+            .id = mpfmt,
+            .avformat = AV_PIX_FMT_NONE,
+            .flags = MP_IMGFLAG_BE | MP_IMGFLAG_LE | MP_IMGFLAG_RGB,
+        };
+    }
+    return (struct mp_imgfmt_desc) {0};
 }
 
 struct mp_imgfmt_desc mp_imgfmt_get_desc(int mpfmt)
@@ -162,12 +134,11 @@ struct mp_imgfmt_desc mp_imgfmt_get_desc(int mpfmt)
     enum AVPixelFormat fmt = imgfmt2pixfmt(mpfmt);
     const AVPixFmtDescriptor *pd = av_pix_fmt_desc_get(fmt);
     if (!pd || fmt == AV_PIX_FMT_NONE)
-        return (struct mp_imgfmt_desc) {0};
+        return mp_only_imgfmt_desc(mpfmt);
 
     struct mp_imgfmt_desc desc = {
         .id = mpfmt,
         .avformat = fmt,
-        .name = mp_imgfmt_to_name(mpfmt),
         .chroma_xs = pd->log2_chroma_w,
         .chroma_ys = pd->log2_chroma_h,
     };
@@ -190,7 +161,7 @@ struct mp_imgfmt_desc mp_imgfmt_get_desc(int mpfmt)
     // Packed RGB formats are the only formats that have less than 8 bits per
     // component, and still require endian dependent access.
     if (pd->comp[0].depth_minus1 + 1 <= 8 &&
-        !(mpfmt >= IMGFMT_RGB12_LE && mpfmt <= IMGFMT_BGR16_BE))
+        !(mpfmt >= IMGFMT_RGB444_LE && mpfmt <= IMGFMT_BGR565_BE))
     {
         desc.flags |= MP_IMGFLAG_LE | MP_IMGFLAG_BE;
     } else {
@@ -211,13 +182,8 @@ struct mp_imgfmt_desc mp_imgfmt_get_desc(int mpfmt)
         desc.flags |= MP_IMGFLAG_RGB;
     }
 
-#ifdef AV_PIX_FMT_FLAG_ALPHA
     if (pd->flags & AV_PIX_FMT_FLAG_ALPHA)
         desc.flags |= MP_IMGFLAG_ALPHA;
-#else
-    if (desc.num_planes > 3)
-        desc.flags |= MP_IMGFLAG_ALPHA;
-#endif
 
     if (mpfmt >= IMGFMT_RGB0_START && mpfmt <= IMGFMT_RGB0_END)
         desc.flags &= ~MP_IMGFLAG_ALPHA;

@@ -16,17 +16,51 @@
  * with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-// At this point both gcc and clang had __sync_synchronize support for some
-// time. We only support a full memory barrier.
+#ifndef MP_ATOMICS_H
+#define MP_ATOMICS_H
 
+#include <inttypes.h>
 #include "config.h"
 
+#if HAVE_STDATOMIC
+#include <stdatomic.h>
+#else
+
+// Emulate the parts of C11 stdatomic.h needed by mpv.
+// Still relies on gcc/clang atomic builtins.
+
+typedef struct { volatile unsigned long v;  } atomic_ulong;
+typedef struct { volatile int v;            } atomic_int;
+typedef struct { volatile _Bool v;          } atomic_bool;
+typedef struct { volatile long long v;      } atomic_llong;
+typedef struct { volatile uint_least32_t v; } atomic_uint_least32_t;
+typedef struct { volatile unsigned long long v; } atomic_ullong;
+
+#define ATOMIC_VAR_INIT(x) \
+    {.v = (x)}
+
 #if HAVE_ATOMIC_BUILTINS
-# define mp_memory_barrier()           __atomic_thread_fence(__ATOMIC_SEQ_CST)
-# define mp_atomic_add_and_fetch(a, b) __atomic_add_fetch(a, b,__ATOMIC_SEQ_CST)
+
+#define atomic_load(p) \
+    __atomic_load_n(&(p)->v, __ATOMIC_SEQ_CST)
+#define atomic_store(p, val) \
+    __atomic_store_n(&(p)->v, val, __ATOMIC_SEQ_CST)
+#define atomic_fetch_add(a, b) \
+    __atomic_fetch_add(&(a)->v, b, __ATOMIC_SEQ_CST)
+
 #elif HAVE_SYNC_BUILTINS
-# define mp_memory_barrier()           __sync_synchronize()
-# define mp_atomic_add_and_fetch(a, b) __sync_add_and_fetch(a, b)
+
+#define atomic_load(p) \
+    __sync_fetch_and_add(&(p)->v, 0)
+#define atomic_store(p, val) \
+    (__sync_synchronize(), (p)->v = (val), __sync_synchronize())
+#define atomic_fetch_add(a, b) \
+    __sync_fetch_and_add(&(a)->v, b)
+
 #else
 # error "this should have been a configuration error, report a bug please"
+#endif
+
+#endif /* else HAVE_STDATOMIC */
+
 #endif
