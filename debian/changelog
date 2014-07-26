@@ -1,3 +1,10 @@
+mpv (0.4.2-1) UNRELEASED; urgency=medium
+
+  * New upstream release
+    - Include point releases too in the release notes (Closes: #722997)
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Sat, 26 Jul 2014 12:25:02 +0200
+
 mpv (0.4.1-1) unstable; urgency=medium
 
   * New upstream release
