@@ -2995,6 +2995,7 @@ static bool reinit_filters(MPContext *mpctx, enum stream_type mediatype)
     case STREAM_VIDEO:
         return reinit_video_filters(mpctx) >= 0;
     case STREAM_AUDIO:
+        clear_audio_output_buffers(mpctx);
         return reinit_audio_filters(mpctx) >= 0;
     }
     return false;
@@ -3549,7 +3550,7 @@ int run_command(MPContext *mpctx, mp_cmd_t *cmd)
 
     case MP_CMD_LOADFILE: {
         char *filename = cmd->args[0].v.s;
-        bool append = cmd->args[1].v.i;
+        int append = cmd->args[1].v.i;
 
         if (!append)
             playlist_clear(mpctx->playlist);
@@ -3564,7 +3565,7 @@ int run_command(MPContext *mpctx, mp_cmd_t *cmd)
         }
         playlist_add(mpctx->playlist, entry);
 
-        if (!append)
+        if (!append || (append == 2 && !mpctx->playlist->current))
             mp_set_playlist_entry(mpctx, mpctx->playlist->first);
         break;
     }
@@ -3576,7 +3577,7 @@ int run_command(MPContext *mpctx, mp_cmd_t *cmd)
         if (pl) {
             if (!append)
                 playlist_clear(mpctx->playlist);
-            playlist_transfer_entries(mpctx->playlist, pl);
+            playlist_append_entries(mpctx->playlist, pl);
             talloc_free(pl);
 
             if (!append && mpctx->playlist->first) {
