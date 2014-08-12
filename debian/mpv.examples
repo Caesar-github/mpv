@@ -1,2 +1,2 @@
 etc/*.conf
-DOCS/lua_examples
+TOOLS/lua
