@@ -545,15 +545,18 @@ static int control(stream_t *stream, int cmd, void *arg)
         return STREAM_OK;
     }
     case STREAM_CTRL_SEEK_TO_TIME: {
-        int64_t tm = (int64_t) (*((double *)arg) * 90000);
+        double d = *(double *)arg;
+        int64_t tm = (int64_t)(d * 90000);
         if (tm < 0)
             tm = 0;
         if (priv->duration && tm >= (priv->duration * 90))
             tm = priv->duration * 90 - 1;
-        MP_VERBOSE(stream, "seek to PTS %"PRId64"\n", tm);
+        MP_VERBOSE(stream, "seek to PTS %f (%"PRId64")\n", d, tm);
         if (dvdnav_time_search(dvdnav, tm) != DVDNAV_STATUS_OK)
             break;
         stream_drop_buffers(stream);
+        d = dvdnav_get_current_time(dvdnav) / 90000.0f;
+        MP_VERBOSE(stream, "landed at: %f\n", d);
         return STREAM_OK;
     }
     case STREAM_CTRL_GET_NUM_ANGLES: {
@@ -596,8 +599,6 @@ static int control(stream_t *stream, int cmd, void *arg)
         snprintf(req->name, sizeof(req->name), "%c%c", lang >> 8, lang);
         return STREAM_OK;
     }
-    case STREAM_CTRL_MANAGES_TIMELINE:
-        return STREAM_OK;
     case STREAM_CTRL_GET_DVD_INFO: {
         struct stream_dvd_info_req *req = arg;
         memset(req, 0, sizeof(*req));
@@ -732,7 +733,7 @@ static int open_s(stream_t *stream)
     stream->control = control;
     stream->close = stream_dvdnav_close;
     stream->type = STREAMTYPE_DVD;
-    stream->demuxer = "lavf";
+    stream->demuxer = "+disc";
     stream->lavf_type = "mpeg";
     stream->allow_caching = false;
 

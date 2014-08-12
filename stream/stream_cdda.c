@@ -37,7 +37,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
-#include <sys/types.h>
+
+#include "osdep/endian.h"
 
 #include "talloc.h"
 
@@ -396,7 +397,8 @@ static int open_cdda(stream_t *st)
     st->control = control;
     st->close = close_cdda;
 
-    st->demuxer = "rawaudio";
+    st->type = STREAMTYPE_CDDA;
+    st->demuxer = "+disc";
 
     print_cdtext(st, 0);
 

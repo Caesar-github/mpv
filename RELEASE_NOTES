@@ -1,182 +1,83 @@
-Release 0.4.2
-=============
-
-Bug fixes
----------
-
-- Include changes from point releases in the release notes.
-- Fix --cache-file operation when file size is unknown (e.g. when playing from
-  a pipe).
-- Don't sleep if playback is stopped when reconnecting for remote stream.
-- Suspend read on vts change even if the requested title is not found when
-  using dvdnav (dvd://) (this fixes a bug where the DVD menu was not shown
-  properly after a DVD track ended).
-- Avoid draining if the audio output is paused (this fixes a bug where mpv would
-  hang when switching tracks when paused).
-- Drop buffered audio when switching tracks or filters (this fixes a possible
-  regression when using gapless audio).
-- Reverse video rotation direction.
-- Fix initialization of the input when playing from a pipe.
-- Fix description of the --mf option in the manpage (the --mf syntax changed a
-  while ago, but was not documented).
-- Actually append entries to the end of the playlist instead of after the
-  current entry with the "loadlist append" command.
-
-New features
-------------
-
-- Add "append-play" mode for the loadfile command.
-
-This listing is not complete. There are many more bug fixes and changes. The
-complete change log can be viewed by running ``git log bb00774..d50be0a`` in
-the git repository.
-
-Release 0.4.1
-=============
-
-Bug fixes
----------
-
-- Fix af_volume bug that caused negative ReplayGain values to increase volume
-  instead of decreasing it in some situations.
-- Actually use "weak" as --gapless-audio default value (as documented in the
-  0.4.0 release notes).
-- Fix cache resizing bug that caused seeking to not work anymore.
-- Escape all colons in the options descriptions in the zsh completion script.
-- Don't consume an extra argument with --ao/af and --vo/vf options in the zsh
-  completion script (as side effect, the completion now uses --opt=val instead
-  of --opt val).
-- Allow client applications to call mpv_terminate_destroy(NULL).
-- Make sure seeking bounds are within range with dvdnav://.
-- Check the length of the last title too with dvdnav://longest.
-- Properly flush buffers on DVD seek (this fixes some seeking problems when
-  playing DVDs).
-- Allow compilation without atomics (for compilers that don't support atomic
-  operations).
-- Disable ao_null latency emulation.
-- Restore ability to combine mouse buttons.
-
-This listing is not complete. There are many more bug fixes and changes. The
-complete change log can be viewed by running ``git log 0075f8e..b18c2d9`` in
-the git repository.
-
-Release 0.4.0
+Release 0.5.0
 =============
 
 Changes
 -------
 
-- Drop support for Libav 9 and earlier FFmpeg releases. At least FFmpeg 2.1.4 or
-  Libav 10 are now required.
-- Change cache options to take kilobytes instead of percentages, and raise the
-  default values.
-- Lower --auto-pause/resume defaults values to improve web streams playback.
-- Use dvdnav support instead of the internal dvd implementation for dvd:// URLs
-  (the old implementation is available under dvdread://).
-- DVD (dvd://) tracks IDs now start from 0 instead of 1.
-- Play the longest track by default with dvd://.
-- Rename some options to make them more consistent. Here's a partial list of
-  renamed options:
-
-  + Audio-related:
-
-    * --audiofile       → --audio-file
-    * --audiofile-cache → --audio-file-cache
-    * --channels        → --audio-channels
-    * --format          → --audio-format
-    * --srate           → --audio-samplerate
-
-  + Input-related:
-
-    * --ar              → --input-appleremote
-    * --consolecontrols → --input-terminal
-    * --media-keys      → --input-media-keys
-    * --joystick        → --input-joystick
-    * --lirc            → --input-lirc
-    * --lircconf        → --input-lirc-conf
-    * --mouse-movements → --input-cursor
-    * --right-alt-gr    → --input-right-alt-gr
-
-  + Terminal-related:
-
-    * --msgcolor    → --msg-color
-    * --msglevel    → --msg-level
-    * --msgmodule   → --msg-module
-    * --msgtime     → --msg-time
-    * --playing-msg → --term-playing-msg
-    * --status-msg  → --term-status-msg
-
-  + Subtitle-related:
-
-    * --ass           → --sub-ass
-    * --autosub       → --sub-auto
-    * --autosub-match → --sub-auto-match
-    * --sub           → --sub-file
-    * --subcp         → --sub-codepage
-    * --subfps        → --sub-fps
-
-  + Video-related:
-
-    * --aspect    → --video-aspect
-    * --fstype    → --x11-fstype
-    * --native-fs → --fs-missioncontrol
-    * --name      → --x11-name
-
-- Remove global options variables for --tv, --pvr, --dvb and --cdda.
-- Move post-processing support to a separate filter (vdpaupp) for the vdpau vo,
-  and deprecate the old vdpau post-processing options.
-- Remove radio:// support.
-- Remove support for ASX, SMIL and NSC playlist formats.
-- Re-introduce pretty-printing for module names with --msg-module.
-- Load Lua scripts under `$MPV_HOME/lua/` (default `~/.mpv/lua/`) automatically
-  (this can be disabled by using `--load-scripts=no`).
-- Corrupt/broken frames are not shown by default anymore (this can be re-enabled
-  by using --vd-lavc-show-all=yes).
-- Automatically copy metadata from the input file to the output when encoding
-  (this can be disabled by using --no-ometadata).
-- Change --sub-file semantics: if multiple --sub-file are used, the subtitle
-  tracks can be cycled at runtime and used with --sid and --secondary-sid.
-- Make the subtitle font size relative to the window, instead of the video, when
-  --sub-scale-with-window=yes is used.
-- Change default ao from wasapi to dsound on Windows.
+- Support setting the start time relative to the start PTS with --start.
+- Use /dev/sr0 as default cdrom/dvd device on Linux.
+- Change "cache" property representation to float.
+- Split the ao_coreaudio audio output into ao_coreaudio (which uses the
+  AudioUnits and the CoreAudio sound server) and ao_coreaudio_device (which uses
+  direct device access).
+- Complete supported URL schemes in the zsh completion script.
+- Enable compiler optimizations (-O2) during build.
+- Allow precise seeking with percent-based seeks too.
+- Do precise seeks when clicking on the OSC seekbar.
+- Remove support for older VDA hwaccel versions on Mac OS X (requires recent
+  versions of ffmpeg/libav).
+- Remove the last remains of slave mode (--slave-broken option). Support for
+  reading input commands from stdin can be emulated using: --input-terminal=no
+  --input-file=/dev/stdin.
+- Some key binding were remapped or removed:
+  + "LEFT" and "RIGHT" have been remapped to seek 5 seconds instead of 10.
+  + "c" for changing the YUV color space was unmapped.
+  + OSD level cycling has been remapped from "o" to "O".
+  + "o" is now mapped to the show_progress command (like "P").
+  + "PGUP" and "PGDWN" have been remapped to chapter-based seeks (the old
+    bindings "@" and "!" are still available). The old behvaiour has been
+    remapped to "Shift+PGUP" and "Shift+PGDWM".
+  + Increasing/decreasing audio delay have been remapped from "+" and "-" to
+    "Ctrl++" and "Ctrl+-".
+  + "(" and ")" for adjusting audio balance have been unmapped.
+  + "F" for toggling the "sub-forced-only" option has been unmapped.
+  + "TAB" for cycling TS programs has been unmapped.
+  + "A" for cycling DVD angle has been unmapped.
+  + "U" for stopping playback has been unmapped.
+  + "l" and "L" for cycling quvi format have been unmapped.
+- Make it possible to build the client API (libmpv) on Mac OS X.
+- Do necessary checks for nested Wayland compositors which only have limited
+  interfaces.
+- The options in the manpage have been re-organized into sections and ordered by
+  usage to make it easier to navigate.
+- The "hard" framedrop mode has been removed (this behaviour is still available
+  via the --vd-lavc-framedrop option).
+- Show the basename of a subtitle file only (without the directory part).
 
 Bug fixes
 ---------
 
-- Fix tv:// playback with missing timestamps.
-- Fix display of cover art inside audio files with the vdpau vo.
+- Use a default color space for files with no video (this fixes color managed
+  OSD messages when no video channel is present).
+- Fix key equivalent dispatching for Cocoa on Mac OS X.
+- Disable non-interleaved audio formats by default with ao_alsa, since some
+  ALSA plugins don't cope well with them (non-interleaved formats can still be
+  enabled using the "non-interleaved" ao_alsa option).
+- Fix deadlock in the client API when calling mpv_terminate_destroy() before
+  mpv_initialize().
+- Fix flushing of filter chain (this fixes a bug where the last frames would get
+  dropped on EOF, if buffered by filters).
+- Actually use the channels.conf configuration file for DVB.
+- Restore the --dvbin-file option.
+- Fix off by one error in the command parser which caused a segfault when using
+  the mp.commandv() Lua function with 10 or more arguments.
 
 New features
 ------------
 
-- Add client API in the form of the libmpv library, which is intended to be a
-  stable API to get some rough control over the player (this is not supported on
-  Mac OS X).
-- Add option for approximating BT.709 gamma for the opengl vo (similarly to many
-  programs in the Apple ecosystem).
-- Add support for non-BT.709 primaries.
-- Add support for BT.2020 colorspace.
-- Generate and install zsh completion script (disabled by default since it may
-  interfere with cross-compilation).
-- Add support for looping a single file (instead of the whole playlist) with the
-  --loop-file option.
-- Add VapourSynth video filter (this has various restrictions, which are listed
-  in the manpage).
-- Add support for ReplayGain in the volume audio filter.
-- Add a --config-dir option to force config directory.
-- Add support for GPU switching on Mac OS X.
-- Add support for automatic selection of color profiles on Mac OS X.
-- Add support for binding commands to sequences of keys.
-- Add support for passing options to Lua scripts with --lua-opts.
-- Add some filesystem utility functions to the Lua API.
-- Add functions for observing property changes to the Lua API .
-- Add support for creating a cache file on the filesystem with --cache-file.
-- Add support for window dragging by grabbing with the x11 vo.
-- Add option to write file name to watch later file.
-- Add support for a "weak" gapless mode, and make it default (the old mode can
-  be enabled with --gapless-audio or --gapless-audio=yes).
-- Automatically detect network filesystems on Linux and Windows.
+- Search for config files in $XDG_CONFIG_HOME and $XDG_CONFIG_DIRS in addition
+  to ~/.mpv. The config file has also been renamed to mpv.conf (although the
+  old file still works and will be loaded even if the new one exists).
+- Add "playback-time" property that returns the current playback time always
+  starting at 0. This is now used to show the playback time in the OSD and the
+  status line, fixing the shown playback time for transport streams that start
+  at a completely random timestamp.
+- Add cache-related "cache-free", "cache-used" and "cache-idle" properties.
+- Add option to list supported protocols (--list-protocols).
+- Allow setting libavformat stream options with the --stream-lavf-o option.
+- Support running the demuxer in a separate thread and prefetch packets (this
+  can be enabled using the --demuxer-thread option).
 
 This listing is not complete. There are many more bug fixes and changes. The
-complete change log can be viewed by running ``git log 56ce2a3..8bb7d42`` in
+complete change log can be viewed by running ``git log cb250d4..52f2f67`` in
 the git repository.

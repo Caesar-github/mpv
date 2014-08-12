@@ -71,7 +71,7 @@ static void select_format(struct ao *ao, AVCodec *codec)
     {
         int fmt = af_from_avformat(*sampleformat);
         if (!fmt) {
-            MP_WARN(ao, "unsupported lavc format %s",
+            MP_WARN(ao, "unsupported lavc format %s\n",
                     av_get_sample_fmt_name(*sampleformat));
             continue;
         }
@@ -114,12 +114,11 @@ static int init(struct ao *ao)
 
     codec = encode_lavc_get_codec(ao->encode_lavc_ctx, ac->stream);
 
-    // ac->stream->time_base.num = 1;
-    // ac->stream->time_base.den = ao->samplerate;
-    // doing this breaks mpeg2ts in ffmpeg
-    // which doesn't properly force the time base to be 90000
-    // furthermore, ffmpeg.c doesn't do this either and works
-
+    // TODO: Remove this redundancy with encode_lavc_alloc_stream also
+    // setting the time base.
+    // Using codec->time_bvase is deprecated, but needed for older lavf.
+    ac->stream->time_base.num = 1;
+    ac->stream->time_base.den = ao->samplerate;
     ac->stream->codec->time_base.num = 1;
     ac->stream->codec->time_base.den = ao->samplerate;
 
@@ -342,8 +341,7 @@ static int play(struct ao *ao, void **data, int samples, int flags)
     }
 
     double pts = ectx->last_audio_in_pts;
-    pts += ectx->samples_since_last_pts / ao->samplerate;
-    ectx->samples_since_last_pts += samples;
+    pts += ectx->samples_since_last_pts / (double)ao->samplerate;
 
     size_t num_planes = af_fmt_is_planar(ao->format) ? ao->channels.num : 1;
 
@@ -451,6 +449,10 @@ static int play(struct ao *ao, void **data, int samples, int flags)
     }
 
     talloc_free(tempdata);
+
+    int taken = FFMIN(bufpos, orig_samples);
+    ectx->samples_since_last_pts += taken;
+
     pthread_mutex_unlock(&ectx->lock);
 
     if (flags & AOPLAY_FINAL_CHUNK) {
@@ -463,7 +465,7 @@ static int play(struct ao *ao, void **data, int samples, int flags)
         }
     }
 
-    return FFMIN(bufpos, orig_samples);
+    return taken;
 }
 
 static void drain(struct ao *ao)

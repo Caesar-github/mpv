@@ -36,12 +36,10 @@ struct dec_audio {
     struct mp_audio_buffer *decode_buffer;
     struct af_stream *afilter;
     char *decoder_desc;
-    struct mp_tags *metadata;
     struct replaygain_data *replaygain_data;
+    int init_retries;
     // set by decoder
-    struct mp_audio decoded;    // format of decoded audio (no data, temporarily
-                                // different from decode_buffer during format
-                                // changes)
+    struct mp_audio decoded;    // decoded audio set by last decode_packet() call
     int bitrate;                // input bitrate, can change with VBR sources
     // last known pts value in output from decoder
     double pts;
@@ -51,10 +49,19 @@ struct dec_audio {
     void *priv;
 };
 
+enum {
+    AD_OK = 0,
+    AD_ERR = -1,
+    AD_EOF = -2,
+    AD_NEW_FMT = -3,
+    AD_WAIT = -4,
+};
+
 struct mp_decoder_list *audio_decoder_list(void);
 int audio_init_best_codec(struct dec_audio *d_audio, char *audio_decoders);
 int audio_decode(struct dec_audio *d_audio, struct mp_audio_buffer *outbuf,
                  int minsamples);
+int initial_audio_decode(struct dec_audio *d_audio);
 void audio_reset_decoding(struct dec_audio *d_audio);
 void audio_uninit(struct dec_audio *d_audio);
 

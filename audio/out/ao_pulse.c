@@ -53,7 +53,6 @@ struct priv {
     // temporary during control()
     struct pa_sink_input_info pi;
 
-    bool broken_pause;
     int retval;
 
     // for wakeup handling
@@ -64,6 +63,7 @@ struct priv {
     char *cfg_host;
     char *cfg_sink;
     int cfg_buffer;
+    int cfg_latency_hacks;
 };
 
 #define GENERIC_ERR_MSG(str) \
@@ -113,7 +113,7 @@ static void stream_request_cb(pa_stream *s, size_t length, void *userdata)
     pa_threaded_mainloop_signal(priv->mainloop, 0);
 }
 
-static int wait(struct ao *ao, pthread_mutex_t *lock)
+static int wait_audio(struct ao *ao, pthread_mutex_t *lock)
 {
     struct priv *priv = ao->priv;
     // We don't use this mutex, because pulse like to call stream_request_cb
@@ -280,25 +280,11 @@ static int init(struct ao *ao)
     struct priv *priv = ao->priv;
     char *host = priv->cfg_host && priv->cfg_host[0] ? priv->cfg_host : NULL;
     char *sink = priv->cfg_sink && priv->cfg_sink[0] ? priv->cfg_sink : NULL;
-    const char *version = pa_get_library_version();
 
     pthread_mutex_init(&priv->wakeup_lock, NULL);
     pthread_cond_init(&priv->wakeup, NULL);
 
     ao->per_application_mixer = true;
-
-    priv->broken_pause = false;
-    /* not sure which versions are affected, assume 0.9.11* to 0.9.14*
-     * known bad: 0.9.14, 0.9.13
-     * known good: 0.9.9, 0.9.10, 0.9.15
-     * To test: pause, wait ca. 5 seconds, framestep and see if MPlayer
-     * hangs somewhen. */
-    if (strncmp(version, "0.9.1", 5) == 0 && version[5] >= '1'
-        && version[5] <= '4') {
-        MP_WARN(ao, "working around probably broken pause functionality,\n"
-                    "        see http://www.pulseaudio.org/ticket/440\n");
-        priv->broken_pause = true;
-    }
 
     if (!(priv->mainloop = pa_threaded_mainloop_new())) {
         MP_ERR(ao, "Failed to allocate main loop\n");
@@ -357,6 +343,8 @@ static int init(struct ao *ao)
         goto unlock_and_fail;
     }
     (void)pa_proplist_sets(proplist, PA_PROP_MEDIA_ROLE, "video");
+    (void)pa_proplist_sets(proplist, PA_PROP_MEDIA_ICON_NAME,
+                           PULSE_CLIENT_NAME);
 
     if (!(priv->stream = pa_stream_new_with_proplist(priv->context,
                                                      "audio stream", &ss,
@@ -378,8 +366,13 @@ static int init(struct ao *ao)
         .minreq = -1,
         .fragsize = -1,
     };
+
+    int flags = PA_STREAM_NOT_MONOTONIC;
+    if (!priv->cfg_latency_hacks)
+        flags |= PA_STREAM_INTERPOLATE_TIMING|PA_STREAM_AUTO_TIMING_UPDATE;
+
     if (pa_stream_connect_playback(priv->stream, sink, &bufattr,
-                                   PA_STREAM_NOT_MONOTONIC, NULL, NULL) < 0)
+                                   flags, NULL, NULL) < 0)
         goto unlock_and_fail;
 
     /* Wait until the stream is ready */
@@ -463,12 +456,6 @@ static void pause(struct ao *ao)
 // Resume the audio stream by uncorking it on the server
 static void resume(struct ao *ao)
 {
-    struct priv *priv = ao->priv;
-    /* Without this, certain versions will cause an infinite hang because
-     * pa_stream_writable_size returns 0 always.
-     * Note that this workaround causes A-V desync after pause. */
-    if (priv->broken_pause)
-        reset(ao);
     cork(ao, false);
 }
 
@@ -482,8 +469,7 @@ static int get_space(struct ao *ao)
     return space / ao->sstride;
 }
 
-// Return the current latency in seconds
-static float get_delay(struct ao *ao)
+static float get_delay_hackfixed(struct ao *ao)
 {
     /* This code basically does what pa_stream_get_latency() _should_
      * do, but doesn't due to multiple known bugs in PulseAudio (at
@@ -536,6 +522,34 @@ static float get_delay(struct ao *ao)
         latency = 0;
     pa_threaded_mainloop_unlock(priv->mainloop);
     return latency / 1e6;
+}
+
+static float get_delay_pulse(struct ao *ao)
+{
+    struct priv *priv = ao->priv;
+    pa_usec_t latency = (pa_usec_t) -1;
+    pa_threaded_mainloop_lock(priv->mainloop);
+    while (pa_stream_get_latency(priv->stream, &latency, NULL) < 0) {
+        if (pa_context_errno(priv->context) != PA_ERR_NODATA) {
+            GENERIC_ERR_MSG("pa_stream_get_latency() failed");
+            break;
+        }
+        /* Wait until latency data is available again */
+        pa_threaded_mainloop_wait(priv->mainloop);
+    }
+    pa_threaded_mainloop_unlock(priv->mainloop);
+    return latency == (pa_usec_t) -1 ? 0 : latency / 1000000.0;
+}
+
+// Return the current latency in seconds
+static float get_delay(struct ao *ao)
+{
+    struct priv *priv = ao->priv;
+    if (priv->cfg_latency_hacks) {
+        return get_delay_hackfixed(ao);
+    } else {
+        return get_delay_pulse(ao);
+    }
 }
 
 /* A callback function that is called when the
@@ -662,16 +676,18 @@ const struct ao_driver audio_out_pulse = {
     .pause     = pause,
     .resume    = resume,
     .drain     = drain,
-    .wait      = wait,
+    .wait      = wait_audio,
     .wakeup    = wakeup,
     .priv_size = sizeof(struct priv),
     .priv_defaults = &(const struct priv) {
         .cfg_buffer = 250,
+        .cfg_latency_hacks = 1,
     },
     .options = (const struct m_option[]) {
         OPT_STRING("host", cfg_host, 0),
         OPT_STRING("sink", cfg_sink, 0),
         OPT_CHOICE_OR_INT("buffer", cfg_buffer, 0, 1, 2000, ({"native", -1})),
+        OPT_FLAG("latency-hacks", cfg_latency_hacks, 0),
         {0}
     },
 };

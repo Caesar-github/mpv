@@ -35,7 +35,7 @@ struct dec_video {
     struct vf_chain *vfilter;  // video filter chain
     struct vo *vo;  // (still) needed by video_set/get_colors
     const struct vd_functions *vd_driver;
-    struct mp_hwdec_info hwdec_info; // video output hwdec handles
+    struct mp_hwdec_info *hwdec_info; // video output hwdec handles
     struct sh_stream *header;
 
     char *decoder_desc;
@@ -72,7 +72,6 @@ struct dec_video {
     // Final PTS of previously decoded image
     double decoded_pts;
 
-    float stream_aspect;  // aspect ratio in media headers (DVD IFO files)
     int bitrate;          // compressed bits/sec
     float fps;            // FPS from demuxer or from user override
     float initial_decoder_aspect;

@@ -34,7 +34,6 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <ctype.h>
 #include <sys/ioctl.h>
 #include <sys/time.h>
 #include <poll.h>
@@ -45,6 +44,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 #include <libavutil/avstring.h>
 
 #include "osdep/io.h"
+#include "misc/ctype.h"
 
 #include "stream.h"
 #include "options/m_config.h"
@@ -77,6 +77,7 @@ const struct m_sub_options stream_dvb_conf = {
         OPT_STRING("prog", cfg_prog, 0),
         OPT_INTRANGE("card", cfg_card, 0, 1, 4),
         OPT_INTRANGE("timeout",  cfg_timeout, 0, 1, 30),
+        OPT_STRING("file", cfg_file, 0),
         {0}
     },
     .size = sizeof(struct dvb_params),
@@ -177,7 +178,7 @@ static dvb_channels_list *dvb_get_channels(struct mp_log *log, char *filename, i
                 {
                         fields = sscanf(&line[k], sat_conf,
                                 &ptr->freq, &ptr->pol, &ptr->diseqc, &ptr->srate, vpid_str, apid_str);
-                        ptr->pol = toupper(ptr->pol);
+                        ptr->pol = mp_toupper(ptr->pol);
                         ptr->freq *=  1000UL;
                         ptr->srate *=  1000UL;
                         ptr->tone = -1;
@@ -717,8 +718,9 @@ dvb_config_t *dvb_get_config(stream_t *stream)
 {
         struct mp_log *log = stream->log;
         struct mpv_global *global = stream->global;
+        dvb_priv_t *priv = stream->priv;
         int i, fd, type, size;
-        char filename[30], *conf_file, *name;
+        char filename[30], *name;
         dvb_channels_list *list;
         dvb_card_config_t *cards = NULL, *tmp;
         dvb_config_t *conf = NULL;
@@ -750,27 +752,28 @@ dvb_config_t *dvb_get_config(stream_t *stream)
                 }
 
         void *talloc_ctx = talloc_new(NULL);
-        conf_file = mp_find_user_config_file(talloc_ctx, global, "channels.conf");
-        switch(type) {
+        char *conf_file = NULL;
+        if (priv->cfg_file && priv->cfg_file[0]) {
+            conf_file = priv->cfg_file;
+        } else {
+            switch(type) {
             case TUNER_TER:
-                conf_file = mp_find_user_config_file(talloc_ctx, global, "channels.conf.ter");
+                conf_file = mp_find_config_file(talloc_ctx, global, "channels.conf.ter");
                 break;
             case TUNER_CBL:
-                conf_file = mp_find_user_config_file(talloc_ctx, global, "channels.conf.cbl");
+                conf_file = mp_find_config_file(talloc_ctx, global, "channels.conf.cbl");
                 break;
             case TUNER_SAT:
-                conf_file = mp_find_user_config_file(talloc_ctx, global, "channels.conf.sat");
+                conf_file = mp_find_config_file(talloc_ctx, global, "channels.conf.sat");
                 break;
             case TUNER_ATSC:
-                conf_file = mp_find_user_config_file(talloc_ctx, global, "channels.conf.atsc");
+                conf_file = mp_find_config_file(talloc_ctx, global, "channels.conf.atsc");
                 break;
-        }
-
-        if(conf_file && (access(conf_file, F_OK | R_OK) != 0)) {
-            conf_file = mp_find_user_config_file(talloc_ctx, global, "channels.conf");
-
-            if(conf_file && (access(conf_file, F_OK | R_OK) != 0)) {
-                conf_file = mp_find_global_config_file(talloc_ctx, global, "channels.conf");
+            }
+            if (conf_file) {
+                mp_verbose(log, "Ignoring other channels.conf files.\n");
+            } else {
+                conf_file = mp_find_config_file(talloc_ctx, global, "channels.conf");
             }
         }
 

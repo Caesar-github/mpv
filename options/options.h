@@ -29,8 +29,6 @@ typedef struct mp_vo_opts {
     int keepaspect;
     int border;
 
-    int enable_mouse_movements;
-
     int64_t WinID;
 
     float force_monitor_aspect;
@@ -149,7 +147,6 @@ typedef struct MPOpts {
     char *heartbeat_cmd;
     float heartbeat_interval;
     int player_idle_mode;
-    int slave_mode;
     int consolecontrols;
     struct m_rel_time play_start;
     struct m_rel_time play_end;
@@ -183,6 +180,9 @@ typedef struct MPOpts {
 
     char **audio_files;
     char *demuxer_name;
+    int demuxer_thread;
+    int demuxer_min_packs;
+    int demuxer_min_bytes;
     char *audio_demuxer_name;
     char *sub_demuxer_name;
     int mkv_subtitle_preroll;
@@ -249,6 +249,7 @@ typedef struct MPOpts {
     struct pvr_params *stream_pvr_opts;
     struct cdda_params *stream_cdda_opts;
     struct dvb_params *stream_dvb_opts;
+    struct stream_lavf_params *stream_lavf_opts;
 
     char *cdrom_device;
     int dvd_title;

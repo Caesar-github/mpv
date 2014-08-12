@@ -50,7 +50,8 @@ SOURCES-$(MPG123)               += audio/decode/ad_mpg123.c
 SOURCES-$(PVR)                  += stream/stream_pvr.c
 
 SOURCES-$(TV)                   += stream/stream_tv.c stream/tv.c \
-                                   stream/frequencies.c stream/tvi_dummy.c
+                                   stream/frequencies.c stream/tvi_dummy.c \
+                                   demux/demux_tv.c
 
 SOURCES-$(TV_V4L2)              += stream/tvi_v4l2.c stream/audio_in.c
 SOURCES-$(DUMMY_OSD)            += sub/osd_dummy.c
@@ -148,7 +149,6 @@ SOURCES = audio/audio.c \
           bstr/bstr.c \
           common/av_common.c \
           common/av_log.c \
-          common/av_opts.c \
           common/codecs.c \
           common/common.c \
           common/msg.c \
@@ -159,6 +159,7 @@ SOURCES = audio/audio.c \
           demux/demux.c \
           demux/demux_edl.c \
           demux/demux_cue.c \
+          demux/demux_disc.c \
           demux/demux_lavf.c \
           demux/demux_mf.c \
           demux/demux_mkv.c \
@@ -167,6 +168,7 @@ SOURCES = audio/audio.c \
           demux/demux_subreader.c \
           demux/ebml.c \
           demux/mf.c \
+          demux/packet.c \
           input/cmd_list.c \
           input/cmd_parse.c \
           input/event.c \
@@ -174,6 +176,7 @@ SOURCES = audio/audio.c \
           input/keycodes.c \
           misc/charset_conv.c \
           misc/dispatch.c \
+          misc/rendezvous.c \
           misc/ring.c \
           options/m_config.c \
           options/m_option.c \
@@ -243,6 +246,7 @@ SOURCES = audio/audio.c \
           video/decode/vd_lavc.c \
           video/filter/vf.c \
           video/filter/pullup.c \
+          video/filter/vf_buffer.c \
           video/filter/vf_crop.c \
           video/filter/vf_delogo.c \
           video/filter/vf_divtc.c \
@@ -406,7 +410,7 @@ common/version.c: version.h
 DOCS/man/mpv.1: DOCS/man/af.rst \
                    DOCS/man/ao.rst \
                    DOCS/man/changes.rst \
-                   DOCS/mancode.rst \
+                   DOCS/man/encode.rst \
                    DOCS/man/input.rst \
                    DOCS/man/options.rst \
                    DOCS/man/vf.rst \

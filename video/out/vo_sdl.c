@@ -603,7 +603,7 @@ static void check_events(struct vo *vo)
             break;
         }
         case SDL_MOUSEMOTION:
-            vo_mouse_movement(vo, ev.motion.x, ev.motion.y);
+            mp_input_set_mouse_pos(vo->input_ctx, ev.motion.x, ev.motion.y);
             break;
         case SDL_MOUSEBUTTONDOWN:
             mp_input_put_key(vo->input_ctx,
@@ -825,7 +825,7 @@ static int preinit(struct vo *vo)
     vc->reinit_renderer = true;
 
     // we don't have proper event handling
-    vo->wakeup_period = 0.02;
+    vo->wakeup_period = 0.2;
 
     return 0;
 }
@@ -952,9 +952,9 @@ static int set_eq(struct vo *vo, const char *name, int value)
 {
     struct priv *vc = vo->priv;
 
-    if (!strcasecmp(name, "brightness"))
+    if (!strcmp(name, "brightness"))
         vc->brightness = value;
-    else if (!strcasecmp(name, "contrast"))
+    else if (!strcmp(name, "contrast"))
         vc->contrast = value;
     else
         return VO_NOTIMPL;
@@ -968,9 +968,9 @@ static int get_eq(struct vo *vo, const char *name, int *value)
 {
     struct priv *vc = vo->priv;
 
-    if (!strcasecmp(name, "brightness"))
+    if (!strcmp(name, "brightness"))
         *value = vc->brightness;
-    else if (!strcasecmp(name, "contrast"))
+    else if (!strcmp(name, "contrast"))
         *value = vc->contrast;
     else
         return VO_NOTIMPL;

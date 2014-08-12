@@ -22,7 +22,6 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
-#include <ctype.h>
 
 #include <libavutil/md5.h>
 
@@ -34,6 +33,7 @@
 #include "common/global.h"
 #include "common/encode.h"
 #include "common/msg.h"
+#include "misc/ctype.h"
 #include "options/path.h"
 #include "options/m_config.h"
 #include "options/parse_configfile.h"
@@ -46,18 +46,26 @@
 #include "core.h"
 #include "command.h"
 
+static void load_all_cfgfiles(struct MPContext *mpctx, char *section,
+                              char *filename)
+{
+    char **cf = mp_find_all_config_files(NULL, mpctx->global, filename);
+    for (int i = 0; cf && cf[i]; i++)
+        m_config_parse_config_file(mpctx->mconfig, cf[i], section, 0);
+    talloc_free(cf);
+}
+
 #define SECT_ENCODE "encoding"
 
-bool mp_parse_cfgfiles(struct MPContext *mpctx)
+void mp_parse_cfgfiles(struct MPContext *mpctx)
 {
     struct MPOpts *opts = mpctx->opts;
     if (!opts->load_config)
-        return true;
+        return;
+
+    mp_mk_config_dir(mpctx->global, "");
 
     m_config_t *conf = mpctx->mconfig;
-    void *tmp = talloc_new(NULL);
-    bool r = true;
-    char *conffile;
     char *section = NULL;
     bool encoding = opts->encode_opts &&
         opts->encode_opts->file && opts->encode_opts->file[0];
@@ -70,30 +78,17 @@ bool mp_parse_cfgfiles(struct MPContext *mpctx)
 
     // The #if is a stupid hack to avoid errors if libavfilter is not available.
 #if HAVE_LIBAVFILTER && HAVE_ENCODING
-    conffile = mp_find_config_file(tmp, mpctx->global, "encoding-profiles.conf");
-    if (conffile && mp_path_exists(conffile))
-        m_config_parse_config_file(mpctx->mconfig, conffile, SECT_ENCODE, 0);
+    char *cf = mp_find_config_file(NULL, mpctx->global, "encoding-profiles.conf");
+    if (cf)
+        m_config_parse_config_file(mpctx->mconfig, cf, SECT_ENCODE, 0);
+    talloc_free(cf);
 #endif
 
-    conffile = mp_find_global_config_file(tmp, mpctx->global, "mpv.conf");
-    if (conffile && m_config_parse_config_file(conf, conffile, section, 0) < 0) {
-        r = false;
-        goto done;
-    }
-    mp_mk_config_dir(mpctx->global, NULL);
-    if (!(conffile = mp_find_user_config_file(tmp, mpctx->global, "config")))
-        MP_ERR(mpctx, "mp_find_user_config_file(\"config\") problem\n");
-    else if (m_config_parse_config_file(conf, conffile, section, 0) < 0) {
-        r = false;
-        goto done;
-    }
+    load_all_cfgfiles(mpctx, section, "config");
+    load_all_cfgfiles(mpctx, section, "mpv.conf");
 
     if (encoding)
         m_config_set_profile(conf, m_config_add_profile(conf, SECT_ENCODE), 0);
-
-done:
-    talloc_free(tmp);
-    return r;
 }
 
 static int try_load_config(struct MPContext *mpctx, const char *file, int flags)
@@ -134,7 +129,7 @@ static void mp_load_per_file_config(struct MPContext *mpctx)
             return;
     }
 
-    if ((confpath = mp_find_user_config_file(NULL, mpctx->global, name))) {
+    if ((confpath = mp_find_config_file(NULL, mpctx->global, name))) {
         try_load_config(mpctx, confpath, FILE_LOCAL_FLAGS);
 
         talloc_free(confpath);
@@ -200,9 +195,13 @@ static char *mp_get_playback_resume_config_filename(struct mpv_global *global,
     for (int i = 0; i < 16; i++)
         conf = talloc_asprintf_append(conf, "%02X", md5[i]);
 
-    conf = talloc_asprintf(tmp, "%s/%s", MP_WATCH_LATER_CONF, conf);
+    res = talloc_asprintf(tmp, MP_WATCH_LATER_CONF "/%s", conf);
+    res = mp_find_config_file(NULL, global, res);
 
-    res = mp_find_user_config_file(NULL, global, conf);
+    if (!res) {
+        res = mp_find_config_file(tmp, global, MP_WATCH_LATER_CONF);
+        res = talloc_asprintf(NULL, "%s/%s", res, conf);
+    }
 
 exit:
     talloc_free(tmp);
@@ -268,7 +267,7 @@ static bool needs_config_quoting(const char *s)
 {
     for (int i = 0; s && s[i]; i++) {
         unsigned char c = s[i];
-        if (!isprint(c) || isspace(c) || c == '#' || c == '\'' || c == '"')
+        if (!mp_isprint(c) || mp_isspace(c) || c == '#' || c == '\'' || c == '"')
             return true;
     }
     return false;
@@ -276,8 +275,8 @@ static bool needs_config_quoting(const char *s)
 
 void mp_write_watch_later_conf(struct MPContext *mpctx)
 {
-    void *tmp = talloc_new(NULL);
     char *filename = mpctx->filename;
+    char *conffile = NULL;
     if (!filename)
         goto exit;
 
@@ -287,9 +286,8 @@ void mp_write_watch_later_conf(struct MPContext *mpctx)
 
     mp_mk_config_dir(mpctx->global, MP_WATCH_LATER_CONF);
 
-    char *conffile = mp_get_playback_resume_config_filename(mpctx->global,
-                                                            mpctx->filename);
-    talloc_steal(tmp, conffile);
+    conffile = mp_get_playback_resume_config_filename(mpctx->global,
+                                                      mpctx->filename);
     if (!conffile)
         goto exit;
 
@@ -324,7 +322,7 @@ void mp_write_watch_later_conf(struct MPContext *mpctx)
     fclose(file);
 
 exit:
-    talloc_free(tmp);
+    talloc_free(conffile);
 }
 
 void mp_load_playback_resume(struct MPContext *mpctx, const char *file)

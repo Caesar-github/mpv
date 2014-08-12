@@ -22,13 +22,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
-#include <ctype.h>
 #include <assert.h>
 
 #include "osdep/io.h"
 
 #include "parse_configfile.h"
 #include "common/msg.h"
+#include "misc/ctype.h"
 #include "m_option.h"
 #include "m_config.h"
 
@@ -63,16 +63,15 @@ int m_config_parse_config_file(m_config_t *config, const char *conffile,
 
     flags = flags | M_SETOPT_FROM_CONFIG_FILE;
 
-    MP_VERBOSE(config, "Reading config file %s", conffile);
+    MP_VERBOSE(config, "Reading config file %s\n", conffile);
 
     if (config->recursion_depth > MAX_RECURSION_DEPTH) {
-        MP_ERR(config, ": too deep 'include'. check your configfiles\n");
+        MP_ERR(config, "Maximum 'include' nesting depth exceeded.\n");
         ret = -1;
         goto out;
     }
 
     if ((line = malloc(MAX_LINE_LEN + 1)) == NULL) {
-        MP_FATAL(config, "\ncan't get memory for 'line': %s", strerror(errno));
         ret = -1;
         goto out;
     } else
@@ -80,7 +79,7 @@ int m_config_parse_config_file(m_config_t *config, const char *conffile,
         MP_VERBOSE(config, "\n");
 
     if ((fp = fopen(conffile, "r")) == NULL) {
-        MP_VERBOSE(config, ": %s\n", strerror(errno));
+        MP_VERBOSE(config, "Can't open config file: %s\n", strerror(errno));
         ret = 0;
         goto out;
     }
@@ -94,8 +93,12 @@ int m_config_parse_config_file(m_config_t *config, const char *conffile,
         line_num++;
         line_pos = 0;
 
+        /* skip BOM */
+        if (strncmp(line, "\xEF\xBB\xBF", 3) == 0)
+            line_pos += 3;
+
         /* skip whitespaces */
-        while (isspace(line[line_pos]))
+        while (mp_isspace(line[line_pos]))
             ++line_pos;
 
         /* EOL / comment */
@@ -103,14 +106,14 @@ int m_config_parse_config_file(m_config_t *config, const char *conffile,
             continue;
 
         /* read option. */
-        for (opt_pos = 0; isprint(line[line_pos]) &&
+        for (opt_pos = 0; mp_isprint(line[line_pos]) &&
              line[line_pos] != ' ' &&
              line[line_pos] != '#' &&
              line[line_pos] != '='; /* NOTHING */) {
             opt[opt_pos++] = line[line_pos++];
             if (opt_pos >= MAX_OPT_LEN) {
                 PRINT_LINENUM;
-                MP_ERR(config, "too long option\n");
+                MP_ERR(config, "option name too long\n");
                 errors++;
                 ret = -1;
                 goto nextline;
@@ -133,7 +136,7 @@ int m_config_parse_config_file(m_config_t *config, const char *conffile,
         }
 
         /* skip whitespaces */
-        while (isspace(line[line_pos]))
+        while (mp_isspace(line[line_pos]))
             ++line_pos;
 
         param_pos = 0;
@@ -145,7 +148,7 @@ int m_config_parse_config_file(m_config_t *config, const char *conffile,
             param_set = true;
 
             /* whitespaces... */
-            while (isspace(line[line_pos]))
+            while (mp_isspace(line[line_pos]))
                 ++line_pos;
 
             /* read the parameter */
@@ -187,8 +190,8 @@ int m_config_parse_config_file(m_config_t *config, const char *conffile,
                 }
             }
 
-            for (param_pos = 0; isprint(line[line_pos])
-                    && !isspace(line[line_pos])
+            for (param_pos = 0; mp_isprint(line[line_pos])
+                    && !mp_isspace(line[line_pos])
                     && line[line_pos] != '#'; /* NOTHING */) {
                 param[param_pos++] = line[line_pos++];
                 if (param_pos >= MAX_PARAM_LEN) {
@@ -202,7 +205,7 @@ int m_config_parse_config_file(m_config_t *config, const char *conffile,
 
         param_done:
 
-            while (isspace(line[line_pos]))
+            while (mp_isspace(line[line_pos]))
                 ++line_pos;
         }
         param[param_pos] = '\0';

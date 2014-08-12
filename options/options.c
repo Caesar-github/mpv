@@ -38,7 +38,6 @@
 #include "m_option.h"
 #include "common/common.h"
 #include "stream/stream.h"
-#include "stream/tv.h"
 #include "video/csputils.h"
 #include "sub/osd.h"
 #include "audio/mixer.h"
@@ -46,6 +45,7 @@
 #include "audio/decode/dec_audio.h"
 #include "player/core.h"
 #include "player/command.h"
+#include "stream/stream.h"
 
 extern const char mp_help_text[];
 
@@ -63,6 +63,7 @@ extern const struct m_sub_options tv_params_conf;
 extern const struct m_sub_options stream_pvr_conf;
 extern const struct m_sub_options stream_cdda_conf;
 extern const struct m_sub_options stream_dvb_conf;
+extern const struct m_sub_options stream_lavf_conf;
 extern const struct m_sub_options sws_conf;
 extern const struct m_sub_options demux_rawaudio_conf;
 extern const struct m_sub_options demux_rawvideo_conf;
@@ -214,6 +215,9 @@ const m_option_t mp_opts[] = {
     OPT_STRING("demuxer", demuxer_name, 0),
     OPT_STRING("audio-demuxer", audio_demuxer_name, 0),
     OPT_STRING("sub-demuxer", sub_demuxer_name, 0),
+    OPT_FLAG("demuxer-thread", demuxer_thread, 0),
+    OPT_INTRANGE("demuxer-readahead-packets", demuxer_min_packs, 0, 0, MAX_PACKS),
+    OPT_INTRANGE("demuxer-readahead-bytes", demuxer_min_bytes, 0, 0, MAX_PACK_BYTES),
 
     OPT_DOUBLE("mf-fps", mf_fps, 0),
     OPT_STRING("mf-type", mf_type, 0),
@@ -226,6 +230,7 @@ const m_option_t mp_opts[] = {
 #if HAVE_DVBIN
     OPT_SUBSTRUCT("dvbin", stream_dvb_opts, stream_dvb_conf, 0),
 #endif
+    OPT_SUBSTRUCT("", stream_lavf_opts, stream_lavf_conf, 0),
 
 // ------------------------- a-v sync options --------------------
 
@@ -452,8 +457,7 @@ const m_option_t mp_opts[] = {
 
     OPT_CHOICE("framedrop", frame_dropping, 0,
                ({"no", 0},
-                {"yes", 1},
-                {"hard", 2})),
+                {"yes", 1})),
 
     OPT_FLAG("untimed", untimed, M_OPT_FIXED),
 
@@ -504,10 +508,8 @@ const m_option_t mp_opts[] = {
     OPT_STRING("term-status-msg", status_msg, 0),
     OPT_STRING("osd-status-msg", osd_status_msg, 0),
 
-    OPT_FLAG("slave-broken", slave_mode, CONF_GLOBAL),
     OPT_FLAG("idle", player_idle_mode, M_OPT_GLOBAL),
     OPT_FLAG("input-terminal", consolecontrols, CONF_GLOBAL),
-    OPT_FLAG("input-cursor", vo.enable_mouse_movements, CONF_GLOBAL),
 
     OPT_SUBSTRUCT("screenshot", screenshot_image_opts, image_writer_conf, 0),
     OPT_STRING("screenshot-template", screenshot_template, 0),
@@ -515,6 +517,7 @@ const m_option_t mp_opts[] = {
     OPT_SUBSTRUCT("input", input_opts, input_config, 0),
 
     OPT_PRINT("list-properties", property_print_help),
+    OPT_PRINT("list-protocols", stream_print_proto_list),
     OPT_PRINT("help", print_help),
     OPT_PRINT("h", print_help),
     OPT_PRINT("version", print_version),
@@ -546,7 +549,6 @@ const struct MPOpts mp_default_opts = {
         .monitor_pixel_aspect = 1.0,
         .screen_id = -1,
         .fsscreen_id = -1,
-        .enable_mouse_movements = 1,
         .panscan = 0.0f,
         .keepaspect = 1,
         .border = 1,
@@ -590,6 +592,9 @@ const struct MPOpts mp_default_opts = {
     },
     .stream_cache_pause = 50,
     .stream_cache_unpause = 100,
+    .demuxer_thread = 0,
+    .demuxer_min_packs = MIN_PACKS,
+    .demuxer_min_bytes = MIN_PACK_BYTES,
     .network_rtsp_transport = 2,
     .chapterrange = {-1, -1},
     .edition_id = -1,
@@ -629,11 +634,7 @@ const struct MPOpts mp_default_opts = {
     .ass_shaper = 1,
     .use_embedded_fonts = 1,
     .sub_fix_timing = 1,
-#if HAVE_ENCA
-    .sub_cp = "enca",
-#else
-    .sub_cp = "UTF-8:UTF-8-BROKEN",
-#endif
+    .sub_cp = "auto",
 
     .hwdec_codecs = "h264,vc1,wmv3",
 

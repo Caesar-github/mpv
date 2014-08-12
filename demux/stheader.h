@@ -31,7 +31,6 @@ struct demuxer;
 
 struct sh_stream {
     enum stream_type type;
-    struct demuxer *demuxer;
     // Index into demuxer->streams.
     int index;
     // Demuxer/format specific ID. Corresponds to the stream IDs as encoded in
@@ -73,6 +72,7 @@ typedef struct sh_audio {
     // note codec extradata may be either under "wf" or "codecdata"
     unsigned char *codecdata;
     int codecdata_len;
+    struct replaygain_data *replaygain_data;
 } sh_audio_t;
 
 typedef struct sh_video {

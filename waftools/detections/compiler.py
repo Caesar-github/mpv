@@ -22,6 +22,9 @@ def __add_generic_flags__(ctx):
                        "-D_LARGEFILE64_SOURCE",
                        "-std=c99", "-Wall"]
 
+    if ctx.is_optimization():
+        ctx.env.CFLAGS += ['-O2']
+
     if ctx.is_debug_build():
         ctx.env.CFLAGS += ['-g']
 
@@ -43,9 +46,6 @@ def __add_clang_flags__(ctx):
 
 def __add_mingw_flags__(ctx):
     ctx.env.CFLAGS += ['-D__USE_MINGW_ANSI_STDIO=1']
-    ctx.env.CFLAGS += ['-DBYTE_ORDER=1234']
-    ctx.env.CFLAGS += ['-DLITLE_ENDIAN=1234']
-    ctx.env.CFLAGS += ['-DBIG_ENDIAN=4321']
     ctx.env.LAST_LINKFLAGS += ['-mwindows']
 
 def __add_cygwin_flags__(ctx):

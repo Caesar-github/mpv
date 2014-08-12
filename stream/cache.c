@@ -56,6 +56,7 @@
 #include "osdep/threads.h"
 
 #include "common/msg.h"
+#include "common/tags.h"
 #include "options/options.h"
 
 #include "stream.h"
@@ -75,7 +76,6 @@ struct priv {
     int64_t buffer_size;    // size of the allocated buffer memory
     int64_t back_size;      // keep back_size amount of old bytes for backward seek
     int64_t seek_limit;     // keep filling cache if distance is less that seek limit
-    struct byte_meta *bm;   // additional per-byte metadata
     bool seekable;          // underlying stream is seekable
 
     struct mp_log *log;
@@ -109,25 +109,12 @@ struct priv {
 
     // Cached STREAM_CTRLs
     double stream_time_length;
-    double stream_start_time;
     int64_t stream_size;
-    bool stream_manages_timeline;
-    unsigned int stream_num_chapters;
-    int stream_cache_idle;
-    int stream_cache_fill;
-    char **stream_metadata;
-    char *disc_name;
-};
-
-// Store additional per-byte metadata. Since per-byte would be way too
-// inefficient, store it only for every BYTE_META_CHUNK_SIZE byte.
-struct byte_meta {
-    float stream_pts;
+    struct mp_tags *stream_metadata;
+    double start_pts;
 };
 
 enum {
-    BYTE_META_CHUNK_SIZE = 8 * 1024,
-
     CACHE_INTERRUPTED = -1,
 
     CACHE_CTRL_NONE = 0,
@@ -135,7 +122,7 @@ enum {
     CACHE_CTRL_PING = -2,
 
     // we should fill buffer only if space>=FILL_LIMIT
-    FILL_LIMIT = FFMAX(16 * 1024, BYTE_META_CHUNK_SIZE * 2),
+    FILL_LIMIT = 16 * 1024,
 };
 
 static int64_t mp_clipi64(int64_t val, int64_t min, int64_t max)
@@ -180,6 +167,7 @@ static void cache_drop_contents(struct priv *s)
 {
     s->offset = s->min_filepos = s->max_filepos = s->read_filepos;
     s->eof = false;
+    s->start_pts = MP_NOPTS_VALUE;
 }
 
 // Copy at most dst_size from the cache at the given absolute file position pos.
@@ -279,13 +267,12 @@ static bool cache_fill(struct priv *s)
     len = stream_read_partial(s->stream, &s->buffer[pos], space);
     pthread_mutex_lock(&s->mutex);
 
-    double pts;
-    if (stream_control(s->stream, STREAM_CTRL_GET_CURRENT_TIME, &pts) <= 0)
-        pts = MP_NOPTS_VALUE;
-    for (int64_t b_pos = pos; b_pos < pos + len + BYTE_META_CHUNK_SIZE;
-         b_pos += BYTE_META_CHUNK_SIZE)
-    {
-        s->bm[b_pos / BYTE_META_CHUNK_SIZE] = (struct byte_meta){.stream_pts = pts};
+    // Do this after reading a block, because at least libdvdnav updates the
+    // stream position only after actually reading something after a seek.
+    if (s->start_pts == MP_NOPTS_VALUE) {
+        double pts;
+        if (stream_control(s->stream, STREAM_CTRL_GET_CURRENT_TIME, &pts) > 0)
+            s->start_pts = pts;
     }
 
     s->max_filepos += len;
@@ -312,11 +299,8 @@ static int resize_cache(struct priv *s, int64_t size)
     int64_t buffer_size = MPMIN(MPMAX(size, min_size), max_size);
 
     unsigned char *buffer = malloc(buffer_size);
-    struct byte_meta *bm = calloc(buffer_size / BYTE_META_CHUNK_SIZE + 2,
-                                  sizeof(struct byte_meta));
-    if (!buffer || !bm) {
+    if (!buffer) {
         free(buffer);
-        free(bm);
         return STREAM_ERROR;
     }
 
@@ -347,12 +331,10 @@ static int resize_cache(struct priv *s, int64_t size)
     }
 
     free(s->buffer);
-    free(s->bm);
 
     s->buffer_size = buffer_size;
     s->back_size = buffer_size / 2;
     s->buffer = buffer;
-    s->bm = bm;
     s->idle = false;
     s->eof = false;
 
@@ -361,39 +343,20 @@ static int resize_cache(struct priv *s, int64_t size)
     if (s->seek_limit > s->buffer_size - FILL_LIMIT)
         s->seek_limit = s->buffer_size - FILL_LIMIT;
 
-    for (size_t n = 0; n < s->buffer_size / BYTE_META_CHUNK_SIZE + 2; n++)
-        s->bm[n] = (struct byte_meta){.stream_pts = MP_NOPTS_VALUE};
-
     return STREAM_OK;
 }
 
 static void update_cached_controls(struct priv *s)
 {
-    unsigned int ui;
     int64_t i64;
     double d;
-    char **m;
-    char *t;
+    struct mp_tags *tags;
     s->stream_time_length = 0;
     if (stream_control(s->stream, STREAM_CTRL_GET_TIME_LENGTH, &d) == STREAM_OK)
         s->stream_time_length = d;
-    s->stream_start_time = MP_NOPTS_VALUE;
-    if (stream_control(s->stream, STREAM_CTRL_GET_START_TIME, &d) == STREAM_OK)
-        s->stream_start_time = d;
-    s->stream_manages_timeline = false;
-    if (stream_control(s->stream, STREAM_CTRL_MANAGES_TIMELINE, NULL) == STREAM_OK)
-        s->stream_manages_timeline = true;
-    s->stream_num_chapters = 0;
-    if (stream_control(s->stream, STREAM_CTRL_GET_NUM_CHAPTERS, &ui) == STREAM_OK)
-        s->stream_num_chapters = ui;
-    if (stream_control(s->stream, STREAM_CTRL_GET_METADATA, &m) == STREAM_OK) {
+    if (stream_control(s->stream, STREAM_CTRL_GET_METADATA, &tags) == STREAM_OK) {
         talloc_free(s->stream_metadata);
-        s->stream_metadata = talloc_steal(s, m);
-    }
-    if (stream_control(s->stream, STREAM_CTRL_GET_DISC_NAME, &t) == STREAM_OK)
-    {
-        talloc_free(s->disc_name);
-        s->disc_name = talloc_steal(s, t);
+        s->stream_metadata = talloc_steal(s, tags);
     }
     s->stream_size = -1;
     if (stream_control(s->stream, STREAM_CTRL_GET_SIZE, &i64) == STREAM_OK)
@@ -417,58 +380,25 @@ static int cache_get_cached_control(stream_t *cache, int cmd, void *arg)
     case STREAM_CTRL_GET_TIME_LENGTH:
         *(double *)arg = s->stream_time_length;
         return s->stream_time_length ? STREAM_OK : STREAM_UNSUPPORTED;
-    case STREAM_CTRL_GET_START_TIME:
-        if (s->stream_start_time == MP_NOPTS_VALUE)
-            return STREAM_UNSUPPORTED;
-        *(double *)arg = s->stream_start_time;
-        return STREAM_OK;
     case STREAM_CTRL_GET_SIZE:
         if (s->stream_size < 0)
             return STREAM_UNSUPPORTED;
         *(int64_t *)arg = s->stream_size;
         return STREAM_OK;
-    case STREAM_CTRL_MANAGES_TIMELINE:
-        return s->stream_manages_timeline ? STREAM_OK : STREAM_UNSUPPORTED;
-    case STREAM_CTRL_GET_NUM_CHAPTERS:
-        *(unsigned int *)arg = s->stream_num_chapters;
-        return STREAM_OK;
     case STREAM_CTRL_GET_CURRENT_TIME: {
-        if (s->read_filepos >= s->min_filepos &&
-            s->read_filepos <= s->max_filepos &&
-            s->min_filepos < s->max_filepos)
-        {
-            int64_t fpos = FFMIN(s->read_filepos, s->max_filepos - 1);
-            int64_t pos = fpos - s->offset;
-            if (pos < 0)
-                pos += s->buffer_size;
-            else if (pos >= s->buffer_size)
-                pos -= s->buffer_size;
-            double pts = s->bm[pos / BYTE_META_CHUNK_SIZE].stream_pts;
-            *(double *)arg = pts;
-            return pts == MP_NOPTS_VALUE ? STREAM_UNSUPPORTED : STREAM_OK;
-        }
-        return STREAM_UNSUPPORTED;
+        if (s->start_pts == MP_NOPTS_VALUE)
+            return STREAM_UNSUPPORTED;
+        *(double *)arg = s->start_pts;
+        return STREAM_OK;
     }
     case STREAM_CTRL_GET_METADATA: {
-        if (s->stream_metadata && s->stream_metadata[0]) {
-            char **m = talloc_new(NULL);
-            int num_m = 0;
-            for (int n = 0; s->stream_metadata[n]; n++) {
-                char *t = talloc_strdup(m, s->stream_metadata[n]);
-                MP_TARRAY_APPEND(NULL, m, num_m, t);
-            }
-            MP_TARRAY_APPEND(NULL, m, num_m, NULL);
-            MP_TARRAY_APPEND(NULL, m, num_m, NULL);
-            *(char ***)arg = m;
+        if (s->stream_metadata) {
+            ta_set_parent(s->stream_metadata, NULL);
+            *(struct mp_tags **)arg = s->stream_metadata;
+            s->stream_metadata = NULL;
             return STREAM_OK;
         }
         return STREAM_UNSUPPORTED;
-    }
-    case STREAM_CTRL_GET_DISC_NAME: {
-        if (!s->disc_name)
-            return STREAM_UNSUPPORTED;
-        *(char **)arg = talloc_strdup(NULL, s->disc_name);
-        return STREAM_OK;
     }
     case STREAM_CTRL_RESUME_CACHE:
         s->idle = s->eof = false;
@@ -482,6 +412,7 @@ static bool control_needs_flush(int stream_ctrl)
 {
     switch (stream_ctrl) {
     case STREAM_CTRL_SEEK_TO_TIME:
+    case STREAM_CTRL_AVSEEK:
     case STREAM_CTRL_SET_ANGLE:
     case STREAM_CTRL_SET_CURRENT_TITLE:
         return true;
@@ -662,7 +593,6 @@ static void cache_uninit(stream_t *cache)
     pthread_mutex_destroy(&s->mutex);
     pthread_cond_destroy(&s->wakeup);
     free(s->buffer);
-    free(s->bm);
     talloc_free(s);
 }
 
@@ -676,6 +606,8 @@ int stream_cache_init(stream_t *cache, stream_t *stream,
 
     struct priv *s = talloc_zero(NULL, struct priv);
     s->log = cache->log;
+
+    cache_drop_contents(s);
 
     s->seek_limit = opts->seek_min * 1024ULL;
 

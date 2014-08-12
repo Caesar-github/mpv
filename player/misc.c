@@ -53,16 +53,21 @@ double get_relative_time(struct MPContext *mpctx)
 double rel_time_to_abs(struct MPContext *mpctx, struct m_rel_time t)
 {
     double length = get_time_length(mpctx);
+    double start = get_start_time(mpctx);
     switch (t.type) {
     case REL_TIME_ABSOLUTE:
         return t.pos;
-    case REL_TIME_NEGATIVE:
-        if (length != 0)
-            return MPMAX(length - t.pos, 0.0);
+    case REL_TIME_RELATIVE:
+        if (t.pos >= 0) {
+            return start + t.pos;
+        } else {
+            if (length != 0)
+                return MPMAX(start + length + t.pos, 0.0);
+        }
         break;
     case REL_TIME_PERCENT:
         if (length != 0)
-            return length * (t.pos / 100.0);
+            return start + length * (t.pos / 100.0);
         break;
     case REL_TIME_CHAPTER:
         if (chapter_start_time(mpctx, t.pos) != MP_NOPTS_VALUE)
@@ -95,8 +100,9 @@ double get_main_demux_pts(struct MPContext *mpctx)
     double main_new_pos = MP_NOPTS_VALUE;
     if (mpctx->demuxer) {
         for (int n = 0; n < mpctx->demuxer->num_streams; n++) {
-            if (main_new_pos == MP_NOPTS_VALUE)
-                main_new_pos = demux_get_next_pts(mpctx->demuxer->streams[n]);
+            struct sh_stream *stream = mpctx->demuxer->streams[n];
+            if (main_new_pos == MP_NOPTS_VALUE && stream->type != STREAM_SUB)
+                main_new_pos = demux_get_next_pts(stream);
         }
     }
     return main_new_pos;
@@ -104,25 +110,18 @@ double get_main_demux_pts(struct MPContext *mpctx)
 
 double get_start_time(struct MPContext *mpctx)
 {
-    struct demuxer *demuxer = mpctx->demuxer;
-    if (!demuxer)
-        return 0;
-    // We reload the demuxer on menu transitions; don't make it use the first
-    // timestamp it finds as start PTS.
-    if (mpctx->nav_state)
-        return 0;
-    return demuxer_get_start_time(demuxer);
+    return mpctx->demuxer ? mpctx->demuxer->start_time : 0;
 }
 
-int mp_get_cache_percent(struct MPContext *mpctx)
+float mp_get_cache_percent(struct MPContext *mpctx)
 {
-    if (mpctx->stream) {
+    if (mpctx->demuxer) {
         int64_t size = -1;
         int64_t fill = -1;
-        stream_control(mpctx->stream, STREAM_CTRL_GET_CACHE_SIZE, &size);
-        stream_control(mpctx->stream, STREAM_CTRL_GET_CACHE_FILL, &fill);
+        demux_stream_control(mpctx->demuxer, STREAM_CTRL_GET_CACHE_SIZE, &size);
+        demux_stream_control(mpctx->demuxer, STREAM_CTRL_GET_CACHE_FILL, &fill);
         if (size > 0 && fill >= 0)
-            return fill / (size / 100);
+            return fill / (size / 100.0);
     }
     return -1;
 }
@@ -130,8 +129,8 @@ int mp_get_cache_percent(struct MPContext *mpctx)
 bool mp_get_cache_idle(struct MPContext *mpctx)
 {
     int idle = 0;
-    if (mpctx->stream)
-        stream_control(mpctx->stream, STREAM_CTRL_GET_CACHE_IDLE, &idle);
+    if (mpctx->demuxer)
+        demux_stream_control(mpctx->demuxer, STREAM_CTRL_GET_CACHE_IDLE, &idle);
     return idle;
 }
 

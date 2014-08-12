@@ -1,12 +1,15 @@
 #ifndef OSDEP_PATH_H
 #define OSDEP_PATH_H
 
+#define MAX_CONFIG_PATHS 32
+
 struct mpv_global;
 
-char *mp_get_win_config_path(const char *filename);
-
-// Returns absolute path of a resource file in a Mac OS X application bundle.
-char *mp_get_macosx_bundled_path(void *talloc_ctx, struct mpv_global *global,
-                                 const char *filename);
+// Append paths starting at dirs[i]. The dirs array has place only for at most
+// MAX_CONFIG_PATHS paths, but it's guaranteed that at least 4 paths can be
+// added without checking for i>=MAX_CONFIG_PATHS.
+// Return the new value of i.
+int mp_add_win_config_dirs(struct mpv_global *global, char **dirs, int i);
+int mp_add_macosx_bundle_dir(struct mpv_global *global, char **dirs, int i);
 
 #endif
