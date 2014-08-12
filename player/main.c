@@ -21,7 +21,6 @@
 #include <stdbool.h>
 #include <math.h>
 #include <assert.h>
-#include <ctype.h>
 #include <string.h>
 #include <pthread.h>
 
@@ -72,8 +71,9 @@
 #endif
 #endif
 
-#if HAVE_COCOA
+#if HAVE_COCOA_APPLICATION
 #include "osdep/macosx_application.h"
+#include "osdep/macosx_events.h"
 #endif
 
 #ifdef PTW32_STATIC_LIB
@@ -160,7 +160,7 @@ static MP_NORETURN void exit_player(struct MPContext *mpctx,
 {
     int rc;
 
-#if HAVE_COCOA
+#if HAVE_COCOA_APPLICATION
     cocoa_set_input_context(NULL);
 #endif
 
@@ -200,7 +200,7 @@ static MP_NORETURN void exit_player(struct MPContext *mpctx,
 
     mp_destroy(mpctx);
 
-#if HAVE_COCOA
+#if HAVE_COCOA_APPLICATION
     terminate_cocoa_application();
     // never reach here:
     // terminate calls exit itself, just silence compiler warning
@@ -403,15 +403,8 @@ int mp_initialize(struct MPContext *mpctx)
     }
 #endif
 
-    if (opts->use_terminal) {
-        if (mpctx->opts->slave_mode)
-            terminal_setup_stdin_cmd_input(mpctx->input);
-        else if (mpctx->opts->consolecontrols)
-            terminal_setup_getch(mpctx->input);
-
-        if (opts->consolecontrols)
-            getch2_enable();
-    }
+    if (opts->use_terminal && opts->consolecontrols)
+        terminal_setup_getch(mpctx->input);
 
 #if HAVE_LIBASS
     mpctx->ass_log = mp_log_new(mpctx, mpctx->global->log, "!libass");
@@ -428,7 +421,7 @@ int mp_initialize(struct MPContext *mpctx)
 
     mp_get_resume_defaults(mpctx);
 
-#if HAVE_COCOA
+#if HAVE_COCOA_APPLICATION
     if (mpctx->is_cplayer)
         cocoa_set_input_context(mpctx->input);
 #endif
@@ -491,8 +484,7 @@ int mpv_main(int argc, char *argv[])
 
     mp_print_version(mpctx->log, false);
 
-    if (!mp_parse_cfgfiles(mpctx))
-        exit_player(mpctx, EXIT_ERROR);
+    mp_parse_cfgfiles(mpctx);
 
     int r = m_config_parse_mp_command_line(mpctx->mconfig, mpctx->playlist,
                                            mpctx->global, argc, argv);

@@ -177,6 +177,7 @@ static struct vo *vo_create(struct mpv_global *global,
         .max_video_queue = 1,
     };
     talloc_steal(vo, log);
+    mp_input_set_mouse_transform(vo->input_ctx, NULL, NULL);
     if (vo->driver->encode != !!vo->encode_lavc_ctx)
         goto error;
     struct m_config *config = m_config_from_obj_desc(vo, vo->log, &desc);
@@ -287,12 +288,6 @@ void vo_queue_image(struct vo *vo, struct mp_image *mpi)
     if (!vo->config_ok)
         return;
     assert(mp_image_params_equal(vo->params, &mpi->params));
-    if (vo->driver->filter_image && mpi)
-        mpi = vo->driver->filter_image(vo, mpi);
-    if (!mpi) {
-        MP_ERR(vo, "Could not upload image.\n");
-        return;
-    }
     assert(vo->max_video_queue <= VO_MAX_QUEUE);
     assert(vo->num_video_queue < vo->max_video_queue);
     vo->video_queue[vo->num_video_queue++] = mpi;
@@ -402,22 +397,6 @@ const char *vo_get_window_title(struct vo *vo)
     if (!vo->window_title)
         vo->window_title = talloc_strdup(vo, "");
     return vo->window_title;
-}
-
-/**
- * Generates a mouse movement message if those are enable and sends it
- * to the "main" MPlayer.
- *
- * \param posx new x position of mouse
- * \param posy new y position of mouse
- */
-void vo_mouse_movement(struct vo *vo, int posx, int posy)
-{
-    if (!vo->opts->enable_mouse_movements)
-        return;
-    float p[2] = {posx, posy};
-    vo_control(vo, VOCTRL_WINDOW_TO_OSD_COORDS, p);
-    mp_input_set_mouse_pos(vo->input_ctx, p[0], p[1]);
 }
 
 /**

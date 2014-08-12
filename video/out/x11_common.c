@@ -777,7 +777,7 @@ int vo_x11_check_events(struct vo *vo)
             if (x11->window == None)
                 break;
             vo_x11_update_geometry(vo);
-            if (Event.xconfigure.window == vo->opts->WinID) {
+            if (Event.xconfigure.window == (Window)vo->opts->WinID) {
                 XMoveResizeWindow(x11->display, x11->window,
                                   x11->winrc.x0, x11->winrc.y0,
                                   RC_W(x11->winrc), RC_H(x11->winrc));
@@ -835,7 +835,8 @@ int vo_x11_check_events(struct vo *vo)
                 };
                 x11_send_ewmh_msg(x11, "_NET_WM_MOVERESIZE", params);
             } else {
-                vo_mouse_movement(vo, Event.xmotion.x, Event.xmotion.y);
+                mp_input_set_mouse_pos(vo->input_ctx, Event.xmotion.x,
+                                                      Event.xmotion.y);
             }
             x11->win_drag_button1_down = false;
             break;
@@ -1560,7 +1561,7 @@ static void vo_x11_selectinput_witherr(struct vo *vo,
                                        Window w,
                                        long event_mask)
 {
-    if (!vo->opts->enable_mouse_movements)
+    if (!mp_input_mouse_enabled(vo->input_ctx))
         event_mask &= ~(PointerMotionMask | ButtonPressMask | ButtonReleaseMask);
 
     XSelectInput(display, w, NoEventMask);

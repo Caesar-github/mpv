@@ -1,16 +1,17 @@
 #include <dirent.h>
 #include <string.h>
+#include <strings.h>
 #include <stdlib.h>
-#include <ctype.h>
 #include <assert.h>
 
 #include "osdep/io.h"
 
+#include "common/common.h"
 #include "common/global.h"
 #include "common/msg.h"
+#include "misc/ctype.h"
 #include "options/options.h"
 #include "options/path.h"
-#include "common/common.h"
 #include "sub/find_subfiles.h"
 
 static const char *const sub_exts[] = {"utf", "utf8", "utf-8", "idx", "sub", "srt",
@@ -75,7 +76,7 @@ static struct bstr guess_lang_from_filename(struct bstr name)
 
     if (name.start[i] == ')' || name.start[i] == ']')
         i--;
-    while (i >= 0 && isalpha(name.start[i])) {
+    while (i >= 0 && mp_isalpha(name.start[i])) {
         n++;
         if (n > 3)
             return (struct bstr){NULL, 0};
@@ -242,7 +243,7 @@ struct subfn *find_text_subtitles(struct mpv_global *global, const char *fname)
     }
 
     // Load subtitles in ~/.mpv/sub limiting sub fuzziness
-    char *mp_subdir = mp_find_user_config_file(NULL, global, "sub/");
+    char *mp_subdir = mp_find_config_file(NULL, global, "sub/");
     if (mp_subdir)
         append_dir_subtitles(global, &slist, &n, bstr0(mp_subdir), fname, 1);
     talloc_free(mp_subdir);

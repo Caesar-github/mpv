@@ -134,6 +134,7 @@ def build(ctx):
         ( "audio/out/ao.c" ),
         ( "audio/out/ao_alsa.c",                 "alsa" ),
         ( "audio/out/ao_coreaudio.c",            "coreaudio" ),
+        ( "audio/out/ao_coreaudio_device.c",     "coreaudio" ),
         ( "audio/out/ao_coreaudio_properties.c", "coreaudio" ),
         ( "audio/out/ao_coreaudio_utils.c",      "coreaudio" ),
         ( "audio/out/ao_dsound.c",               "dsound" ),
@@ -160,7 +161,6 @@ def build(ctx):
         ## Core
         ( "common/av_common.c" ),
         ( "common/av_log.c" ),
-        ( "common/av_opts.c" ),
         ( "common/codecs.c" ),
         ( "common/encode_lavc.c",                "encoding" ),
         ( "common/common.c" ),
@@ -173,6 +173,7 @@ def build(ctx):
         ( "demux/codec_tags.c" ),
         ( "demux/demux.c" ),
         ( "demux/demux_cue.c" ),
+        ( "demux/demux_disc.c" ),
         ( "demux/demux_edl.c" ),
         ( "demux/demux_lavf.c" ),
         ( "demux/demux_libass.c",                "libass"),
@@ -181,8 +182,10 @@ def build(ctx):
         ( "demux/demux_playlist.c" ),
         ( "demux/demux_raw.c" ),
         ( "demux/demux_subreader.c" ),
+        ( "demux/demux_tv.c",                    "tv" ),
         ( "demux/ebml.c" ),
         ( "demux/mf.c" ),
+        ( "demux/packet.c" ),
 
         ## Input
         ( "input/cmd_list.c" ),
@@ -197,6 +200,7 @@ def build(ctx):
         ( "misc/charset_conv.c" ),
         ( "misc/dispatch.c" ),
         ( "misc/ring.c" ),
+        ( "misc/rendezvous.c" ),
 
         ## Options
         ( "options/m_config.c" ),
@@ -297,6 +301,7 @@ def build(ctx):
         ( "video/decode/vdpau.c",                "vdpau-hwaccel" ),
         ( "video/filter/pullup.c" ),
         ( "video/filter/vf.c" ),
+        ( "video/filter/vf_buffer.c" ),
         ( "video/filter/vf_crop.c" ),
         ( "video/filter/vf_delogo.c" ),
         ( "video/filter/vf_divtc.c" ),
@@ -377,7 +382,7 @@ def build(ctx):
         ( "osdep/threads.c" ),
 
         ( "osdep/ar/HIDRemote.m",                "cocoa" ),
-        ( "osdep/macosx_application.m",          "cocoa" ),
+        ( "osdep/macosx_application.m",          "cocoa-application" ),
         ( "osdep/macosx_events.m",               "cocoa" ),
         ( "osdep/path-macosx.m",                 "cocoa" ),
 
@@ -429,27 +434,28 @@ def build(ctx):
             install_name = '/mpv.app/Contents/Resources/' + res_basename
             ctx.install_as(ctx.env.BINDIR + install_name, resource)
 
-    ctx(
-        target       = "mpv",
-        source       = ctx.filtered_sources(sources) + ["player/main_fn.c"],
-        use          = ctx.dependencies_use(),
-        includes     = [ctx.bldnode.abspath(), ctx.srcnode.abspath()] + \
-                       ctx.dependencies_includes(),
-        features     = "c cprogram",
-        install_path = ctx.env.BINDIR,
-        **cprog_kwargs
-    )
+
+    if ctx.dependency_satisfied('cplayer'):
+        ctx(
+            target       = "mpv",
+            source       = ctx.filtered_sources(sources) + ["player/main_fn.c"],
+            use          = ctx.dependencies_use(),
+            includes     = [ctx.bldnode.abspath(), ctx.srcnode.abspath()] + \
+                           ctx.dependencies_includes(),
+            features     = "c cprogram",
+            install_path = ctx.env.BINDIR,
+            **cprog_kwargs
+        )
 
     build_shared = ctx.dependency_satisfied('libmpv-shared')
     build_static = ctx.dependency_satisfied('libmpv-static')
     if build_shared or build_static:
         if build_shared:
             ctx.load("syms")
-        vnum = int(re.search('^#define MPV_CLIENT_API_VERSION 0x(.*)UL$',
-                             ctx.path.find_node("libmpv/client.h").read(),
-                             re.M)
-                   .group(1), 16)
-        libversion = str(vnum >> 16) + '.' + str(vnum & 0xffff) + '.0'
+        vre = '^#define MPV_CLIENT_API_VERSION MPV_MAKE_VERSION\((.*), (.*)\)$'
+        libmpv_header = ctx.path.find_node("libmpv/client.h").read()
+        major, minor = re.search(vre, libmpv_header, re.M).groups()
+        libversion = major + '.' + minor + '.0'
 
         def _build_libmpv(shared):
             features = "c "
@@ -464,7 +470,7 @@ def build(ctx):
                 includes     = [ctx.bldnode.abspath(), ctx.srcnode.abspath()] + \
                                 ctx.dependencies_includes(),
                 features     = features,
-                export_symbols_regex = 'mpv_.*',
+                export_symbols_def = "libmpv/mpv.def",
                 install_path = ctx.env.LIBDIR,
                 vnum         = libversion,
             )
@@ -472,6 +478,13 @@ def build(ctx):
             _build_libmpv(True)
         if build_static:
             _build_libmpv(False)
+
+        def get_deps():
+            res = ""
+            for k in ctx.env.keys():
+                if k.startswith("LIB_") and k != "LIB_ST":
+                    res += " ".join(["-l" + x for x in ctx.env[k]]) + " "
+            return res
 
         ctx(
             target       = 'libmpv/mpv.pc',
@@ -481,6 +494,7 @@ def build(ctx):
             LIBDIR       = ctx.env.LIBDIR,
             INCDIR       = ctx.env.INCDIR,
             VERSION      = libversion,
+            PRIV_LIBS    = get_deps(),
         )
 
         headers = ["client.h"]

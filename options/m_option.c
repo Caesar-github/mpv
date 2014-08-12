@@ -29,7 +29,6 @@
 #include <limits.h>
 #include <inttypes.h>
 #include <unistd.h>
-#include <ctype.h>
 #include <assert.h>
 
 #include <libavutil/common.h>
@@ -1400,13 +1399,16 @@ static int parse_keyvalue_list(struct mp_log *log, const m_option_t *opt,
         r = read_subparam(log, name, &param, &val);
         if (r < 0)
             break;
-        MP_TARRAY_APPEND(NULL, lst, num, bstrto0(NULL, key));
-        MP_TARRAY_APPEND(NULL, lst, num, bstrto0(NULL, val));
+        if (dst) {
+            MP_TARRAY_APPEND(NULL, lst, num, bstrto0(NULL, key));
+            MP_TARRAY_APPEND(NULL, lst, num, bstrto0(NULL, val));
+        }
 
         if (!bstr_eatstart0(&param, ","))
             break;
     }
-    MP_TARRAY_APPEND(NULL, lst, num, NULL);
+    if (dst)
+        MP_TARRAY_APPEND(NULL, lst, num, NULL);
 
     if (param.len) {
         mp_err(log, "Unparseable garbage at end of option value: '%.*s'\n",
@@ -1414,9 +1416,11 @@ static int parse_keyvalue_list(struct mp_log *log, const m_option_t *opt,
         r = M_OPT_INVALID;
     }
 
-    VAL(dst) = lst;
-    if (r < 0)
-        free_str_list(dst);
+    if (dst) {
+        VAL(dst) = lst;
+        if (r < 0)
+            free_str_list(dst);
+    }
     return r;
 }
 
@@ -2181,10 +2185,13 @@ static int parse_rel_time(struct mp_log *log, const m_option_t *opt,
         }
     }
 
-    bool sign = bstr_eatstart0(&param, "-");
     double time;
     if (parse_timestring(param, &time, 0)) {
-        t.type = sign ? REL_TIME_NEGATIVE : REL_TIME_ABSOLUTE;
+        if (bstr_startswith0(param, "+") || bstr_startswith0(param, "-")) {
+            t.type = REL_TIME_RELATIVE;
+        } else {
+            t.type = REL_TIME_ABSOLUTE;
+        }
         t.pos = time;
         goto out;
     }

@@ -35,7 +35,6 @@
 #include "common/msg.h"
 #include "options/options.h"
 #include "bstr/bstr.h"
-#include "common/av_opts.h"
 #include "common/av_common.h"
 #include "common/codecs.h"
 
@@ -76,10 +75,11 @@ struct vd_lavc_params {
     int skip_loop_filter;
     int skip_idct;
     int skip_frame;
+    int framedrop;
     int threads;
     int bitexact;
     int check_hw_profile;
-    char *avopt;
+    char **avopts;
 };
 
 static const struct m_opt_choice_alternatives discard_names[] = {
@@ -102,10 +102,11 @@ const struct m_sub_options vd_lavc_conf = {
         OPT_DISCARD("skiploopfilter", skip_loop_filter, 0),
         OPT_DISCARD("skipidct", skip_idct, 0),
         OPT_DISCARD("skipframe", skip_frame, 0),
+        OPT_DISCARD("framedrop", framedrop, 0),
         OPT_INTRANGE("threads", threads, 0, 0, 16),
         OPT_FLAG("bitexact", bitexact, 0),
         OPT_FLAG("check-hw-profile", check_hw_profile, 0),
-        OPT_STRING("o", avopt, 0),
+        OPT_KEYVALUELIST("o", avopts, 0),
         {0}
     },
     .size = sizeof(struct vd_lavc_params),
@@ -115,6 +116,7 @@ const struct m_sub_options vd_lavc_conf = {
         .skip_loop_filter = AVDISCARD_DEFAULT,
         .skip_idct = AVDISCARD_DEFAULT,
         .skip_frame = AVDISCARD_DEFAULT,
+        .framedrop = AVDISCARD_NONREF,
     },
 };
 
@@ -225,7 +227,7 @@ static struct vd_lavc_hwdec *probe_hwdec(struct dec_video *vd, bool autoprobe,
         MP_VERBOSE(vd, "Requested hardware decoder not compiled.\n");
         return NULL;
     }
-    int r = hwdec_probe(hwdec, &vd->hwdec_info, decoder);
+    int r = hwdec_probe(hwdec, vd->hwdec_info, decoder);
     if (r == HWDEC_ERR_EMULATED) {
         if (autoprobe)
             return NULL;
@@ -340,7 +342,7 @@ static void init_avctx(struct dec_video *vd, const char *decoder,
     if (!lavc_codec)
         return;
 
-    ctx->hwdec_info = &vd->hwdec_info;
+    ctx->hwdec_info = vd->hwdec_info;
 
     ctx->pix_fmt = AV_PIX_FMT_NONE;
     ctx->hwdec = hwdec;
@@ -383,14 +385,7 @@ static void init_avctx(struct dec_video *vd, const char *decoder,
     avctx->skip_idct = lavc_param->skip_idct;
     avctx->skip_frame = lavc_param->skip_frame;
 
-    if (lavc_param->avopt) {
-        if (parse_avopts(avctx, lavc_param->avopt) < 0) {
-            MP_ERR(vd, "Your options /%s/ look like gibberish to me pal\n",
-                   lavc_param->avopt);
-            uninit_avctx(vd);
-            return;
-        }
-    }
+    mp_set_avopts(vd->log, avctx, lavc_param->avopts);
 
     // Do this after the above avopt handling in case it changes values
     ctx->skip_frame = avctx->skip_frame;
@@ -600,14 +595,16 @@ static int decode(struct dec_video *vd, struct demux_packet *packet,
     int ret;
     vd_ffmpeg_ctx *ctx = vd->priv;
     AVCodecContext *avctx = ctx->avctx;
+    struct vd_lavc_params *lavc_param = ctx->opts->vd_lavc_params;
     AVPacket pkt;
 
-    if (flags & 2)
-        avctx->skip_frame = AVDISCARD_ALL;
-    else if (flags & 1)
-        avctx->skip_frame = AVDISCARD_NONREF;
-    else
+    if (flags) {
+        // hr-seek framedrop vs. normal framedrop
+        avctx->skip_frame = flags == 2 ? AVDISCARD_NONREF : lavc_param->framedrop;
+    } else {
+        // normal playback
         avctx->skip_frame = ctx->skip_frame;
+    }
 
     mp_set_av_packet(&pkt, packet, NULL);
 

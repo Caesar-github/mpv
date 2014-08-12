@@ -18,6 +18,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <strings.h>
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -36,7 +37,7 @@
 
 #define MF_MAX_FILE_SIZE (1024 * 1024 * 256)
 
-static void demux_seek_mf(demuxer_t *demuxer, float rel_seek_secs, int flags)
+static void demux_seek_mf(demuxer_t *demuxer, double rel_seek_secs, int flags)
 {
     mf_t *mf = demuxer->priv;
     int newpos = (flags & SEEK_ABSOLUTE) ? 0 : mf->curr_frame - 1;
@@ -48,7 +49,7 @@ static void demux_seek_mf(demuxer_t *demuxer, float rel_seek_secs, int flags)
     if (newpos < 0)
         newpos = 0;
     if (newpos >= mf->nr_of_files)
-        newpos = mf->nr_of_files - 1;
+        newpos = mf->nr_of_files;
     mf->curr_frame = newpos;
 }
 
@@ -79,7 +80,7 @@ static int demux_mf_fill_buffer(demuxer_t *demuxer)
             memcpy(dp->buffer, data.start, data.len);
             dp->pts = mf->curr_frame / mf->sh->fps;
             dp->keyframe = true;
-            demuxer_add_packet(demuxer, demuxer->streams[0], dp);
+            demux_add_packet(demuxer->streams[0], dp);
         }
         talloc_free(data.start);
     }

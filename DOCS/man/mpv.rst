@@ -2,7 +2,7 @@ mpv
 ###
 
 ##############
-a movie player
+a media player
 ##############
 
 :Copyright: GPLv2+
@@ -19,7 +19,7 @@ SYNOPSIS
 DESCRIPTION
 ===========
 
-**mpv** is a movie player based on MPlayer and mplayer2. It supports a wide variety of video
+**mpv** is a media player based on MPlayer and mplayer2. It supports a wide variety of video
 file formats, audio and video codecs, and subtitle types. Special input URL
 types are available to read input from a variety of sources other than disk
 files. Depending on platform, a variety of different video and audio output
@@ -40,15 +40,12 @@ Keyboard Control
 ----------------
 
 LEFT and RIGHT
-    Seek backward/forward 10 seconds. Shift+arrow does a 1 second exact seek
+    Seek backward/forward 5 seconds. Shift+arrow does a 1 second exact seek
     (see ``--hr-seek``).
 
 UP and DOWN
     Seek forward/backward 1 minute. Shift+arrow does a 5 second exact seek (see
     ``--hr-seek``).
-
-PGUP and PGDWN
-    Seek forward/backward 10 minutes.
 
 [ and ]
     Decrease/increase current playback speed by 10%.
@@ -69,11 +66,11 @@ p / SPACE
     Pause (pressing again unpauses).
 
 \.
-    Step forward. Pressing once will pause movie, every consecutive press will
+    Step forward. Pressing once will pause, every consecutive press will
     play one frame and then go into pause mode again.
 
 ,
-    Step backward. Pressing once will pause movie, every consecutive press will
+    Step backward. Pressing once will pause, every consecutive press will
     play one frame in reverse and then go into pause mode again.
 
 q / ESC
@@ -83,20 +80,11 @@ Q
     Like ``q``, but store the current playback position. Playing the same file
     later will resume at the old playback position if possible.
 
-U
-    Stop playing (and quit if ``--idle`` is not used).
-
-\+ and -
-    Adjust audio delay by +/- 0.1 seconds.
-
 / and *
     Decrease/increase volume.
 
 9 and 0
     Decrease/increase volume.
-
-( and )
-    Adjust audio balance in favor of left/right channel.
 
 m
     Mute sound.
@@ -107,9 +95,6 @@ m
 \#
     Cycle through the available audio tracks.
 
-TAB (MPEG-TS and libavformat only)
-    Cycle through the available programs.
-
 f
     Toggle fullscreen (see also ``--fs``).
 
@@ -119,7 +104,10 @@ T
 w and e
     Decrease/increase pan-and-scan range.
 
-o
+o (also P)
+    Show progression bar, elapsed time and total duration on the OSD.
+
+O
     Toggle OSD states: none / seek / seek + timer / seek + timer + total time.
 
 d
@@ -131,9 +119,6 @@ v
 
 j and J
     Cycle through the available subtitles.
-
-F
-    Toggle displaying "forced subtitles".
 
 x and z
     Adjust subtitle delay by +/- 0.1 seconds.
@@ -155,22 +140,13 @@ S
 I
     Show filename on the OSD.
 
-P
-    Show progression bar, elapsed time and total duration on the OSD.
-
-! and @
+PGUP and PGDWN
     Seek to the beginning of the previous/next chapter. In most cases,
     "previous" will actually go to the beginning of the current chapter; see
     ``--chapter-seek-threshold``.
 
-D (``--vo=vdpau``, ``--vf=yadif`` only)
+D
     Activate/deactivate deinterlacer.
-
-A
-    Cycle through the available DVD angles.
-
-c
-    Change YUV colorspace.
 
 (The following keys are valid only when using a video output that supports the
 corresponding adjustment, or the software equalizer (``--vf=eq``).)
@@ -190,21 +166,21 @@ corresponding adjustment, or the software equalizer (``--vf=eq``).)
 (The following keys are valid only on OSX.)
 
 command + 0
-    Resize movie window to half its original size.
+    Resize video window to half its original size.
     (On other platforms, you can bind keys to change the ``window-scale``
     property.)
 
 command + 1
-    Resize movie window to its original size.
+    Resize video window to its original size.
 
 command + 2
-    Resize movie window to double its original size.
+    Resize video window to double its original size.
 
 command + f
     Toggle fullscreen (see also ``--fs``).
 
 command + [ and command + ]
-    Set movie window alpha.
+    Set video window alpha.
 
 (The following keys are valid if you have a keyboard with multimedia keys.)
 
@@ -222,12 +198,6 @@ support.)
 
 h and k
     Select previous/next channel.
-
-n
-    Change norm.
-
-u
-    Change channel list.
 
 Mouse Control
 -------------
@@ -338,7 +308,7 @@ Location and Syntax
 You can put all of the options in configuration files which will be read every
 time mpv is run. The system-wide configuration file 'mpv.conf' is in your
 configuration directory (e.g. ``/etc/mpv`` or ``/usr/local/etc/mpv``), the
-user-specific one is ``~/.mpv/config``.
+user-specific one is ``~/.config/mpv/mpv.conf``.
 User-specific options override system-wide options and options given on the
 command line override either. The syntax of the configuration files is
 ``option=<value>``; everything after a *#* is considered a comment. Options
@@ -373,8 +343,8 @@ File-specific Configuration Files
 ---------------------------------
 
 You can also write file-specific configuration files. If you wish to have a
-configuration file for a file called 'movie.avi', create a file named
-'movie.avi.conf' with the file-specific options in it and put it in
+configuration file for a file called 'video.avi', create a file named
+'video.avi.conf' with the file-specific options in it and put it in
 ``~/.mpv/``. You can also put the configuration file in the same directory
 as the file to be played, as long as you give the ``--use-filedir-conf``
 option (either on the command line or in your global config file). If a
@@ -539,15 +509,23 @@ ENVIRONMENT VARIABLES
 There are a number of environment variables that can be used to control the
 behavior of mpv.
 
-``HOME``
-    Used to determine mpv config directory: ``$HOME/.mpv``
+``HOME``, ``XDG_CONFIG_HOME``
+    Used to determine mpv config directory. If ``XDG_CONFIG_HOME`` is not set,
+    ``$HOME/.config/mpv`` is used.
+
+    ``$HOME/.mpv`` is always added to the list of config search paths with a
+    lower priority.
+
+``XDG_CONFIG_DIRS``
+    If set, XDG-style system configuration directories are used. Otherwise,
+    the UNIX convention (``PREFIX/etc/mpv/``) is used.
 
 ``TERM``
     Used to determine terminal type.
 
 ``MPV_HOME``
     Directory where mpv looks for user settings. Overrides ``HOME``, and mpv
-    will try to load the config file as ``$MPV_HOME/config``.
+    will try to load the config file as ``$MPV_HOME/mpv.conf``.
 
 ``MPV_VERBOSE`` (see also ``-v`` and ``--msg-level``)
     Set the initial verbosity level across all message modules (default: 0).
@@ -660,18 +638,23 @@ FILES
 ``/usr/local/etc/mpv/mpv.conf``
     mpv system-wide settings (depends on ``--prefix`` passed to configure)
 
-``~/.mpv/config``
+``~/.config/mpv/mpv.conf``
     mpv user settings
 
-``~/.mpv/input.conf``
-    input bindings (see ``--input-keylist`` for the full list)
+``~/.config/mpv/input.conf``
+    key bindings (see `INPUT.CONF`_ section)
 
-``~/.mpv/lua/``
+``~/.config/mpv/lua/``
     All files in this directly are loaded as if they were passed to the
     ``--lua`` option. They are loaded in alphabetical order, and sub-directories
     and files with no ``.lua`` extension are ignored. The ``--load-scripts=no``
     option disables loading these files.
 
+Note that the environment variables ``$XDG_CONFIG_HOME`` and ``$MPV_HOME`` can
+override the standard directory ``~/.config/mpv/``.
+
+Also, the old config location at ``~/.mpv/`` is still read, and if the XDG
+variant does not exist, will still be preferred.
 
 EXAMPLES OF MPV USAGE
 =====================

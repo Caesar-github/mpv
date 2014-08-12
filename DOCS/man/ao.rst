@@ -53,6 +53,10 @@ Available audio output drivers are:
         Set the index of the mixer channel (default: 0). Consider the output of
         "``amixer scontrols``", then the index is the number that follows the
         name of the element.
+    ``non-interleaved``
+        Allow output of non-interleaved formats (if the audio decoder uses
+        this format). Currently disabled by default, because some popular
+        ALSA plugins are utterly broken with non-interleaved formats.
 
     .. note::
 
@@ -110,7 +114,19 @@ Available audio output drivers are:
         with fixed setups.
 
 ``coreaudio`` (Mac OS X only)
-    Native Mac OS X audio output driver
+    Native Mac OS X audio output driver using the AudioUnits and the CoreAudio
+    sound server.
+
+    ``device_id=<id>``
+        ID of output device to use (0 = default device)
+    ``help``
+        List all available output devices with their IDs.
+
+``coreaudio_device`` (Mac OS X only)
+    Native Mac OS X audio output driver using direct device access and
+    exclusive mode (bypasses the sound server).
+
+    Supports only compressed formats (AC3 and DTS).
 
     ``device_id=<id>``
         ID of output device to use (0 = default device)
@@ -136,6 +152,12 @@ Available audio output drivers are:
         more data, and has a lower probability of buffer underruns. A smaller
         value makes the audio stream react faster, e.g. to playback speed
         changes. Default: 250.
+
+    ``latency-hacks=<yes|no>``
+        Enable hacks to workaround PulseAudio timing bugs (default: yes). If
+        enabled, mpv will do elaborate latency calculations on its own. If
+        disabled, it will use PulseAudio automatically updated timing
+        information. Disabling this might help with e.g. networked audio.
 
 ``portaudio``
     PortAudio audio output driver. This works on all platforms, and has

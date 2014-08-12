@@ -36,6 +36,11 @@ build_options = [
         'default': 'enable',
         'func': check_true
     }, {
+        'name': '--optimize',
+        'desc': 'whether to optimize',
+        'default': 'enable',
+        'func': check_true
+    }, {
         'name': '--debug-build',
         'desc': 'whether to compile-in debugging information',
         'default': 'enable',
@@ -68,17 +73,6 @@ build_options = [
         'desc': 'zsh completion',
         'func': check_true,
         'default': 'disable',
-    }, {
-        'name': '--macosx-bundle',
-        'desc': 'compilation of a Mac OS X Application bundle',
-        'deps': [ 'os-darwin' ],
-        'default': 'disable',
-        'func': check_true
-    }, {
-        'name': 'win32-executable',
-        'desc': 'w32 executable',
-        'deps_any': [ 'os-win32', 'os-cygwin'],
-        'func': check_ctx_vars('WINDRES')
     }, {
         # does nothing - left for backward and forward compatibility
         'name': '--asm',
@@ -474,7 +468,7 @@ audio_output_features = [
     }, {
         'name': '--pulse',
         'desc': 'PulseAudio audio output',
-        'func': check_pkg_config('libpulse', '>= 0.9')
+        'func': check_pkg_config('libpulse', '>= 1.0')
     }, {
         'name': '--portaudio',
         'desc': 'PortAudio audio output',
@@ -678,27 +672,13 @@ hwaccel_features = [
     } , {
         'name': '--vda-hwaccel',
         'desc': 'libavcodec VDA hwaccel',
-        'deps': [ 'corevideo'],
+        'deps': [ 'corevideo' ],
         'func': compose_checks(
             check_headers('VideoDecodeAcceleration/VDADecoder.h'),
             check_statement('libavcodec/vda.h',
-                            'ff_vda_create_decoder(NULL, NULL, NULL)',
+                            'av_vda_alloc_context()',
                             framework='IOSurface',
                             use='libav')),
-    } , {
-        'name': 'vda-libavcodec-refcounting',
-        'desc': "libavcodec VDA ref-counted CVPixelBuffers",
-        'deps': [ 'vda-hwaccel' ],
-        'func': check_statement ('libavcodec/vda.h',
-            """struct vda_context a = (struct vda_context) {
-                   .use_ref_buffer = 1 }""", use='libav')
-    }, {
-        'name': 'vda-av-vda-alloc-context',
-        'desc': "libavcodec VDA hwaccel 1.2",
-        'deps': [ 'vda-hwaccel' ],
-        'func': check_statement('libavcodec/vda.h',
-                                'av_vda_alloc_context()',
-                                use='libav')
     }, {
         'name': '--vda-gl',
         'desc': 'VDA with OpenGL',
@@ -746,6 +726,31 @@ scripting_features = [
     }
 ]
 
+standalone_features = [
+    {
+        'name': '--cplayer',
+        'desc': 'mpv CLI player',
+        'func': check_true
+    }, {
+        'name': 'win32-executable',
+        'desc': 'w32 executable',
+        'deps_any': [ 'os-win32', 'os-cygwin'],
+        'func': check_ctx_vars('WINDRES')
+    }, {
+        'name': 'cocoa-application',
+        'desc': 'standalone Cocoa application',
+        'deps': [ 'cocoa' ],
+        'deps_neg': [ 'libmpv-shared', 'libmpv-static' ],
+        'func': check_true
+    }, {
+        'name': '--macosx-bundle',
+        'desc': 'compilation of a Mac OS X Application bundle',
+        'deps': [ 'os-darwin' ],
+        'default': 'disable',
+        'func': check_true
+    }
+]
+
 _INSTALL_DIRS_LIST = [
     ('bindir',  '${PREFIX}/bin',      'binary files'),
     ('libdir',  '${PREFIX}/lib',      'library files'),
@@ -772,6 +777,10 @@ def options(opt):
             help    = 'directory for installing {0} [{1}]' \
                       .format(desc, default))
 
+    group.add_option('--variant',
+        default = '',
+        help    = 'variant name for saving configuration and build results')
+
     opt.parse_features('build and install options', build_options)
     optional_features = main_dependencies + libav_dependencies
     opt.parse_features('optional feaures',  optional_features)
@@ -780,6 +789,7 @@ def options(opt):
     opt.parse_features('hwaccels',          hwaccel_features)
     opt.parse_features('tv features',       radio_and_tv_features)
     opt.parse_features('scripting',         scripting_features)
+    opt.parse_features('standalone app',    standalone_features)
 
     group = opt.get_option_group("scripting")
     group.add_option('--lua',
@@ -788,10 +798,15 @@ def options(opt):
         help    = "select Lua package which should be autodetected. Choices: 51 51deb 51fbsd 52 52deb 52fbsd luajit")
 
 @conf
+def is_optimization(ctx):
+    return getattr(ctx.options, 'enable_optimize')
+
+@conf
 def is_debug_build(ctx):
     return getattr(ctx.options, 'enable_debug-build')
 
 def configure(ctx):
+    ctx.resetenv(ctx.options.variant)
     ctx.check_waf_version(mini='1.7.15')
     target = os.environ.get('TARGET')
     (cc, pkg_config, windres) = ('cc', 'pkg-config', 'windres')
@@ -834,6 +849,7 @@ def configure(ctx):
         ctx.options.enable_lua = True
 
     ctx.parse_dependencies(scripting_features)
+    ctx.parse_dependencies(standalone_features)
 
     ctx.define('HAVE_SYS_SOUNDCARD_H',
                '(HAVE_OSS_AUDIO_NATIVE || HAVE_OSS_AUDIO_4FRONT)',
@@ -851,5 +867,27 @@ def configure(ctx):
     ctx.store_dependencies_lists()
 
 def build(ctx):
+    if ctx.options.variant not in ctx.all_envs:
+        from waflib import Errors
+        raise Errors.WafError(
+            'The project was not configured: run "waf --variant={0} configure" first!'
+                .format(ctx.options.variant))
     ctx.unpack_dependencies_lists()
     ctx.load('wscript_build')
+
+def init(ctx):
+    from waflib.Build import BuildContext, CleanContext, InstallContext, UninstallContext
+    for y in (BuildContext, CleanContext, InstallContext, UninstallContext):
+        class tmp(y):
+            variant = ctx.options.variant
+
+    # This is needed because waf initializes the ConfigurationContext with
+    # an arbitrary setenv('') which would rewrite the previous configuration
+    # cache for the default variant if the configure step finishes.
+    # Ideally ConfigurationContext should just let us override this at class
+    # level like the other Context subclasses do with variant
+    from waflib.Configure import ConfigurationContext
+    class cctx(ConfigurationContext):
+        def resetenv(self, name):
+            self.all_envs = {}
+            self.setenv(name)

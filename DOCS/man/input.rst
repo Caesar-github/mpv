@@ -4,11 +4,17 @@ INPUT.CONF
 The input.conf file consists of a list of key bindings, for example::
 
     s screenshot      # take a screenshot with the s key
+    LEFT seek 15      # map the left-arrow key to seeking forward by 15 seconds
 
 Each line maps a key to an input command. Keys are specified with their literal
 value (upper case if combined with ``Shift``), or a name for special keys. For
 example, ``a`` maps to the ``a`` key without shift, and ``A`` maps to ``a``
 with shift.
+
+The file is normally located in ``~/.config/mpv/input.conf`` (some platforms
+may use different paths). The default bindings are defined here::
+
+    https://github.com/mpv-player/mpv/blob/master/etc/input.conf
 
 A list of special keys can be obtained with
 
@@ -101,7 +107,7 @@ List of Input Commands
     ``revert_seek`` command itself.
 
 ``frame_step``
-    Play one frame, then pause.
+    Play one frame, then pause. Does nothing with audio-only playback.
 
 ``frame_back_step``
     Go back by one frame, then pause. Note that this can be very slow (it tries
@@ -615,11 +621,6 @@ Property list
 ``stream-end``
     Raw end position in bytes in source stream.
 
-``stream-time-pos`` (RW)
-    Time position in source stream. This only works for DVD and Bluray. This
-    is probably never different from ``time-pos``, because ``time-pos`` is
-    forced to this value anyway.
-
 ``length``
     Length of the current file in seconds. If the length is unknown, the
     property is unavailable. Note that the file duration is not always exactly
@@ -659,6 +660,9 @@ Property list
 
 ``playtime-remaining``
     ``time-remaining`` scaled by the the current ``speed``.
+
+``playback-time``
+    Return the playback time, which is the time difference between start PTS and current PTS.
 
 ``chapter`` (RW)
     Current chapter number. The number of the first chapter is 0.
@@ -793,7 +797,7 @@ Property list
     pauses itself due to low network cache.
 
 ``cache``
-    Network cache fill state (0-100).
+    Network cache fill state (0-100.0).
 
 ``cache-size`` (RW)
     Total network cache size in KB. This is similar to ``--cache``. This allows
@@ -807,6 +811,16 @@ Property list
 
     Don't use this when playing DVD or Bluray.
 
+``cache-free`` (R)
+    Total free cache size in KB.
+
+``cache-used`` (R)
+    Total used cache size in KB.
+
+``cache-idle`` (R)
+    Returns ``yes`` if the cache is idle, which means the cache is filled as
+    much as possible, and is currently not reading more data.
+
 ``paused-for-cache``
     Returns ``yes`` when playback is paused because of waiting for the cache.
 
@@ -816,6 +830,12 @@ Property list
     since otherwise the player will immediately play the next file (or exit
     or enter idle mode), and in these cases the ``eof-reached`` property will
     logically be cleared immediately after it's set.
+
+``seeking``
+    Returns ``yes`` if the player is currently seeking, or otherwise trying
+    to restart playback. (It's possible that it returns ``yes`` while a file
+    is loaded, or when switching ordered chapter segments. This is because
+    the same underlying code is used for seeking and resyncing.)
 
 ``pts-association-mode`` (RW)
     See ``--pts-association-mode``.
@@ -980,6 +1000,7 @@ Property list
                 "par"               MPV_FORMAT_DOUBLE
                 "colormatrix"       MPV_FORMAT_STRING
                 "colorlevels"       MPV_FORMAT_STRING
+                "primaries"         MPV_FORMAT_STRING
                 "chroma-location"   MPV_FORMAT_STRING
                 "rotate"            MPV_FORMAT_INT64
 
@@ -1249,8 +1270,8 @@ Property list
     require reloading the file for changes to take effect. If there is an
     equivalent property, prefer setting the property instead.
 
-``write_watch_later_config``
-    Saves current playback position.
+``property-list``
+    Return the list of top-level properties.
 
 Property Expansion
 ------------------

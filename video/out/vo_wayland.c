@@ -40,6 +40,7 @@
 #include "sub/img_convert.h"
 
 #include "common/msg.h"
+#include "input/input.h"
 
 #include "wayland_common.h"
 #include "wayland-version.h"
@@ -501,6 +502,8 @@ static bool resize(struct priv *p)
     p->dst_w = p->dst.x1 - p->dst.x0;
     p->dst_h = p->dst.y1 - p->dst.y0;
 
+    mp_input_set_mouse_transform(p->vo->input_ctx, &p->dst, NULL);
+
     MP_DBG(wl, "resizing %dx%d -> %dx%d\n", wl->window.width,
                                             wl->window.height,
                                             p->dst_w,
@@ -898,15 +901,6 @@ static int control(struct vo *vo, uint32_t request, void *data)
         return VO_TRUE;
     case VOCTRL_REDRAW_FRAME:
         return redraw_frame(p);
-    case VOCTRL_WINDOW_TO_OSD_COORDS:
-    {
-        // OSD is rendered into the scaled image
-        float *c = data;
-        struct mp_rect *dst = &p->dst;
-        c[0] = av_clipf(c[0], dst->x0, dst->x1) - dst->x0;
-        c[1] = av_clipf(c[1], dst->y0, dst->y1) - dst->y0;
-        return VO_TRUE;
-    }
     case VOCTRL_SCREENSHOT:
     {
         struct voctrl_screenshot_args *args = data;

@@ -168,7 +168,9 @@ void print_status(struct MPContext *mpctx)
     char *line = NULL;
 
     // Playback status
-    if (mpctx->paused_for_cache && !opts->pause) {
+    if (!mpctx->restart_complete && mp_time_sec() - mpctx->start_timestamp > 0.3) {
+        saddf(&line, "(...) ");
+    } else if (mpctx->paused_for_cache && !opts->pause) {
         saddf(&line, "(Buffering) ");
     } else if (mpctx->paused) {
         saddf(&line, "(Paused) ");
@@ -181,8 +183,7 @@ void print_status(struct MPContext *mpctx)
     saddf(&line, ": ");
 
     // Playback position
-    double cur = get_current_time(mpctx);
-    sadd_hhmmssff(&line, cur, mpctx->opts->osd_fractions);
+    sadd_hhmmssff(&line, get_playback_time(mpctx), mpctx->opts->osd_fractions);
 
     double len = get_time_length(mpctx);
     if (len >= 0) {
@@ -222,9 +223,9 @@ void print_status(struct MPContext *mpctx)
             saddf(&line, " Late: %d", mpctx->drop_frame_cnt);
     }
 
-    int cache = mp_get_cache_percent(mpctx);
+    float cache = mp_get_cache_percent(mpctx);
     if (cache >= 0)
-        saddf(&line, " Cache: %d%%", cache);
+        saddf(&line, " Cache: %.2f%%", cache);
 
     if (opts->term_osd_bar) {
         saddf(&line, "\n");
@@ -296,10 +297,15 @@ static mp_osd_msg_t *get_osd_msg(struct MPContext *mpctx)
     double now = mp_time_sec();
     double diff;
 
-    if (mpctx->osd_visible && now >= mpctx->osd_visible) {
-        mpctx->osd_visible = 0;
-        mpctx->osd_progbar.type = -1; // disable
-        osd_set_progbar(mpctx->osd, &mpctx->osd_progbar);
+    if (mpctx->osd_visible) {
+        double sleep = mpctx->osd_visible - now;
+        if (sleep > 0) {
+            mpctx->sleeptime = MPMIN(mpctx->sleeptime, sleep);
+        } else {
+            mpctx->osd_visible = 0;
+            mpctx->osd_progbar.type = -1; // disable
+            osd_set_progbar(mpctx->osd, &mpctx->osd_progbar);
+        }
     }
     if (mpctx->osd_function_visible && now >= mpctx->osd_function_visible) {
         mpctx->osd_function_visible = 0;
@@ -315,19 +321,21 @@ static mp_osd_msg_t *get_osd_msg(struct MPContext *mpctx)
     mp_osd_msg_t *msg = mpctx->osd_msg_stack;
     if (msg) {
         if (!msg->started || msg->time > diff) {
+            // display it
             if (msg->started)
                 msg->time -= diff;
             else
                 msg->started = 1;
-            // display it
-            return msg;
+        } else {
+            // kill the message
+            talloc_free(msg);
+            msg = NULL;
+            mpctx->osd_msg_stack = NULL;
         }
-        // kill the message
-        talloc_free(msg);
-        mpctx->osd_msg_stack = NULL;
     }
-    // Nothing found
-    return NULL;
+    if (msg)
+        mpctx->sleeptime = MPMIN(mpctx->sleeptime, msg->time);
+    return msg;
 }
 
 // type: mp_osd_font_codepoints, ASCII, or OSD_BAR_*
@@ -341,6 +349,7 @@ void set_osd_bar(struct MPContext *mpctx, int type, const char* name,
 
     if (mpctx->video_out && opts->term_osd != 1) {
         mpctx->osd_visible = mp_time_sec() + opts->osd_duration / 1000.0;
+        mpctx->sleeptime = 0;
         mpctx->osd_progbar.type = type;
         mpctx->osd_progbar.value = (val - min) / (max - min);
         mpctx->osd_progbar.num_stops = 0;
@@ -437,14 +446,11 @@ static void sadd_osd_status(char **buffer, struct MPContext *mpctx, bool full)
         *buffer = talloc_strdup_append(*buffer, text);
         talloc_free(text);
     } else {
-        sadd_hhmmssff(buffer, get_current_time(mpctx), fractions);
+        sadd_hhmmssff(buffer, get_playback_time(mpctx), fractions);
         if (full) {
             saddf(buffer, " / ");
             sadd_hhmmssff(buffer, get_time_length(mpctx), fractions);
             sadd_percentage(buffer, get_percent_pos(mpctx));
-            int cache = mp_get_cache_percent(mpctx);
-            if (cache >= 0)
-                saddf(buffer, " Cache: %d%%", cache);
         }
     }
 }

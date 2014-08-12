@@ -16,6 +16,7 @@
  */
 
 #include <string.h>
+#include <strings.h>
 #include <sys/types.h>
 #include <dirent.h>
 #include <math.h>
@@ -167,11 +168,12 @@ void mp_load_scripts(struct MPContext *mpctx)
     }
     if (!mpctx->opts->auto_load_scripts)
         return;
-    // Load ~/.mpv/lua/*
+
+    // Load all lua scripts
     void *tmp = talloc_new(NULL);
-    char *script_path = mp_find_user_config_file(tmp, mpctx->global, "lua");
-    if (script_path) {
-        files = list_script_files(tmp, script_path);
+    char **luadir = mp_find_all_config_files(tmp, mpctx->global, "lua");
+    for (int i = 0; luadir && luadir[i]; i++) {
+        files = list_script_files(tmp, luadir[i]);
         for (int n = 0; files && files[n]; n++)
             mp_load_script(mpctx, files[n]);
     }

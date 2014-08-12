@@ -19,13 +19,61 @@
  * version 2.1 of the License, or (at your option) any later version.
  */
 
+#include <assert.h>
 #include <windows.h>
 #include "w32_common.h"
 #include "gl_common.h"
 
 struct w32_context {
     HGLRC context;
+    HDC hdc;
+    int flags;
 };
+
+static bool create_dc(struct MPGLContext *ctx, int flags)
+{
+    struct w32_context *w32_ctx = ctx->priv;
+    HWND win = vo_w32_hwnd(ctx->vo);
+
+    if (w32_ctx->hdc)
+        return true;
+
+    HDC hdc = GetDC(win);
+    if (!hdc)
+        return false;
+
+    PIXELFORMATDESCRIPTOR pfd;
+    memset(&pfd, 0, sizeof pfd);
+    pfd.nSize = sizeof pfd;
+    pfd.nVersion = 1;
+    pfd.dwFlags = PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER;
+
+    if (flags & VOFLAG_STEREO)
+        pfd.dwFlags |= PFD_STEREO;
+
+    pfd.iPixelType = PFD_TYPE_RGBA;
+    pfd.cColorBits = 24;
+    pfd.iLayerType = PFD_MAIN_PLANE;
+    int pf = ChoosePixelFormat(hdc, &pfd);
+
+    if (!pf) {
+        MP_ERR(ctx->vo, "unable to select a valid pixel format!\n");
+        ReleaseDC(win, hdc);
+        return false;
+    }
+
+    SetPixelFormat(hdc, pf, &pfd);
+
+    int pfmt = GetPixelFormat(hdc);
+    if (DescribePixelFormat(hdc, pfmt, sizeof(PIXELFORMATDESCRIPTOR), &pfd)) {
+        ctx->depth_r = pfd.cRedBits;
+        ctx->depth_g = pfd.cGreenBits;
+        ctx->depth_b = pfd.cBlueBits;
+    }
+
+    w32_ctx->hdc = hdc;
+    return true;
+}
 
 static void *w32gpa(const GLubyte *procName)
 {
@@ -40,57 +88,44 @@ static void *w32gpa(const GLubyte *procName)
 static bool create_context_w32_old(struct MPGLContext *ctx)
 {
     struct w32_context *w32_ctx = ctx->priv;
-    HGLRC *context = &w32_ctx->context;
 
-    if (*context)
-        return true;
-
-    HWND win = ctx->vo->w32->window;
-    HDC windc = GetDC(win);
+    HDC windc = w32_ctx->hdc;
     bool res = false;
 
-    HGLRC new_context = wglCreateContext(windc);
-    if (!new_context) {
+    HGLRC context = wglCreateContext(windc);
+    if (!context) {
         MP_FATAL(ctx->vo, "Could not create GL context!\n");
-        goto out;
+        return res;
     }
 
-    if (!wglMakeCurrent(windc, new_context)) {
+    if (!wglMakeCurrent(windc, context)) {
         MP_FATAL(ctx->vo, "Could not set GL context!\n");
-        wglDeleteContext(new_context);
-        goto out;
+        wglDeleteContext(context);
+        return res;
     }
 
-    *context = new_context;
+    w32_ctx->context = context;
 
     mpgl_load_functions(ctx->gl, w32gpa, NULL, ctx->vo->log);
-    res = true;
-
-out:
-    ReleaseDC(win, windc);
-    return res;
+    return true;
 }
 
 static bool create_context_w32_gl3(struct MPGLContext *ctx)
 {
     struct w32_context *w32_ctx = ctx->priv;
-    HGLRC *context = &w32_ctx->context;
 
-    if (*context) // reuse existing context
-        return true; // not reusing it breaks gl3!
+    HDC windc = w32_ctx->hdc;
+    HGLRC context = 0;
 
-    HWND win = ctx->vo->w32->window;
-    HDC windc = GetDC(win);
-    HGLRC new_context = 0;
-
-    new_context = wglCreateContext(windc);
-    if (!new_context) {
+    // A legacy context is needed to get access to the new functions.
+    HGLRC legacy_context = wglCreateContext(windc);
+    if (!legacy_context) {
         MP_FATAL(ctx->vo, "Could not create GL context!\n");
         return false;
     }
 
     // set context
-    if (!wglMakeCurrent(windc, new_context)) {
+    if (!wglMakeCurrent(windc, legacy_context)) {
         MP_FATAL(ctx->vo, "Could not set GL context!\n");
         goto out;
     }
@@ -121,78 +156,100 @@ static bool create_context_w32_gl3(struct MPGLContext *ctx)
         0
     };
 
-    *context = wglCreateContextAttribsARB(windc, 0, attribs);
-    if (! *context) {
+    context = wglCreateContextAttribsARB(windc, 0, attribs);
+    if (!context) {
         // NVidia, instead of ignoring WGL_CONTEXT_FLAGS_ARB, will error out if
         // it's present on pre-3.2 contexts.
         // Remove it from attribs and retry the context creation.
         attribs[6] = attribs[7] = 0;
-        *context = wglCreateContextAttribsARB(windc, 0, attribs);
+        context = wglCreateContextAttribsARB(windc, 0, attribs);
     }
-    if (! *context) {
+    if (!context) {
         int err = GetLastError();
         MP_FATAL(ctx->vo, "Could not create an OpenGL 3.x context: error 0x%x\n", err);
         goto out;
     }
 
-    wglMakeCurrent(NULL, NULL);
-    wglDeleteContext(new_context);
+    wglMakeCurrent(windc, NULL);
+    wglDeleteContext(legacy_context);
 
-    if (!wglMakeCurrent(windc, *context)) {
+    if (!wglMakeCurrent(windc, context)) {
         MP_FATAL(ctx->vo, "Could not set GL3 context!\n");
-        wglDeleteContext(*context);
+        wglDeleteContext(context);
         return false;
     }
+
+    w32_ctx->context = context;
 
     /* update function pointers */
     mpgl_load_functions(ctx->gl, w32gpa, NULL, ctx->vo->log);
 
-    int pfmt = GetPixelFormat(windc);
-    PIXELFORMATDESCRIPTOR pfd;
-    if (DescribePixelFormat(windc, pfmt, sizeof(PIXELFORMATDESCRIPTOR), &pfd)) {
-        ctx->depth_r = pfd.cRedBits;
-        ctx->depth_g = pfd.cGreenBits;
-        ctx->depth_b = pfd.cBlueBits;
-    }
-
     return true;
 
 unsupported:
-    MP_ERR(ctx->vo, "The current OpenGL implementation does not support OpenGL 3.x \n");
+    MP_ERR(ctx->vo, "The OpenGL driver does not support OpenGL 3.x \n");
 out:
-    wglDeleteContext(new_context);
+    wglMakeCurrent(windc, NULL);
+    wglDeleteContext(legacy_context);
     return false;
+}
+
+static void create_ctx(void *ptr)
+{
+    struct MPGLContext *ctx = ptr;
+    struct w32_context *w32_ctx = ctx->priv;
+
+    if (!create_dc(ctx, w32_ctx->flags))
+        return;
+
+    if (ctx->requested_gl_version >= MPGL_VER(3, 0))
+        create_context_w32_gl3(ctx);
+    if (!w32_ctx->context)
+        create_context_w32_old(ctx);
+    wglMakeCurrent(w32_ctx->hdc, NULL);
 }
 
 static bool config_window_w32(struct MPGLContext *ctx, int flags)
 {
+    struct w32_context *w32_ctx = ctx->priv;
     if (!vo_w32_config(ctx->vo, flags))
         return false;
 
-    bool success = false;
-    if (ctx->requested_gl_version >= MPGL_VER(3, 0))
-        success = create_context_w32_gl3(ctx);
-    if (!success)
-        success = create_context_w32_old(ctx);
-    return success;
+    if (w32_ctx->context) // reuse existing context
+        return true;
+
+    w32_ctx->flags = flags;
+    vo_w32_run_on_thread(ctx->vo, create_ctx, ctx);
+
+    if (w32_ctx->context)
+        wglMakeCurrent(w32_ctx->hdc, w32_ctx->context);
+    return !!w32_ctx->context;
+}
+
+static void destroy_gl(void *ptr)
+{
+    struct MPGLContext *ctx = ptr;
+    struct w32_context *w32_ctx = ctx->priv;
+    if (w32_ctx->context)
+        wglDeleteContext(w32_ctx->context);
+    w32_ctx->context = 0;
+    if (w32_ctx->hdc)
+        ReleaseDC(vo_w32_hwnd(ctx->vo), w32_ctx->hdc);
+    w32_ctx->hdc = NULL;
 }
 
 static void releaseGlContext_w32(MPGLContext *ctx)
 {
     struct w32_context *w32_ctx = ctx->priv;
-    HGLRC *context = &w32_ctx->context;
-    if (*context) {
-        wglMakeCurrent(0, 0);
-        wglDeleteContext(*context);
-    }
-    *context = 0;
+    if (w32_ctx->context)
+        wglMakeCurrent(w32_ctx->hdc, 0);
+    vo_w32_run_on_thread(ctx->vo, destroy_gl, ctx);
 }
 
 static void swapGlBuffers_w32(MPGLContext *ctx)
 {
-    HDC vo_hdc = GetDC(ctx->vo->w32->window);
-    SwapBuffers(vo_hdc);
-    ReleaseDC(ctx->vo->w32->window, vo_hdc);
+    struct w32_context *w32_ctx = ctx->priv;
+    SwapBuffers(w32_ctx->hdc);
 }
 
 void mpgl_set_backend_w32(MPGLContext *ctx)

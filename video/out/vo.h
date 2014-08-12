@@ -52,7 +52,7 @@ enum mp_voctrl {
     VOCTRL_GET_EQUALIZER,               // struct voctrl_get_equalizer_args*
 
     /* for hardware decoding */
-    VOCTRL_GET_HWDEC_INFO,              // struct mp_hwdec_info*
+    VOCTRL_GET_HWDEC_INFO,              // struct mp_hwdec_info**
 
     // Redraw the image previously passed to draw_image() (basically, repeat
     // the previous draw_image call). If this is handled, the OSD should also
@@ -71,7 +71,6 @@ enum mp_voctrl {
     VOCTRL_SET_DEINTERLACE,
     VOCTRL_GET_DEINTERLACE,
 
-    VOCTRL_WINDOW_TO_OSD_COORDS,        // float[2] (x/y)
     VOCTRL_GET_WINDOW_SIZE,             // int[2] (w/h)
     VOCTRL_SET_WINDOW_SIZE,             // int[2] (w/h)
 
@@ -163,20 +162,6 @@ struct vo_driver {
      * returns: 0 on not supported, otherwise a bitmask of VFCAP_* values
      */
     int (*query_format)(struct vo *vo, uint32_t format);
-
-    /*
-     * Optional. Can be used to convert the input image into something VO
-     * internal, such as GPU surfaces. Ownership of mpi is passed to the
-     * function, and the returned image is owned by the caller.
-     * The following guarantees are given:
-     * - mpi has the format with which the VO was configured
-     * - the returned image can be arbitrary, and the VO merely manages its
-     *   lifetime
-     * - images passed to draw_image are always passed through this function
-     * - the maximum number of images kept alive is not over vo->max_video_queue
-     * - if vo->max_video_queue is large enough, some images may be buffered ahead
-     */
-    struct mp_image *(*filter_image)(struct vo *vo, struct mp_image *mpi);
 
     /*
      * Initialize or reconfigure the display driver.
@@ -293,9 +278,6 @@ struct mp_keymap {
   int to;
 };
 int lookup_keymap_table(const struct mp_keymap *map, int key);
-
-void vo_mouse_movement(struct vo *vo, int posx, int posy);
-void vo_drop_files(struct vo *vo, int num_files, char **files);
 
 struct mp_osd_res;
 void vo_get_src_dst_rects(struct vo *vo, struct mp_rect *out_src,

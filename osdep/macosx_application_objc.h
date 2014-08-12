@@ -18,33 +18,16 @@
 
 #import <Cocoa/Cocoa.h>
 #include "osdep/macosx_application.h"
-#import "ar/HIDRemote.h"
-
-@interface EventsResponder : NSObject <HIDRemoteDelegate>
-- (BOOL)handleMediaKey:(NSEvent *)event;
-- (NSEvent *)handleKey:(NSEvent *)event;
-- (void)startAppleRemote;
-- (void)stopAppleRemote;
-- (void)startMediaKeys;
-- (void)restartMediaKeys;
-- (void)stopMediaKeys;
-- (int)mapKeyModifiers:(int)cocoaModifiers;
-- (int)keyModifierMask:(NSEvent *)event;
-@end
 
 @interface Application : NSApplication
 - (void)initialize_menu;
 - (void)registerSelector:(SEL)selector forKey:(MPMenuKey)key;
 - (void)stopPlayback;
-- (void)handleFilesArray:(NSArray *)files;
 
-@property(nonatomic, assign) struct input_ctx *inputContext;
-@property(nonatomic, retain) EventsResponder *eventsResponder;
 @property(nonatomic, retain) NSMutableDictionary *menuItems;
 @property(nonatomic, retain) NSArray *files;
 @property(nonatomic, retain) NSMutableArray *argumentsList;
 @property(nonatomic, assign) BOOL willStopOnOpenEvent;
-@property(nonatomic, retain) NSCondition *input_ready;
 @end
 
 Application *mpv_shared_app(void);

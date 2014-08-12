@@ -57,6 +57,7 @@
 #include "sub/draw_bmp.h"
 #include "video/csputils.h"
 #include "options/m_option.h"
+#include "input/input.h"
 #include "osdep/timer.h"
 
 #define CK_METHOD_NONE       0 // no colorkey drawing
@@ -140,29 +141,29 @@ static int xv_find_atom(struct vo *vo, uint32_t xv_port, const char *name,
    then trigger it if it's ok so that the other values are at default upon query */
             if (atom != None) {
                 if (!strcmp(attributes[i].name, "XV_BRIGHTNESS") &&
-                    (!strcasecmp(name, "brightness")))
+                    (!strcmp(name, "brightness")))
                     break;
                 else if (!strcmp(attributes[i].name, "XV_CONTRAST") &&
-                         (!strcasecmp(name, "contrast")))
+                         (!strcmp(name, "contrast")))
                     break;
                 else if (!strcmp(attributes[i].name, "XV_SATURATION") &&
-                         (!strcasecmp(name, "saturation")))
+                         (!strcmp(name, "saturation")))
                     break;
                 else if (!strcmp(attributes[i].name, "XV_HUE") &&
-                         (!strcasecmp(name, "hue")))
+                         (!strcmp(name, "hue")))
                     break;
                 if (!strcmp(attributes[i].name, "XV_RED_INTENSITY") &&
-                    (!strcasecmp(name, "red_intensity")))
+                    (!strcmp(name, "red_intensity")))
                     break;
                 else if (!strcmp(attributes[i].name, "XV_GREEN_INTENSITY")
-                         && (!strcasecmp(name, "green_intensity")))
+                         && (!strcmp(name, "green_intensity")))
                     break;
                 else if (!strcmp(attributes[i].name, "XV_BLUE_INTENSITY")
-                         && (!strcasecmp(name, "blue_intensity")))
+                         && (!strcmp(name, "blue_intensity")))
                     break;
                 else if ((!strcmp(attributes[i].name, "XV_ITURBT_709") //NVIDIA
                           || !strcmp(attributes[i].name, "XV_COLORSPACE")) //ATI
-                         && (!strcasecmp(name, "bt_709")))
+                         && (!strcmp(name, "bt_709")))
                     break;
                 atom = None;
                 continue;
@@ -411,6 +412,8 @@ static void resize(struct vo *vo)
     vo_x11_clear_background(vo, &ctx->dst_rect);
     xv_draw_colorkey(vo, &ctx->dst_rect);
     read_xv_csp(vo);
+
+    mp_input_set_mouse_transform(vo->input_ctx, &ctx->dst_rect, &ctx->src_rect);
 
     vo->want_redraw = true;
 }
@@ -842,16 +845,6 @@ static int control(struct vo *vo, uint32_t request, void *data)
         struct voctrl_screenshot_args *args = data;
         args->out_image = get_screenshot(vo);
         return true;
-    }
-    case VOCTRL_WINDOW_TO_OSD_COORDS: {
-        float *c = data;
-        struct mp_rect *src = &ctx->src_rect;
-        struct mp_rect *dst = &ctx->dst_rect;
-        c[0] = av_clipf(c[0], dst->x0, dst->x1) - dst->x0;
-        c[1] = av_clipf(c[1], dst->y0, dst->y1) - dst->y0;
-        c[0] = c[0] / (dst->x1 - dst->x0) * (src->x1 - src->x0) + src->x0;
-        c[1] = c[1] / (dst->y1 - dst->y0) * (src->y1 - src->y0) + src->y0;
-        return VO_TRUE;
     }
     }
     int events = 0;

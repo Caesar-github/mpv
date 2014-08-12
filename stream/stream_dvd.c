@@ -18,12 +18,12 @@
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
-#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <string.h>
+#include <strings.h>
 #include <libgen.h>
 #include <errno.h>
 #include <stdint.h>
@@ -533,11 +533,6 @@ static int control(stream_t *stream,int cmd,void* arg)
             *((double *)arg) = (double) mp_get_titleset_length(d->vts_file, d->tt_srpt, d->cur_title)/1000.0;
             return 1;
         }
-        case STREAM_CTRL_GET_START_TIME:
-        {
-            *((double *)arg) = 0;
-            return 1;
-        }
         case STREAM_CTRL_GET_NUM_TITLES:
         {
             *((unsigned int *)arg) = d->vmg_file->tt_srpt->nr_of_srpts;
@@ -620,8 +615,6 @@ static int control(stream_t *stream,int cmd,void* arg)
             snprintf(req->name, sizeof(req->name), "%c%c", lang >> 8, lang);
             return STREAM_OK;
         }
-        case STREAM_CTRL_MANAGES_TIMELINE:
-            return STREAM_OK;
         case STREAM_CTRL_GET_DVD_INFO:
         {
             struct stream_dvd_info_req *req = arg;
@@ -900,6 +893,8 @@ static int open_s(stream_t *stream)
     // ... (unimplemented)
     //    return NULL;
     stream->type = STREAMTYPE_DVD;
+    stream->demuxer = "+disc";
+    stream->lavf_type = "mpeg";
     stream->sector_size = 2048;
     stream->fill_buffer = fill_buffer;
     stream->control = control;
