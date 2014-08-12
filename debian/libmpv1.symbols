@@ -18,7 +18,6 @@ libmpv.so.1 libmpv1 #MINVER#
  mpv_get_wakeup_pipe@Base 0.4.0
  mpv_initialize@Base 0.4.0
  mpv_load_config_file@Base 0.4.0
- mpv_main@Base 0.4.0
  mpv_observe_property@Base 0.4.0
  mpv_request_event@Base 0.4.0
  mpv_request_log_messages@Base 0.4.0
