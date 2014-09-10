@@ -1,8 +1,9 @@
-mpv (0.5.3-1) UNRELEASED; urgency=medium
+mpv (0.5.3-1) unstable; urgency=medium
 
   * New upstream release
+  * Fix wildcard-matches-nothing-in-dep5-copyright
 
- -- Alessandro Ghedini <ghedo@debian.org>  Wed, 10 Sep 2014 19:57:12 +0200
+ -- Alessandro Ghedini <ghedo@debian.org>  Wed, 10 Sep 2014 20:05:33 +0200
 
 mpv (0.5.1-1) unstable; urgency=medium
 
