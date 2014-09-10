@@ -96,6 +96,8 @@ void reset_audio_state(struct MPContext *mpctx)
 {
     if (mpctx->d_audio)
         audio_reset_decoding(mpctx->d_audio);
+    if (mpctx->ao_buffer)
+        mp_audio_buffer_clear(mpctx->ao_buffer);
     mpctx->audio_status = mpctx->d_audio ? STATUS_SYNCING : STATUS_EOF;
 }
 
@@ -111,8 +113,6 @@ void reinit_audio_chain(struct MPContext *mpctx)
 
     mp_notify(mpctx, MPV_EVENT_AUDIO_RECONFIG, NULL);
 
-    mpctx->audio_status = STATUS_SYNCING;
-
     if (!(mpctx->initialized_flags & INITIALIZED_ACODEC)) {
         mpctx->initialized_flags |= INITIALIZED_ACODEC;
         assert(!mpctx->d_audio);
@@ -122,14 +122,18 @@ void reinit_audio_chain(struct MPContext *mpctx)
         mpctx->d_audio->opts = opts;
         mpctx->d_audio->header = sh;
         mpctx->d_audio->replaygain_data = sh->audio->replaygain_data;
+        mpctx->ao_buffer = mp_audio_buffer_create(NULL);
         if (!audio_init_best_codec(mpctx->d_audio, opts->audio_decoders))
             goto init_error;
         reset_audio_state(mpctx);
+
+        if (mpctx->ao) {
+            struct mp_audio fmt;
+            ao_get_format(mpctx->ao, &fmt);
+            mp_audio_buffer_reinit(mpctx->ao_buffer, &fmt);
+        }
     }
     assert(mpctx->d_audio);
-
-    if (!mpctx->ao_buffer)
-        mpctx->ao_buffer = mp_audio_buffer_create(mpctx);
 
     struct mp_audio in_format;
     mp_audio_buffer_get_format(mpctx->d_audio->decode_buffer, &in_format);

@@ -25,6 +25,8 @@ API changes
 
 ::
 
+ --- mpv 0.5.2 is released ---
+ 1.4    - subtle change in X11 and "--wid" behavior
  --- mpv 0.5.0 is released ---
  1.3    - add MPV_MAKE_VERSION()
  1.2    - remove "stream-time-pos" property (no replacement)
