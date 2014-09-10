@@ -6,10 +6,6 @@ Files: *
 Copyright: 2000-2013, The mplayer, mplayer2 and mpv Developers
 License: GPL-2+
 
-Files: compat/x86_cpu.h
-Copyright: 2006, Michael Niedermayer <michaelni@gmx.at>
-License: LGPL-2.1+
-
 Files: osdep/ar/HIDRemote.*
 Copyright: 2007-2011, IOSPIRIT GmbH
 License: BSD-3-clause
@@ -17,10 +13,6 @@ License: BSD-3-clause
 Files: osdep/timer-darwin.c
 Copyright: 2003-2004, Dan Villiom Podlaski Christiansen
 License: Expat
-
-Files: video/decode/lavc_dr1.c
-Copyright: 2000-2003 Fabrice Bellard
-License: LGPL-2.1+
 
 Files: TOOLS/vf_dlopen/*
 Copyright: 2012, Rudolf Polzer <divVerent@xonotic.org>
