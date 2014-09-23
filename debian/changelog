@@ -1,10 +1,10 @@
-mpv (0.5.4-1) UNRELEASED; urgency=medium
+mpv (0.5.4-1) unstable; urgency=medium
 
   * New upstream release
     - Rebuild should fix warnings regarding libav libraries versions
       (Closes: #762229)
 
- -- Alessandro Ghedini <ghedo@debian.org>  Tue, 23 Sep 2014 21:26:26 +0200
+ -- Alessandro Ghedini <ghedo@debian.org>  Tue, 23 Sep 2014 21:37:19 +0200
 
 mpv (0.5.3-1) unstable; urgency=medium
 
