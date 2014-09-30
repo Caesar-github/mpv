@@ -39,13 +39,12 @@
 # include <libavutil/display.h>
 #endif
 #include <libavutil/opt.h>
-#include "compat/libav.h"
 
 #include "options/options.h"
 #include "common/msg.h"
 #include "common/tags.h"
 #include "common/av_common.h"
-#include "bstr/bstr.h"
+#include "misc/bstr.h"
 
 #include "stream/stream.h"
 #include "demux.h"
@@ -234,7 +233,7 @@ static int lavf_check_file(demuxer_t *demuxer, enum demux_check check)
     priv->filename = remove_prefix(priv->filename, prefixes);
 
     char *avdevice_format = NULL;
-    if (s->type == STREAMTYPE_AVDEVICE) {
+    if (s->uncached_type == STREAMTYPE_AVDEVICE) {
         // always require filename in the form "format:filename"
         char *sep = strchr(priv->filename, ':');
         if (!sep) {
@@ -430,6 +429,19 @@ static void export_replaygain(demuxer_t *demuxer, sh_audio_t *sh, AVStream *st)
 #endif
 }
 
+// Return a dictionary entry as (decimal) integer.
+static int dict_get_decimal(AVDictionary *dict, const char *entry, int def)
+{
+    AVDictionaryEntry *e = av_dict_get(dict, entry, NULL, 0);
+    if (e && e->value) {
+        char *end = NULL;
+        long int r = strtol(e->value, &end, 10);
+        if (end && !end[0] && r >= INT_MIN && r <= INT_MAX)
+            return r;
+    }
+    return def;
+}
+
 static void handle_stream(demuxer_t *demuxer, int i)
 {
     lavf_priv_t *priv = demuxer->priv;
@@ -448,7 +460,7 @@ static void handle_stream(demuxer_t *demuxer, int i)
         sh->format = codec->codec_tag;
 
         // probably unneeded
-        mp_chmap_from_channels(&sh_audio->channels, codec->channels);
+        mp_chmap_set_unknown(&sh_audio->channels, codec->channels);
         if (codec->channel_layout)
             mp_chmap_from_lavc(&sh_audio->channels, codec->channel_layout);
         sh_audio->samplerate = codec->sample_rate;
@@ -467,9 +479,11 @@ static void handle_stream(demuxer_t *demuxer, int i)
         if (st->disposition & AV_DISPOSITION_ATTACHED_PIC) {
             sh->attached_picture = new_demux_packet_from(st->attached_pic.data,
                                                          st->attached_pic.size);
-            sh->attached_picture->pts = 0;
-            talloc_steal(sh, sh->attached_picture);
-            sh->attached_picture->keyframe = true;
+            if (sh->attached_picture) {
+                sh->attached_picture->pts = 0;
+                talloc_steal(sh, sh->attached_picture);
+                sh->attached_picture->keyframe = true;
+            }
         }
 
         sh->format = codec->codec_tag;
@@ -506,13 +520,9 @@ static void handle_stream(demuxer_t *demuxer, int i)
         if (sd)
             sh_video->rotate = -av_display_rotation_get((uint32_t *)sd);
 #else
-        AVDictionaryEntry *rot = av_dict_get(st->metadata, "rotate", NULL, 0);
-        if (rot && rot->value) {
-            char *end = NULL;
-            long int r = strtol(rot->value, &end, 10);
-            if (end && !end[0])
-                sh_video->rotate = r;
-        }
+        int rot = dict_get_decimal(st->metadata, "rotate", -1);
+        if (rot >= 0)
+            sh_video->rotate = rot;
 #endif
         sh_video->rotate = ((sh_video->rotate % 360) + 360) % 360;
 
@@ -590,6 +600,9 @@ static void handle_stream(demuxer_t *demuxer, int i)
         AVDictionaryEntry *lang = av_dict_get(st->metadata, "language", NULL, 0);
         if (lang && lang->value)
             sh->lang = talloc_strdup(sh, lang->value);
+        sh->hls_bitrate = dict_get_decimal(st->metadata, "variant_bitrate", 0);
+        if (!sh->title && sh->hls_bitrate > 0)
+            sh->title = talloc_asprintf(sh, "bitrate %d", sh->hls_bitrate);
     }
 
     select_tracks(demuxer, i);
@@ -606,10 +619,29 @@ static void add_new_streams(demuxer_t *demuxer)
 
 static void update_metadata(demuxer_t *demuxer, AVPacket *pkt)
 {
-#if HAVE_AVCODEC_METADATA_UPDATE_SIDE_DATA
+#if HAVE_AVFORMAT_METADATA_UPDATE_FLAG
+    lavf_priv_t *priv = demuxer->priv;
+    if (priv->avfc->event_flags & AVFMT_EVENT_FLAG_METADATA_UPDATED) {
+        mp_tags_copy_from_av_dictionary(demuxer->metadata, priv->avfc->metadata);
+        priv->avfc->event_flags = 0;
+        demux_changed(demuxer, DEMUX_EVENT_METADATA);
+    }
+    if (priv->merge_track_metadata) {
+        for (int n = 0; n < priv->num_streams; n++) {
+            AVStream *st = priv->streams[n] ? priv->avfc->streams[n] : NULL;
+            if (st && st->event_flags & AVSTREAM_EVENT_FLAG_METADATA_UPDATED) {
+                mp_tags_copy_from_av_dictionary(demuxer->metadata, st->metadata);
+                st->event_flags = 0;
+                demux_changed(demuxer, DEMUX_EVENT_METADATA);
+            }
+        }
+    }
+#elif HAVE_AVCODEC_METADATA_UPDATE_SIDE_DATA
     lavf_priv_t *priv = demuxer->priv;
     int md_size;
     const uint8_t *md;
+    if (!pkt)
+        return;
     md = av_packet_get_side_data(pkt, AV_PKT_DATA_METADATA_UPDATE, &md_size);
     if (md && priv->merge_track_metadata) {
         AVDictionary *dict = NULL;
@@ -740,8 +772,6 @@ static int demux_open_lavf(demuxer_t *demuxer, enum demux_check check)
 
     add_new_streams(demuxer);
 
-    mp_tags_copy_from_av_dictionary(demuxer->metadata, avfc->metadata);
-
     // Often useful with OGG audio-only files, which have metadata in the audio
     // track metadata instead of the main metadata.
     if (demuxer->num_streams == 1) {
@@ -752,6 +782,9 @@ static int demux_open_lavf(demuxer_t *demuxer, enum demux_check check)
         }
     }
 
+    mp_tags_copy_from_av_dictionary(demuxer->metadata, avfc->metadata);
+    update_metadata(demuxer, NULL);
+
     demuxer->ts_resets_possible = priv->avif->flags & AVFMT_TS_DISCONT;
 
     demuxer->start_time = priv->avfc->start_time == AV_NOPTS_VALUE ?
@@ -760,23 +793,21 @@ static int demux_open_lavf(demuxer_t *demuxer, enum demux_check check)
     return 0;
 }
 
-static void destroy_avpacket(void *pkt)
-{
-    av_free_packet(pkt);
-}
-
 static int demux_lavf_fill_buffer(demuxer_t *demux)
 {
     lavf_priv_t *priv = demux->priv;
-    demux_packet_t *dp;
 
-    AVPacket *pkt = talloc(NULL, AVPacket);
+    AVPacket *pkt = &(AVPacket){0};
     int r = av_read_frame(priv->avfc, pkt);
     if (r < 0) {
-        talloc_free(pkt);
-        return r == AVERROR(EAGAIN) ? 1 : -1; // eof
+        av_free_packet(pkt);
+        if (r == AVERROR(EAGAIN))
+            return 1;
+        if (r == AVERROR_EOF)
+            return 0;
+        MP_WARN(demux, "error reading packet.\n");
+        return -1;
     }
-    talloc_set_destructor(pkt, destroy_avpacket);
 
     add_new_streams(demux);
     update_metadata(demux, pkt);
@@ -786,18 +817,15 @@ static int demux_lavf_fill_buffer(demuxer_t *demux)
     AVStream *st = priv->avfc->streams[pkt->stream_index];
 
     if (!demux_stream_is_selected(stream)) {
-        talloc_free(pkt);
+        av_free_packet(pkt);
         return 1; // don't signal EOF if skipping a packet
     }
 
-    // If the packet has pointers to temporary fields that could be
-    // overwritten/freed by next av_read_frame(), copy them to persistent
-    // allocations so we can safely queue the packet for any length of time.
-    if (av_dup_packet(pkt) < 0)
-        abort();
-
-    dp = new_demux_packet_fromdata(pkt->data, pkt->size);
-    dp->avpacket = talloc_steal(dp, pkt);
+    struct demux_packet *dp = new_demux_packet_from_avpacket(pkt);
+    if (!dp) {
+        av_free_packet(pkt);
+        return 1;
+    }
 
     if (pkt->pts != AV_NOPTS_VALUE)
         dp->pts = pkt->pts * av_q2d(st->time_base);
@@ -813,6 +841,7 @@ static int demux_lavf_fill_buffer(demuxer_t *demux)
     } else if (dp->dts != MP_NOPTS_VALUE) {
         priv->last_pts = dp->dts * AV_TIME_BASE;
     }
+    av_free_packet(pkt);
     demux_add_packet(stream, dp);
     return 1;
 }
@@ -981,12 +1010,13 @@ redo:
          * call the new API instead of relying on av_seek_frame() to do this
          * for us.
          */
-        av_seek_frame(priv->avfc, 0, stream_tell(demuxer->stream),
-                      AVSEEK_FLAG_BYTE);
         // avio_flush() is designed for write-only streams, and does the wrong
         // thing when reading. Flush it manually instead.
-        priv->avfc->pb->buf_ptr = priv->avfc->pb->buf_end;
         stream_drop_buffers(demuxer->stream);
+        priv->avfc->pb->buf_ptr = priv->avfc->pb->buf_end = priv->avfc->pb->buffer;
+        priv->avfc->pb->pos = stream_tell(demuxer->stream);
+        av_seek_frame(priv->avfc, 0, stream_tell(demuxer->stream),
+                      AVSEEK_FLAG_BYTE);
         return DEMUXER_CTRL_OK;
     default:
         return DEMUXER_CTRL_NOTIMPL;

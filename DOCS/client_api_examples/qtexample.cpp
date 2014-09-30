@@ -45,12 +45,17 @@ MainWindow::MainWindow(QWidget *parent) :
     mpv_container = new QWidget(this);
     setCentralWidget(mpv_container);
     mpv_container->setAttribute(Qt::WA_NativeWindow);
+    // If you have a HWND, use: int64_t wid = (intptr_t)hwnd;
     int64_t wid = mpv_container->winId();
     mpv_set_option(mpv, "wid", MPV_FORMAT_INT64, &wid);
 
     // Enable default bindings, because we're lazy. Normally, a player using
     // mpv as backend would implement its own key bindings.
     mpv_set_option_string(mpv, "input-default-bindings", "yes");
+
+    // Enable keyboard input on the X11 window. For the messy details, see
+    // --input-x11-keyboard on the manpage.
+    mpv_set_option_string(mpv, "input-x11-keyboard", "yes");
 
     // Let us receive property change events with MPV_EVENT_PROPERTY_CHANGE if
     // this property changes.
@@ -81,6 +86,24 @@ void MainWindow::handle_mpv_event(mpv_event *event)
                 // was stopped.
                 statusBar()->showMessage("");
             }
+        }
+        break;
+    }
+    case MPV_EVENT_VIDEO_RECONFIG: {
+        // Retrieve the new video size.
+        int64_t w, h;
+        if (mpv_get_property(mpv, "dwidth", MPV_FORMAT_INT64, &w) >= 0 &&
+            mpv_get_property(mpv, "dheight", MPV_FORMAT_INT64, &h) >= 0 &&
+            w > 0 && h > 0)
+        {
+            // Note that the MPV_EVENT_VIDEO_RECONFIG event doesn't necessarily
+            // imply a resize, and you should check yourself if the video
+            // dimensions really changed.
+            // mpv itself will scale/letter box the video to the container size
+            // if the video doesn't fit.
+            std::stringstream ss;
+            ss << "Reconfig: " << w << " " << h;
+            statusBar()->showMessage(QString::fromStdString(ss.str()));
         }
         break;
     }

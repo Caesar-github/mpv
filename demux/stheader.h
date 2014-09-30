@@ -23,7 +23,7 @@
 
 #include "common/common.h"
 #include "audio/chmap.h"
-#include "ms_hdr.h"
+
 struct MPOpts;
 struct demuxer;
 
@@ -55,6 +55,7 @@ struct sh_stream {
     char *title;
     char *lang;                 // language code
     bool default_track;         // container default track flag
+    int hls_bitrate;
 
     // stream is a picture (such as album art)
     struct demux_packet *attached_picture;
@@ -66,10 +67,10 @@ struct sh_stream {
 typedef struct sh_audio {
     int samplerate;
     struct mp_chmap channels;
+    bool force_channels;
     int bitrate; // compressed bits/sec
-    // win32-compatible codec parameters:
-    MP_WAVEFORMATEX *wf;
-    // note codec extradata may be either under "wf" or "codecdata"
+    int block_align;
+    int bits_per_coded_sample;
     unsigned char *codecdata;
     int codecdata_len;
     struct replaygain_data *replaygain_data;
@@ -80,9 +81,13 @@ typedef struct sh_video {
     float fps;            // frames per second (set only if constant fps)
     float aspect;         // aspect ratio stored in the file (for prescaling)
     int bitrate;          // compressed bits/sec
+    int bits_per_coded_sample;
+    int coded_width, coded_height;
+    unsigned char *extradata;
+    int extradata_len;
     int disp_w, disp_h;   // display size
     int rotate;           // intended display rotation, in degrees, [0, 359]
-    MP_BITMAPINFOHEADER *bih;
+    int stereo_mode;      // mp_stereo3d_mode (0 if none/unknown)
 } sh_video_t;
 
 typedef struct sh_sub {

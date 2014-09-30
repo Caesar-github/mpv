@@ -1,173 +1,68 @@
-Release 0.5.4
-=============
-
-Bug fixes
----------
-
-- Fix generation of watch later config file for multiline file names when
-  --write-filename-in-watch-later-config is used (avoid writing the new lines
-  in the config, which would make it possible for the filename to set options).
-- Fix random crashes on audio uninit.
-
-This listing is not complete. There are many more bug fixes and changes. The
-complete change log can be viewed by running ``git log 6f7f7c3..1a7b6f1`` in
-the git repository.
-
-Release 0.5.3
-=============
-
-Bug fixes
----------
-
-- Fix build failure introduced by the previous release.
-
-This listing is not complete. There are many more bug fixes and changes. The
-complete change log can be viewed by running ``git log 41f2ad3..41f2ad3`` in
-the git repository.
-
-Release 0.5.2
+Release 0.6.0
 =============
 
 Changes
 -------
 
-- Inherit event flags from parent X11 window when using --wid.
-- Properly resume playlists loaded at runtime (this makes mpv try to resume a
-  playlist when loaded like "mpv playlist.m3u").
-- Don't honor $XDG_CONFIG_DIRS anymore for global paths (this fixes a regression
-  on systems that set the variable by default to somewhere else then /etc,
-  making mpv skip previously created config files).
-- Allow up to 256 MB of extradata to make broken files work.
-
-Bug fixes
----------
-
-- Restore old speed change behavior (this fixes a temporary lack of sound after
-  restoring normal speed e.g. when pressing Backspace).
-- Fix quit handling when seeking past EOF while paused.
-- Prevent burning CPU when seeking while paused.
-- Don't add the playlist base path twice when using --playlist.
-- Fix a crash when the initialization of the EGL context fails on Wayland.
-- Make EOF handling properly event-based (this fixes a bug that made mpv hang
-  when changing from one file to the next with --gapless-audio=no).
-- Assume icy title data is terminated with ';' (this fixes handling of streams
-  with metadata containing apostrophes).
-
-This listing is not complete. There are many more bug fixes and changes. The
-complete change log can be viewed by running ``git log 0f1d6c0..e3d3a47`` in
-the git repository.
-
-Release 0.5.1
-=============
-
-Changes
--------
-
-- Add audio/flac to the MIME type list in mpv.desktop.
-- The --slave-broken option has been reintroduced and is equivalent to using
-  --input-file=/dev/stdin and --input-terminal=no.
-
-Bug fixes
----------
-
-- Fix screenshots with anamorphic videos in the vdpau vo.
-- Fix a crash happening when mpv fails to create a vdpau mixer in the vdpau vo.
-- Don't quit when the --loop-file option is used.
-- Always load the cursor theme in the wayland vo (this fixes a crash caused by
-  moving the mouse cursor over the video).
-- Properly return non-zero from the zsh completion script when no matches are
-  found (this fixes the use of user-defined zsh completion matchers).
-- Fix the description of the opengl-hq vo default options in the manpage.
-- Remove duplicated content from the manpage that was accidentally added in the
-  manpage reorganization from the previous release.
-- Avoid clobbering playback position on video end (when both audio and video
-  streams reached the end, the playback poisition was briefly set at 0).
-- Avoid overwriting user input in the coreaudio_device ao.
-
-This listing is not complete. There are many more bug fixes and changes. The
-complete change log can be viewed by running ``git log 6729e39..fdd648b`` in
-the git repository.
-
-Release 0.5.0
-=============
-
-Changes
--------
-
-- Support setting the start time relative to the start PTS with --start.
-- Use /dev/sr0 as default cdrom/dvd device on Linux.
-- Change "cache" property representation to float.
-- Split the ao_coreaudio audio output into ao_coreaudio (which uses the
-  AudioUnits and the CoreAudio sound server) and ao_coreaudio_device (which uses
-  direct device access).
-- Complete supported URL schemes in the zsh completion script.
-- Enable compiler optimizations (-O2) during build.
-- Allow precise seeking with percent-based seeks too.
-- Do precise seeks when clicking on the OSC seekbar.
-- Remove support for older VDA hwaccel versions on Mac OS X (requires recent
-  versions of ffmpeg/libav).
-- Remove the last remains of slave mode (--slave-broken option). Support for
-  reading input commands from stdin can be emulated using: --input-terminal=no
-  --input-file=/dev/stdin.
-- Some key binding were remapped or removed:
-  + "LEFT" and "RIGHT" have been remapped to seek 5 seconds instead of 10.
-  + "c" for changing the YUV color space was unmapped.
-  + OSD level cycling has been remapped from "o" to "O".
-  + "o" is now mapped to the show_progress command (like "P").
-  + "PGUP" and "PGDWN" have been remapped to chapter-based seeks (the old
-    bindings "@" and "!" are still available). The old behvaiour has been
-    remapped to "Shift+PGUP" and "Shift+PGDWM".
-  + Increasing/decreasing audio delay have been remapped from "+" and "-" to
-    "Ctrl++" and "Ctrl+-".
-  + "(" and ")" for adjusting audio balance have been unmapped.
-  + "F" for toggling the "sub-forced-only" option has been unmapped.
-  + "TAB" for cycling TS programs has been unmapped.
-  + "A" for cycling DVD angle has been unmapped.
-  + "U" for stopping playback has been unmapped.
-  + "l" and "L" for cycling quvi format have been unmapped.
-- Make it possible to build the client API (libmpv) on Mac OS X.
-- Do necessary checks for nested Wayland compositors which only have limited
-  interfaces.
-- The options in the manpage have been re-organized into sections and ordered by
-  usage to make it easier to navigate.
-- The "hard" framedrop mode has been removed (this behaviour is still available
-  via the --vd-lavc-framedrop option).
-- Show the basename of a subtitle file only (without the directory part).
-
-Bug fixes
----------
-
-- Use a default color space for files with no video (this fixes color managed
-  OSD messages when no video channel is present).
-- Fix key equivalent dispatching for Cocoa on Mac OS X.
-- Disable non-interleaved audio formats by default with ao_alsa, since some
-  ALSA plugins don't cope well with them (non-interleaved formats can still be
-  enabled using the "non-interleaved" ao_alsa option).
-- Fix deadlock in the client API when calling mpv_terminate_destroy() before
-  mpv_initialize().
-- Fix flushing of filter chain (this fixes a bug where the last frames would get
-  dropped on EOF, if buffered by filters).
-- Actually use the channels.conf configuration file for DVB.
-- Restore the --dvbin-file option.
-- Fix off by one error in the command parser which caused a segfault when using
-  the mp.commandv() Lua function with 10 or more arguments.
+- Map ESC to exiting fullscreen.
+- Run the vo inside its own thread.
+- Enable the demuxer thread by default.
+- Prefer the opengl vo over the vdpau one.
+- Complete profile names in the zsh completion script.
+- Raise dsound ao buffer size to 200ms and make it configurable.
+- Bind ctrl+c to quit, so that it works both in the terminal and the player
+  window.
+- Automatically load playlists without needing --load-unsafe-playlists or
+  --playlist. Unsafe URLs are still rejected (e.g. remote playlists can't load
+  local files).
+- Remove quvi-format property (which never really worked).
+- Wait until all Lua scripts are loaded on start.
+- Use separate threads for input sources (terminal, lirc, joystick) instead of
+  using a central I/O loop.
+- Complete values for options that take file names in the zsh completion script.
+- Use libwaio for pipe input on Windows (if you want --input-file to work on
+  Windows you need libwaio as an additional dependency).
+- Remove the --volstep option (users should change the argument to the "add"
+  function in input.conf instead).
+- Always show the OSD message when changing volume, gamma, panscan, etc along
+  with the OSD bar.
+- When changing a property always show it on the OSD (except for "pause" and
+  "fullscreen").
+- Prefer the libavcodec decoder over libmpg123 for mp3 decoding (ffmpeg/libav
+  support for gapless audio works better for mpv's use-case).
+- Allow passing number of loops to --loop-file.
+- Change --keep-open option semantics to not terminate the player when playing
+  or seeking past the end of the file and there's no next file to be played.
+- Disable the sndio ao by default and prefer other outputs even if it's enabled.
 
 New features
 ------------
 
-- Search for config files in $XDG_CONFIG_HOME and $XDG_CONFIG_DIRS in addition
-  to ~/.mpv. The config file has also been renamed to mpv.conf (although the
-  old file still works and will be loaded even if the new one exists).
-- Add "playback-time" property that returns the current playback time always
-  starting at 0. This is now used to show the playback time in the OSD and the
-  status line, fixing the shown playback time for transport streams that start
-  at a completely random timestamp.
-- Add cache-related "cache-free", "cache-used" and "cache-idle" properties.
-- Add option to list supported protocols (--list-protocols).
-- Allow setting libavformat stream options with the --stream-lavf-o option.
-- Support running the demuxer in a separate thread and prefetch packets (this
-  can be enabled using the --demuxer-thread option).
+- Add new framedrop mode that limits the frequency of new video frames displayed
+  based on the display framerate (this is enabled by default, the old
+  decoder-based mode can be enabled with --framedrop=decoder).
+- Add --demuxer-readahead-secs option to control the readahead buffer using a
+  duration value.
+- Add estimated-frame-count and estimated-frame-number properties.
+- Add --cache-secs option which overrides the value of --demuxer-readahead-secs
+  if the stream cache is active.
+- Add demuxer-cache-duration and demuxer-cache-idle properties.
+- Make --cache-file create a temporary file if the string "TMP" is passed
+  instead of a file name.
+- Add support for Matroska 3D (if a file is marked as 3D using the StereoMode
+  element, an automatic conversion filter is added).
+- Add --osd-playing-msg option to show a message on the OSD when the playback
+  starts.
+- Add --media-title option to force the content of the media-title property.
+- Add --osd-msg1, --osd-msg2 and --osd-msg3 options to override the OSD message
+  for the corresponding OSD level (before only level 3 could be overridden with
+  --osd-status-message).
+- Add support for digital passthrough in the pulse ao.
+- Add support for opening DVD and Bluray directories directly.
+- Add --input-x11-keyboard option to control whether keyboard input should be
+  enabled on the X11 window ot not (this is disabled by default when using the
+  libmpv library).
 
 This listing is not complete. There are many more bug fixes and changes. The
-complete change log can be viewed by running ``git log cb250d4..52f2f67`` in
+complete change log can be viewed by running ``git log a1be3cf..61ebe61`` in
 the git repository.

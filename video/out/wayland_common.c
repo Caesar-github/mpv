@@ -31,7 +31,7 @@
 #include <linux/input.h>
 
 #include "config.h"
-#include "bstr/bstr.h"
+#include "misc/bstr.h"
 #include "options/options.h"
 #include "common/msg.h"
 #include "talloc.h"
@@ -153,19 +153,9 @@ static void output_handle_geometry(void *data,
                                    const char *model,
                                    int32_t transform)
 {
-    /* Ignore transforms for now */
-    switch (transform) {
-        case WL_OUTPUT_TRANSFORM_NORMAL:
-        case WL_OUTPUT_TRANSFORM_90:
-        case WL_OUTPUT_TRANSFORM_180:
-        case WL_OUTPUT_TRANSFORM_270:
-        case WL_OUTPUT_TRANSFORM_FLIPPED:
-        case WL_OUTPUT_TRANSFORM_FLIPPED_90:
-        case WL_OUTPUT_TRANSFORM_FLIPPED_180:
-        case WL_OUTPUT_TRANSFORM_FLIPPED_270:
-        default:
-            break;
-    }
+    struct vo_wayland_output *output = data;
+    output->make = make;
+    output->model = model;
 }
 
 static void output_handle_mode(void *data,
@@ -177,17 +167,53 @@ static void output_handle_mode(void *data,
 {
     struct vo_wayland_output *output = data;
 
-    if (!output)
+    // only save current mode
+    if (!output || !(flags & WL_OUTPUT_MODE_CURRENT))
         return;
 
     output->width = width;
     output->height = height;
     output->flags = flags;
+    output->refresh_rate = refresh;
 }
 
 static const struct wl_output_listener output_listener = {
     output_handle_geometry,
     output_handle_mode
+};
+
+
+/* SURFACE LISTENER */
+
+static void surface_handle_enter(void *data,
+                                 struct wl_surface *wl_surface,
+                                 struct wl_output *output)
+{
+    struct vo_wayland_state *wl = data;
+    wl->display.current_output = NULL;
+
+    struct vo_wayland_output *o;
+    wl_list_for_each(o, &wl->display.output_list, link) {
+        if (o->output == output) {
+            wl->display.current_output = o;
+            break;
+        }
+    }
+}
+
+static void surface_handle_leave(void *data,
+                                 struct wl_surface *wl_surface,
+                                 struct wl_output *output)
+{
+    // window can be displayed at 2 output, but we only use the most recently
+    // entered and discard the previous one even if a part of the window is
+    // still visible on the previous entered output.
+    // Don't bother with a "leave" logic
+}
+
+static const struct wl_surface_listener surface_listener = {
+    surface_handle_enter,
+    surface_handle_leave
 };
 
 /* KEYBOARD LISTENER */
@@ -227,7 +253,7 @@ static void keyboard_handle_keymap(void *data,
     wl->input.xkb.state = xkb_state_new(wl->input.xkb.keymap);
     if (!wl->input.xkb.state) {
         MP_ERR(wl, "failed to create XKB state\n");
-        xkb_map_unref(wl->input.xkb.keymap);
+        xkb_keymap_unref(wl->input.xkb.keymap);
         wl->input.xkb.keymap = NULL;
         return;
     }
@@ -263,7 +289,7 @@ static void keyboard_handle_key(void *data,
     xkb_keysym_t sym;
 
     code = key + 8;
-    num_syms = xkb_key_get_syms(wl->input.xkb.state, code, &syms);
+    num_syms = xkb_state_key_get_syms(wl->input.xkb.state, code, &syms);
 
     sym = XKB_KEY_NoSymbol;
     if (num_syms == 1)
@@ -294,12 +320,28 @@ static void keyboard_handle_modifiers(void *data,
                           0, 0, group);
 }
 
+static void keyboard_handle_repeat_info(void *data,
+                                        struct wl_keyboard *wl_keyboard,
+                                        int32_t rate,
+                                        int32_t delay)
+{
+    struct vo_wayland_state *wl = data;
+    if (wl->vo->opts->native_keyrepeat) {
+        if (rate < 0 || delay < 0) {
+            MP_WARN(wl, "Invalid rate or delay values sent by compositor\n");
+            return;
+        }
+        mp_input_set_repeat_info(wl->vo->input_ctx, rate, delay);
+    }
+}
+
 static const struct wl_keyboard_listener keyboard_listener = {
     keyboard_handle_keymap,
     keyboard_handle_enter,
     keyboard_handle_leave,
     keyboard_handle_key,
-    keyboard_handle_modifiers
+    keyboard_handle_modifiers,
+    keyboard_handle_repeat_info
 };
 
 /* POINTER LISTENER */
@@ -424,8 +466,17 @@ static void seat_handle_capabilities(void *data,
     }
 }
 
+static void seat_handle_name(void *data,
+                             struct wl_seat *seat,
+                             const char *name)
+{
+    struct vo_wayland_state *wl = data;
+    MP_VERBOSE(wl, "Seat \"%s\" connected\n", name);
+}
+
 static const struct wl_seat_listener seat_listener = {
     seat_handle_capabilities,
+    seat_handle_name,
 };
 
 static void data_offer_handle_offer(void *data,
@@ -567,7 +618,7 @@ static void registry_handle_global (void *data,
 
     else if (strcmp(interface, "wl_seat") == 0) {
 
-        wl->input.seat = wl_registry_bind(reg, id, &wl_seat_interface, 1);
+        wl->input.seat = wl_registry_bind(reg, id, &wl_seat_interface, 4);
         wl_seat_add_listener(wl->input.seat, &seat_listener, wl);
 
         wl->input.datadev = wl_data_device_manager_get_data_device(
@@ -738,7 +789,7 @@ static bool create_display (struct vo_wayland_state *wl)
     wl->display.registry = wl_display_get_registry(wl->display.display);
     wl_registry_add_listener(wl->display.registry, &registry_listener, wl);
 
-    wl_display_dispatch(wl->display.display);
+    wl_display_roundtrip(wl->display.display);
 
     wl->display.display_fd = wl_display_get_fd(wl->display.display);
 
@@ -783,6 +834,9 @@ static bool create_window (struct vo_wayland_state *wl)
 {
     wl->window.video_surface =
         wl_compositor_create_surface(wl->display.compositor);
+
+    wl_surface_add_listener(wl->window.video_surface,
+                            &surface_listener, wl);
 
     if (wl->display.shell) {
         wl->window.shell_surface = wl_shell_get_shell_surface(wl->display.shell,
@@ -859,7 +913,7 @@ static void destroy_input (struct vo_wayland_state *wl)
 {
     if (wl->input.keyboard) {
         wl_keyboard_destroy(wl->input.keyboard);
-        xkb_map_unref(wl->input.xkb.keymap);
+        xkb_keymap_unref(wl->input.xkb.keymap);
         xkb_state_unref(wl->input.xkb.state);
     }
 
@@ -897,6 +951,22 @@ int vo_wayland_init (struct vo *vo)
     {
         vo_wayland_uninit(vo);
         return false;
+    }
+
+    // create_display's roundtrip only adds the interfaces
+    // the second roundtrip receives output modes, geometry and more ...
+    wl_display_roundtrip(wl->display.display);
+
+    struct vo_wayland_output *o = NULL;
+    wl_list_for_each(o, &wl->display.output_list, link) {
+        MP_VERBOSE(wl, "output received:\n"
+                       "\tvendor: %s\n"
+                       "\tmodel: %s\n"
+                       "\tw: %d, h: %d\n"
+                       "\tHz: %d\n",
+                       o->make, o->model,
+                       o->width, o->height,
+                       o->refresh_rate / 1000);
     }
 
     vo->event_fd = wl->display.display_fd;
@@ -1047,9 +1117,6 @@ static void vo_wayland_update_screeninfo(struct vo *vo, struct mp_rect *screenrc
 {
     struct vo_wayland_state *wl = vo->wayland;
     struct mp_vo_opts *opts = vo->opts;
-    bool mode_received = false;
-
-    wl_display_roundtrip(wl->display.display);
 
     *screenrc = (struct mp_rect){0};
 
@@ -1059,24 +1126,16 @@ static void vo_wayland_update_screeninfo(struct vo *vo, struct mp_rect *screenrc
     struct vo_wayland_output *first_output = NULL;
     struct vo_wayland_output *fsscreen_output = NULL;
 
-    wl_list_for_each_reverse(output, &wl->display.output_list, link) {
-        if (!output || !output->width)
-            continue;
+    if (opts->fsscreen_id >= 0) {
+        wl_list_for_each_reverse(output, &wl->display.output_list, link) {
+            if (!output || !output->width)
+                continue;
 
-        mode_received = true;
+            if (opts->fsscreen_id == screen_id)
+                fsscreen_output = output;
 
-        if (opts->fsscreen_id == screen_id)
-            fsscreen_output = output;
-
-        if (!first_output)
-            first_output = output;
-
-        screen_id++;
-    }
-
-    if (!mode_received) {
-        MP_ERR(wl, "no output mode detected\n");
-        return;
+            screen_id++;
+        }
     }
 
     if (fsscreen_output) {
@@ -1088,8 +1147,8 @@ static void vo_wayland_update_screeninfo(struct vo *vo, struct mp_rect *screenrc
         wl->display.fs_output = NULL; /* current output is always 0 */
 
         if (first_output) {
-            screenrc->x1 = first_output->width;
-            screenrc->y1 = first_output->height;
+            screenrc->x1 = wl->display.current_output->width;
+            screenrc->y1 = wl->display.current_output->height;
         }
     }
 
@@ -1112,13 +1171,13 @@ int vo_wayland_control (struct vo *vo, int *events, int request, void *arg)
     case VOCTRL_ONTOP:
         vo_wayland_ontop(vo);
         return VO_TRUE;
-    case VOCTRL_GET_WINDOW_SIZE: {
+    case VOCTRL_GET_UNFS_WINDOW_SIZE: {
         int *s = arg;
         s[0] = wl->window.width;
         s[1] = wl->window.height;
         return VO_TRUE;
     }
-    case VOCTRL_SET_WINDOW_SIZE: {
+    case VOCTRL_SET_UNFS_WINDOW_SIZE: {
         int *s = arg;
         if (!wl->window.is_fullscreen)
             schedule_resize(wl, 0, s[0], s[1]);
@@ -1138,6 +1197,15 @@ int vo_wayland_control (struct vo *vo, int *events, int request, void *arg)
     case VOCTRL_UPDATE_WINDOW_TITLE:
         window_set_title(wl, (char*) arg);
         return VO_TRUE;
+    case VOCTRL_GET_DISPLAY_FPS: {
+        if (!wl->display.current_output)
+            break;
+
+        // refresh rate is stored in milli-Hertz (mHz)
+        double fps = wl->display.current_output->refresh_rate / 1000;
+        *(double*) arg = fps;
+        return VO_TRUE;
+    }
     }
     return VO_NOTIMPL;
 }
@@ -1158,20 +1226,9 @@ bool vo_wayland_config (struct vo *vo, uint32_t flags)
     wl->window.aspect = vo->dwidth / (float) MPMAX(vo->dheight, 1);
 
     if (!(flags & VOFLAG_HIDDEN)) {
-        if (!wl->window.is_init) {
-            wl->window.width = vo->dwidth;
-            wl->window.height = vo->dheight;
-        }
-
-        if (vo->opts->fullscreen) {
-            if (wl->window.is_fullscreen)
-                schedule_resize(wl, 0, wl->window.fs_width, wl->window.fs_height);
-            else
-                vo_wayland_fullscreen(vo);
-        }
-        else
-            vo_wayland_ontop(vo);
-        wl->window.is_init = true;
+        wl->window.width = vo->dwidth;
+        wl->window.height = vo->dheight;
+        vo_wayland_fullscreen(vo);
     }
 
     return true;

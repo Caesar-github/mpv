@@ -80,8 +80,9 @@ double rel_time_to_abs(struct MPContext *mpctx, struct m_rel_time t)
 double get_play_end_pts(struct MPContext *mpctx)
 {
     struct MPOpts *opts = mpctx->opts;
+    double end = MP_NOPTS_VALUE;
     if (opts->play_end.type) {
-        return rel_time_to_abs(mpctx, opts->play_end);
+        end = rel_time_to_abs(mpctx, opts->play_end);
     } else if (opts->play_length.type) {
         double startpts = get_start_time(mpctx);
         double start = rel_time_to_abs(mpctx, opts->play_start);
@@ -89,9 +90,14 @@ double get_play_end_pts(struct MPContext *mpctx)
             start = startpts;
         double length = rel_time_to_abs(mpctx, opts->play_length);
         if (start != MP_NOPTS_VALUE && length != MP_NOPTS_VALUE)
-            return start + length;
+            end = start + length;
     }
-    return MP_NOPTS_VALUE;
+    if (opts->chapterrange[1] > 0) {
+        double cend = chapter_start_time(mpctx, opts->chapterrange[1]);
+        if (cend != MP_NOPTS_VALUE && (end == MP_NOPTS_VALUE || cend < end))
+            end = cend;
+    }
+    return end;
 }
 
 // Time used to seek external tracks to.
@@ -111,6 +117,16 @@ double get_main_demux_pts(struct MPContext *mpctx)
 double get_start_time(struct MPContext *mpctx)
 {
     return mpctx->demuxer ? mpctx->demuxer->start_time : 0;
+}
+
+// Get the offset from the given track to the video.
+double get_track_video_offset(struct MPContext *mpctx, struct track *track)
+{
+    if (track && track->under_timeline)
+        return mpctx->video_offset;
+    if (track && track->is_external)
+        return get_start_time(mpctx);
+    return 0;
 }
 
 float mp_get_cache_percent(struct MPContext *mpctx)
@@ -148,10 +164,8 @@ void update_window_title(struct MPContext *mpctx, bool force)
         talloc_free(mpctx->last_window_title);
         mpctx->last_window_title = talloc_steal(mpctx, title);
 
-        if (mpctx->video_out) {
-            mpctx->video_out->window_title = talloc_strdup(mpctx->video_out, title);
+        if (mpctx->video_out)
             vo_control(mpctx->video_out, VOCTRL_UPDATE_WINDOW_TITLE, title);
-        }
 
         if (mpctx->ao) {
             ao_control(mpctx->ao, AOCONTROL_UPDATE_STREAM_TITLE, title);
@@ -180,13 +194,7 @@ void stream_dump(struct MPContext *mpctx)
                    (long long int)pos, (long long int)size);
         }
         stream_fill_buffer(stream);
-        for (;;) {
-            mp_cmd_t *cmd = mp_input_get_cmd(mpctx->input, 0, false);
-            if (!cmd)
-                break;
-            run_command(mpctx, cmd);
-            talloc_free(cmd);
-        }
+        mp_process_input(mpctx);
     }
 }
 

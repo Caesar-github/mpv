@@ -25,6 +25,7 @@
 
 #include "config.h"
 #include "osdep/io.h"
+#include "osdep/terminal.h"
 
 // Set the CLOEXEC flag on the given fd.
 // On error, false is returned (and errno set).
@@ -138,7 +139,7 @@ int mp_stat(const char *path, struct stat *buf)
     return res;
 }
 
-static int mp_check_console(HANDLE *wstream)
+static int mp_check_console(HANDLE wstream)
 {
     if (wstream != INVALID_HANDLE_VALUE) {
         unsigned int filetype = GetFileType(wstream);
@@ -167,7 +168,7 @@ static int mp_vfprintf(FILE *stream, const char *format, va_list args)
 {
     int done = 0;
 
-    HANDLE *wstream = INVALID_HANDLE_VALUE;
+    HANDLE wstream = INVALID_HANDLE_VALUE;
 
     if (stream == stdout || stream == stderr) {
         wstream = GetStdHandle(stream == stdout ?
@@ -179,13 +180,10 @@ static int mp_vfprintf(FILE *stream, const char *format, va_list args)
         char *buf = talloc_array(NULL, char, len);
 
         if (buf) {
-            vsnprintf(buf, len, format, args);
-            wchar_t *out = mp_from_utf8(NULL, buf);
-            size_t out_len = wcslen(out);
-            talloc_free(buf);
-            done = WriteConsoleW(wstream, out, out_len, NULL, NULL);
-            talloc_free(out);
+            done = vsnprintf(buf, len, format, args);
+            mp_write_console_ansi(wstream, buf);
         }
+        talloc_free(buf);
     } else {
         done = vfprintf(stream, format, args);
     }
@@ -310,6 +308,41 @@ int mp_mkdir(const char *path, int mode)
     int res = _wmkdir(wpath);
     talloc_free(wpath);
     return res;
+}
+
+FILE *mp_tmpfile(void)
+{
+    // Reserve a file name in the format %TMP%\mpvXXXX.TMP
+    wchar_t tmp_path[MAX_PATH + 1];
+    if (!GetTempPathW(MAX_PATH + 1, tmp_path))
+        return NULL;
+    wchar_t tmp_name[MAX_PATH + 1];
+    if (!GetTempFileNameW(tmp_path, L"mpv", 0, tmp_name))
+        return NULL;
+
+    // Create the file. FILE_ATTRIBUTE_TEMPORARY indicates the file will be
+    // short-lived. Windows should avoid flushing it to disk while there is
+    // sufficient cache.
+    HANDLE file = CreateFileW(tmp_name, GENERIC_READ | GENERIC_WRITE | DELETE,
+        FILE_SHARE_READ | FILE_SHARE_DELETE, NULL, CREATE_ALWAYS,
+        FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE, NULL);
+    if (file == INVALID_HANDLE_VALUE) {
+        DeleteFileW(tmp_name);
+        return NULL;
+    }
+
+    int fd = _open_osfhandle((intptr_t)file, 0);
+    if (fd < 0) {
+        CloseHandle(file);
+        return NULL;
+    }
+    FILE *fp = fdopen(fd, "w+b");
+    if (!fp) {
+        close(fd);
+        return NULL;
+    }
+
+    return fp;
 }
 
 static char **utf8_environ;

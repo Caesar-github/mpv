@@ -214,8 +214,7 @@ static int configure_lavrr(struct af_instance *af, struct mp_audio *in,
     if (avresample_open(s->avrctx) < 0 ||
         avresample_open(s->avrctx_out) < 0)
     {
-        MP_ERR(af, "Cannot open "
-                "Libavresample Context. \n");
+        MP_ERR(af, "Cannot open Libavresample Context. \n");
         return AF_ERROR;
     }
     return AF_OK;
@@ -339,7 +338,7 @@ static int filter(struct af_instance *af, struct mp_audio *data, int flags)
     if (needs_reorder(s->reorder_out, out->nch)) {
         if (af_fmt_is_planar(out->format)) {
             reorder_planes(data, s->reorder_out);
-        } else {
+        } else if (out->samples) {
             int out_size = out->samples * out->sstride;
             if (talloc_get_size(s->reorder_buffer) < out_size)
                 s->reorder_buffer = talloc_realloc_size(s, s->reorder_buffer, out_size);
@@ -347,7 +346,8 @@ static int filter(struct af_instance *af, struct mp_audio *data, int flags)
             int out_samples = avresample_convert(s->avrctx_out,
                     (uint8_t **) data->planes, out_size, out->samples,
                     (uint8_t **) out->planes, out_size, out->samples);
-            assert(out_samples == data->samples);
+            if (out_samples < 0)
+                MP_ERR(af, "Reordering failed.\n");
         }
     }
 
@@ -371,8 +371,7 @@ static int af_open(struct af_instance *af)
     if (s->avrctx && s->avrctx_out) {
         return AF_OK;
     } else {
-        MP_ERR(af, "Cannot initialize "
-               "Libavresample Context. \n");
+        MP_ERR(af, "Cannot initialize Libavresample Context. \n");
         uninit(af);
         return AF_ERROR;
     }

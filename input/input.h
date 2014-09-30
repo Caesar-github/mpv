@@ -20,23 +20,13 @@
 #define MPLAYER_INPUT_H
 
 #include <stdbool.h>
-#include "bstr/bstr.h"
+#include "misc/bstr.h"
 
 #include "cmd_list.h"
 #include "cmd_parse.h"
 
-// Error codes for the drivers
-
-// An error occurred but we can continue
-#define MP_INPUT_ERROR -1
-// A fatal error occurred, this driver should be removed
-#define MP_INPUT_DEAD -2
-// No input was available
-#define MP_INPUT_NOTHING -3
-//! Input will be available if you try again
-#define MP_INPUT_RETRY -4
-// Key FIFO was full - release events may be lost, zero button-down status
-#define MP_INPUT_RELEASE_ALL -5
+// For mp_input_put_key(): release all keys that are down.
+#define MP_INPUT_RELEASE_ALL -1
 
 enum mp_cmd_flags {
     MP_ON_OSD_NO = 0,           // prefer not using OSD
@@ -94,27 +84,57 @@ typedef struct mp_cmd {
     const struct mp_cmd_def *def;
 } mp_cmd_t;
 
-/* Add a new command input source.
- * "fd" is a file descriptor (use -1 if you don't use any fd)
- * "select" tells whether to use select() on the fd to determine when to
- * try reading.
- * "read_cmd_func" is optional. It must return either text data or one of the
- * MP_INPUT error codes above. For return values >= 0, it behaves like UNIX
- * read() and returns the number of bytes copied to the dest buffer.
- * "read_key_func" is optional. It returns either key codes (ASCII, keycodes.h),
- * or MP_INPUT error codes.
- * "close_func" will be called when closing. Can be NULL. Its return value
- * is ignored (it's only there to allow using standard close() as the func).
- * "ctx" is for free use, and is passed to the callbacks.
- */
-int mp_input_add_fd(struct input_ctx *ictx, int fd, int select,
-                    int read_cmd_func(void *ctx, int fd, char *dest, int size),
-                    int read_key_func(void *ctx, int fd),
-                    int close_func(void *ctx, int fd), void *ctx);
+struct mp_input_src {
+    struct mpv_global *global;
+    struct mp_log *log;
+    struct input_ctx *input_ctx;
 
-/* Can be passed as read_func for above function in order to read() from the FD.
- */
-int input_default_read_cmd(void *ctx, int fd, char *buf, int l);
+    struct mp_input_src_internal *in;
+
+    // If not-NULL: called before destroying the input_src. Should unblock the
+    // reader loop, and make it exit. (Use with mp_input_add_thread_src().)
+    void (*cancel)(struct mp_input_src *src);
+    // Called after the reader thread returns, and cancel() won't be called
+    // again. This should make sure that nothing after this call accesses src.
+    void (*uninit)(struct mp_input_src *src);
+
+    // For free use by the implementer.
+    void *priv;
+};
+
+// Add a new input source. The input code can create a new thread, which feeds
+// keys or commands to input_ctx. mp_input_src.uninit must be set.
+// mp_input_src_kill() must not be called by anything after init.
+struct mp_input_src *mp_input_add_src(struct input_ctx *ictx);
+
+// Add an input source that runs on a thread. The source is automatically
+// removed if the thread loop exits.
+//  ctx: this is passed to loop_fn.
+//  loop_fn: this is called once inside of a new thread, and should not return
+//      until all input is read, or src->cancel is called by another thread.
+//      You must call mp_input_src_init_done(src) early during init to signal
+//      success (then src->cancel may be called at a later point); on failure,
+//      return from loop_fn immediately.
+// Returns >=0 on success, <0 on failure to allocate resources.
+// Do not set src->cancel after mp_input_src_init_done() has been called.
+int mp_input_add_thread_src(struct input_ctx *ictx, void *ctx,
+    void (*loop_fn)(struct mp_input_src *src, void *ctx));
+
+// Signal successful init.
+// Must be called on the same thread as loop_fn (see mp_input_add_thread_src()).
+// Set src->cancel and src->uninit (if needed) before calling this.
+void mp_input_src_init_done(struct mp_input_src *src);
+
+// Currently only with mp_input_add_thread_src().
+int mp_input_src_get_wakeup_fd(struct mp_input_src *src);
+
+// Remove and free the source. You can call this only while the input_ctx
+// exists; otherwise there would be a race condition when another thread
+// destroys input_ctx.
+void mp_input_src_kill(struct mp_input_src *src);
+
+// Feed text data, which will be split into lines of commands.
+void mp_input_src_feed_cmd_text(struct mp_input_src *src, char *buf, size_t len);
 
 // Process keyboard input. code is a key code from keycodes.h, possibly
 // with modifiers applied. MP_INPUT_RELEASE_ALL is also a valid value.
@@ -136,6 +156,8 @@ void mp_input_get_mouse_pos(struct input_ctx *ictx, int *x, int *y);
 // Return whether we want/accept mouse input.
 bool mp_input_mouse_enabled(struct input_ctx *ictx);
 
+bool mp_input_x11_keyboard_enabled(struct input_ctx *ictx);
+
 /* Make mp_input_set_mouse_pos() mangle the mouse coordinates. Hack for certain
  * VOs. dst=NULL, src=NULL reset it. src can be NULL.
  */
@@ -143,18 +165,11 @@ struct mp_rect;
 void mp_input_set_mouse_transform(struct input_ctx *ictx, struct mp_rect *dst,
                                   struct mp_rect *src);
 
-// As for the cmd one you usually don't need this function.
-void mp_input_rm_key_fd(struct input_ctx *ictx, int fd);
-
 // Add a command to the command queue.
 int mp_input_queue_cmd(struct input_ctx *ictx, struct mp_cmd *cmd);
 
-/* Return next available command, or sleep up to "time" ms if none is
- * available. If "peek_only" is true return a reference to the command
- * but leave it queued.
- */
-struct mp_cmd *mp_input_get_cmd(struct input_ctx *ictx, int time,
-                                int peek_only);
+// Return next queued command, or NULL.
+struct mp_cmd *mp_input_read_cmd(struct input_ctx *ictx);
 
 // Parse text and return corresponding struct mp_cmd.
 // The location parameter is for error messages.
@@ -208,15 +223,24 @@ bool mp_input_test_dragging(struct input_ctx *ictx, int x, int y);
 struct mpv_global;
 struct input_ctx *mp_input_init(struct mpv_global *global);
 
+// Load config, options, and devices.
+void mp_input_load(struct input_ctx *ictx);
+
 void mp_input_uninit(struct input_ctx *ictx);
+
+// Sleep for the given amount of seconds, until mp_input_wakeup() is called,
+// or new input arrives. seconds<=0 returns immediately.
+void mp_input_wait(struct input_ctx *ictx, double seconds);
 
 // Wake up sleeping input loop from another thread.
 void mp_input_wakeup(struct input_ctx *ictx);
 
 void mp_input_wakeup_nolock(struct input_ctx *ictx);
 
-// Interruptible usleep:  (used by demux)
-bool mp_input_check_interrupt(struct input_ctx *ictx);
+// Used to asynchronously abort playback. Needed because the core still can
+// block on network in some situations.
+struct mp_cancel;
+void mp_input_set_cancel(struct input_ctx *ictx, struct mp_cancel *cancel);
 
 // If this returns true, use Right Alt key as Alt Gr to produce special
 // characters. If false, count Right Alt as the modifier Alt key.
@@ -226,8 +250,10 @@ bool mp_input_use_alt_gr(struct input_ctx *ictx);
 void mp_input_run_cmd(struct input_ctx *ictx, int def_flags, const char **cmd,
                       const char *location);
 
-void mp_input_set_main_thread(struct input_ctx *ictx);
+void mp_input_pipe_add(struct input_ctx *ictx, const char *filename);
+void mp_input_joystick_add(struct input_ctx *ictx, char *dev);
+void mp_input_lirc_add(struct input_ctx *ictx, char *lirc_configfile);
 
-extern int async_quit_request;
+void mp_input_set_repeat_info(struct input_ctx *ictx, int rate, int delay);
 
 #endif /* MPLAYER_INPUT_H */

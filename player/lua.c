@@ -39,7 +39,7 @@
 #include "options/m_option.h"
 #include "input/input.h"
 #include "options/path.h"
-#include "bstr/bstr.h"
+#include "misc/bstr.h"
 #include "osdep/timer.h"
 #include "osdep/threads.h"
 #include "sub/osd.h"
@@ -215,6 +215,28 @@ static int load_scripts(lua_State *L)
     return 0;
 }
 
+static void set_path(lua_State *L)
+{
+    void *tmp = talloc_new(NULL);
+
+    lua_getglobal(L, "package"); // package
+    lua_getfield(L, -1, "path"); // package path
+    const char *path = lua_tostring(L, -1);
+
+    char *newpath = talloc_strdup(tmp, path ? path : "");
+    char **luadir = mp_find_all_config_files(tmp, get_mpctx(L)->global, "lua");
+    for (int i = 0; luadir && luadir[i]; i++) {
+        newpath = talloc_asprintf_append(newpath, ";%s",
+                mp_path_join(tmp, bstr0(luadir[i]), bstr0("?.lua")));
+    }
+
+    lua_pushstring(L, newpath);  // package path newpath
+    lua_setfield(L, -3, "path"); // package path
+    lua_pop(L, 2);  // -
+
+    talloc_free(tmp);
+}
+
 static int run_lua(lua_State *L)
 {
     struct script_ctx *ctx = lua_touserdata(L, -1);
@@ -266,6 +288,9 @@ static int run_lua(lua_State *L)
     }
     lua_pop(L, 2); // -
 
+    assert(lua_gettop(L) == 0);
+
+    set_path(L);
     assert(lua_gettop(L) == 0);
 
     // run this under an error handler that can do backtraces
@@ -873,6 +898,7 @@ static int script_set_osd_ass(lua_State *L)
     int res_y = luaL_checkinteger(L, 2);
     const char *text = luaL_checkstring(L, 3);
     osd_set_external(mpctx->osd, res_x, res_y, (char *)text);
+    mp_input_wakeup(mpctx->input);
     return 0;
 }
 
@@ -891,7 +917,7 @@ static int script_get_screen_size(lua_State *L)
     struct MPContext *mpctx = get_mpctx(L);
     struct mp_osd_res vo_res = osd_get_vo_res(mpctx->osd, OSDTYPE_EXTERNAL);
     double aspect = 1.0 * vo_res.w / MPMAX(vo_res.h, 1) /
-                    vo_res.display_par;
+                    (vo_res.display_par ? vo_res.display_par : 1);
     lua_pushnumber(L, vo_res.w);
     lua_pushnumber(L, vo_res.h);
     lua_pushnumber(L, aspect);
@@ -977,10 +1003,10 @@ static int script_input_set_section_mouse_area(lua_State *L)
     osd_object_get_scale_factor(mpctx->osd, OSDTYPE_EXTERNAL, &sw, &sh);
 
     char *section = (char *)luaL_checkstring(L, 1);
-    int x0 = luaL_checkinteger(L, 2) / sw;
-    int y0 = luaL_checkinteger(L, 3) / sh;
-    int x1 = luaL_checkinteger(L, 4) / sw;
-    int y1 = luaL_checkinteger(L, 5) / sh;
+    int x0 = sw ? luaL_checkinteger(L, 2) / sw : 0;
+    int y0 = sh ? luaL_checkinteger(L, 3) / sh : 0;
+    int x1 = sw ? luaL_checkinteger(L, 4) / sw : 0;
+    int y1 = sh ? luaL_checkinteger(L, 5) / sh : 0;
     mp_input_set_section_mouse_area(mpctx->input, section, x0, y0, x1, y1);
     return 0;
 }
@@ -1001,6 +1027,19 @@ static int script_get_wakeup_pipe(lua_State *L)
 {
     struct script_ctx *ctx = get_ctx(L);
     lua_pushinteger(L, mpv_get_wakeup_pipe(ctx->client));
+    return 1;
+}
+
+static int script_getcwd(lua_State *L)
+{
+    char *cwd = mp_getcwd(NULL);
+    if (!cwd) {
+        lua_pushnil(L);
+        lua_pushstring(L, "error");
+        return 2;
+    }
+    lua_pushstring(L, cwd);
+    talloc_free(cwd);
     return 1;
 }
 
@@ -1103,6 +1142,7 @@ static const struct fn_entry main_fns[] = {
 };
 
 static const struct fn_entry utils_fns[] = {
+    FN_ENTRY(getcwd),
     FN_ENTRY(readdir),
     FN_ENTRY(split_path),
     FN_ENTRY(join_path),

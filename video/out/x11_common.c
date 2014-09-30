@@ -23,7 +23,7 @@
 #include <limits.h>
 
 #include "config.h"
-#include "bstr/bstr.h"
+#include "misc/bstr.h"
 #include "options/options.h"
 #include "common/common.h"
 #include "common/msg.h"
@@ -46,6 +46,7 @@
 #include <X11/Xatom.h>
 #include <X11/keysym.h>
 #include <X11/XKBlib.h>
+#include <X11/XF86keysym.h>
 
 #if HAVE_XSS
 #include <X11/extensions/scrnsaver.h>
@@ -59,12 +60,8 @@
 #include <X11/extensions/Xinerama.h>
 #endif
 
-#if HAVE_XF86VM
-#include <X11/extensions/xf86vmode.h>
-#endif
-
-#if HAVE_XF86XK
-#include <X11/XF86keysym.h>
+#if HAVE_XRANDR
+#include <X11/extensions/Xrandr.h>
 #endif
 
 #if HAVE_ZLIB
@@ -325,6 +322,67 @@ static int vo_wm_detect(struct vo *vo)
     return wm;
 }
 
+static void xrandr_read(struct vo_x11_state *x11)
+{
+#if HAVE_XRANDR
+    x11->num_displays = 0;
+
+    if (x11->xrandr_event < 0) {
+        int event_base, error_base;
+        if (!XRRQueryExtension(x11->display, &event_base, &error_base)) {
+            MP_VERBOSE(x11, "Couldn't init Xrandr.\n");
+            return;
+        }
+        x11->xrandr_event = event_base + RRNotify;
+        XRRSelectInput(x11->display, x11->rootwin, RRScreenChangeNotifyMask |
+                       RRCrtcChangeNotifyMask | RROutputChangeNotifyMask);
+    }
+
+    XRRScreenResources *r = XRRGetScreenResources(x11->display, x11->rootwin);
+    if (!r) {
+        MP_VERBOSE(x11, "Xrandr doesn't work.\n");
+        return;
+    }
+
+    for (int o = 0; o < r->noutput; o++) {
+        RROutput output = r->outputs[o];
+        XRRCrtcInfo *crtc = NULL;
+        XRROutputInfo *out = XRRGetOutputInfo(x11->display, r, output);
+        if (!out || !out->crtc)
+            goto next;
+        crtc = XRRGetCrtcInfo(x11->display, r, out->crtc);
+        if (!crtc)
+            goto next;
+        for (int om = 0; om < out->nmode; om++) {
+            RRMode xm = out->modes[om];
+            for (int n = 0; n < r->nmode; n++) {
+                XRRModeInfo m = r->modes[n];
+                if (m.id != xm || crtc->mode != xm)
+                    continue;
+                if (x11->num_displays >= MAX_DISPLAYS)
+                    continue;
+                struct xrandr_display d = {
+                    .rc = { crtc->x, crtc->y,
+                            crtc->x + crtc->width, crtc->y + crtc->height },
+                    .fps = m.dotClock / (m.hTotal * (double)m.vTotal),
+                };
+                int num = x11->num_displays++;
+                MP_VERBOSE(x11, "Display %d: [%d, %d, %d, %d] @ %f FPS\n",
+                           num, d.rc.x0, d.rc.y0, d.rc.x1, d.rc.y1, d.fps);
+                x11->displays[num] = d;
+            }
+        }
+    next:
+        if (crtc)
+            XRRFreeCrtcInfo(crtc);
+        if (out)
+            XRRFreeOutputInfo(out);
+    }
+
+    XRRFreeScreenResources(r);
+#endif
+}
+
 static void vo_x11_update_screeninfo(struct vo *vo)
 {
     struct mp_vo_opts *opts = vo->opts;
@@ -399,10 +457,13 @@ int vo_x11_init(struct vo *vo)
 
     assert(!vo->x11);
 
+    XInitThreads();
+
     struct vo_x11_state *x11 = talloc_ptrtype(NULL, x11);
     *x11 = (struct vo_x11_state){
         .log = mp_log_new(x11, vo->log, "x11"),
         .screensaver_enabled = true,
+        .xrandr_event = -1,
     };
     vo->x11 = x11;
 
@@ -454,6 +515,8 @@ int vo_x11_init(struct vo *vo)
 
     vo->event_fd = ConnectionNumber(x11->display);
 
+    xrandr_read(x11);
+
     return 1;
 }
 
@@ -496,17 +559,17 @@ static const struct mp_keymap keymap[] = {
     {XK_KP_Right, MP_KEY_KP6}, {XK_KP_Home, MP_KEY_KP7}, {XK_KP_Up, MP_KEY_KP8},
     {XK_KP_Page_Up, MP_KEY_KP9}, {XK_KP_Delete, MP_KEY_KPDEL},
 
-#ifdef XF86XK_AudioPause
     {XF86XK_MenuKB, MP_KEY_MENU},
     {XF86XK_AudioPlay, MP_KEY_PLAY}, {XF86XK_AudioPause, MP_KEY_PAUSE},
-    {XF86XK_AudioStop, MP_KEY_STOP}, {XF86XK_AudioPrev, MP_KEY_PREV},
-    {XF86XK_AudioNext, MP_KEY_NEXT}, {XF86XK_AudioMute, MP_KEY_MUTE},
+    {XF86XK_AudioStop, MP_KEY_STOP},
+    {XF86XK_AudioPrev, MP_KEY_PREV}, {XF86XK_AudioNext, MP_KEY_NEXT},
+    {XF86XK_AudioRewind, MP_KEY_REWIND}, {XF86XK_AudioForward, MP_KEY_FORWARD},
+    {XF86XK_AudioMute, MP_KEY_MUTE},
     {XF86XK_AudioLowerVolume, MP_KEY_VOLUME_DOWN},
     {XF86XK_AudioRaiseVolume, MP_KEY_VOLUME_UP},
     {XF86XK_HomePage, MP_KEY_HOMEPAGE}, {XF86XK_WWW, MP_KEY_WWW},
     {XF86XK_Mail, MP_KEY_MAIL}, {XF86XK_Favorites, MP_KEY_FAVORITES},
     {XF86XK_Search, MP_KEY_SEARCH}, {XF86XK_Sleep, MP_KEY_SLEEP},
-#endif
 
     {0, 0}
 };
@@ -862,6 +925,7 @@ int vo_x11_check_events(struct vo *vo)
             if (x11->window_hidden)
                 vo_x11_clearwindow(vo, x11->window);
             x11->window_hidden = false;
+            x11->pseudo_mapped = true;
             vo_x11_update_geometry(vo);
             break;
         case DestroyNotify:
@@ -878,10 +942,22 @@ int vo_x11_check_events(struct vo *vo)
         case SelectionNotify:
             vo_x11_dnd_handle_selection(vo, &Event.xselection);
             break;
+        case PropertyNotify:
+            if (Event.xproperty.atom == x11->atom_frame_exts) {
+                if (!x11->pseudo_mapped && vo->opts->WinID < 0) {
+                    MP_VERBOSE(x11, "not waiting for MapNotify\n");
+                    x11->pseudo_mapped = true;
+                }
+            }
+            break;
         default:
             if (Event.type == x11->ShmCompletionEvent) {
                 if (x11->ShmCompletionWaitCount > 0)
                     x11->ShmCompletionWaitCount--;
+            }
+            if (Event.type == x11->xrandr_event) {
+                xrandr_read(x11);
+                vo_x11_update_geometry(vo);
             }
             break;
         }
@@ -1145,6 +1221,8 @@ static void vo_x11_create_window(struct vo *vo, XVisualInfo *vis,
     vo_x11_set_wm_icon(x11);
     vo_x11_update_window_title(vo);
     vo_x11_dnd_init_window(vo);
+
+    x11->atom_frame_exts = XA(x11, _NET_FRAME_EXTENTS);
 }
 
 static void vo_x11_map_window(struct vo *vo, struct mp_rect rc)
@@ -1177,15 +1255,12 @@ static void vo_x11_map_window(struct vo *vo, struct mp_rect rc)
     }
 
     // map window
-    int events = StructureNotifyMask | ExposureMask;
-    if (vo->opts->WinID > 0) {
-        XWindowAttributes attribs;
-        if (XGetWindowAttributes(x11->display, vo->opts->WinID, &attribs))
-            events |= attribs.your_event_mask;
-    } else {
-        events |= KeyPressMask | KeyReleaseMask | ButtonPressMask |
-                  ButtonReleaseMask | PointerMotionMask | LeaveWindowMask;
-    }
+    int events = StructureNotifyMask | ExposureMask | PropertyChangeMask |
+                 LeaveWindowMask;
+    if (mp_input_mouse_enabled(vo->input_ctx))
+        events |= PointerMotionMask | ButtonPressMask | ButtonReleaseMask;
+    if (mp_input_x11_keyboard_enabled(vo->input_ctx))
+        events |= KeyPressMask | KeyReleaseMask;
     vo_x11_selectinput_witherr(vo, x11->display, x11->window, events);
     XMapWindow(x11->display, x11->window);
 }
@@ -1218,7 +1293,9 @@ static void vo_x11_highlevel_resize(struct vo *vo, struct mp_rect rc)
 static void wait_until_mapped(struct vo *vo)
 {
     struct vo_x11_state *x11 = vo->x11;
-    while (x11->window_hidden && x11->window) {
+    if (!x11->pseudo_mapped)
+        x11_send_ewmh_msg(x11, "_NET_REQUEST_FRAME_EXTENTS", (long[5]){0});
+    while (!x11->pseudo_mapped && x11->window) {
         XEvent unused;
         XPeekEvent(x11->display, &unused);
         vo_x11_check_events(vo);
@@ -1362,6 +1439,11 @@ static void vo_x11_setlayer(struct vo *vo, bool ontop)
     }
 }
 
+static bool rc_overlaps(struct mp_rect rc1, struct mp_rect rc2)
+{
+    return mp_rect_intersection(&rc1, &rc2); // changes the first argument
+}
+
 // update x11->winrc with current boundaries of vo->x11->window
 static void vo_x11_update_geometry(struct vo *vo)
 {
@@ -1382,6 +1464,16 @@ static void vo_x11_update_geometry(struct vo *vo)
                               &x, &y, &dummy_win);
     }
     x11->winrc = (struct mp_rect){x, y, x + w, y + h};
+    double fps = 1000.0;
+    for (int n = 0; n < x11->num_displays; n++) {
+        if (rc_overlaps(x11->displays[n].rc, x11->winrc))
+            fps = MPMIN(fps, x11->displays[n].fps);
+    }
+    double fallback = x11->num_displays > 0 ? x11->displays[0].fps : 0;
+    fps = fps < 1000.0 ? fps : fallback;
+    if (fps != x11->current_display_fps)
+        MP_VERBOSE(x11, "Current display FPS: %f\n", fps);
+    x11->current_display_fps = fps;
 }
 
 static void vo_x11_fullscreen(struct vo *vo)
@@ -1465,7 +1557,7 @@ int vo_x11_control(struct vo *vo, int *events, int request, void *arg)
         vo_x11_border(vo);
         *events |= VO_EVENT_RESIZE;
         return VO_TRUE;
-    case VOCTRL_GET_WINDOW_SIZE: {
+    case VOCTRL_GET_UNFS_WINDOW_SIZE: {
         int *s = arg;
         if (!x11->window)
             return VO_FALSE;
@@ -1473,7 +1565,7 @@ int vo_x11_control(struct vo *vo, int *events, int request, void *arg)
         s[1] = x11->fs ? RC_H(x11->nofsrc) : RC_H(x11->winrc);
         return VO_TRUE;
     }
-    case VOCTRL_SET_WINDOW_SIZE: {
+    case VOCTRL_SET_UNFS_WINDOW_SIZE: {
         int *s = arg;
         if (!x11->window)
             return VO_FALSE;
@@ -1495,6 +1587,13 @@ int vo_x11_control(struct vo *vo, int *events, int request, void *arg)
     case VOCTRL_UPDATE_WINDOW_TITLE:
         vo_x11_update_window_title(vo);
         return VO_TRUE;
+    case VOCTRL_GET_DISPLAY_FPS: {
+        double fps = x11->current_display_fps;
+        if (fps <= 0)
+            break;
+        *(double *)arg = fps;
+        return VO_TRUE;
+    }
     }
     return VO_NOTIMPL;
 }
@@ -1566,9 +1665,6 @@ static void vo_x11_selectinput_witherr(struct vo *vo,
                                        Window w,
                                        long event_mask)
 {
-    if (!mp_input_mouse_enabled(vo->input_ctx))
-        event_mask &= ~(PointerMotionMask | ButtonPressMask | ButtonReleaseMask);
-
     XSelectInput(display, w, NoEventMask);
 
     // NOTE: this can raise BadAccess, which should be ignored by the X error
@@ -1591,25 +1687,6 @@ static void vo_x11_selectinput_witherr(struct vo *vo,
         }
     }
 }
-
-#if HAVE_XF86VM
-double vo_x11_vm_get_fps(struct vo *vo)
-{
-    struct vo_x11_state *x11 = vo->x11;
-    int clock;
-    XF86VidModeModeLine modeline;
-    if (!XF86VidModeGetModeLine(x11->display, x11->screen, &clock, &modeline))
-        return 0;
-    if (modeline.privsize)
-        XFree(modeline.private);
-    return 1e3 * clock / modeline.htotal / modeline.vtotal;
-}
-#else /* HAVE_XF86VM */
-double vo_x11_vm_get_fps(struct vo *vo)
-{
-    return 0;
-}
-#endif
 
 bool vo_x11_screen_is_composited(struct vo *vo)
 {

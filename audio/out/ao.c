@@ -60,9 +60,6 @@ static const struct ao_driver * const audio_out_drivers[] = {
 #if HAVE_PULSE
     &audio_out_pulse,
 #endif
-#if HAVE_SNDIO
-    &audio_out_sndio,
-#endif
 #if HAVE_ALSA
     &audio_out_alsa,
 #endif
@@ -87,6 +84,9 @@ static const struct ao_driver * const audio_out_drivers[] = {
 #endif
 #if HAVE_SDL1 || HAVE_SDL2
     &audio_out_sdl,
+#endif
+#if HAVE_SNDIO
+    &audio_out_sndio,
 #endif
     &audio_out_null,
     // should not be auto-selected:
@@ -152,6 +152,7 @@ static struct ao *ao_create(bool probing, struct mpv_global *global,
         .channels = channels,
         .format = format,
         .log = mp_log_new(ao, log, name),
+        .def_buffer = global->opts->audio_buffer,
     };
     if (ao->driver->encode != !!ao->encode_lavc_ctx)
         goto error;
@@ -187,7 +188,7 @@ static struct ao *ao_create(bool probing, struct mpv_global *global,
         ao->device_buffer = ao->driver->get_space(ao);
         MP_VERBOSE(ao, "device buffer: %d samples.\n", ao->device_buffer);
     }
-    ao->buffer = MPMAX(ao->device_buffer, MIN_BUFFER * ao->samplerate);
+    ao->buffer = MPMAX(ao->device_buffer, ao->def_buffer * ao->samplerate);
     MP_VERBOSE(ao, "using soft-buffer of %d samples.\n", ao->buffer);
 
     if (ao->api->init(ao) < 0)
@@ -258,16 +259,7 @@ int ao_play(struct ao *ao, void **data, int samples, int flags)
 
 int ao_control(struct ao *ao, enum aocontrol cmd, void *arg)
 {
-    switch (cmd) {
-    case AOCONTROL_HAS_TEMP_VOLUME:
-        return !ao->no_persistent_volume;
-    case AOCONTROL_HAS_PER_APP_VOLUME:
-        return !!ao->per_application_mixer;
-    default:
-        if (ao->api->control)
-            return ao->api->control(ao, cmd, arg);
-    }
-    return CONTROL_UNKNOWN;
+    return ao->api->control ? ao->api->control(ao, cmd, arg) : CONTROL_UNKNOWN;
 }
 
 // Return size of the buffered data in seconds. Can include the device latency.

@@ -31,6 +31,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <errno.h>
 #include <string.h>
 #include <strings.h>
@@ -38,6 +39,8 @@
 #include "config.h"
 #include "options/options.h"
 #include "common/msg.h"
+#include "osdep/timer.h"
+#include "osdep/endian.h"
 
 #if HAVE_SYS_SOUNDCARD_H
 #include <sys/soundcard.h>
@@ -52,14 +55,20 @@
 #include "ao.h"
 #include "internal.h"
 
+// Define to 0 if the device must be reopened to reset it (stop all playback,
+// clear the buffer), and the device should be closed when unused.
+// Define to 1 if SNDCTL_DSP_RESET should be used to reset without close.
+#define KEEP_DEVICE (defined(SNDCTL_DSP_RESET) && !defined(__NetBSD__))
+
 struct priv {
     int audio_fd;
-    int prepause_space;
+    int prepause_samples;
     int oss_mixer_channel;
-    audio_buf_info zz;
     int audio_delay_method;
     int buffersize;
     int outburst;
+    bool device_failed;
+    double audio_end;
 
     char *dsp;
     char *oss_mixer_device;
@@ -81,52 +90,59 @@ static const struct mp_chmap oss_layouts[MP_NUM_CHANNELS + 1] = {
     MP_CHMAP8(FL, FR, BL, BR, FC, LFE, SL, SR), // 7.1
 };
 
+#if !defined(AFMT_S16_NE) && defined(AFMT_S16_LE) && defined(AFMT_S16_BE)
+#define AFMT_S16_NE MP_SELECT_LE_BE(AFMT_S16_LE, AFMT_S16_BE)
+#endif
+
+#if !defined(AFMT_U16_NE) && defined(AFMT_U16_LE) && defined(AFMT_U16_BE)
+#define AFMT_U16_NE MP_SELECT_LE_BE(AFMT_U16_LE, AFMT_U16_BE)
+#endif
+
+#if !defined(AFMT_U24_NE) && defined(AFMT_U24_LE) && defined(AFMT_U24_BE)
+#define AFMT_U24_NE MP_SELECT_LE_BE(AFMT_U24_LE, AFMT_U24_BE)
+#endif
+
+#if !defined(AFMT_S24_NE) && defined(AFMT_S24_LE) && defined(AFMT_S24_BE)
+#define AFMT_S24_NE MP_SELECT_LE_BE(AFMT_S24_LE, AFMT_S24_BE)
+#endif
+
+#if !defined(AFMT_U32_NE) && defined(AFMT_U32_LE) && defined(AFMT_U32_BE)
+#define AFMT_U32MP_SELECT_LE_BE(AFMT_U32_LE, AFMT_U32_BE)
+#endif
+
+#if !defined(AFMT_S32_NE) && defined(AFMT_S32_LE) && defined(AFMT_S32_BE)
+#define AFMT_S32MP_SELECT_LE_BE(AFMT_S32_LE, AFMT_S32_BE)
+#endif
+
 static const int format_table[][2] = {
     {AFMT_U8,           AF_FORMAT_U8},
     {AFMT_S8,           AF_FORMAT_S8},
-    {AFMT_U16_LE,       AF_FORMAT_U16_LE},
-    {AFMT_U16_BE,       AF_FORMAT_U16_BE},
-    {AFMT_S16_LE,       AF_FORMAT_S16_LE},
-    {AFMT_S16_BE,       AF_FORMAT_S16_BE},
-#ifdef AFMT_S24_PACKED
-    {AFMT_S24_PACKED,   AF_FORMAT_S24_LE},
+    {AFMT_U16_NE,       AF_FORMAT_U16},
+    {AFMT_S16_NE,       AF_FORMAT_S16},
+#ifdef AFMT_U24_NE
+    {AFMT_U24_NE,       AF_FORMAT_U24},
 #endif
-#ifdef AFMT_U24_LE
-    {AFMT_U24_LE,       AF_FORMAT_U24_LE},
+#ifdef AFMT_S24_NE
+    {AFMT_S24_NE,       AF_FORMAT_S24},
 #endif
-#ifdef AFMT_U24_BE
-    {AFMT_U24_BE,       AF_FORMAT_U24_BE},
+#ifdef AFMT_U32_NE
+    {AFMT_U32_NE,       AF_FORMAT_U32},
 #endif
-#ifdef AFMT_S24_LE
-    {AFMT_S24_LE,       AF_FORMAT_S24_LE},
-#endif
-#ifdef AFMT_S24_BE
-    {AFMT_S24_BE,       AF_FORMAT_S24_BE},
-#endif
-#ifdef AFMT_U32_LE
-    {AFMT_U32_LE,       AF_FORMAT_U32_LE},
-#endif
-#ifdef AFMT_U32_BE
-    {AFMT_U32_BE,       AF_FORMAT_U32_BE},
-#endif
-#ifdef AFMT_S32_LE
-    {AFMT_S32_LE,       AF_FORMAT_S32_LE},
-#endif
-#ifdef AFMT_S32_BE
-    {AFMT_S32_BE,       AF_FORMAT_S32_BE},
+#ifdef AFMT_S32_NE
+    {AFMT_S32_NE,       AF_FORMAT_S32},
 #endif
 #ifdef AFMT_FLOAT
     {AFMT_FLOAT,        AF_FORMAT_FLOAT},
 #endif
-    // SPECIALS
 #ifdef AFMT_MPEG
-    {AFMT_MPEG,         AF_FORMAT_MPEG2},
-#endif
-#ifdef AFMT_AC3
-    {AFMT_AC3,          AF_FORMAT_AC3},
+    {AFMT_MPEG,         AF_FORMAT_S_MP3},
 #endif
     {-1, -1}
 };
+
+#ifndef AFMT_AC3
+#define AFMT_AC3 -1
+#endif
 
 static int format2oss(int format)
 {
@@ -143,7 +159,7 @@ static int oss2format(int format)
         if (format_table[n][0] == format)
             return format_table[n][1];
     }
-    return -1;
+    return 0;
 }
 
 
@@ -178,8 +194,7 @@ static int control(struct ao *ao, enum aocontrol cmd, void *arg)
     struct priv *p = ao->priv;
     switch (cmd) {
     case AOCONTROL_GET_VOLUME:
-    case AOCONTROL_SET_VOLUME:
-    {
+    case AOCONTROL_SET_VOLUME: {
         ao_control_vol_t *vol = (ao_control_vol_t *)arg;
         int fd, v, devs;
 
@@ -189,7 +204,7 @@ static int control(struct ao *ao, enum aocontrol cmd, void *arg)
             return CONTROL_OK;
 #endif
 
-        if (AF_FORMAT_IS_AC3(ao->format))
+        if (AF_FORMAT_IS_SPECIAL(ao->format))
             return CONTROL_TRUE;
 
         if ((fd = open(p->oss_mixer_device, O_RDONLY)) != -1) {
@@ -210,10 +225,196 @@ static int control(struct ao *ao, enum aocontrol cmd, void *arg)
             close(fd);
             return CONTROL_OK;
         }
-    }
         return CONTROL_ERROR;
     }
+#ifdef SNDCTL_DSP_GETPLAYVOL
+    case AOCONTROL_HAS_SOFT_VOLUME:
+        return CONTROL_TRUE;
+#endif
+    }
     return CONTROL_UNKNOWN;
+}
+
+// 1: ok, 0: not writable, -1: error
+static int device_writable(struct ao *ao)
+{
+    struct priv *p = ao->priv;
+    struct pollfd fd = {.fd = p->audio_fd, .events = POLLOUT};
+    return poll(&fd, 1, 0);
+}
+
+static void close_device(struct ao *ao)
+{
+    struct priv *p = ao->priv;
+    p->device_failed = false;
+    if (p->audio_fd == -1)
+        return;
+#if defined(SNDCTL_DSP_RESET)
+    ioctl(p->audio_fd, SNDCTL_DSP_RESET, NULL);
+#endif
+    close(p->audio_fd);
+    p->audio_fd = -1;
+}
+
+// close audio device
+static void uninit(struct ao *ao)
+{
+    close_device(ao);
+}
+
+static bool try_format(struct ao *ao, int *format)
+{
+    struct priv *p = ao->priv;
+
+    int oss_format = format2oss(*format);
+    if (oss_format == -1 && AF_FORMAT_IS_IEC61937(*format))
+        oss_format = AFMT_AC3;
+
+    if (oss_format == -1) {
+        MP_VERBOSE(ao, "Unknown/not supported internal format: %s\n",
+                   af_fmt_to_str(*format));
+        *format = 0;
+        return false;
+    }
+
+    int actual_format = oss_format;
+    if (ioctl(p->audio_fd, SNDCTL_DSP_SETFMT, &actual_format) < 0)
+        actual_format = -1;
+
+    if (actual_format == oss_format)
+        return true;
+
+    MP_WARN(ao, "Can't set audio device to %s output.\n", af_fmt_to_str(*format));
+    *format = oss2format(actual_format);
+    if (actual_format != -1 && !*format)
+        MP_ERR(ao, "Unknown/Unsupported OSS format: 0x%x.\n", actual_format);
+    return false;
+}
+
+static int reopen_device(struct ao *ao, bool allow_format_changes)
+{
+    struct priv *p = ao->priv;
+
+    int samplerate = ao->samplerate;
+    int format = ao->format;
+    struct mp_chmap channels = ao->channels;
+
+#ifdef __linux__
+    p->audio_fd = open(p->dsp, O_WRONLY | O_NONBLOCK);
+#else
+    p->audio_fd = open(p->dsp, O_WRONLY);
+#endif
+    if (p->audio_fd < 0) {
+        MP_ERR(ao, "Can't open audio device %s: %s\n", p->dsp, strerror(errno));
+        goto fail;
+    }
+
+#ifdef __linux__
+    /* Remove the non-blocking flag */
+    if (fcntl(p->audio_fd, F_SETFL, 0) < 0) {
+        MP_ERR(ao, "Can't make file descriptor blocking: %s\n",  strerror(errno));
+        goto fail;
+    }
+#endif
+
+#if defined(FD_CLOEXEC) && defined(F_SETFD)
+    fcntl(p->audio_fd, F_SETFD, FD_CLOEXEC);
+#endif
+
+    if (AF_FORMAT_IS_IEC61937(format)) {
+        ioctl(p->audio_fd, SNDCTL_DSP_SPEED, &samplerate);
+        // Probably could be fixed by setting number of channels; needs testing.
+        if (channels.num != 2) {
+            MP_ERR(ao, "Format %s not implemented.\n", af_fmt_to_str(format));
+            goto fail;
+        }
+    }
+
+    int try_formats[] = {format, AF_FORMAT_S32, AF_FORMAT_S24, AF_FORMAT_S16, 0};
+    for (int n = 0; try_formats[n]; n++) {
+        format = try_formats[n];
+        if (try_format(ao, &format))
+            break;
+    }
+
+    if (!format) {
+        MP_ERR(ao, "Can't set sample format.\n");
+        goto fail;
+    }
+
+    MP_VERBOSE(ao, "sample format: %s\n", af_fmt_to_str(format));
+
+    if (!AF_FORMAT_IS_IEC61937(format)) {
+        struct mp_chmap_sel sel = {0};
+        for (int n = 0; n < MP_NUM_CHANNELS + 1; n++)
+            mp_chmap_sel_add_map(&sel, &oss_layouts[n]);
+        if (!ao_chmap_sel_adjust(ao, &sel, &channels))
+            goto fail;
+        int reqchannels = channels.num;
+        // We only use SNDCTL_DSP_CHANNELS for >2 channels, in case some drivers don't have it
+        if (reqchannels > 2) {
+            int nchannels = reqchannels;
+            if (ioctl(p->audio_fd, SNDCTL_DSP_CHANNELS, &nchannels) == -1 ||
+                nchannels != reqchannels)
+            {
+                MP_ERR(ao, "Failed to set audio device to %d channels.\n",
+                       reqchannels);
+                goto fail;
+            }
+        } else {
+            int c = reqchannels - 1;
+            if (ioctl(p->audio_fd, SNDCTL_DSP_STEREO, &c) == -1) {
+                MP_ERR(ao, "Failed to set audio device to %d channels.\n",
+                       reqchannels);
+                goto fail;
+            }
+            if (!ao_chmap_sel_get_def(ao, &sel, &channels, c + 1))
+                goto fail;
+        }
+        MP_VERBOSE(ao, "using %d channels (requested: %d)\n",
+                   channels.num, reqchannels);
+        // set rate
+        ioctl(p->audio_fd, SNDCTL_DSP_SPEED, &samplerate);
+        MP_VERBOSE(ao, "using %d Hz samplerate\n", samplerate);
+    }
+
+    audio_buf_info zz = {0};
+    if (ioctl(p->audio_fd, SNDCTL_DSP_GETOSPACE, &zz) == -1) {
+        int r = 0;
+        MP_WARN(ao, "driver doesn't support SNDCTL_DSP_GETOSPACE\n");
+        if (ioctl(p->audio_fd, SNDCTL_DSP_GETBLKSIZE, &r) == -1)
+            MP_VERBOSE(ao, "%d bytes/frag (config.h)\n", p->outburst);
+        else {
+            p->outburst = r;
+            MP_VERBOSE(ao, "%d bytes/frag (GETBLKSIZE)\n", p->outburst);
+        }
+    } else {
+        MP_VERBOSE(ao, "frags: %3d/%d  (%d bytes/frag)  free: %6d\n",
+                   zz.fragments, zz.fragstotal, zz.fragsize, zz.bytes);
+        p->buffersize = zz.bytes;
+        p->outburst = zz.fragsize;
+    }
+
+    if (allow_format_changes) {
+        ao->format = format;
+        ao->samplerate = samplerate;
+        ao->channels = channels;
+    } else {
+        if (format != ao->format || samplerate != ao->samplerate ||
+            !mp_chmap_equals(&channels, &ao->channels))
+        {
+            MP_ERR(ao, "Could not reselect previous audio format.\n");
+            goto fail;
+        }
+    }
+
+    p->outburst -= p->outburst % (channels.num * af_fmt2bps(format)); // round down
+
+    return 0;
+
+fail:
+    close_device(ao);
+    return -1;
 }
 
 // open & setup audio device
@@ -221,11 +422,6 @@ static int control(struct ao *ao, enum aocontrol cmd, void *arg)
 static int init(struct ao *ao)
 {
     struct priv *p = ao->priv;
-    int oss_format;
-
-#ifdef SNDCTL_DSP_GETPLAYVOL
-    ao->no_persistent_volume = true;
-#endif
 
     const char *mchan = NULL;
     if (p->cfg_oss_mixer_channel && p->cfg_oss_mixer_channel[0])
@@ -266,178 +462,36 @@ static int init(struct ao *ao)
     MP_VERBOSE(ao, "using '%s' mixer device\n", p->oss_mixer_device);
     MP_VERBOSE(ao, "using '%s' mixer device\n", mixer_channels[p->oss_mixer_channel]);
 
-#ifdef __linux__
-    p->audio_fd = open(p->dsp, O_WRONLY | O_NONBLOCK);
-#else
-    p->audio_fd = open(p->dsp, O_WRONLY);
-#endif
-    if (p->audio_fd < 0) {
-        MP_ERR(ao, "Can't open audio device %s: %s\n", p->dsp, strerror(errno));
-        return -1;
-    }
-
-#ifdef __linux__
-    /* Remove the non-blocking flag */
-    if (fcntl(p->audio_fd, F_SETFL, 0) < 0) {
-        MP_ERR(ao, "Can't make file descriptor blocking: %s\n",  strerror(errno));
-        return -1;
-    }
-#endif
-
-#if defined(FD_CLOEXEC) && defined(F_SETFD)
-    fcntl(p->audio_fd, F_SETFD, FD_CLOEXEC);
-#endif
-
     ao->format = af_fmt_from_planar(ao->format);
 
-    if (AF_FORMAT_IS_AC3(ao->format)) {
-        ioctl(p->audio_fd, SNDCTL_DSP_SPEED, &ao->samplerate);
-    }
-
-ac3_retry:
-    if (AF_FORMAT_IS_AC3(ao->format))
-        ao->format = AF_FORMAT_AC3;
-    oss_format = format2oss(ao->format);
-    if (oss_format == -1) {
-        MP_VERBOSE(ao, "Unknown/not supported internal format: %s\n",
-                   af_fmt_to_str(ao->format));
-#if defined(AFMT_S32_LE) && defined(AFMT_S32_BE)
-#if BYTE_ORDER == BIG_ENDIAN
-        oss_format = AFMT_S32_BE;
-#else
-        oss_format = AFMT_S32_LE;
-#endif
-        ao->format = AF_FORMAT_S32;
-#elif defined(AFMT_S24_LE) && defined(AFMT_S24_BE)
-#if BYTE_ORDER == BIG_ENDIAN
-        oss_format = AFMT_S24_BE;
-#else
-        oss_format = AFMT_S24_LE;
-#endif
-        ao->format = AF_FORMAT_S24;
-#else
-#if BYTE_ORDER == BIG_ENDIAN
-        oss_format = AFMT_S16_BE;
-#else
-        oss_format = AFMT_S16_LE;
-#endif
-        ao->format = AF_FORMAT_S16;
-#endif
-    }
-    if (ioctl(p->audio_fd, SNDCTL_DSP_SETFMT, &oss_format) < 0 ||
-        oss_format != format2oss(ao->format))
-    {
-        MP_WARN(ao, "Can't set audio device %s to %s output, trying %s...\n",
-                p->dsp, af_fmt_to_str(ao->format),
-                af_fmt_to_str(AF_FORMAT_S16));
-        ao->format = AF_FORMAT_S16;
-        goto ac3_retry;
-    }
-
-    ao->format = oss2format(oss_format);
-    if (ao->format == -1) {
-        MP_ERR(ao, "Unknown/Unsupported OSS format: %x.\n", oss_format);
-        return -1;
-    }
-
-    MP_VERBOSE(ao, "sample format: %s\n", af_fmt_to_str(ao->format));
-
-    if (!AF_FORMAT_IS_AC3(ao->format)) {
-        struct mp_chmap_sel sel = {0};
-        for (int n = 0; n < MP_NUM_CHANNELS + 1; n++)
-            mp_chmap_sel_add_map(&sel, &oss_layouts[n]);
-        if (!ao_chmap_sel_adjust(ao, &sel, &ao->channels))
-            return -1;
-        int reqchannels = ao->channels.num;
-        // We only use SNDCTL_DSP_CHANNELS for >2 channels, in case some drivers don't have it
-        if (reqchannels > 2) {
-            int nchannels = reqchannels;
-            if (ioctl(p->audio_fd, SNDCTL_DSP_CHANNELS, &nchannels) == -1 ||
-                nchannels != reqchannels)
-            {
-                MP_ERR(ao, "Failed to set audio device to %d channels.\n",
-                       reqchannels);
-                return -1;
-            }
-        } else {
-            int c = reqchannels - 1;
-            if (ioctl(p->audio_fd, SNDCTL_DSP_STEREO, &c) == -1) {
-                MP_ERR(ao, "Failed to set audio device to %d channels.\n",
-                       reqchannels);
-                return -1;
-            }
-            if (!ao_chmap_sel_get_def(ao, &sel, &ao->channels, c + 1))
-                return -1;
-        }
-        MP_VERBOSE(ao, "using %d channels (requested: %d)\n",
-                   ao->channels.num, reqchannels);
-        // set rate
-        ioctl(p->audio_fd, SNDCTL_DSP_SPEED, &ao->samplerate);
-        MP_VERBOSE(ao, "using %d Hz samplerate\n", ao->samplerate);
-    }
-
-    if (ioctl(p->audio_fd, SNDCTL_DSP_GETOSPACE, &p->zz) == -1) {
-        int r = 0;
-        MP_WARN(ao, "driver doesn't support SNDCTL_DSP_GETOSPACE\n");
-        if (ioctl(p->audio_fd, SNDCTL_DSP_GETBLKSIZE, &r) == -1)
-            MP_VERBOSE(ao, "%d bytes/frag (config.h)\n", p->outburst);
-        else {
-            p->outburst = r;
-            MP_VERBOSE(ao, "%d bytes/frag (GETBLKSIZE)\n", p->outburst);
-        }
-    } else {
-        MP_VERBOSE(ao, "frags: %3d/%d  (%d bytes/frag)  free: %6d\n",
-                   p->zz.fragments, p->zz.fragstotal, p->zz.fragsize, p->zz.bytes);
-        p->buffersize = p->zz.bytes;
-        p->outburst = p->zz.fragsize;
-    }
+    if (reopen_device(ao, true) < 0)
+        goto fail;
 
     if (p->buffersize == -1) {
         // Measuring buffer size:
-        void *data;
+        void *data = malloc(p->outburst);
+        if (!data) {
+            MP_ERR(ao, "Out of memory, or broken outburst size.\n");
+            goto fail;
+        }
         p->buffersize = 0;
-#if HAVE_AUDIO_SELECT
-        data = malloc(p->outburst);
         memset(data, 0, p->outburst);
-        while (p->buffersize < 0x40000) {
-            fd_set rfds;
-            struct timeval tv;
-            FD_ZERO(&rfds);
-            FD_SET(p->audio_fd, &rfds);
-            tv.tv_sec = 0;
-            tv.tv_usec = 0;
-            if (!select(p->audio_fd + 1, NULL, &rfds, NULL, &tv))
-                break;
+        while (p->buffersize < 0x40000 && device_writable(ao) > 0) {
             write(p->audio_fd, data, p->outburst);
             p->buffersize += p->outburst;
         }
         free(data);
         if (p->buffersize == 0) {
-            MP_ERR(ao, "***  Your audio driver DOES NOT support select()  ***\n");
-            MP_ERR(ao, "Recompile mpv with #define HAVE_AUDIO_SELECT 0 in config.h!\n");
-            return -1;
+            MP_ERR(ao, "Your OSS audio driver DOES NOT support poll().\n");
+            goto fail;
         }
-#endif
     }
 
-    ao->bps = ao->channels.num * af_fmt2bps(ao->format);
-    p->outburst -= p->outburst % ao->bps; // round down
-    ao->bps *= ao->samplerate;
-
     return 0;
-}
 
-// close audio device
-static void uninit(struct ao *ao)
-{
-    struct priv *p = ao->priv;
-    if (p->audio_fd == -1)
-        return;
-#ifdef SNDCTL_DSP_RESET
-    ioctl(p->audio_fd, SNDCTL_DSP_RESET, NULL);
-#endif
-    close(p->audio_fd);
-    p->audio_fd = -1;
+fail:
+    uninit(ao);
+    return -1;
 }
 
 static void drain(struct ao *ao)
@@ -450,104 +504,39 @@ static void drain(struct ao *ao)
 #endif
 }
 
-#ifndef SNDCTL_DSP_RESET
-static void close_device(struct ao *ao)
-{
-    struct priv *p = ao->priv;
-    close(p->audio_fd);
-    p->audio_fd = -1;
-}
-#endif
-
 // stop playing and empty buffers (for seeking/pause)
 static void reset(struct ao *ao)
 {
+#if KEEP_DEVICE
     struct priv *p = ao->priv;
-    int oss_format;
-#ifdef SNDCTL_DSP_RESET
-    ioctl(p->audio_fd, SNDCTL_DSP_RESET, NULL);
-#else
-    close_device(ao);
-    p->audio_fd = open(p->dsp, O_WRONLY);
-    if (p->audio_fd < 0) {
-        MP_ERR(ao, "Fatal error: *** CANNOT "
-               "RE-OPEN / RESET AUDIO DEVICE *** %s\n", strerror(errno));
-        return;
-    }
-
-#if defined(FD_CLOEXEC) && defined(F_SETFD)
-    fcntl(p->audio_fd, F_SETFD, FD_CLOEXEC);
-#endif
-#endif
-
-    oss_format = format2oss(ao->format);
-    if (AF_FORMAT_IS_AC3(ao->format))
-        ioctl(p->audio_fd, SNDCTL_DSP_SPEED, &ao->samplerate);
-    ioctl(p->audio_fd, SNDCTL_DSP_SETFMT, &oss_format);
-    if (!AF_FORMAT_IS_AC3(ao->format)) {
-        int c = ao->channels.num;
-        if (ao->channels.num > 2)
-            ioctl(p->audio_fd, SNDCTL_DSP_CHANNELS, &c);
-        else {
-            c--;
-            ioctl(p->audio_fd, SNDCTL_DSP_STEREO, &c);
-        }
-        ioctl(p->audio_fd, SNDCTL_DSP_SPEED, &ao->samplerate);
-    }
-}
-
-// return: how many bytes can be played without blocking
-static int get_space(struct ao *ao)
-{
-    struct priv *p = ao->priv;
-    int playsize = p->outburst;
-
-#ifdef SNDCTL_DSP_GETOSPACE
-    if (ioctl(p->audio_fd, SNDCTL_DSP_GETOSPACE, &p->zz) != -1) {
-        // calculate exact buffer space:
-        playsize = p->zz.fragments * p->zz.fragsize;
-        return playsize / ao->sstride;
-    }
-#endif
-
-    // check buffer
-#if HAVE_AUDIO_SELECT
-    {
-        fd_set rfds;
-        struct timeval tv;
-        FD_ZERO(&rfds);
-        FD_SET(p->audio_fd, &rfds);
-        tv.tv_sec = 0;
-        tv.tv_usec = 0;
-        if (!select(p->audio_fd + 1, NULL, &rfds, NULL, &tv))
-            return 0;                                            // not block!
-    }
-#endif
-
-    return p->outburst / ao->sstride;
-}
-
-// stop playing, keep buffers (for pause)
-static void audio_pause(struct ao *ao)
-{
-    struct priv *p = ao->priv;
-    p->prepause_space = get_space(ao) * ao->sstride;
-#ifdef SNDCTL_DSP_RESET
     ioctl(p->audio_fd, SNDCTL_DSP_RESET, NULL);
 #else
     close_device(ao);
 #endif
 }
 
-// plays 'len' bytes of 'data'
+// plays 'len' samples of 'data'
 // it should round it down to outburst*n
-// return: number of bytes played
+// return: number of samples played
 static int play(struct ao *ao, void **data, int samples, int flags)
 {
     struct priv *p = ao->priv;
     int len = samples * ao->sstride;
     if (len == 0)
         return len;
+
+    if (p->audio_fd < 0 && !p->device_failed && reopen_device(ao, false) < 0)
+        MP_ERR(ao, "Fatal error: *** CANNOT RE-OPEN / RESET AUDIO DEVICE ***\n");
+    if (p->audio_fd < 0) {
+        // Let playback continue normally, even with a closed device.
+        p->device_failed = true;
+        double now = mp_time_sec();
+        if (p->audio_end < now)
+            p->audio_end = now;
+        p->audio_end += samples / (double)ao->samplerate;
+        return samples;
+    }
+
     if (len > p->outburst || !(flags & AOPLAY_FINAL_CHUNK)) {
         len /= p->outburst;
         len *= p->outburst;
@@ -556,22 +545,16 @@ static int play(struct ao *ao, void **data, int samples, int flags)
     return len / ao->sstride;
 }
 
-// resume playing, after audio_pause()
-static void audio_resume(struct ao *ao)
-{
-    struct priv *p = ao->priv;
-#ifndef SNDCTL_DSP_RESET
-    reset(ao);
-#endif
-    int fillframes = get_space(ao) - p->prepause_space / ao->sstride;
-    if (fillframes > 0)
-        ao_play_silence(ao, fillframes);
-}
-
 // return: delay in seconds between first and last sample in buffer
 static float get_delay(struct ao *ao)
 {
     struct priv *p = ao->priv;
+    if (p->audio_fd < 0) {
+        double rest = p->audio_end - mp_time_sec();
+        if (rest > 0)
+            return rest;
+        return 0;
+    }
     /* Calculate how many bytes/second is sent out */
     if (p->audio_delay_method == 2) {
 #ifdef SNDCTL_DSP_GETODELAY
@@ -582,14 +565,55 @@ static float get_delay(struct ao *ao)
         p->audio_delay_method = 1; // fallback if not supported
     }
     if (p->audio_delay_method == 1) {
-        // SNDCTL_DSP_GETOSPACE
-        if (ioctl(p->audio_fd, SNDCTL_DSP_GETOSPACE, &p->zz) != -1) {
-            return ((float)(p->buffersize -
-                            p->zz.bytes)) / (float)ao->bps;
+        audio_buf_info zz = {0};
+        if (ioctl(p->audio_fd, SNDCTL_DSP_GETOSPACE, &zz) != -1) {
+            return ((float)(p->buffersize - zz.bytes)) / (float)ao->bps;
         }
         p->audio_delay_method = 0; // fallback if not supported
     }
     return ((float)p->buffersize) / (float)ao->bps;
+}
+
+
+// return: how many samples can be played without blocking
+static int get_space(struct ao *ao)
+{
+    struct priv *p = ao->priv;
+
+    audio_buf_info zz = {0};
+    if (ioctl(p->audio_fd, SNDCTL_DSP_GETOSPACE, &zz) != -1) {
+        // calculate exact buffer space:
+        return zz.fragments * zz.fragsize / ao->sstride;
+    }
+
+    if (p->audio_fd < 0 && p->device_failed && get_delay(ao) > 0.2)
+        return 0;
+
+    if (p->audio_fd < 0 || device_writable(ao) > 0)
+        return p->outburst / ao->sstride;
+
+    return 0;
+}
+
+// stop playing, keep buffers (for pause)
+static void audio_pause(struct ao *ao)
+{
+    struct priv *p = ao->priv;
+    p->prepause_samples = get_delay(ao) * ao->samplerate;
+#if KEEP_DEVICE
+    ioctl(p->audio_fd, SNDCTL_DSP_RESET, NULL);
+#else
+    close_device(ao);
+#endif
+}
+
+// resume playing, after audio_pause()
+static void audio_resume(struct ao *ao)
+{
+    struct priv *p = ao->priv;
+    p->audio_end = 0;
+    if (p->prepause_samples > 0)
+        ao_play_silence(ao, p->prepause_samples);
 }
 
 #define OPT_BASE_STRUCT struct priv

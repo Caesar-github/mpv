@@ -230,7 +230,7 @@ double written_audio_pts(struct MPContext *mpctx)
     mp_audio_buffer_get_format(d_audio->decode_buffer, &in_format);
 
     if (!mp_audio_config_valid(&in_format) || !d_audio->afilter)
-        return MP_NOPTS_VALUE;;
+        return MP_NOPTS_VALUE;
 
     // first calculate the end pts of audio that has been output by decoder
     double a_pts = d_audio->pts;
@@ -259,7 +259,8 @@ double written_audio_pts(struct MPContext *mpctx)
     // to get the length in original units without speedup or slowdown
     a_pts -= buffered_output * mpctx->opts->playback_speed;
 
-    return a_pts + mpctx->video_offset;
+    return a_pts +
+        get_track_video_offset(mpctx, mpctx->current_track[0][STREAM_AUDIO]);
 }
 
 // Return pts value corresponding to currently playing audio.
@@ -279,7 +280,6 @@ static int write_to_ao(struct MPContext *mpctx, struct mp_audio *data, int flags
     struct ao *ao = mpctx->ao;
     struct mp_audio out_format;
     ao_get_format(ao, &out_format);
-    mpctx->ao_pts = pts;
 #if HAVE_ENCODING
     encode_lavc_set_audio_pts(mpctx->encode_lavc_ctx, playing_audio_pts(mpctx));
 #endif
@@ -291,9 +291,6 @@ static int write_to_ao(struct MPContext *mpctx, struct mp_audio *data, int flags
     if (played > 0) {
         mpctx->shown_aframes += played;
         mpctx->delay += played / real_samplerate;
-        // Keep correct pts for remaining data - could be used to flush
-        // remaining buffer when closing ao.
-        mpctx->ao_pts += played / real_samplerate;
         return played;
     }
     return 0;
@@ -318,7 +315,7 @@ static bool get_sync_samples(struct MPContext *mpctx, int *skip)
     ao_get_format(mpctx->ao, &out_format);
     double play_samplerate = out_format.rate / opts->playback_speed;
 
-    bool is_pcm = !(out_format.format & AF_FORMAT_SPECIAL_MASK); // no spdif
+    bool is_pcm = !AF_FORMAT_IS_SPECIAL(out_format.format); // no spdif
     if (!opts->initial_audio_sync || !is_pcm) {
         mpctx->audio_status = STATUS_FILLING;
         return true;
@@ -346,7 +343,7 @@ static bool get_sync_samples(struct MPContext *mpctx, int *skip)
     }
 
     if (sync_to_video)
-        sync_pts += mpctx->delay - mpctx->audio_delay;
+        sync_pts -= mpctx->audio_delay - mpctx->delay;
 
     double ptsdiff = written_pts - sync_pts;
     // Missing timestamp, or PTS reset, or just broken.
@@ -387,6 +384,10 @@ void fill_audio_out_buffers(struct MPContext *mpctx, double endpts)
         return; // try again next iteration
     }
 
+    struct mp_audio out_format = {0};
+    ao_get_format(mpctx->ao, &out_format);
+    double play_samplerate = out_format.rate / opts->playback_speed;
+
     // If audio is infinitely fast, somehow try keeping approximate A/V sync.
     if (mpctx->audio_status == STATUS_PLAYING && ao_untimed(mpctx->ao) &&
         mpctx->video_status != STATUS_EOF && mpctx->delay > 0)
@@ -426,7 +427,7 @@ void fill_audio_out_buffers(struct MPContext *mpctx, double endpts)
     // If EOF was reached before, but now something can be decoded, try to
     // restart audio properly. This helps with video files where audio starts
     // later. Retrying is needed to get the correct sync PTS.
-    if (mpctx->audio_status == STATUS_EOF && status == AD_OK) {
+    if (mpctx->audio_status >= STATUS_DRAINING && status == AD_OK) {
         mpctx->audio_status = STATUS_SYNCING;
         mpctx->sleeptime = 0;
         return; // retry on next iteration
@@ -441,7 +442,7 @@ void fill_audio_out_buffers(struct MPContext *mpctx, double endpts)
     } else if (skip < 0) {
         if (-skip > playsize) { // heuristic against making the buffer too large
             ao_reset(mpctx->ao); // some AOs repeat data on underflow
-            mpctx->audio_status = STATUS_EOF;
+            mpctx->audio_status = STATUS_DRAINING;
             mpctx->delay = 0;
             return;
         }
@@ -452,7 +453,7 @@ void fill_audio_out_buffers(struct MPContext *mpctx, double endpts)
     if (mpctx->audio_status == STATUS_SYNCING) {
         if (end_sync)
             mpctx->audio_status = STATUS_FILLING;
-        if (status != AD_OK)
+        if (status != AD_OK && !mp_audio_buffer_samples(mpctx->ao_buffer))
             mpctx->audio_status = STATUS_EOF;
         mpctx->sleeptime = 0;
         return; // continue on next iteration
@@ -472,10 +473,6 @@ void fill_audio_out_buffers(struct MPContext *mpctx, double endpts)
     bool audio_eof = status == AD_EOF;
     bool partial_fill = false;
     int playflags = 0;
-
-    struct mp_audio out_format = {0};
-    ao_get_format(mpctx->ao, &out_format);
-    double play_samplerate = out_format.rate / opts->playback_speed;
 
     if (endpts != MP_NOPTS_VALUE) {
         double samples = (endpts - written_audio_pts(mpctx) - mpctx->audio_delay)
@@ -526,11 +523,4 @@ void clear_audio_output_buffers(struct MPContext *mpctx)
         ao_reset(mpctx->ao);
         mp_audio_buffer_clear(mpctx->ao_buffer);
     }
-}
-
-// Drop decoded data queued for filtering.
-void clear_audio_decode_buffers(struct MPContext *mpctx)
-{
-    if (mpctx->d_audio)
-        mp_audio_buffer_clear(mpctx->d_audio->decode_buffer);
 }

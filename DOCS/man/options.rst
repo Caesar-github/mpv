@@ -198,26 +198,22 @@ Playback Control
         (i.e. not with stdin, pipe, etc).
 
 ``--load-unsafe-playlists``
-    Normally, something like ``mpv playlist.m3u`` won't load the playlist. This
-    is because the playlist code is unsafe. (This is the same in all other
-    variations of MPlayer.)
+    Load URLs from playlists which are considered unsafe (default: no). This
+    includes special protocols and anything that doesn't refer to normal files.
+    Local files and HTTP links on the other hand are always considered safe.
 
-    See ``--playlist`` for details.
+    Note that ``--playlist`` always loads all entries, so you use that instead
+    if you really have the need for this functionality.
 
-    Note: this option will allow opening playlists using the ``playlist``
-    special demuxer. The ``--playlist`` uses different code, and supports more
-    playlist formats than the playlist demuxer. This means that for now, the
-    ``--playlist`` option should always be used if you intend to open playlists.
-    Background: the special demuxer contains newly written code, while the
-    ``--playlist`` option uses the old MPlayer code. Adding support for more
-    playlist formats to the special demuxer is work in progress, and eventually
-    the old code should disappear.
+``--loop-file=<N|inf|no>``
+    Loop a single file N times. ``inf`` means forever, ``no`` means normal
+    playback. For compatibility, ``--loop-file`` and ``--loop-file=yes`` are
+    also accepted, and are the same as ``--loop-file=inf``.
 
-``--loop-file``
-    Loop a single file. The difference to ``--loop=inf`` is that this doesn't
-    loop the playlist, just the file itself. If the playlist contains only a
-    single file, the difference between the two option is that this option
-    performs a seek on loop, instead of reloading the file.
+    The difference to ``--loop`` is that this doesn't loop the playlist, just
+    the file itself. If the playlist contains only a single file, the difference
+    between the two option is that this option performs a seek on loop, instead
+    of reloading the file.
 
 ``--ordered-chapters``, ``--no-ordered-chapters``
     Enabled by default.
@@ -430,16 +426,45 @@ Video
     Do not sleep when outputting video frames. Useful for benchmarks when used
     with ``--no-audio.``
 
-``--framedrop=<no|yes>``
-    Skip displaying some frames to maintain A/V sync on slow systems. Video
-    filters are not applied to such frames. For B-frames even decoding is
-    skipped completely. May produce unwatchably choppy output.
+``--framedrop=<mode>``
+    Skip displaying some frames to maintain A/V sync on slow systems, or
+    playing high framerate video on video outputs that have an upper framerate
+    limit.
 
-    The ``--vd-lavc-framedrop`` option controls what frames to drop.
+    The argument selects the drop methods, and can be one of the following:
+
+    <no>
+        Disable any framedropping.
+    <vo>
+        Drop late frames on video output (default). This still decodes and
+        filters all frames, but doesn't render them on the VO. It tries to query
+        the display FPS (X11 only, not correct on multi-monitor systems), or
+        assumes infinite display FPS if that fails. Drops are indicated in
+        the terminal status line as ``D:`` field. If the decoder is too slow,
+        in theory all frames would have to be dropped (because all frames are
+        too late) - to avoid this, frame dropping stops if the effective
+        framerate is below 10 FPS.
+    <decoder>
+        Old, decoder-based framedrop mode. (This is the same as ``--framedrop=yes``
+        in mpv 0.5.x and before.) This tells the decoder to skip frames (unless
+        they are needed to decode future frames). May help with slow systems,
+        but can produce unwatchably choppy output, or even freeze the display
+        complete. Not recommended.
+        The ``--vd-lavc-framedrop`` option controls what frames to drop.
+    <decoder+vo>
+        Enable both modes. Not recommended.
 
     .. note::
 
-        Practical use of this feature is questionable. Disabled by default.
+        ``--vo=vdpau`` has its own code for the ``vo`` framedrop mode. Slight
+        differences to other VOs are possible.
+
+``--display-fps=<fps>``
+    Set the maximum assumed display FPS used with ``--framedrop``. By default
+    a detected value is used (X11 only, not correct on multi-monitor systems),
+    or infinite display FPS if that fails. Infinite FPS means only frames too
+    late are dropped. If a correct FPS is provided, frames that are predicted
+    to be too late are dropped too.
 
 ``--hwdec=<api>``
     Specify the hardware video decoding API that should be used if possible.
@@ -453,7 +478,7 @@ Video
     :vdpau:     requires ``--vo=vdpau`` or ``--vo=opengl`` (Linux only)
     :vaapi:     requires ``--vo=opengl`` or ``--vo=vaapi`` (Linux with Intel GPUs only)
     :vaapi-copy: copies video back into system RAM (Linux with Intel GPUs only)
-    :vda:       requires ``--vo=opengl`` or ``--vo=corevideo`` (OS X only)
+    :vda:       requires ``--vo=opengl`` (OS X only)
 
     ``auto`` tries to automatically enable hardware decoding using the first
     available method. This still depends what VO you are using. For example,
@@ -530,6 +555,22 @@ Video
     rotation metadata. (The rotation value is added to the rotation metadata,
     which means the value ``0`` would rotate the video according to the
     rotation metadata.)
+
+``--video-stereo-mode=<mode>``
+    Set the stereo 3D output mode (default: ``mono``). This is done by inserting
+    the ``stereo3d`` conversion filter.
+
+    The mode ``mono`` is an alias to ``ml``, which refers to the left frame in
+    2D. This is the default, which means mpv will try to show 3D movies in 2D,
+    instead of the mangled 3D image not intended for consumption (such as
+    showing the left and right frame side by side, etc.).
+
+    The pseudo-mode ``none`` disables automatic conversion completely.
+
+    Use ``--video-stereo-mode=help`` to list all available modes. Check with
+    the ``stereo3d`` filter documentation to see what the names mean. Note that
+    some names refer to modes not supported by ``stereo3d`` - these modes can
+    appear in files, but can't be handled properly by mpv.
 
 ``--video-zoom=<value>``
     Adjust the video display scale factor by the given value. The unit is in
@@ -640,11 +681,6 @@ Video
 
         The following explanations are relevant:
         `<http://quvi.sourceforge.net/r/api/0.9/glossary_termino.html#m_stream_id>`_
-
-    The ``quvi-format`` property can be used at runtime to cycle through the
-    list of formats. Unfortunately, this is slow. On libquvi 0.4.x, this
-    functionality is limited to switching between ``best`` and ``default`` if
-    the ``cycle`` input command is used.
 
 ``--vd-lavc-check-hw-profile=<yes|no>``
     Check hardware decoder profile (default: yes). If ``no`` is set, the
@@ -940,10 +976,6 @@ Audio
         maximum amplification, i.e. amplify by 200%. The default volume (no
         change in volume) will be ``50`` in this case.
 
-``--volstep=<0-100>``
-    Set the step size of mixer volume changes in percent of the full range
-    (default: 3).
-
 ``--volume-restore-data=<string>``
     Used internally for use by playback resume (e.g. with ``quit_watch_later``).
     Restoring value has to be done carefully, because different AOs as well as
@@ -956,6 +988,20 @@ Audio
 
     Do not use.
 
+``--audio-buffer=<seconds>``
+    Set the audio output minimum buffer. The audio device might actually create
+    a larger buffer if it pleases. If the device creates a smaller buffer,
+    additional audio is buffered in an additional software buffer.
+
+    Making this larger will make soft-volume and other filters react slower,
+    introduce additional issues on playback speed change, and block the
+    player on audio format changes. A smaller buffer might lead to audio
+    dropouts.
+
+    This option should be used for testing only. If a non-default value helps
+    significantly, the mpv developers should be contacted.
+
+    Default: 0.2 (200 ms).
 
 Subtitles
 ---------
@@ -1322,6 +1368,13 @@ Subtitles
     Can be used to disable display of subtitles, but still select and decode
     them.
 
+``--sub-clear-on-seek``
+    (Obscure, rarely useful.) Can be used to play broken mkv files with
+    duplicate ReadOrder fields. ReadOrder is the first field in a
+    Matroska-style ASS subtitle packets. It should be unique, and libass
+    uses it for fast elimination of duplicates. This option disables caching
+    of subtitles across seeks, so after a seek libass can't eliminate subtitle
+    packets with the same ReadOrder as earlier packets.
 
 Window
 ------
@@ -1372,7 +1425,8 @@ Window
     See also ``--screen``.
 
 ``--keep-open``
-    Do not terminate when playing or seeking beyond the end of the file.
+    Do not terminate when playing or seeking beyond the end of the file, and
+    there is not next file to be played (and ``--loop`` is not used).
     Instead, pause the player. When trying to seek beyond end of the file, the
     player will pause at an arbitrary playback position (or, in corner cases,
     not redraw the window at all).
@@ -1384,6 +1438,12 @@ Window
         Explicitly skipping to the next file or skipping beyond the last
         chapter will terminate playback as well, even if ``--keep-open`` is
         given.
+
+    Since mpv 0.6.0, this doesn't pause if there is a next file in the playlist,
+    or the playlist is looped. Approximately, this will pause when the player
+    would normally exit, but in practice there are corner cases in which this
+    is not the case (e.g. ``mpv --keep-open file.mkv /dev/null`` will play
+    file.mkv normally, then fail to open ``/dev/null``, then exit).
 
 ``--force-window``
     Create a video output window even if there is no video. This can be useful
@@ -1591,7 +1651,7 @@ Window
     .. note::
 
         This does not affect the normal screensaver operation in any way.
-        
+
 ``--no-keepaspect``, ``--keepaspect``
     ``--no-keepaspect`` will always stretch the video to window size, and will
     disable the window manager hints that force the window aspect ratio.
@@ -1940,6 +2000,7 @@ Demuxer
 
 ``--demuxer-rawaudio-format=<value>``
     Sample format for ``--demuxer=rawaudio`` (default: s16le).
+    Use ``--demuxer-rawaudio-format=help`` to get a list of all formats.
 
 ``--demuxer-rawaudio-rate=<value>``
     Sample rate for ``--demuxer=rawaudio`` (default: 44 kHz).
@@ -1975,13 +2036,25 @@ Demuxer
 
 ``--demuxer-thread=<yes|no>``
     Run the demuxer in a separate thread, and let it prefetch a certain amount
-    of packets (default: no).
+    of packets (default: yes). Having this enabled may lead to smoother
+    playback, but on the other hand can add delays to seeking or track
+    switching.
+
+``--demuxer-readahead-secs=N``
+    If ``--demuxer-thread`` is enabled, this controls how much the demuxer
+    should buffer ahead in seconds (default: 0.2). As long as no packet has
+    a timestamp difference higher than the readahead amount relative to the
+    last packet returned to the decoder, the demuxer keeps reading.
+
+    (This value tends to be fuzzy, because many file formats don't store linear
+    timestamps.)
 
 ``--demuxer-readahead-packets=N``
     If ``--demuxer-thread`` is enabled, this controls how much the demuxer
-    should buffer ahead. If the number of packets in the packet queue exceeds
-    ``--demuxer-readahead-packets``, or the total number of bytes exceeds
-    ``--demuxer-readahead-bytes``, the thread stops reading ahead.
+    should buffer ahead. As long as the number of packets in the packet queue
+    doesn't exceed ``--demuxer-readahead-packets``, and the total number of
+    bytes doesn't exceed ``--demuxer-readahead-bytes``, the thread keeps
+    reading ahead.
 
     Note that if you set these options near the maximum, you might get a
     packet queue overflow warning.
@@ -2085,6 +2158,24 @@ Input
     Use the right Alt key as Alt Gr to produce special characters. If disabled,
     count the right Alt as an Alt modifier key. Enabled by default.
 
+``--input-x11-keyboard=<yes|no>``
+    Disable all keyboard input on the X11 VO window. Generally useful for
+    embedding only.
+
+    On X11, a sub-window with input enabled grabs all keyboard input as long
+    as it is 1. a child of a focused window, and 2. the mouse is inside of
+    the sub-window. The can steal away all keyboard input from the
+    application embedding the mpv window, and on the other hand, the mpv
+    window will receive no input if the mouse is outside of the mpv window,
+    even though mpv has focus. Modern toolkits work around this weird X11
+    behavior, but naively embedding foreign windows breaks it.
+
+    The only way to handle this reasonably is using the XEmbed protocol, which
+    was designed to solve these problems. But Qt has questionable support, and
+    mpv doesn't implement it yet.
+
+    As a workaround, this option is disabled by default in libmpv. (Note that
+    ``input-default-bindings`` is disabled by default in libmpv as well.)
 
 OSD
 ---
@@ -2126,12 +2217,43 @@ OSD
 
     Default: 45.
 
+``--osd-msg1=<string>``
+    Show this string as message on OSD with OSD level 1 (visible by default).
+    The message will be visible by default, and as long no other message
+    covers it, and the OSD level isn't changed (see ``--osd-level``).
+    Expands properties; see `Property Expansion`_.
+
+``--osd-msg2=<string>``
+    Similar as ``--osd-msg1``, but for OSD level 2. If this is an empty string
+    (default), then the playback time is shown.
+
+``--osd-msg3=<string>``
+    Similar as ``--osd-msg1``, but for OSD level 3. If this is an empty string
+    (default), then the playback time, duration, and some more information is
+    shown.
+
+    This is also used for the ``show_progress`` command (by default mapped to
+    ``P``), or in some non-default cases when seeking.
+
+    ``--osd-status-msg`` is a legacy equivalent (but with a minor difference).
+
 ``--osd-status-msg=<string>``
     Show a custom string during playback instead of the standard status text.
     This overrides the status text used for ``--osd-level=3``, when using the
     ``show_progress`` command (by default mapped to ``P``), or in some
     non-default cases when seeking. Expands properties. See
     `Property Expansion`_.
+
+    This option has been replaced with ``--osd-msg3``. The only difference is
+    that this option implicitly includes ``${osd-sym-cc}``. This option is
+    ignored if ``--osd-msg3`` is not empty.
+
+``--osd-playing-msg=<string>``
+    Show a message on OSD when playback starts. The string is expanded for
+    properties, e.g. ``--osd-playing-msg='file: ${filename}'`` will show the
+    message ``file:`` followed by a space and the currently played filename.
+
+    See `Property Expansion`_.
 
 ``--osd-bar-align-x=<-1-1>``
     Position of the OSD bar. -1 is far left, 0 is centered, 1 is far right.
@@ -2697,20 +2819,6 @@ Cache
     will not automatically enable the cache e.g. when playing from a network
     stream. Note that using ``--cache`` will always override this option.
 
-``--cache-pause-below=<kBytes|no>``
-    If the cache size goes below the specified value (in KB), pause and wait
-    until the size set by ``--cache-pause-restart`` is reached, then  resume
-    playback (default: 50). If ``no`` is specified, this behavior is disabled.
-
-    When the player is paused this way, the status line shows ``Buffering``
-    instead of ``Paused``, and the OSD uses a clock symbol instead of the
-    normal paused symbol.
-
-``--cache-pause-restart=<kBytes>``
-    If the cache is paused due to the ``--cache-pause-below`` functionality,
-    then the player unpauses as soon as the cache has this much data (in KB).
-    (Default: 100)
-
 ``--cache-initial=<kBytes>``
     Playback will start when the cache has been filled up with this many
     kilobytes of data (default: 0).
@@ -2727,22 +2835,40 @@ Cache
     on the situation, either of these might be slower than the other method.
     This option allows control over this.
 
-``--cache-file=<path>``
-    Create a cache file on the filesystem with the given name. The file is
-    always overwritten. When the general cache is enabled, this file cache
-    will be used to store whatever is read from the source stream.
+``--cache-file=<TMP|path>``
+    Create a cache file on the filesystem.
 
-    This will always overwrite the cache file, and you can't use an existing
-    cache file to resume playback of a stream. (Technically, mpv wouldn't
-    even know which blocks in the file are valid and which not.)
+    There are two ways of using this:
 
-    The resulting file will not necessarily contain all data of the source
-    stream. For example, if you seek, the parts that were skipped over are
-    never read and consequently are not written to the cache. The skipped over
-    parts are filled with zeros. This means that the cache file doesn't
-    necessarily correspond to a full download of the source stream.
+    1. Passing a path (a filename). The file will always be overwritten. When
+       the general cache is enabled, this file cache will be used to store
+       whatever is read from the source stream.
 
-    Both of these issues could be improved if there is any user interest.
+       This will always overwrite the cache file, and you can't use an existing
+       cache file to resume playback of a stream. (Technically, mpv wouldn't
+       even know which blocks in the file are valid and which not.)
+
+       The resulting file will not necessarily contain all data of the source
+       stream. For example, if you seek, the parts that were skipped over are
+       never read and consequently are not written to the cache. The skipped over
+       parts are filled with zeros. This means that the cache file doesn't
+       necessarily correspond to a full download of the source stream.
+
+       Both of these issues could be improved if there is any user interest.
+
+       .. warning:: Causes random corruption when used with ordered chapters or
+                    with ``--audio-file``.
+
+    2. Passing the string ``TMP``. This will not be interpreted as filename.
+       Instead, an invisible temporary file is created. It depends on your
+       C library where this file is created (usually ``/tmp/``), and whether
+       filename is visible (the ``tmpfile()`` function is used). On some
+       systems, automatic deletion of the cache file might not be guaranteed.
+
+       If you want to use a file cache, this mode is recommended, because it
+       doesn't break ordered chapters or ``--audio-file``. These modes open
+       multiple cache streams, and using the same file for them obviously
+       clashes.
 
     Also see ``--cache-file-size``.
 
@@ -2750,10 +2876,23 @@ Cache
     Maximum size of the file created with ``--cache-file``. For read accesses
     above this size, the cache is simply not used.
 
+    Keep in mind that some use-cases, like playing ordered chapters with cache
+    enabled, will actually create multiple cache files, each of which will
+    use up to this much disk space.
+
     (Default: 1048576, 1 GB.)
 
 ``--no-cache``
     Turn off input stream caching. See ``--cache``.
+
+``--cache-secs=<seconds>``
+    How many seconds of audio/video to prefetch if the cache is active. This
+    overrides the ``--demuxer-readahead-secs`` option if and only if the cache
+    is enabled. (Default: 2.)
+
+``--cache-pause``, ``--no-cache-pause``
+    Whether the player should automatically pause when the cache runs low,
+    and unpause once more data is available ("buffering").
 
 
 Network
@@ -2763,11 +2902,9 @@ Network
     Use ``<string>`` as user agent for HTTP streaming.
 
 ``--cookies``, ``--no-cookies``
-    (network only)
     Support cookies when making HTTP requests. Disabled by default.
 
 ``--cookies-file=<filename>``
-    (network only)
     Read HTTP cookies from <filename>. The file is assumed to be in Netscape
     format.
 
@@ -2807,6 +2944,17 @@ Network
     network transport when playing ``rtsp://...`` URLs. The value ``lavf``
     leaves the decision to libavformat.
 
+``--hls-bitrate=<no|min|max>``
+    If HLS streams are played, this option controls what streams are selected
+    by default. The option allows the following parameters:
+
+    :no:        Don't do anything special. Typically, this will simply pick the
+                first audio/video streams it can find. (Default.)
+    :min:       Pick the streams with the lowest bitrate.
+    :max:       Same, but highest bitrate.
+
+    The bitrate as used is sent by the server, and there's no guarantee it's
+    actually meaningful.
 
 DVB
 ---
@@ -2941,6 +3089,11 @@ Miscellaneous
     You can also try to use ``--no-correct-pts`` for files with completely
     broken timestamps.
 
+``--media-title=<string>``
+    Force the contents of the ``media-title`` property to this value. Useful
+    for scripts which want to set a title, without overriding the user's
+    setting in ``--title``.
+
 ``--slave-broken``
     Switches on the old slave mode. This is for testing only, and incompatible
     to the removed ``--slave`` switch.
@@ -2958,10 +3111,3 @@ Miscellaneous
         if there is enough interest).
 
         This affects most third-party GUI frontends.
-
-``--softsleep``
-    Time frames by repeatedly checking the current time instead of asking
-    the kernel to wake up mpv at the correct time. Useful if your kernel
-    timing is imprecise and you cannot use the RTC either. Comes at the
-    price of higher CPU consumption.
-

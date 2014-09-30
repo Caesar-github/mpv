@@ -28,7 +28,7 @@
 #include "config.h"
 #include "common/codecs.h"
 #include "common/msg.h"
-#include "bstr/bstr.h"
+#include "misc/bstr.h"
 
 #include "stream/stream.h"
 #include "demux/demux.h"
@@ -48,10 +48,10 @@ extern const struct ad_functions ad_lavc;
 extern const struct ad_functions ad_spdif;
 
 static const struct ad_functions * const ad_drivers[] = {
+    &ad_lavc,
 #if HAVE_MPG123
     &ad_mpg123,
 #endif
-    &ad_lavc,
     &ad_spdif,
     NULL
 };

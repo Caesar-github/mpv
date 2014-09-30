@@ -284,6 +284,27 @@ static inline void update_ch(af_hrtf_t *s, short *in, const int k)
     s->ba_r[k] = in[4] + in[1] + in[3];
 }
 
+static void clear_coeff(af_hrtf_t *s, float *c)
+{
+    memset(c, 0, s->dlbuflen * sizeof(float));
+}
+
+static void reset(af_hrtf_t *s)
+{
+    clear_coeff(s, s->lf);
+    clear_coeff(s, s->rf);
+    clear_coeff(s, s->lr);
+    clear_coeff(s, s->rr);
+    clear_coeff(s, s->cf);
+    clear_coeff(s, s->cr);
+    clear_coeff(s, s->ba_l);
+    clear_coeff(s, s->ba_r);
+    clear_coeff(s, s->fwrbuf_l);
+    clear_coeff(s, s->fwrbuf_r);
+    clear_coeff(s, s->fwrbuf_lr);
+    clear_coeff(s, s->fwrbuf_rr);
+}
+
 /* Initialization and runtime control */
 static int control(struct af_instance *af, int cmd, void* arg)
 {
@@ -292,30 +313,27 @@ static int control(struct af_instance *af, int cmd, void* arg)
 
     switch(cmd) {
     case AF_CONTROL_REINIT:
-        af->data->rate   = ((struct mp_audio*)arg)->rate;
-        if(af->data->rate != 48000) {
-            // automatic samplerate adjustment in the filter chain
-            // is not yet supported.
-            MP_ERR(af, "ERROR: Sampling rate is not 48000 Hz (%d)!\n",
-                   af->data->rate);
-            return AF_ERROR;
-        }
+        reset(s);
+        af->data->rate = 48000;
         mp_audio_set_channels_old(af->data, ((struct mp_audio*)arg)->nch);
-            if(af->data->nch == 2) {
-               /* 2 channel input */
-               if(s->decode_mode != HRTF_MIX_MATRIX2CH) {
-                  /* Default behavior is stereo mixing. */
-                  s->decode_mode = HRTF_MIX_STEREO;
-               }
+        if(af->data->nch == 2) {
+            /* 2 channel input */
+            if(s->decode_mode != HRTF_MIX_MATRIX2CH) {
+                /* Default behavior is stereo mixing. */
+                s->decode_mode = HRTF_MIX_STEREO;
             }
-            else if (af->data->nch < 5)
-              mp_audio_set_channels_old(af->data, 5);
+        } else if (af->data->nch < 5) {
+            mp_audio_set_channels_old(af->data, 5);
+        }
         mp_audio_set_format(af->data, AF_FORMAT_S16);
         test_output_res = af_test_output(af, (struct mp_audio*)arg);
         // after testing input set the real output format
         mp_audio_set_num_channels(af->data, 2);
         s->print_flag = 1;
         return test_output_res;
+    case AF_CONTROL_RESET:
+        reset(s);
+        return AF_OK;
     }
 
     return AF_UNKNOWN;

@@ -400,8 +400,10 @@ static void add_sub_list(struct dec_sub *sub, int at, struct packet_list *subs)
 static void add_packet(struct packet_list *subs, struct demux_packet *pkt)
 {
     pkt = demux_copy_packet(pkt);
-    talloc_steal(subs, pkt);
-    MP_TARRAY_APPEND(subs, subs->packets, subs->num_packets, pkt);
+    if (pkt) {
+        talloc_steal(subs, pkt);
+        MP_TARRAY_APPEND(subs, subs->packets, subs->num_packets, pkt);
+    }
 }
 
 // Read all packets from the demuxer and decode/add them. Returns false if
@@ -531,6 +533,8 @@ bool sub_has_get_text(struct dec_sub *sub)
 }
 
 // See sub_get_bitmaps() for locking requirements.
+// It can be called unlocked too, but then only 1 thread must call this function
+// at a time (unless exclusive access is guaranteed).
 char *sub_get_text(struct dec_sub *sub, double pts)
 {
     pthread_mutex_lock(&sub->lock);

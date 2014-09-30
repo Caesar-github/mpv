@@ -410,8 +410,9 @@ static int init(struct ao *ao)
     ao->format = af_fmt_from_planar(ao->format);
 
     bool supports_digital = false;
-    /* Probe whether device support S/PDIF stream output if input is AC3 stream. */
-    if (AF_FORMAT_IS_AC3(ao->format)) {
+    /* Probe whether device support S/PDIF stream output if input is AC3 stream,
+     * or anything else IEC61937-framed. */
+    if (AF_FORMAT_IS_IEC61937(ao->format)) {
         if (ca_device_supports_digital(ao, p->device))
             supports_digital = true;
     }
@@ -521,14 +522,7 @@ static int init_digital(struct ao *ao, AudioStreamBasicDescription asbd)
     err = ca_enable_device_listener(p->device, changed);
     CHECK_CA_ERROR("cannot install format change listener during init");
 
-#if BYTE_ORDER == BIG_ENDIAN
-    if (!(p->stream_asdb.mFormatFlags & kAudioFormatFlagIsBigEndian))
-#else
-    /* tell mplayer that we need a byteswap on AC3 streams, */
-    if (p->stream_asbd.mFormatID & kAudioFormat60958AC3)
-        ao->format = AF_FORMAT_AC3_LE;
-    else if (p->stream_asbd.mFormatFlags & kAudioFormatFlagIsBigEndian)
-#endif
+    if (p->stream_asbd.mFormatFlags & kAudioFormatFlagIsBigEndian)
         MP_WARN(ao, "stream has non-native byte order, output may fail\n");
 
     ao->samplerate = p->stream_asbd.mSampleRate;

@@ -2,9 +2,14 @@ LUA SCRIPTING
 =============
 
 mpv can load Lua scripts. Scripts in ``~/.mpv/lua/`` will be loaded on program
-start, or if passed to ``--lua``. mpv provides the built-in module ``mp``, which
-provides functions to send commands to the mpv core and to retrieve information
-about playback state, user settings, file information, and so on.
+start, or if passed to ``--lua``. mpv appends ``~/.mpv/lua`` to the end of
+lua's path so you can import them too. Since it's added to the end, don't name
+scripts you want to import the same as lua libraries because they will be
+overshadowed by them.
+
+mpv provides the built-in module ``mp``, which provides functions to send
+commands to the mpv core and to retrieve information about playback state, user
+settings, file information, and so on.
 
 These scripts can be used to control mpv in a similar way to slave mode.
 Technically, the Lua code uses the client API internally.
@@ -46,6 +51,15 @@ loaded before your script (see ``player/lua/defaults.lua`` in the mpv sources).
 The event loop will wait for events and dispatch events registered with
 ``mp.register_event``. It will also handle timers added with ``mp.add_timeout``
 and similar (by waiting with a timeout).
+
+Since mpv 0.6.0, the player will wait until the script is fully loaded before
+continuing normal operation. The player considers a script as fully loaded as
+soon as it starts waiting for mpv events (or it exits). In practice this means
+the player will more or less hang until the script returns from the main chunk
+(and ``mp_event_loop`` is called), or the script calls ``mp_event_loop`` or
+``mp.dispatch_events`` directly. This is done to make it possible for a script
+to fully setup event handlers etc. before playback actually starts. In older
+mpv versions, this happened asynchronously.
 
 mp functions
 ------------
@@ -485,6 +499,10 @@ mp.utils options
 This built-in module provides generic helper functions for Lua, and have
 strictly speaking nothing to do with mpv or video/audio playback. They are
 provided for convenience. Most compensate for Lua's scarce standard library.
+
+``utils.getcwd()``
+    Returns the directory that mpv was launched from. On error, ``nil, error``
+    is returned.
 
 ``utils.readdir(path [, filter])``
     Enumerate all entries at the given path on the filesystem, and return them

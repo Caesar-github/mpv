@@ -104,6 +104,11 @@ main_dependencies = [
         'desc': 'mman.h',
         'func': check_statement('sys/mman.h', 'mmap(0, 0, 0, 0, 0, 0)')
     }, {
+        'name': 'mingw',
+        'desc': 'MinGW',
+        'deps': [ 'os-win32' ],
+        'func': check_statement('stddef.h', 'int x = __MINGW32__')
+    }, {
         'name': 'pthreads',
         'desc': 'POSIX threads',
         'func': check_pthreads,
@@ -160,18 +165,26 @@ iconv support use --disable-iconv.",
         'deps_any': [ 'os-win32', 'os-cygwin'],
         'func': check_true
     }, {
+        'name': '--waio',
+        'desc': 'libwaio for win32',
+        'deps': [ 'os-win32', 'mingw' ],
+        'func': check_libs(['waio'],
+                    check_statement('waio/waio.h', 'waio_alloc(0, 0, 0, 0)')),
+    }, {
         'name': 'videoio',
         'desc': 'videoio.h',
         'func': check_headers('sys/videoio.h')
     }, {
         'name': '--terminfo',
         'desc': 'terminfo',
+        'default': 'disable',
         'func': check_libs(['ncurses', 'ncursesw'],
             check_statement('term.h', 'setupterm(0, 1, 0)')),
     }, {
         'name': '--termcap',
         'desc': 'termcap',
         'deps_neg': ['terminfo'],
+        'default': 'disable',
         'func': check_libs(['ncurses', 'tinfo', 'termcap'],
             check_statement('term.h', 'tgetent(0, 0)')),
     }, {
@@ -183,13 +196,6 @@ iconv support use --disable-iconv.",
         'desc': 'shm',
         'func': check_statement(['sys/types.h', 'sys/ipc.h', 'sys/shm.h'],
             'shmget(0, 0, 0); shmat(0, 0, 0); shmctl(0, 0, 0)')
-    }, {
-        'name': 'posix-select',
-        'desc': 'POSIX select()',
-        'func': check_statement('sys/select.h', """
-            int rc;
-            rc = select(0, (fd_set *)(0), (fd_set *)(0), (fd_set *)(0),
-                        (struct timeval *)(0))""")
     }, {
         'name': 'glob',
         'desc': 'glob()',
@@ -393,6 +399,12 @@ Libav libraries ({0}). Aborting.".format(" ".join(libav_pkg_config_checks))
                                 'enum AVPacketSideDataType type = AV_PKT_DATA_METADATA_UPDATE',
                                 use='libav')
     }, {
+        'name': 'avformat-metadata-update-flag',
+        'desc': "libavformat metadata update flags",
+        'func': check_statement('libavformat/avformat.h',
+                                'int x = AVFMT_EVENT_FLAG_METADATA_UPDATED',
+                                use='libav')
+    }, {
         'name': 'avcodec-replaygain-side-data',
         'desc': 'libavcodec AV_PKT_DATA_REPLAYGAIN side data type',
         'func': check_statement('libavcodec/avcodec.h',
@@ -458,11 +470,6 @@ audio_output_features = [
         'deps_any': [ 'oss-audio-native', 'oss-audio-sunaudio',
                       'oss-audio-4front' ]
     }, {
-        'name': '--audio-select',
-        'desc': 'audio select()',
-        'deps': [ 'posix-select', 'oss-audio' ],
-        'func': check_true,
-    }, {
         'name': '--rsound',
         'desc': 'RSound audio output',
         'func': check_statement('rsound.h', 'rsd_init(NULL)', lib='rsound')
@@ -470,7 +477,8 @@ audio_output_features = [
         'name': '--sndio',
         'desc': 'sndio audio input/output',
         'func': check_statement('sndio.h',
-            'struct sio_par par; sio_initpar(&par); const char *s = SIO_DEVANY', lib='sndio')
+            'struct sio_par par; sio_initpar(&par); const char *s = SIO_DEVANY', lib='sndio'),
+        'default': 'disable'
     }, {
         'name': '--pulse',
         'desc': 'PulseAudio audio output',
@@ -538,8 +546,8 @@ video_output_features = [
     } , {
         'name': '--wayland',
         'desc': 'Wayland',
-        'func': check_pkg_config('wayland-client', '>= 1.3.0',
-                                 'wayland-cursor', '>= 1.3.0',
+        'func': check_pkg_config('wayland-client', '>= 1.6.0',
+                                 'wayland-cursor', '>= 1.6.0',
                                  'xkbcommon',      '>= 0.3.0'),
     } , {
         'name': '--x11',
@@ -549,8 +557,7 @@ video_output_features = [
         'name': '--xss',
         'desc': 'Xss screensaver extensions',
         'deps': [ 'x11' ],
-        'func': check_statement('X11/extensions/scrnsaver.h',
-            'XScreenSaverSuspend(NULL, True)', use='x11', lib='Xss'),
+        'func': check_pkg_config('xscrnsaver'),
     } , {
         'name': '--xext',
         'desc': 'X extensions',
@@ -567,16 +574,10 @@ video_output_features = [
         'deps': [ 'x11' ],
         'func': check_pkg_config('xinerama'),
     }, {
-        'name': '--xf86vm',
-        'desc': 'Xxf86vm',
+        'name': '--xrandr',
+        'desc': 'Xrandr',
         'deps': [ 'x11' ],
-        'func': check_cc(fragment=load_fragment('xf86vm.c'),
-                         lib='Xxf86vm', use='x11')
-    } , {
-        'name': '--xf86xk',
-        'desc': 'XF86keysym',
-        'deps': [ 'x11' ],
-        'func': check_cc(fragment=load_fragment('xf86xk.c'))
+        'func': check_pkg_config('xrandr', '>= 1.2.0'),
     } , {
         'name': '--gl-cocoa',
         'desc': 'OpenGL Cocoa Backend',
@@ -610,13 +611,6 @@ video_output_features = [
         'desc': 'OpenGL video outputs',
         'deps_any': [ 'gl-cocoa', 'gl-x11', 'gl-win32', 'gl-wayland' ],
         'func': check_true
-    } , {
-        'name': '--corevideo',
-        'desc': 'CoreVideo',
-        'deps': [ 'gl', 'gl-cocoa' ],
-        'func': check_statement('QuartzCore/CoreVideo.h',
-            'CVOpenGLTextureCacheCreate(0, 0, 0, 0, 0, 0)',
-            framework_name=['QuartzCore'])
     } , {
         'name': '--vdpau',
         'desc': 'VDPAU acceleration',
@@ -678,7 +672,6 @@ hwaccel_features = [
     } , {
         'name': '--vda-hwaccel',
         'desc': 'libavcodec VDA hwaccel',
-        'deps': [ 'corevideo' ],
         'func': compose_checks(
             check_headers('VideoDecodeAcceleration/VDADecoder.h'),
             check_statement('libavcodec/vda.h',
@@ -689,7 +682,9 @@ hwaccel_features = [
         'name': '--vda-gl',
         'desc': 'VDA with OpenGL',
         'deps': [ 'gl-cocoa', 'vda-hwaccel' ],
-        'func': check_true
+        # apparently a bug in waf causes msg= to be needed when passing only
+        # framework= (it probably fails to infer it)
+        'func': check_cc(msg='QuartzCore', framework='QuartzCore')
     }, {
         'name': '--vdpau-hwaccel',
         'desc': 'libavcodec VDPAU hwaccel',

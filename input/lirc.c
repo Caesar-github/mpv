@@ -16,8 +16,6 @@
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
-#include "config.h"
-
 #include <lirc/lirc_client.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -25,22 +23,20 @@
 #include <string.h>
 #include <unistd.h>
 #include <stdlib.h>
+#include <poll.h>
 
 #include "common/msg.h"
 #include "input.h"
-#include "lirc.h"
-
-static int mp_input_lirc_read(void *ctx, int fd,char* dest, int s);
-static int mp_input_lirc_close(void *ctx, int fd);
 
 struct ctx {
     struct mp_log *log;
     struct lirc_config *lirc_config;
     char* cmd_buf;
+    int fd;
 };
 
-int mp_input_lirc_init(struct input_ctx *ictx, struct mp_log *log,
-                       char *lirc_configfile)
+static struct ctx *mp_input_lirc_init(struct input_ctx *ictx, struct mp_log *log,
+                                      char *lirc_configfile)
 {
   int lirc_sock;
   int mode;
@@ -48,14 +44,14 @@ int mp_input_lirc_init(struct input_ctx *ictx, struct mp_log *log,
   mp_verbose(log,"Setting up LIRC support...\n");
   if((lirc_sock=lirc_init("mpv",0))==-1){
     mp_verbose(log,"Failed to open LIRC support. You will not be able to use your remote control.\n");
-    return -1;
+    return NULL;
   }
 
   mode = fcntl(lirc_sock, F_GETFL);
   if (mode < 0 || fcntl(lirc_sock, F_SETFL, mode | O_NONBLOCK) < 0) {
     mp_err(log, "setting non-blocking mode failed: %s\n", strerror(errno));
     lirc_deinit();
-    return -1;
+    return NULL;
   }
 
   struct lirc_config *lirc_config = NULL;
@@ -63,17 +59,16 @@ int mp_input_lirc_init(struct input_ctx *ictx, struct mp_log *log,
     mp_err(log, "Failed to read LIRC config file %s.\n",
                     lirc_configfile == NULL ? "~/.lircrc" : lirc_configfile);
     lirc_deinit();
-    return -1;
+    return NULL;
   }
 
   struct ctx *ctx = talloc_ptrtype(NULL, ctx);
   *ctx = (struct ctx){
       .log = log,
       .lirc_config = lirc_config,
+      .fd = lirc_sock,
   };
-  mp_input_add_fd(ictx, lirc_sock, 1, mp_input_lirc_read, NULL, mp_input_lirc_close, ctx);
-
-  return lirc_sock;
+  return ctx;
 }
 
 static int mp_input_lirc_read(void *pctx,int fd,char* dest, int s) {
@@ -98,10 +93,10 @@ static int mp_input_lirc_read(void *pctx,int fd,char* dest, int s) {
   // Nothing in the buffer, poll the lirc fd
   if(lirc_nextcode(&code) != 0) {
     MP_ERR(ctx, "Lirc error.\n");
-    return MP_INPUT_DEAD;
+    return -1;
   }
 
-  if(!code) return MP_INPUT_NOTHING;
+  if(!code) return 0;
 
   // We put all cmds in a single buffer separated by \n
   while((r = lirc_code2char(ctx->lirc_config,code,&c))==0 && c!=NULL) {
@@ -118,11 +113,11 @@ static int mp_input_lirc_read(void *pctx,int fd,char* dest, int s) {
   free(code);
 
   if(r < 0)
-    return MP_INPUT_DEAD;
+    return -1;
   else if(ctx->cmd_buf) // return the first command in the buffer
     return mp_input_lirc_read(ctx,fd,dest,s);
   else
-    return MP_INPUT_RETRY;
+    return 0;
 
 }
 
@@ -132,6 +127,40 @@ static int mp_input_lirc_close(void *pctx,int fd)
   free(ctx->cmd_buf);
   lirc_freeconfig(ctx->lirc_config);
   lirc_deinit();
+  close(fd);
   talloc_free(ctx);
   return 0;
+}
+
+static void read_lirc_thread(struct mp_input_src *src, void *param)
+{
+    int wakeup_fd = mp_input_src_get_wakeup_fd(src);
+    struct ctx *ctx = mp_input_lirc_init(src->input_ctx, src->log, param);
+
+    if (!ctx)
+        return;
+
+    mp_input_src_init_done(src);
+
+    while (1) {
+        struct pollfd fds[2] = {
+            { .fd = ctx->fd, .events = POLLIN },
+            { .fd = wakeup_fd, .events = POLLIN },
+        };
+        poll(fds, 2, -1);
+        if (!(fds[0].revents & POLLIN))
+            break;
+        char buffer[128];
+        int r = mp_input_lirc_read(ctx, ctx->fd, buffer, sizeof(buffer));
+        if (r < 0)
+            break;
+        mp_input_src_feed_cmd_text(src, buffer, r);
+    }
+
+    mp_input_lirc_close(ctx, ctx->fd);
+}
+
+void mp_input_lirc_add(struct input_ctx *ictx, char *lirc_configfile)
+{
+    mp_input_add_thread_src(ictx, (void *)lirc_configfile, read_lirc_thread);
 }

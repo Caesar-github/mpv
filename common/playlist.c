@@ -30,7 +30,8 @@
 struct playlist_entry *playlist_entry_new(const char *filename)
 {
     struct playlist_entry *e = talloc_zero(NULL, struct playlist_entry);
-    e->filename = talloc_strdup(e, filename);
+    char *local_filename = mp_file_url_to_filename(e, bstr0(filename));
+    e->filename = local_filename ? local_filename : talloc_strdup(e, filename);
     return e;
 }
 
@@ -105,10 +106,18 @@ static void playlist_unlink(struct playlist *pl, struct playlist_entry *entry)
     entry->pl = NULL;
 }
 
+void playlist_entry_unref(struct playlist_entry *e)
+{
+    e->reserved--;
+    if (e->reserved < 0)
+        talloc_free(e);
+}
+
 void playlist_remove(struct playlist *pl, struct playlist_entry *entry)
 {
     playlist_unlink(pl, entry);
-    talloc_free(entry);
+    entry->removed = true;
+    playlist_entry_unref(entry);
 }
 
 void playlist_clear(struct playlist *pl)

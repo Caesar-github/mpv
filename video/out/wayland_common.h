@@ -41,6 +41,9 @@ struct vo_wayland_output {
     uint32_t flags;
     int32_t width;
     int32_t height;
+    int32_t refresh_rate; // fps (mHz)
+    const char *make;
+    const char *model;
     struct wl_list link;
 };
 
@@ -72,7 +75,7 @@ struct vo_wayland_state {
 
         struct wl_list output_list;
         struct wl_output *fs_output; /* fullscreen output */
-        int output_mode_received;
+        struct vo_wayland_output *current_output;
 
         int display_fd;
 
@@ -92,7 +95,6 @@ struct vo_wayland_state {
         int32_t sh_y;
         float aspect;
 
-        bool is_init;       // true if the window has a valid size
         bool is_fullscreen; // don't keep aspect ratio in fullscreen mode
         int32_t fs_width;   // fullscreen sizes
         int32_t fs_height;

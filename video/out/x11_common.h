@@ -29,6 +29,13 @@
 struct vo;
 struct mp_log;
 
+#define MAX_DISPLAYS 32 // ought to be enough for everyone
+
+struct xrandr_display {
+    struct mp_rect rc;
+    double fps;
+};
+
 struct vo_x11_state {
     struct mp_log *log;
     Display *display;
@@ -39,6 +46,11 @@ struct vo_x11_state {
     int ws_width;
     int ws_height;
     struct mp_rect screenrc;
+
+    struct xrandr_display displays[MAX_DISPLAYS];
+    int num_displays;
+
+    int xrandr_event;
 
     bool screensaver_enabled;
     bool dpms_touched;
@@ -53,7 +65,8 @@ struct vo_x11_state {
     Colormap colormap;
 
     int wm_type;
-    bool window_hidden;
+    bool window_hidden; // the window was mapped at least once
+    bool pseudo_mapped; // not necessarily mapped, but known window size
     int fs;     // whether we assume the window is in fullscreen mode
 
     bool mouse_cursor_hidden;
@@ -61,6 +74,7 @@ struct vo_x11_state {
 
     // Current actual window position (updated on window move/resize events).
     struct mp_rect winrc;
+    double current_display_fps;
 
     int pending_vo_events;
 
@@ -93,6 +107,8 @@ struct vo_x11_state {
     Atom dnd_requested_format;
     Window dnd_src_window;
 
+    Atom atom_frame_exts;
+
     /* dragging the window */
     bool win_drag_button1_down;
 };
@@ -106,7 +122,5 @@ void vo_x11_config_vo_window(struct vo *vo, XVisualInfo *vis, int flags,
 void vo_x11_clear_background(struct vo *vo, const struct mp_rect *rc);
 void vo_x11_clearwindow(struct vo *vo, Window vo_window);
 int vo_x11_control(struct vo *vo, int *events, int request, void *arg);
-
-double vo_x11_vm_get_fps(struct vo *vo);
 
 #endif /* MPLAYER_X11_COMMON_H */

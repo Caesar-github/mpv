@@ -77,10 +77,12 @@ Available filters are:
     ``bitrate=<rate>``
         The bitrate use for the AC-3 stream. Set it to 384 to get 384 kbps.
 
+        The default is 640. Some receivers might not be able to handle this.
+
         Valid values: 32, 40, 48, 56, 64, 80, 96, 112, 128,
         160, 192, 224, 256, 320, 384, 448, 512, 576, 640.
 
-        The special value ``default`` selects a default bitrate based on the
+        The special value ``auto`` selects a default bitrate based on the
         input channel number:
 
         :1ch: 96
@@ -92,7 +94,7 @@ Available filters are:
 
     ``minchn=<n>``
         If the input channel number is less than ``<minchn>``, the filter will
-        detach itself (default: 5).
+        detach itself (default: 3).
 
 ``sweep[=speed]``
     Produces a sine sweep.
@@ -263,9 +265,8 @@ Available filters are:
     Filter for internal use only. Converts between 24-bit and 32-bit sample
     formats.
 
-``convertsignendian``
-    Filter for internal use only. Converts between signed/unsigned formats
-    and formats with different endian.
+``convertsign``
+    Filter for internal use only. Converts between signed/unsigned formats.
 
 ``volume[=<volumedb>[:...]]``
     Implements software volume control. Use this filter with caution since it

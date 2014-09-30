@@ -111,7 +111,7 @@ static void shutdown_clients(struct MPContext *mpctx)
     while (mpctx->clients && mp_clients_num(mpctx)) {
         mp_client_broadcast_event(mpctx, MPV_EVENT_SHUTDOWN, NULL);
         mp_dispatch_queue_process(mpctx->dispatch, 0);
-        mp_input_get_cmd(mpctx->input, 100, 1);
+        mp_wait_events(mpctx, 10000);
     }
     mp_clients_destroy(mpctx);
 }
@@ -132,9 +132,6 @@ void mp_destroy(struct MPContext *mpctx)
 
     command_uninit(mpctx);
 
-    mp_dispatch_set_wakeup_fn(mpctx->dispatch, NULL, NULL);
-    mp_input_uninit(mpctx->input);
-
     osd_free(mpctx->osd);
 
 #if HAVE_LIBASS
@@ -142,10 +139,14 @@ void mp_destroy(struct MPContext *mpctx)
         ass_library_done(mpctx->ass_library);
 #endif
 
-    if (mpctx->opts->use_terminal) {
-        getch2_disable();
+    if (mpctx->opts->use_terminal && terminal_initialized) {
+        terminal_uninit();
         terminal_initialized = false;
     }
+
+    mp_dispatch_set_wakeup_fn(mpctx->dispatch, NULL, NULL);
+    mp_input_uninit(mpctx->input);
+
     uninit_libav(mpctx->global);
 
     if (mpctx->autodetach)
@@ -307,6 +308,7 @@ struct MPContext *mp_create(void)
         .osd_progbar = { .type = -1 },
         .playlist = talloc_struct(mpctx, struct playlist, {0}),
         .dispatch = mp_dispatch_create(mpctx),
+        .playback_abort = mp_cancel_new(mpctx),
     };
 
     mpctx->global = talloc_zero(mpctx, struct mpv_global);
@@ -331,6 +333,7 @@ struct MPContext *mp_create(void)
 
     mpctx->global->opts = mpctx->opts;
 
+    mpctx->input = mp_input_init(mpctx->global);
     screenshot_init(mpctx);
     mpctx->mixer = mixer_init(mpctx, mpctx->global);
     command_init(mpctx);
@@ -338,12 +341,6 @@ struct MPContext *mp_create(void)
     mp_clients_init(mpctx);
 
     return mpctx;
-}
-
-static int check_stream_interrupt(void *ctx)
-{
-    struct MPContext *mpctx = ctx;
-    return mp_input_check_interrupt(mpctx->input);
 }
 
 static void wakeup_playloop(void *ctx)
@@ -381,9 +378,8 @@ int mp_initialize(struct MPContext *mpctx)
         m_config_set_option0(mpctx->mconfig, "input-file", "/dev/stdin");
     }
 
-    mpctx->input = mp_input_init(mpctx->global);
-    mpctx->global->stream_interrupt_cb = check_stream_interrupt;
-    mpctx->global->stream_interrupt_cb_ctx = mpctx;
+    mp_input_load(mpctx->input);
+    mp_input_set_cancel(mpctx->input, mpctx->playback_abort);
 
     mp_dispatch_set_wakeup_fn(mpctx->dispatch, wakeup_playloop, mpctx);
 
@@ -409,7 +405,7 @@ int mp_initialize(struct MPContext *mpctx)
     }
 #endif
 
-    if (opts->use_terminal && opts->consolecontrols)
+    if (opts->use_terminal && opts->consolecontrols && terminal_initialized)
         terminal_setup_getch(mpctx->input);
 
 #if HAVE_LIBASS
