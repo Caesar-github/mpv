@@ -159,7 +159,9 @@ List of Input Commands
         Take a single screenshot.
     <each-frame>
         Take a screenshot each frame. Issue this command again to stop taking
-        screenshots.
+        screenshots. Note that you should disable frame-dropping when using
+        this mode - or you might receive duplicate images in cases when a
+        frame was dropped.
 
 ``screenshot_to_file "<filename>" [subtitles|video|window]``
     Take a screenshot and save it to a given file. The format of the file will
@@ -258,7 +260,7 @@ List of Input Commands
     exactly as in the ``quit`` command.
 
 ``sub_add "<file>"``
-    Load the given subtitle file. It is not selected as current subtitle after
+    Load the given subtitle file. It is selected as current subtitle after
     loading.
 
 ``sub_remove [<id>]``
@@ -266,7 +268,7 @@ List of Input Commands
     the current track. (Works on external subtitle files only.)
 
 ``sub_reload [<id>]``
-    Reload the given subtitle tracks. If the ``id`` argument is missing, remove
+    Reload the given subtitle tracks. If the ``id`` argument is missing, reload
     the current track. (Works on external subtitle files only.)
 
     This works by unloading and re-adding the subtitle track.
@@ -324,6 +326,12 @@ List of Input Commands
 ``write_watch_later_config``
     Write the resume config file that the ``quit_watch_later`` command writes,
     but continue playback normally.
+
+``stop``
+    Stop playback and clear playlist. With default settings, this is
+    essentially like ``quit``. Useful for the client API: playback can be
+    stopped without terminating the player.
+
 
 Input Commands that are Possibly Subject to Change
 --------------------------------------------------
@@ -501,8 +509,8 @@ Input Commands that are Possibly Subject to Change
     be used in input.conf to reassign such bindings.)
 
 
-Undocumented commands: ``tv_last_channel`` (TV/DVB only), ``stop`` (questionable
-use), ``get_property`` (?), ``vo_cmdline`` (experimental).
+Undocumented commands: ``tv_last_channel`` (TV/DVB only), ``get_property`` (?),
+``vo_cmdline`` (experimental).
 
 Input Command Prefixes
 ----------------------
@@ -594,6 +602,18 @@ Property list
     ``${stream-end}``. For ordered chapters and such, the
     size of the currently played segment is returned.)
 
+``estimated-frame-count``
+    Total number of frames in current file.
+
+    .. note:: This is only an estimate. (It's computed from two unreliable
+              quantities: fps and stream length.)
+
+``estimated-frame-number``
+    Number of current frame in current stream.
+
+    .. note:: This is only an estimate. (It's computed from two unreliable
+              quantities: fps and possibly rounded timestamps.)
+
 ``path``
     Full path of the currently played file.
 
@@ -635,8 +655,12 @@ Property list
     disabled.
 
 ``drop-frame-count``
-    Frames dropped because they arrived to late. Unavailable if video
-    is disabled
+    Frames dropped because they arrived too late. Doesn't necessarily indicate
+    actual frame-drops, just the number of times the decoder was asked to drop.
+    Unavailable if video is disabled
+
+``vo-drop-frame-count``
+    Frames dropped by VO (when using ``--framedrop=vo``).
 
 ``percent-pos`` (RW)
     Position in current file (0-100). The advantage over using this instead of
@@ -820,6 +844,15 @@ Property list
 ``cache-idle`` (R)
     Returns ``yes`` if the cache is idle, which means the cache is filled as
     much as possible, and is currently not reading more data.
+
+``demuxer-cache-duration``
+    Approximate duration of video buffered in the demuxer, in seconds. The
+    guess is very unreliable, and often the property will not be available
+    at all, even if data is buffered.
+
+``demuxer-cache-idle``
+    Returns ``yes`` if the demuxer is idle, which means the demuxer cache is
+    filled to the requested amount, and is currently not reading more data.
 
 ``paused-for-cache``
     Returns ``yes`` when playback is paused because of waiting for the cache.
@@ -1007,13 +1040,17 @@ Property list
 ``dwidth``, ``dheight``
     Video display size. This is the video size after filters and aspect scaling
     have been applied. The actual video window size can still be different
-    from this.
+    from this, e.g. if the user resized the video window manually.
+
+    These have the same values as ``video-out-params/dw`` and
+    ``video-out-params/dh``.
 
 ``video-out-params``
     Same as ``video-params``, but after video filters have been applied. If
     there are no video filters in use, this will contain the same values as
     ``video-params``. Note that this is still not necessarily what the video
-    window uses, since all real VOs do their own scaling.
+    window uses, since the user can change the window size, and all real VOs
+    do their own scaling independently from the filter chain.
 
     Has the same sub-properties as ``video-params``.
 
@@ -1033,7 +1070,7 @@ Property list
     Window size multiplier. Setting this will resize the video window to the
     values contained in ``dwidth`` and ``dheight`` multiplied with the value
     set with this property. Setting ``1`` will resize to original video size
-    (or to be exactly, the size the video filters output). ``2`` will set the
+    (or to be exact, the size the video filters output). ``2`` will set the
     double size, ``0.5`` halves the size.
 
 ``video-aspect`` (RW)
@@ -1234,11 +1271,6 @@ Property list
                 "title" MPV_FORMAT_STRING
                 "time"  MPV_FORMAT_DOUBLE
 
-``quvi-format`` (RW)
-    See ``--quvi-format``. Cycling this property (``cycle``) will attempt to
-    cycle through known format, although currently this feature doesn't work
-    well at all.
-
 ``af`` (RW)
     See ``--af`` and the ``af`` command.
 
@@ -1263,6 +1295,28 @@ Property list
 
 ``seekable``
     Return whether it's generally possible to seek in the current file.
+
+``osd-sym-cc``
+    Inserts the current OSD symbol as opaque OSD control code (cc). This makes
+    sense only with the ``show_text`` command or options which set OSD messages.
+    The control code is implementation specific and is useless for anything else.
+
+``osd-ass-cc``
+    ``${osd-ass-cc/0}`` disables escaping ASS sequences of text in OSD,
+    ``${osd-ass-cc/1}`` enables it again. By default, ASS sequences are
+    escaped to avoid accidental formatting, and this property can disable
+    this behavior. Note that the properties return an opaque OSD control
+    code, which only makes sense for the ``show_text`` command or options
+    which set OSD messages.
+
+    .. admonition:: Example
+
+        --osd-status-msg='This is ${osd-ass-cc/0}{\\b1}bold text'
+
+    Any ASS override tags as understood by libass can be used.
+
+    Note that you need to escape the ``\`` character, because the string is
+    processed for C escape sequences before passing it to the OSD code.
 
 ``options/<name>`` (RW)
     Read-only access to value of option ``--<name>``. Most options can be

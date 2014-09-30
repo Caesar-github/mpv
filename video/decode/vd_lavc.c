@@ -28,17 +28,14 @@
 #include <libavutil/intreadwrite.h>
 #include <libavutil/pixdesc.h>
 
-#include "compat/libav.h"
-
 #include "talloc.h"
 #include "config.h"
 #include "common/msg.h"
 #include "options/options.h"
-#include "bstr/bstr.h"
+#include "misc/bstr.h"
 #include "common/av_common.h"
 #include "common/codecs.h"
 
-#include "compat/mpbswap.h"
 #include "video/fmt-conversion.h"
 
 #include "vd.h"
@@ -64,8 +61,6 @@ static void uninit_avctx(struct dec_video *vd);
 static int get_buffer2_hwdec(AVCodecContext *avctx, AVFrame *pic, int flags);
 static enum AVPixelFormat get_format_hwdec(struct AVCodecContext *avctx,
                                            const enum AVPixelFormat *pix_fmt);
-
-static void uninit(struct dec_video *vd);
 
 #define OPT_BASE_STRUCT struct vd_lavc_params
 
@@ -160,6 +155,17 @@ static bool hwdec_codec_allowed(struct dec_video *vd, const char *codec)
     return false;
 }
 
+static void hwdec_lock(struct lavc_ctx *ctx)
+{
+    if (ctx->hwdec && ctx->hwdec->lock)
+        ctx->hwdec->lock(ctx);
+}
+static void hwdec_unlock(struct lavc_ctx *ctx)
+{
+    if (ctx->hwdec && ctx->hwdec->unlock)
+        ctx->hwdec->unlock(ctx);
+}
+
 // Find the correct profile entry for the current codec and profile.
 // Assumes the table has higher profiles first (for each codec).
 const struct hwdec_profile_entry *hwdec_find_profile(
@@ -246,6 +252,11 @@ static struct vd_lavc_hwdec *probe_hwdec(struct dec_video *vd, bool autoprobe,
     return NULL;
 }
 
+static void uninit(struct dec_video *vd)
+{
+    uninit_avctx(vd);
+    talloc_free(vd->priv);
+}
 
 static int init(struct dec_video *vd, const char *decoder)
 {
@@ -310,17 +321,6 @@ static int init(struct dec_video *vd, const char *decoder)
         vd->bitrate = ctx->avctx->bit_rate;
 
     return 1;
-}
-
-static void set_from_bih(AVCodecContext *avctx, uint32_t format,
-                         MP_BITMAPINFOHEADER *bih)
-{
-    if (bih->biSize > sizeof(*bih))
-        mp_lavc_set_extradata(avctx, bih + 1, bih->biSize - sizeof(*bih));
-
-    avctx->bits_per_coded_sample = bih->biBitCount;
-    avctx->coded_width  = bih->biWidth;
-    avctx->coded_height = bih->biHeight;
 }
 
 static void init_avctx(struct dec_video *vd, const char *decoder,
@@ -393,10 +393,14 @@ static void init_avctx(struct dec_video *vd, const char *decoder,
     avctx->codec_tag = sh->format;
     avctx->coded_width  = sh->video->disp_w;
     avctx->coded_height = sh->video->disp_h;
+    avctx->bits_per_coded_sample = sh->video->bits_per_coded_sample;
 
-    // demux_mkv
-    if (sh->video->bih)
-        set_from_bih(avctx, sh->format, sh->video->bih);
+    if (sh->video->coded_width && sh->video->coded_height) {
+        avctx->coded_width  = sh->video->coded_width;
+        avctx->coded_height = sh->video->coded_height;
+    }
+
+    mp_lavc_set_extradata(avctx, sh->video->extradata, sh->video->extradata_len);
 
     if (mp_rawvideo) {
         avctx->pix_fmt = imgfmt2pixfmt(sh->format);
@@ -438,11 +442,6 @@ static void uninit_avctx(struct dec_video *vd)
     av_frame_free(&ctx->pic);
 }
 
-static void uninit(struct dec_video *vd)
-{
-    uninit_avctx(vd);
-}
-
 static void update_image_params(struct dec_video *vd, AVFrame *frame,
                                 struct mp_image_params *out_params)
 {
@@ -476,6 +475,7 @@ static void update_image_params(struct dec_video *vd, AVFrame *frame,
         .chroma_location =
             avchroma_location_to_mp(ctx->avctx->chroma_sample_location),
         .rotate = vd->header->video->rotate,
+        .stereo_in = vd->header->video->stereo_mode,
     };
 
     if (opts->video_rotate < 0) {
@@ -483,6 +483,7 @@ static void update_image_params(struct dec_video *vd, AVFrame *frame,
     } else {
         out_params->rotate = (out_params->rotate + opts->video_rotate) % 360;
     }
+    out_params->stereo_out = opts->video_stereo_mode;
 }
 
 static enum AVPixelFormat get_format_hwdec(struct AVCodecContext *avctx,
@@ -608,7 +609,9 @@ static int decode(struct dec_video *vd, struct demux_packet *packet,
 
     mp_set_av_packet(&pkt, packet, NULL);
 
+    hwdec_lock(ctx);
     ret = avcodec_decode_video2(avctx, ctx->pic, &got_picture, &pkt);
+    hwdec_unlock(ctx);
     if (ret < 0) {
         MP_WARN(vd, "Error while decoding frame!\n");
         return -1;

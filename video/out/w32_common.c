@@ -66,6 +66,9 @@ struct vo_w32_state {
     int prev_x;
     int prev_y;
 
+    // Has the window seen a WM_DESTROY? If so, don't call DestroyWindow again.
+    bool destroyed;
+
     // whether the window position and size were intialized
     bool window_bounds_initialized;
 
@@ -501,7 +504,7 @@ static bool handle_char(struct vo_w32_state *w32, wchar_t wc)
 static void signal_events(struct vo_w32_state *w32, int events)
 {
     w32->event_flags |= events;
-    mp_input_wakeup(w32->input_ctx);
+    vo_wakeup(w32->vo);
 }
 
 static void wakeup_gui_thread(void *ctx)
@@ -573,7 +576,11 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam,
         // Don't actually allow it to destroy the window, or whatever else it
         // is that will make us lose WM_USER wakeups.
         mp_input_put_key(w32->input_ctx, MP_KEY_CLOSE_WIN);
-        return 1;
+        return 0;
+    case WM_DESTROY:
+        w32->destroyed = true;
+        PostQuitMessage(0);
+        return 0;
     case WM_SYSCOMMAND:
         switch (wParam) {
         case SC_SCREENSAVE:
@@ -824,6 +831,9 @@ static int reinit_window_state(struct vo_w32_state *w32)
     // xxx not sure if this can trigger any unwanted messages (WM_MOVE/WM_SIZE)
     updateScreenProperties(w32);
 
+    int screen_w = w32->screenrc.x1 - w32->screenrc.x0;
+    int screen_h = w32->screenrc.y1 - w32->screenrc.y0;
+
     if (w32->opts->fullscreen) {
         // Save window position and size when switching to fullscreen.
         if (toggle_fs) {
@@ -837,9 +847,8 @@ static int reinit_window_state(struct vo_w32_state *w32)
 
         w32->window_x = w32->screenrc.x0;
         w32->window_y = w32->screenrc.y0;
-        w32->dw = w32->screenrc.x1 - w32->screenrc.x0;
-        w32->dh = w32->screenrc.y1 - w32->screenrc.y0;
-        style &= ~WS_OVERLAPPEDWINDOW;
+        w32->dw = screen_w;
+        w32->dh = screen_h;
     } else {
         if (toggle_fs) {
             // Restore window position and size when switching from fullscreen.
@@ -858,7 +867,36 @@ static int reinit_window_state(struct vo_w32_state *w32)
     r.bottom = r.top + w32->dh;
 
     SetWindowLong(w32->window, GWL_STYLE, style);
+
+    RECT cr = r;
     add_window_borders(w32->window, &r);
+
+    if (!w32->opts->fullscreen &&
+        ((r.right - r.left) >= screen_w || (r.bottom - r.top) >= screen_h))
+    {
+        MP_VERBOSE(w32, "requested window size larger than the screen\n");
+        // Use the aspect of the client area, not the full window size.
+        // Basically, try to compute the maximum window size.
+        long n_w = screen_w - (r.right - cr.right) - (cr.left - r.left) - 1;
+        long n_h = screen_h - (r.bottom - cr.bottom) - (cr.top - r.top) - 1;
+        // Letterbox
+        double asp = (cr.right - cr.left) / (double)(cr.bottom - cr.top);
+        double s_asp = n_w / (double)n_h;
+        if (asp > s_asp) {
+            n_h = n_w / asp;
+        } else {
+            n_w = n_h * asp;
+        }
+        r = (RECT){.right = n_w, .bottom = n_h};
+        add_window_borders(w32->window, &r);
+        // Center the final window
+        n_w = r.right - r.left;
+        n_h = r.bottom - r.top;
+        r.left = screen_w / 2 - n_w / 2;
+        r.top = screen_h / 2 - n_h / 2;
+        r.right = r.left + n_w;
+        r.bottom = r.top + n_h;
+    }
 
     MP_VERBOSE(w32, "reset window bounds: %d:%d:%d:%d\n",
                (int) r.left, (int) r.top, (int)(r.right - r.left),
@@ -1016,10 +1054,6 @@ static void *gui_thread(void *ptr)
 
     mp_dispatch_set_wakeup_fn(w32->dispatch, wakeup_gui_thread, w32);
 
-    // Microsoft-recommended way to create a message queue.
-    // Needed so that initial WM_USER wakeups are not lost.
-    PeekMessage(&(MSG){0}, NULL, WM_USER, WM_USER, PM_NOREMOVE);
-
     res = 1;
 done:
 
@@ -1083,13 +1117,10 @@ static bool vo_w32_is_cursor_in_client(struct vo_w32_state *w32)
 static int gui_thread_control(struct vo_w32_state *w32, int *events,
                               int request, void *arg)
 {
-    *events |= w32->event_flags;
-    w32->event_flags = 0;
     switch (request) {
     case VOCTRL_FULLSCREEN:
         if (w32->opts->fullscreen != w32->current_fs)
             reinit_window_state(w32);
-        *events |= VO_EVENT_RESIZE;
         return VO_TRUE;
     case VOCTRL_ONTOP:
         w32->opts->ontop = !w32->opts->ontop;
@@ -1098,9 +1129,8 @@ static int gui_thread_control(struct vo_w32_state *w32, int *events,
     case VOCTRL_BORDER:
         w32->opts->border = !w32->opts->border;
         reinit_window_state(w32);
-        *events |= VO_EVENT_RESIZE;
         return VO_TRUE;
-    case VOCTRL_GET_WINDOW_SIZE: {
+    case VOCTRL_GET_UNFS_WINDOW_SIZE: {
         int *s = arg;
 
         if (!w32->window_bounds_initialized)
@@ -1110,7 +1140,7 @@ static int gui_thread_control(struct vo_w32_state *w32, int *events,
         s[1] = w32->current_fs ? w32->prev_height : w32->dh;
         return VO_TRUE;
     }
-    case VOCTRL_SET_WINDOW_SIZE: {
+    case VOCTRL_SET_UNFS_WINDOW_SIZE: {
         int *s = arg;
 
         if (!w32->window_bounds_initialized)
@@ -1124,7 +1154,6 @@ static int gui_thread_control(struct vo_w32_state *w32, int *events,
         }
 
         reinit_window_state(w32);
-        *events |= VO_EVENT_RESIZE;
         return VO_TRUE;
     }
     case VOCTRL_SET_CURSOR_VISIBILITY:
@@ -1164,6 +1193,8 @@ static void do_control(void *ptr)
     void *arg = p[3];
     int *ret = p[4];
     *ret = gui_thread_control(w32, events, request, arg);
+    *events |= w32->event_flags;
+    w32->event_flags = 0;
     // Safe access, since caller (owner of vo) is blocked.
     if (*events & VO_EVENT_RESIZE) {
         w32->vo->dwidth = w32->dw;
@@ -1184,7 +1215,9 @@ static void do_terminate(void *ptr)
 {
     struct vo_w32_state *w32 = ptr;
     w32->terminate = true;
-    PostQuitMessage(0);
+
+    if (!w32->destroyed)
+        DestroyWindow(w32->window);
 }
 
 void vo_w32_uninit(struct vo *vo)

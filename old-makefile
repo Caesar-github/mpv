@@ -96,7 +96,10 @@ SOURCES-$(VAAPI_GLX)            += video/out/gl_hwdec_vaglx.c
 
 SOURCES-$(X11)                  += video/out/vo_x11.c video/out/x11_common.c
 SOURCES-$(XV)                   += video/out/vo_xv.c
-SOURCES-$(WAYLAND)              += video/out/vo_wayland.c video/out/wayland_common.c
+SOURCES-$(WAYLAND)              += video/out/vo_wayland.c \
+                                   video/out/wayland_common.c \
+                                   video/out/wayland/buffer.c \
+                                   video/out/wayland/memfile.c
 
 SOURCES-$(LIBAVFILTER)          += video/filter/vf_lavfi.c \
                                    audio/filter/af_lavfi.c
@@ -146,7 +149,6 @@ SOURCES = audio/audio.c \
           audio/out/ao_pcm.c \
           audio/out/pull.c \
           audio/out/push.c \
-          bstr/bstr.c \
           common/av_common.c \
           common/av_log.c \
           common/codecs.c \
@@ -174,6 +176,8 @@ SOURCES = audio/audio.c \
           input/event.c \
           input/input.c \
           input/keycodes.c \
+          input/pipe-unix.c \
+          misc/bstr.c \
           misc/charset_conv.c \
           misc/dispatch.c \
           misc/rendezvous.c \
@@ -187,6 +191,7 @@ SOURCES = audio/audio.c \
           options/path.c \
           osdep/io.c \
           osdep/numcores.c \
+          osdep/semaphore_osx.c \
           osdep/terminal-unix.c \
           osdep/timer.c \
           osdep/timer-linux.c \
@@ -302,7 +307,6 @@ DIRS =  . \
         audio/decode \
         audio/filter \
         audio/out \
-        bstr \
         common \
         compat \
         input \

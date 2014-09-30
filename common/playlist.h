@@ -19,7 +19,7 @@
 #define MPLAYER_PLAYLIST_H
 
 #include <stdbool.h>
-#include "bstr/bstr.h"
+#include "misc/bstr.h"
 
 struct playlist_param {
     bstr name, value;
@@ -41,6 +41,17 @@ struct playlist_entry {
     bool playback_short : 1;
     // Set to true if not at least 1 frame (audio or video) could be played.
     bool init_failed : 1;
+    // Entry was removed with playlist_remove (etc.), but not deallocated.
+    bool removed : 1;
+    // Additional refcount. Normally (reserved==0), the entry is owned by the
+    // playlist, and this can be used to keep the entry alive.
+    int reserved;
+    // Used to reject loading of unsafe entries from external playlists.
+    // Can have any of the following bit flags set:
+    //  STREAM_SAFE_ONLY: only allow streams marked with is_safe
+    //  STREAM_NETWORK_ONLY: only allow streams marked with is_network
+    // The value 0 allows everything.
+    int stream_flags;
 };
 
 struct playlist {
@@ -82,5 +93,7 @@ struct playlist_entry *playlist_entry_from_index(struct playlist *pl, int index)
 
 struct mpv_global;
 struct playlist *playlist_parse_file(const char *file, struct mpv_global *global);
+
+void playlist_entry_unref(struct playlist_entry *e);
 
 #endif

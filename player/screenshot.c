@@ -28,7 +28,7 @@
 #include "screenshot.h"
 #include "core.h"
 #include "command.h"
-#include "bstr/bstr.h"
+#include "misc/bstr.h"
 #include "common/msg.h"
 #include "options/path.h"
 #include "video/mp_image.h"
@@ -336,8 +336,10 @@ static struct mp_image *screenshot_get(struct MPContext *mpctx, int mode)
         if (mpctx->d_video && mpctx->d_video->vfilter)
             vf_control_any(mpctx->d_video->vfilter, VFCTRL_SCREENSHOT, &args);
 
-        if (!args.out_image)
+        if (!args.out_image) {
+            vo_wait_frame(mpctx->video_out); // important for each-frame mode
             vo_control(mpctx->video_out, VOCTRL_SCREENSHOT, &args);
+        }
 
         image = args.out_image;
         if (image) {

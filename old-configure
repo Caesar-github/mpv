@@ -162,14 +162,13 @@ options_state_machine() {
 
     opt_yes_no _gl          "OpenGL video output"
     opt_yes_no _libguess    "libguess"
-    opt_yes_no _terminfo    "terminfo database for key codes"
-    opt_yes_no _termcap     "termcap database for key codes"
+    opt_yes_no _terminfo    "terminfo database for key codes" no
+    opt_yes_no _termcap     "termcap database for key codes" no
     opt_yes_no _termios     "termios database for key codes"
     opt_yes_no _iconv       "iconv for encoding conversion"
     opt_yes_no _lirc        "LIRC (remote control) support"
     opt_yes_no _joystick    "joystick support" no
     opt_yes_no _vm          "X video mode extensions"
-    opt_yes_no _xf86keysym  "support for multimedia keys"
     opt_yes_no _dvb         "DVB input"
     opt_yes_no _tv          "TV interface (TV/DVB grabbers)" yes
     opt_yes_no _tv_v4l2     "Video4Linux2 TV interface"
@@ -201,7 +200,7 @@ options_state_machine() {
     opt_yes_no _xv          "Xv video output"
     opt_yes_no _vdpau       "VDPAU acceleration"
     opt_yes_no _vaapi       "VAAPI acceleration"
-    opt_yes_no _vm          "XF86VidMode support (used for monitor FPS detection)"
+    opt_yes_no _xrandr      "Xrandr support (used for monitor FPS detection)"
     opt_yes_no _xinerama    "Xinerama support"
     opt_yes_no _x11         "X11 video output"
     opt_yes_no _wayland     "Wayland video output"
@@ -214,7 +213,6 @@ options_state_machine() {
     opt_yes_no _portaudio   "PortAudio audio output"
     opt_yes_no _jack        "JACK audio output"
     opt_yes_no _openal      "OpenAL audio output"
-    opt_yes_no _select      "using select() on the audio device" yes
     opt_yes_no _shm         "X11/Xv shared memory"
     opt_yes_no _lua         "Lua scripting"
     opt_yes_no _encoding    "encoding functionality" yes
@@ -335,8 +333,11 @@ test -z "$_confdir" && _confdir="$_prefix/etc/mpv"
 
 mplayer_tmpdir=$(mktemp -d --tmpdir mpv-configure-XXXX)
 test -n "$mplayer_tmpdir" || die "Unable to create tmpdir."
+trap 'rm -rf "$mplayer_tmpdir"' EXIT
 
-TMPLOG="config.log"
+mkdir old_build 2> /dev/null
+
+TMPLOG="old_build/config.log"
 
 rm -f "$TMPLOG"
 echo Parameters configure was run with: > "$TMPLOG"
@@ -382,9 +383,11 @@ addcflags() { cflag_check "$@" && OURCFLAGS="$OURCFLAGS $@" ; }
 OURCFLAGS="-std=c99 -Wall $_opt"
 
 addcflags -g -g3 -ggdb
-addcflags -Wundef -Wmissing-prototypes -Wshadow -Wno-switch -Wno-parentheses -Wpointer-arith -Wredundant-decls -Wno-pointer-sign -Werror=implicit-function-declaration -Wno-error=deprecated-declarations -Wno-error=unused-function -Wempty-body
+addcflags -Wundef -Wmissing-prototypes -Wshadow -Wno-switch -Wno-parentheses -Wpointer-arith -Wredundant-decls -Wno-pointer-sign -Werror=implicit-function-declaration -Wno-error=deprecated-declarations -Wno-error=unused-function
 # clang
 addcflags -Wno-logical-op-parentheses -fcolor-diagnostics -Wno-tautological-compare -Wno-tautological-constant-out-of-range-compare
+# extra
+addcflags -Wno-format-zero-length -Wempty-body -Wdisabled-optimization -Wstrict-prototypes
 
 cflag_check -MD -MP && DEPFLAGS="-MD -MP"
 cflag_check -lm && _ld_lm="-lm"
@@ -543,8 +546,6 @@ define_yes_no $_termios_ok HAVE_TERMIOS
 check_statement_libs "shm" $_shm SHM "sys/types.h sys/ipc.h sys/shm.h" \
     "shmget(0, 0, 0); shmat(0, 0, 0); shmctl(0, 0, 0);"
 
-check_trivial "audio select()" $_select AUDIO_SELECT
-
 echocheck "pkg-config"
 if $($_pkg_config --version > /dev/null 2>&1); then
   if test "$_ld_static"; then
@@ -589,7 +590,7 @@ _libquvi=no
 (test "$_libquvi9" = yes || test "$_libquvi4" = yes) && _libquvi=yes
 define_yes_no $_libquvi HAVE_LIBQUVI
 
-_wlver="1.2.0"
+_wlver="1.6.0"
 check_pkg_config "Wayland" $_wayland WAYLAND "wayland-client >= $_wlver wayland-cursor >= $_wlver xkbcommon >= 0.3.0"
 _wayland=$(defretval)
 
@@ -635,13 +636,7 @@ fi
 
 check_pkg_config "Xinerama" $_xinerama XINERAMA 'xinerama'
 
-check_pkg_config "Xxf86vm" $_vm XF86VM 'xxf86vm'
-
-# Check for the presence of special keycodes, like audio control buttons
-# that XFree86 might have.  Used to be bundled with the xf86vm check, but
-# has nothing to do with xf86vm and XFree 3.x has xf86vm but does NOT
-# have these new keycodes.
-check_statement_libs "XF86keysym" auto XF86XK X11/XF86keysym.h 'int x = XF86XK_AudioPause;'
+check_pkg_config "Xrandr" $_xrandr XRANDR 'xrandr >= 1.2.0'
 
 check_pkg_config "CACA" $_caca CACA 'caca >= 0.99.beta18'
 
@@ -810,6 +805,12 @@ api_statement_check \
     'enum AVPacketSideDataType type = AV_PKT_DATA_METADATA_UPDATE'
 
 api_statement_check \
+    "libavformat metadata update flags" \
+    HAVE_AVFORMAT_METADATA_UPDATE_FLAG \
+    libavformat/avformat.h \
+    'int x = AVFMT_EVENT_FLAG_METADATA_UPDATED'
+
+api_statement_check \
     "libavcodec replaygain side data" \
     HAVE_AVCODEC_REPLAYGAIN_SIDE_DATA \
     libavcodec/avcodec.h \
@@ -899,7 +900,6 @@ CFLAGS="$CFLAGS -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGEFILE64_SOURCE
 if test ! -f Makefile ; then
     ln -s old-makefile Makefile
 fi
-mkdir old_build 2> /dev/null
 
 cat > old_build/config.mak << EOF
 # -------- Generated by configure -----------
@@ -962,10 +962,10 @@ cat > $TMPC << EOF
 #define HAVE_DOS_PATHS 0
 #define HAVE_PRIORITY 0
 #define HAVE_GLOB 1
-#define HAVE_POSIX_SELECT 1
 #define HAVE_SYS_MMAN_H 1
 #define HAVE_NANOSLEEP 1
 #define HAVE_SDL1 0
+#define HAVE_WAIO 0
 
 #define DEFAULT_CDROM_DEVICE "/dev/cdrom"
 #define DEFAULT_DVD_DEVICE   "/dev/dvd"
@@ -998,6 +998,3 @@ README for instructions on how to build mpv with the new build system.
 This will not work correctly on MinGW, Cygwin, OSX, and other systems.
 
 EOF
-
-# Last move:
-rm -rf "$mplayer_tmpdir"

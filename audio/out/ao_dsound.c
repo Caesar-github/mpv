@@ -98,6 +98,7 @@ struct priv {
     int outburst;                   ///play in multiple of chunks of this size
 
     int cfg_device;
+    int cfg_buffersize;
 };
 
 static float get_delay(struct ao *ao);
@@ -350,6 +351,8 @@ static int control(struct ao *ao, enum aocontrol cmd, void *arg)
         IDirectSoundBuffer_SetVolume(p->hdsbuf, volume);
         return CONTROL_OK;
     }
+    case AOCONTROL_HAS_SOFT_VOLUME:
+        return CONTROL_TRUE;
     }
     return CONTROL_UNKNOWN;
 }
@@ -370,7 +373,6 @@ static int init(struct ao *ao)
     if (!InitDirectSound(ao))
         return -1;
 
-    ao->no_persistent_volume = true;
     p->audio_volume = 100;
 
     // ok, now create the buffers
@@ -380,34 +382,33 @@ static int init(struct ao *ao)
     int format = af_fmt_from_planar(ao->format);
     int rate = ao->samplerate;
 
-    if (AF_FORMAT_IS_AC3(format))
-        format = AF_FORMAT_AC3;
-    else {
+    if (!AF_FORMAT_IS_IEC61937(format)) {
         struct mp_chmap_sel sel = {0};
         mp_chmap_sel_add_waveext(&sel);
         if (!ao_chmap_sel_adjust(ao, &sel, &ao->channels))
             return -1;
     }
     switch (format) {
-    case AF_FORMAT_AC3:
-    case AF_FORMAT_S24_LE:
-    case AF_FORMAT_S16_LE:
+    case AF_FORMAT_S24:
+    case AF_FORMAT_S16:
     case AF_FORMAT_U8:
         break;
     default:
+        if (AF_FORMAT_IS_IEC61937(format))
+            break;
         MP_VERBOSE(ao, "format %s not supported defaulting to Signed 16-bit Little-Endian\n",
                    af_fmt_to_str(format));
-        format = AF_FORMAT_S16_LE;
+        format = AF_FORMAT_S16;
     }
     //set our audio parameters
     ao->samplerate = rate;
     ao->format = format;
     ao->bps = ao->channels.num * rate * af_fmt2bps(format);
-    int buffersize = ao->bps * 0.100; // space for 100ms
+    int buffersize = ao->bps * p->cfg_buffersize / 1000;
     MP_VERBOSE(ao, "Samplerate:%iHz Channels:%i Format:%s\n", rate,
                ao->channels.num, af_fmt_to_str(format));
-    MP_VERBOSE(ao, "Buffersize:%d bytes (%d msec)\n",
-               buffersize, buffersize / ao->bps * 1000);
+    MP_VERBOSE(ao, "Buffersize:%d bytes (%f msec)\n",
+               buffersize, buffersize * 1000.0 / ao->bps);
 
     //fill waveformatex
     ZeroMemory(&wformat, sizeof(WAVEFORMATEXTENSIBLE));
@@ -415,7 +416,8 @@ static int init(struct ao *ao)
                     ? sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX) : 0;
     wformat.Format.nChannels = ao->channels.num;
     wformat.Format.nSamplesPerSec = rate;
-    if (AF_FORMAT_IS_AC3(format)) {
+    if (AF_FORMAT_IS_IEC61937(format)) {
+        // Whether it also works with e.g. DTS is unknown, but probably does.
         wformat.Format.wFormatTag = WAVE_FORMAT_DOLBY_AC3_SPDIF;
         wformat.Format.wBitsPerSample = 16;
         wformat.Format.nBlockAlign = 4;
@@ -583,7 +585,7 @@ static int get_space(struct ao *ao)
     int space = check_free_buffer_size(ao);
     if (space < p->min_free_space)
         return 0;
-    return (space - p->min_free_space) / ao->sstride;
+    return (space - p->min_free_space) / p->outburst * p->outburst / ao->sstride;
 }
 
 /**
@@ -636,6 +638,7 @@ const struct ao_driver audio_out_dsound = {
     .priv_size = sizeof(struct priv),
     .options = (const struct m_option[]) {
         OPT_INT("device", cfg_device, 0),
+        OPT_INTRANGE("buffersize", cfg_buffersize, 0, 1, 10000, OPTDEF_INT(200)),
         {0}
     },
 };

@@ -138,7 +138,7 @@ static int64_t mp_clipi64(int64_t val, int64_t min, int64_t max)
 // Returns CACHE_INTERRUPTED if the caller is supposed to abort.
 static int cache_wakeup_and_wait(struct priv *s, double *retry_time)
 {
-    if (stream_check_interrupt(s->cache))
+    if (mp_cancel_test(s->cache->cancel))
         return CACHE_INTERRUPTED;
 
     double start = mp_time_sec();
@@ -415,6 +415,9 @@ static bool control_needs_flush(int stream_ctrl)
     case STREAM_CTRL_AVSEEK:
     case STREAM_CTRL_SET_ANGLE:
     case STREAM_CTRL_SET_CURRENT_TITLE:
+    case STREAM_CTRL_RECONNECT:
+    case STREAM_CTRL_DVB_SET_CHANNEL:
+    case STREAM_CTRL_DVB_STEP_CHANNEL:
         return true;
     }
     return false;
@@ -596,13 +599,13 @@ static void cache_uninit(stream_t *cache)
     talloc_free(s);
 }
 
-// return 1 on success, 0 if the function was interrupted and -1 on error, or
-// if the cache is disabled
+// return 1 on success, 0 if the cache is disabled/not needed, and -1 on error
+// or if the cache is disabled
 int stream_cache_init(stream_t *cache, stream_t *stream,
                       struct mp_cache_opts *opts)
 {
     if (opts->size < 1)
-        return -1;
+        return 0;
 
     struct priv *s = talloc_zero(NULL, struct priv);
     s->log = cache->log;
@@ -649,8 +652,8 @@ int stream_cache_init(stream_t *cache, stream_t *stream,
     if (min < 1)
         return 1;
     for (;;) {
-        if (stream_check_interrupt(cache))
-            return 0;
+        if (mp_cancel_test(cache->cancel))
+            return -1;
         int64_t fill;
         int idle;
         if (stream_control(s->cache, STREAM_CTRL_GET_CACHE_FILL, &fill) < 0)

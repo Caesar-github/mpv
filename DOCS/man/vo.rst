@@ -259,13 +259,6 @@ Available video output drivers are:
 
     .. note:: This driver is for compatibility with old systems.
 
-``corevideo`` (Mac OS X 10.6 and later)
-    Mac OS X CoreVideo video output driver. Uses the CoreVideo APIs to fill
-    PixelBuffers and generate OpenGL textures from them (useful as a fallback
-    for ``opengl``).
-
-    .. note:: This driver is for compatibility with old systems.
-
 ``opengl``
     OpenGL video output driver. It supports extended scaling methods, dithering
     and color management.
@@ -297,6 +290,9 @@ Available video output drivers are:
         ``lanczos3``
             Lanczos with radius=3.
 
+        ``lanczos``
+            Generic Lanczos scaling filter. Set radius with ``lradius``.
+
         ``spline36``
             This is the default when using ``opengl-hq``.
 
@@ -316,6 +312,14 @@ Available video output drivers are:
             Mitchell-Netravali. The ``b`` and ``c`` parameters can be set with
             ``lparam1`` and ``lparam2``. Both are set to 1/3 by default.
 
+        ``gaussian``
+            Gaussian filter with a parameter ``p`` for sharpness control.
+            ``p`` can be set to float number between 1(blurry) and 100(sharp)
+            and has a default value of about 28.8 (see ``lparam1``).
+
+            Note that for extremely small value of ``p``, a large filter radius
+            might be required to avoid unintended artifacts (see ``lradius``).
+
 
         There are some more filters. For a complete list, pass ``help`` as
         value, e.g.::
@@ -328,6 +332,16 @@ Available video output drivers are:
 
     ``lparam2=<value>``
         See ``lparam1``.
+
+    ``lradius=<r>``
+        Set radius for filters listed below, must be a float number between 1.0
+        and 8.0. Defaults to be 2.0 if not specified.
+
+            ``sinc``, ``lanczos``, ``blackman``, ``gaussian``
+
+        Note that depending on filter implementation details and video scaling
+        ratio, the radius that actually being used might be different
+        (most likely being increased a bit).
 
     ``scaler-resizes-only``
         Disable the scaler if the video image is not resized. In that case,
@@ -430,6 +444,11 @@ Available video output drivers are:
         RGB. If chroma is not subsampled, this option is ignored, and the
         luma scaler is used instead. Setting this option is often useless.
 
+    ``cparam1``, ``cparam2``, ``cradius``
+        Set filter parameters and radius for ``cscale``.
+
+        See ``lparam1``, ``lparam2`` and ``lradius``.
+
     ``fancy-downscaling``
         When using convolution based filters, extend the filter size
         when downscaling. Trades quality for reduced downscaling performance.
@@ -439,7 +458,16 @@ Available video output drivers are:
         Borders will be distorted due to filtering.
 
     ``glfinish``
-        Call ``glFinish()`` before swapping buffers
+        Call ``glFinish()`` before and after swapping buffers (default: disabled).
+        Slower, but might help getting better results when doing framedropping.
+        The details depend entirely on the OpenGL driver.
+
+    ``waitvsync``
+        Call ``glXWaitVideoSyncSGI`` after each buffer swap (default: disabled).
+        This may or may not help with video timing accuracy and frame drop. It's
+        possible that this makes video output slower, or has no effect at all.
+
+        X11 only.
 
     ``sw``
         Continue even if a software renderer is detected.

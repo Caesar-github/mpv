@@ -31,7 +31,7 @@
 #include <assert.h>
 
 #include <libavutil/common.h>
-#include "compat/mpbswap.h"
+#include "osdep/atomics.h"
 
 #include "talloc.h"
 
@@ -39,7 +39,7 @@
 
 #include "common/common.h"
 #include "common/global.h"
-#include "bstr/bstr.h"
+#include "misc/bstr.h"
 #include "common/msg.h"
 #include "options/options.h"
 #include "options/path.h"
@@ -61,11 +61,14 @@ extern const stream_info_t stream_info_null;
 extern const stream_info_t stream_info_memory;
 extern const stream_info_t stream_info_mf;
 extern const stream_info_t stream_info_ffmpeg;
+extern const stream_info_t stream_info_ffmpeg_unsafe;
 extern const stream_info_t stream_info_avdevice;
 extern const stream_info_t stream_info_file;
 extern const stream_info_t stream_info_ifo;
+extern const stream_info_t stream_info_ifo_dvdnav;
 extern const stream_info_t stream_info_dvd;
 extern const stream_info_t stream_info_dvdnav;
+extern const stream_info_t stream_info_bdmv_dir;
 extern const stream_info_t stream_info_bluray;
 extern const stream_info_t stream_info_bdnav;
 extern const stream_info_t stream_info_rar_filter;
@@ -77,6 +80,7 @@ static const stream_info_t *const stream_list[] = {
     &stream_info_cdda,
 #endif
     &stream_info_ffmpeg,
+    &stream_info_ffmpeg_unsafe,
     &stream_info_avdevice,
 #if HAVE_DVBIN
     &stream_info_dvb,
@@ -95,9 +99,11 @@ static const stream_info_t *const stream_list[] = {
     &stream_info_dvd,
 #endif
 #if HAVE_DVDNAV
+    &stream_info_ifo_dvdnav,
     &stream_info_dvdnav,
 #endif
 #if HAVE_LIBBLURAY
+    &stream_info_bdmv_dir,
     &stream_info_bluray,
     &stream_info_bdnav,
 #endif
@@ -232,9 +238,7 @@ static bool parse_url(struct stream *st, struct m_config *config)
 
 static stream_t *new_stream(void)
 {
-    stream_t *s = talloc_size(NULL, sizeof(stream_t) + TOTAL_BUFFER_SIZE);
-    memset(s, 0, sizeof(stream_t));
-    return s;
+    return talloc_zero_size(NULL, sizeof(stream_t) + TOTAL_BUFFER_SIZE);
 }
 
 static const char *match_proto(const char *url, const char *proto)
@@ -250,13 +254,17 @@ static const char *match_proto(const char *url, const char *proto)
 }
 
 static int open_internal(const stream_info_t *sinfo, struct stream *underlying,
-                         const char *url, int flags, struct mpv_global *global,
-                         struct stream **ret)
+                         const char *url, int flags, struct mp_cancel *c,
+                         struct mpv_global *global, struct stream **ret)
 {
     if (sinfo->stream_filter != !!underlying)
         return STREAM_NO_MATCH;
     if (sinfo->stream_filter && (flags & STREAM_NO_FILTERS))
         return STREAM_NO_MATCH;
+    if (!sinfo->is_safe && (flags & STREAM_SAFE_ONLY))
+        return STREAM_UNSAFE;
+    if (!sinfo->is_network && (flags & STREAM_NETWORK_ONLY))
+        return STREAM_UNSAFE;
 
     const char *path = NULL;
     // Stream filters use the original URL, with no protocol matching at all.
@@ -275,11 +283,13 @@ static int open_internal(const stream_info_t *sinfo, struct stream *underlying,
     s->log = mp_log_new(s, global->log, sinfo->name);
     s->info = sinfo;
     s->opts = global->opts;
+    s->cancel = c;
     s->global = global;
     s->url = talloc_strdup(s, url);
     s->path = talloc_strdup(s, path);
     s->source = underlying;
     s->allow_caching = true;
+    s->is_network = sinfo->is_network;
     s->mode = flags & (STREAM_READ | STREAM_WRITE);
 
     if ((s->mode & STREAM_WRITE) && !sinfo->can_write) {
@@ -328,23 +338,36 @@ static int open_internal(const stream_info_t *sinfo, struct stream *underlying,
     return STREAM_OK;
 }
 
-struct stream *stream_create(const char *url, int flags, struct mpv_global *global)
+struct stream *stream_create(const char *url, int flags,
+                             struct mp_cancel *c, struct mpv_global *global)
 {
     struct mp_log *log = mp_log_new(NULL, global->log, "!stream");
     struct stream *s = NULL;
     assert(url);
 
     // Open stream proper
+    bool unsafe = false;
     for (int i = 0; stream_list[i]; i++) {
-        int r = open_internal(stream_list[i], NULL, url, flags, global, &s);
+        int r = open_internal(stream_list[i], NULL, url, flags, c, global, &s);
         if (r == STREAM_OK)
             break;
         if (r == STREAM_NO_MATCH || r == STREAM_UNSUPPORTED)
             continue;
+        if (r == STREAM_UNSAFE) {
+            unsafe = true;
+            continue;
+        }
         if (r != STREAM_OK) {
             mp_err(log, "Failed to open %s.\n", url);
             goto done;
         }
+    }
+
+    if (!s && unsafe) {
+        mp_err(log, "\nRefusing to load potentially unsafe URL from a playlist.\n"
+               "Use --playlist=file or the --load-unsafe-playlists option to "
+               "load it anyway.\n\n");
+        goto done;
     }
 
     if (!s) {
@@ -356,7 +379,7 @@ struct stream *stream_create(const char *url, int flags, struct mpv_global *glob
     for (;;) {
         struct stream *new = NULL;
         for (int i = 0; stream_list[i]; i++) {
-            int r = open_internal(stream_list[i], s, s->url, flags, global, &new);
+            int r = open_internal(stream_list[i], s, s->url, flags, c, global, &new);
             if (r == STREAM_OK)
                 break;
         }
@@ -372,23 +395,23 @@ done:
 
 struct stream *stream_open(const char *filename, struct mpv_global *global)
 {
-    return stream_create(filename, STREAM_READ, global);
+    return stream_create(filename, STREAM_READ, NULL, global);
 }
 
 stream_t *open_output_stream(const char *filename, struct mpv_global *global)
 {
-    return stream_create(filename, STREAM_WRITE, global);
+    return stream_create(filename, STREAM_WRITE, NULL, global);
 }
 
 static int stream_reconnect(stream_t *s)
 {
 #define MAX_RECONNECT_RETRIES 5
 #define RECONNECT_SLEEP_MAX_MS 500
-    if (!s->streaming)
+    if (!s->streaming || s->uncached_stream)
         return 0;
     if (!s->seekable)
         return 0;
-    if (stream_check_interrupt(s))
+    if (mp_cancel_test(s->cancel))
         return 0;
     int64_t pos = s->pos;
     int sleep_ms = 5;
@@ -400,12 +423,10 @@ static int stream_reconnect(stream_t *s)
             sleep_ms = MPMIN(sleep_ms * 2, RECONNECT_SLEEP_MAX_MS);
         }
 
-        if (stream_check_interrupt(s))
+        if (mp_cancel_test(s->cancel))
             return 0;
 
         s->eof = 1;
-        s->pos = 0;
-        s->buf_pos = s->buf_len = 0;
 
         int r = stream_control(s, STREAM_CTRL_RECONNECT, NULL);
         if (r == STREAM_UNSUPPORTED)
@@ -630,8 +651,9 @@ static int stream_seek_unbuffered(stream_t *s, int64_t newpos)
             MP_ERR(s, "Seek failed\n");
             return 0;
         }
+        stream_drop_buffers(s);
+        s->pos = newpos;
     }
-    s->pos = newpos;
     s->eof = 0; // EOF reset when seek succeeds.
     return -1;
 }
@@ -640,8 +662,6 @@ static int stream_seek_unbuffered(stream_t *s, int64_t newpos)
 // Unlike stream_seek_unbuffered(), it still fills the local buffer.
 static int stream_seek_long(stream_t *s, int64_t pos)
 {
-    stream_drop_buffers(s);
-
     if (s->mode == STREAM_WRITE) {
         if (!s->seekable || !s->seek(s, pos))
             return 0;
@@ -665,8 +685,6 @@ static int stream_seek_long(stream_t *s, int64_t pos)
         return 1; // success
 
     // Fill failed, but seek still is a success (partially).
-    s->buf_pos = 0;
-    s->buf_len = 0;
     s->eof = 0; // eof should be set only on read
 
     MP_VERBOSE(s, "Seek to/past EOF: no buffer preloaded.\n");
@@ -675,7 +693,6 @@ static int stream_seek_long(stream_t *s, int64_t pos)
 
 int stream_seek(stream_t *s, int64_t pos)
 {
-
     MP_TRACE(s, "seek to 0x%llX\n", (long long)pos);
 
     if (pos == stream_tell(s))
@@ -749,13 +766,6 @@ void free_stream(stream_t *s)
     talloc_free(s);
 }
 
-bool stream_check_interrupt(struct stream *s)
-{
-    if (!s->global || !s->global->stream_interrupt_cb)
-        return false;
-    return s->global->stream_interrupt_cb(s->global->stream_interrupt_cb_ctx);
-}
-
 stream_t *open_memory_stream(void *data, int len)
 {
     assert(len >= 0);
@@ -771,7 +781,7 @@ stream_t *open_memory_stream(void *data, int len)
 static stream_t *open_cache(stream_t *orig, const char *name)
 {
     stream_t *cache = new_stream();
-    cache->uncached_type = orig->type;
+    cache->uncached_type = orig->uncached_type;
     cache->uncached_stream = orig;
     cache->seekable = true;
     cache->mode = STREAM_READ;
@@ -782,7 +792,10 @@ static stream_t *open_cache(stream_t *orig, const char *name)
     cache->demuxer = talloc_strdup(cache, orig->demuxer);
     cache->lavf_type = talloc_strdup(cache, orig->lavf_type);
     cache->safe_origin = orig->safe_origin;
+    cache->streaming = orig->streaming,
+    cache->is_network = orig->is_network;
     cache->opts = orig->opts;
+    cache->cancel = orig->cancel;
     cache->global = orig->global;
 
     cache->log = mp_log_new(cache, cache->global->log, name);
@@ -808,15 +821,15 @@ bool stream_wants_cache(stream_t *stream, struct mp_cache_opts *opts)
     return use_opts.size > 0;
 }
 
-// return: 1 on success, 0 if the function was interrupted and -1 on error, or
-//         if the cache is disabled
+// return 1 on success, 0 if the cache is disabled/not needed, and -1 on error
+// or if the cache is disabled
 int stream_enable_cache(stream_t **stream, struct mp_cache_opts *opts)
 {
     stream_t *orig = *stream;
     struct mp_cache_opts use_opts = check_cache_opts(*stream, opts);
 
     if (use_opts.size < 1)
-        return -1;
+        return 0;
 
     stream_t *fcache = open_cache(orig, "file-cache");
     if (stream_file_cache_init(fcache, orig, &use_opts) <= 0) {
@@ -844,7 +857,7 @@ static uint16_t stream_read_word_endian(stream_t *s, bool big_endian)
     unsigned int y = stream_read_char(s);
     y = (y << 8) | stream_read_char(s);
     if (big_endian)
-        y = bswap_16(y);
+        y = (y >> 8) | ((y << 8) & 0xFF);
     return y;
 }
 
@@ -968,6 +981,36 @@ struct bstr stream_read_complete(struct stream *s, void *talloc_ctx,
     buf = talloc_realloc_size(talloc_ctx, buf, total_read + padding);
     memset(&buf[total_read], 0, padding);
     return (struct bstr){buf, total_read};
+}
+
+struct mp_cancel {
+    atomic_bool triggered;
+};
+
+struct mp_cancel *mp_cancel_new(void *talloc_ctx)
+{
+    struct mp_cancel *c = talloc_ptrtype(talloc_ctx, c);
+    *c = (struct mp_cancel){.triggered = ATOMIC_VAR_INIT(false)};
+    return c;
+}
+
+// Request abort.
+void mp_cancel_trigger(struct mp_cancel *c)
+{
+    atomic_store(&c->triggered, true);
+}
+
+// Restore original state. (Allows reusing a mp_cancel.)
+void mp_cancel_reset(struct mp_cancel *c)
+{
+    atomic_store(&c->triggered, false);
+}
+
+// Return whether the caller should abort.
+// For convenience, c==NULL is allowed.
+bool mp_cancel_test(struct mp_cancel *c)
+{
+    return c ? atomic_load(&c->triggered) : false;
 }
 
 void stream_print_proto_list(struct mp_log *log)

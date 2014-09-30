@@ -161,16 +161,19 @@ static int list_options(struct m_config *config)
 
 // The memcpys are supposed to work around the strict aliasing violation,
 // that would result if we just dereferenced a void** (where the void** is
-// actually casted from struct some_type* ).
+// actually casted from struct some_type* ). The dummy struct type is in
+// theory needed, because void* and struct pointers could have different
+// representations, while pointers to different struct types don't.
 static void *substruct_read_ptr(const void *ptr)
 {
-    void *res;
-    memcpy(&res, ptr, sizeof(void*));
+    struct mp_dummy_ *res;
+    memcpy(&res, ptr, sizeof(res));
     return res;
 }
 static void substruct_write_ptr(void *ptr, void *val)
 {
-    memcpy(ptr, &val, sizeof(void*));
+    struct mp_dummy_ *src = val;
+    memcpy(ptr, &src, sizeof(src));
 }
 
 static void add_options(struct m_config *config,
@@ -761,6 +764,8 @@ void m_config_print_option_list(const struct m_config *config)
             MP_INFO(config, " [global]");
         if (opt->flags & M_OPT_NOCFG)
             MP_INFO(config, " [nocfg]");
+        if (opt->flags & M_OPT_FILE)
+            MP_INFO(config, " [file]");
         MP_INFO(config, "\n");
         count++;
     }
@@ -974,5 +979,8 @@ static const char *const replaced_opts =
     "|status-msg#--term-status-msg"
     "|idx#--index"
     "|forceidx#--index"
+    "|cache-pause-below#for 'no', use --no-cache-pause"
+    "|no-cache-pause-below#--no-cache-pause"
+    "|volstep#edit input.conf directly instead"
     "|"
 ;

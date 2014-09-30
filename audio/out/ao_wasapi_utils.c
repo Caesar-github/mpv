@@ -142,46 +142,35 @@ static void set_format(WAVEFORMATEXTENSIBLE *wformat, WORD bytepersample,
     wformat->dwChannelMask = chanmask;
 }
 
-static int format_set_bits(int old_format, int bits, int fp) {
-    int format = old_format;
-    format &= (~AF_FORMAT_BITS_MASK) & (~AF_FORMAT_POINT_MASK) & (~AF_FORMAT_SIGN_MASK);
-    format |= AF_FORMAT_SI;
-
-    switch (bits) {
-    case 32:
-        format |= AF_FORMAT_32BIT;
-        break;
-    case 24:
-        format |= AF_FORMAT_24BIT;
-        break;
-    case 16:
-        format |= AF_FORMAT_16BIT;
-        break;
-    default:
-        abort(); // (should be) unreachable
-    }
-
+static int format_set_bits(int old_format, int bits, int fp)
+{
     if (fp) {
-        format |= AF_FORMAT_F;
-    } else {
-        format |= AF_FORMAT_I;
+        switch (bits) {
+        case 64: return AF_FORMAT_DOUBLE;
+        case 32: return AF_FORMAT_FLOAT;
+        default: return 0;
+        }
     }
 
-    return format;
+    return af_fmt_change_bits(old_format, bits);
 }
 
 static int set_ao_format(struct wasapi_state *state,
                          struct ao *const ao,
-                         WAVEFORMATEXTENSIBLE wformat) {
-    // .Data1 == 1 is PCM, .Data1 == 3 is IEEE_FLOAT
-    int format = format_set_bits(ao->format,
-        wformat.Format.wBitsPerSample, wformat.SubFormat.Data1 == 3);
-
+                         WAVEFORMATEXTENSIBLE wformat)
+{
     if (wformat.SubFormat.Data1 != 1 && wformat.SubFormat.Data1 != 3) {
         MP_ERR(ao, "unknown SubFormat %"PRIu32"\n",
                (uint32_t)wformat.SubFormat.Data1);
         return 0;
     }
+
+    // .Data1 == 1 is PCM, .Data1 == 3 is IEEE_FLOAT
+    int format = format_set_bits(ao->format,
+        wformat.Format.wBitsPerSample, wformat.SubFormat.Data1 == 3);
+
+    if (!format)
+        return 0;
 
     ao->samplerate = wformat.Format.nSamplesPerSec;
     ao->bps = wformat.Format.nAvgBytesPerSec;
@@ -204,6 +193,8 @@ static int try_format(struct wasapi_state *state,
     set_format(&wformat, bits / 8, samplerate, channels.num, mp_chmap_to_waveext(&channels));
 
     int af_format = format_set_bits(ao->format, bits, bits == 32);
+    if (!af_format)
+        return 0;
 
     MP_VERBOSE(ao, "trying %dch %s @ %dhz\n",
                channels.num, af_fmt_to_str(af_format), samplerate);
@@ -292,14 +283,13 @@ static int try_passthrough(struct wasapi_state *state,
     union WAVEFMT u;
     u.extensible = &wformat;
 
-    MP_VERBOSE(ao, "trying passthrough for %s...\n",
-               af_fmt_to_str((ao->format&~AF_FORMAT_END_MASK) | AF_FORMAT_LE));
+    MP_VERBOSE(ao, "trying passthrough for %s...\n", af_fmt_to_str(ao->format));
 
     HRESULT hr = IAudioClient_IsFormatSupported(state->pAudioClient,
                                                 state->share_mode,
                                                 u.ex, NULL);
     if (!FAILED(hr)) {
-        ao->format = (ao->format&~AF_FORMAT_END_MASK) | AF_FORMAT_LE;
+        ao->format = ao->format;
         state->format = wformat;
         return 1;
     }
@@ -310,7 +300,7 @@ static int find_formats(struct ao *const ao)
 {
     struct wasapi_state *state = (struct wasapi_state *)ao->priv;
 
-    if (AF_FORMAT_IS_IEC61937(ao->format) || ao->format == AF_FORMAT_MPEG2) {
+    if (AF_FORMAT_IS_IEC61937(ao->format)) {
         if (try_passthrough(state, ao))
             return 0;
 

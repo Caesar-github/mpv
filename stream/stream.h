@@ -27,7 +27,7 @@
 #include <sys/types.h>
 #include <fcntl.h>
 
-#include "bstr/bstr.h"
+#include "misc/bstr.h"
 
 enum streamtype {
     STREAMTYPE_GENERIC = 0,
@@ -55,7 +55,10 @@ enum streamtype {
 
 // flags for stream_open_ext (this includes STREAM_READ and STREAM_WRITE)
 #define STREAM_NO_FILTERS 2
+#define STREAM_SAFE_ONLY 4
+#define STREAM_NETWORK_ONLY 8
 
+#define STREAM_UNSAFE -3
 #define STREAM_NO_MATCH -2
 #define STREAM_UNSUPPORTED -1
 #define STREAM_ERROR 0
@@ -140,7 +143,9 @@ typedef struct stream_info_st {
     const struct m_option *options;
     const char *const *url_options;
     bool stream_filter;
-    bool can_write;
+    bool can_write;     // correctly checks for READ/WRITE modes
+    bool is_safe;       // opening is no security issue, even with remote provided URLs
+    bool is_network;    // used to restrict remote playlist entries to remote URLs
 } stream_info_t;
 
 typedef struct stream {
@@ -178,10 +183,13 @@ typedef struct stream {
     bool seekable : 1; // presence of general byte seeking support
     bool fast_skip : 1; // consider stream fast enough to fw-seek by skipping
     bool safe_origin : 1; // used for playlists that can be opened safely
+    bool is_network : 1; // original stream_info_t.is_network flag
     bool allow_caching : 1; // stream cache makes sense
     struct mp_log *log;
     struct MPOpts *opts;
     struct mpv_global *global;
+
+    struct mp_cancel *cancel;   // cancellation notification
 
     FILE *capture_file;
     char *capture_filename;
@@ -242,18 +250,23 @@ struct bstr stream_read_complete(struct stream *s, void *talloc_ctx,
                                  int max_size);
 int stream_control(stream_t *s, int cmd, void *arg);
 void free_stream(stream_t *s);
-struct stream *stream_create(const char *url, int flags, struct mpv_global *global);
+struct stream *stream_create(const char *url, int flags,
+                             struct mp_cancel *c, struct mpv_global *global);
 struct stream *stream_open(const char *filename, struct mpv_global *global);
 stream_t *open_output_stream(const char *filename, struct mpv_global *global);
 stream_t *open_memory_stream(void *data, int len);
 
-bool stream_check_interrupt(struct stream *s);
-
 void mp_url_unescape_inplace(char *buf);
 char *mp_url_escape(void *talloc_ctx, const char *s, const char *ok);
 
+struct mp_cancel *mp_cancel_new(void *talloc_ctx);
+void mp_cancel_trigger(struct mp_cancel *c);
+bool mp_cancel_test(struct mp_cancel *c);
+void mp_cancel_reset(struct mp_cancel *c);
+
 // stream_file.c
 char *mp_file_url_to_filename(void *talloc_ctx, bstr url);
+char *mp_file_get_path(void *talloc_ctx, bstr url);
 
 void stream_print_proto_list(struct mp_log *log);
 

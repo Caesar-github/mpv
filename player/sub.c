@@ -106,14 +106,7 @@ static void update_subtitle(struct MPContext *mpctx, int order)
 
     struct osd_sub_state state;
     osd_get_sub(mpctx->osd, obj, &state);
-
-    state.video_offset = 0;
-    if (track->under_timeline) {
-        state.video_offset += mpctx->video_offset;
-    } else if (track->is_external) {
-        state.video_offset += get_start_time(mpctx);
-    };
-
+    state.video_offset = get_track_video_offset(mpctx, track);
     osd_set_sub(mpctx->osd, obj, &state);
 
     double refpts_s = mpctx->playback_pts - state.video_offset;
@@ -151,15 +144,10 @@ static void update_subtitle(struct MPContext *mpctx, int order)
 
     // Handle displaying subtitles on terminal; never done for secondary subs
     if (order == 0) {
-        if (!state.render_bitmap_subs || !mpctx->video_out) {
-            sub_lock(dec_sub);
+        if (!state.render_bitmap_subs || !mpctx->video_out)
             set_osd_subtitle(mpctx, sub_get_text(dec_sub, curpts_s));
-            sub_unlock(dec_sub);
-        }
     } else if (order == 1) {
-        sub_lock(dec_sub);
         osd_set_text(mpctx->osd, obj, sub_get_text(dec_sub, curpts_s));
-        sub_unlock(dec_sub);
     }
 }
 
@@ -172,6 +160,8 @@ void update_subtitles(struct MPContext *mpctx)
 static void reinit_subdec(struct MPContext *mpctx, struct track *track,
                           struct dec_sub *dec_sub)
 {
+    struct MPOpts *opts = mpctx->opts;
+
     if (sub_is_initialized(dec_sub))
         return;
 
@@ -189,7 +179,7 @@ static void reinit_subdec(struct MPContext *mpctx, struct track *track,
     // Don't do this if the file has video/audio streams. Don't do it even
     // if it has only sub streams, because reading packets will change the
     // demuxer position.
-    if (!track->preloaded && track->is_external) {
+    if (!track->preloaded && track->is_external && !opts->sub_clear_on_seek) {
         demux_seek(track->demuxer, 0, SEEK_ABSOLUTE);
         track->preloaded = sub_read_all_packets(dec_sub, track->stream);
     }
@@ -237,7 +227,8 @@ void reinit_subs(struct MPContext *mpctx, int order)
     if (order == 1 && sub_has_get_text(dec_sub))
         state.render_bitmap_subs = false;
 
-    reset_subtitles(mpctx, order);
+    if (!mpctx->current_track[0][STREAM_VIDEO])
+        state.render_bitmap_subs = false;
 
     osd_set_sub(mpctx->osd, obj, &state);
 }

@@ -23,10 +23,11 @@ Note that you can control the mpv instance by writing to the command fifo:
 
     echo "cycle fullscreen" > /tmp/umpv-fifo-*
 
-Note: you can supply custom options with the UMPV_OPTIONS environment variable.
-      The environment variable will be split on whitespace, and each item is
-      passed as option to mpv _if_ the script starts mpv. If mpv is not started
-      by the script (i.e. mpv is already running), the options will be ignored.
+Note: you can supply custom mpv path and options with the MPV environment
+      variable. The environment variable will be split on whitespace, and the
+      first item is used as path to mpv binary and the rest is passed as options
+      _if_ the script starts mpv. If mpv is not started by the script (i.e. mpv
+      is already running), this will be ignored.
 
 Warning:
 
@@ -45,21 +46,17 @@ import fcntl
 import stat
 import string
 
-if len(sys.argv) < 1:
-    sys.exit(1)
 files = sys.argv[1:]
 
-# this is about the same method mpv uses to decide this
+# this is the same method mpv uses to decide this
 def is_url(filename):
-    parts = filename.split(":", 1)
+    parts = filename.split("://", 1)
     if len(parts) < 2:
         return False
     # protocol prefix has no special characters => it's an URL
+    allowed_symbols = string.ascii_letters + string.digits + '_'
     prefix = parts[0]
-    for c in prefix:
-        if string.ascii_letters.find(c) < 0:
-            return False
-    return True
+    return all(map(lambda c: c in allowed_symbols, prefix))
 
 # make them absolute; also makes them safe against interpretation as options
 def make_abs(filename):
@@ -67,9 +64,6 @@ def make_abs(filename):
         return os.path.abspath(filename)
     return filename
 files = [make_abs(f) for f in files]
-
-opts_env = os.getenv("UMPV_OPTIONS")
-opts_env = opts_env.split() if opts_env else []
 
 FIFO = "/tmp/umpv-fifo-" + os.getenv("USER")
 
@@ -89,7 +83,8 @@ if fifo_fd >= 0:
     if (((st.st_mode & (stat.S_IRWXG | stat.S_IRWXO)) != 0) or
         (not stat.S_ISFIFO(st.st_mode)) or
         (st.st_uid != os.getuid())):
-        print("error: command FIFO is not a FIFO or has bogus permissions")
+        sys.stderr.write("error: command FIFO is not a FIFO or has bogus "
+                         "permissions\n")
         sys.exit(1)
 
 if fifo_fd >= 0:
@@ -112,11 +107,11 @@ else:
             pass
         else:
             raise e
-    os.mkfifo(FIFO, int("0600", 8))
+    os.mkfifo(FIFO, 0o600)
 
-    opts = ["mpv", "--no-terminal", "--force-window", "--input-file=" + FIFO]
-    opts.extend(opts_env)
-    opts.append("--")
+    opts = (os.getenv("MPV") or "mpv").split()
+    opts.extend(["--no-terminal", "--force-window", "--input-file=" + FIFO,
+                 "--"])
     opts.extend(files)
 
     subprocess.check_call(opts)

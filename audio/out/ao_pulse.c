@@ -169,15 +169,30 @@ static const struct format_map {
     int mp_format;
     pa_sample_format_t pa_format;
 } format_maps[] = {
-    {AF_FORMAT_S16_LE, PA_SAMPLE_S16LE},
-    {AF_FORMAT_S16_BE, PA_SAMPLE_S16BE},
-    {AF_FORMAT_S32_LE, PA_SAMPLE_S32LE},
-    {AF_FORMAT_S32_BE, PA_SAMPLE_S32BE},
-    {AF_FORMAT_FLOAT_LE, PA_SAMPLE_FLOAT32LE},
-    {AF_FORMAT_FLOAT_BE, PA_SAMPLE_FLOAT32BE},
+    {AF_FORMAT_S16, PA_SAMPLE_S16NE},
+    {AF_FORMAT_S32, PA_SAMPLE_S32NE},
+    {AF_FORMAT_FLOAT, PA_SAMPLE_FLOAT32NE},
     {AF_FORMAT_U8, PA_SAMPLE_U8},
     {AF_FORMAT_UNKNOWN, 0}
 };
+
+static pa_encoding_t map_digital_format(int format)
+{
+    switch (format) {
+    case AF_FORMAT_S_AC3:   return PA_ENCODING_AC3_IEC61937;
+    case AF_FORMAT_S_EAC3:  return PA_ENCODING_EAC3_IEC61937;
+    case AF_FORMAT_S_MP3:   return PA_ENCODING_MPEG_IEC61937;
+    case AF_FORMAT_S_DTS:
+    case AF_FORMAT_S_DTSHD: return PA_ENCODING_DTS_IEC61937;
+#ifdef PA_ENCODING_MPEG2_AAC_IEC61937
+    case AF_FORMAT_S_AAC:   return PA_ENCODING_MPEG2_AAC_IEC61937;
+#endif
+    default:
+        if (AF_FORMAT_IS_IEC61937(format))
+            return PA_ENCODING_ANY;
+        return PA_ENCODING_PCM;
+    }
+}
 
 static const int speaker_map[][2] = {
   {PA_CHANNEL_POSITION_FRONT_LEFT,              MP_SPEAKER_ID_FL},
@@ -274,17 +289,15 @@ static void uninit(struct ao *ao)
 
 static int init(struct ao *ao)
 {
-    struct pa_sample_spec ss;
     struct pa_channel_map map;
     pa_proplist *proplist = NULL;
+    pa_format_info *format = NULL;
     struct priv *priv = ao->priv;
     char *host = priv->cfg_host && priv->cfg_host[0] ? priv->cfg_host : NULL;
     char *sink = priv->cfg_sink && priv->cfg_sink[0] ? priv->cfg_sink : NULL;
 
     pthread_mutex_init(&priv->wakeup_lock, NULL);
     pthread_cond_init(&priv->wakeup, NULL);
-
-    ao->per_application_mixer = true;
 
     if (!(priv->mainloop = pa_threaded_mainloop_new())) {
         MP_ERR(ao, "Failed to allocate main loop\n");
@@ -296,6 +309,12 @@ static int init(struct ao *ao)
         MP_ERR(ao, "Failed to allocate context\n");
         goto fail;
     }
+
+    MP_VERBOSE(ao, "Library version: %s\n", pa_get_library_version());
+    MP_VERBOSE(ao, "Proto: %lu\n",
+        (long)pa_context_get_protocol_version(priv->context));
+    MP_VERBOSE(ao, "Server proto: %lu\n",
+        (long)pa_context_get_server_protocol_version(priv->context));
 
     pa_context_set_state_callback(priv->context, context_state_cb, ao);
 
@@ -313,26 +332,26 @@ static int init(struct ao *ao)
     if (pa_context_get_state(priv->context) != PA_CONTEXT_READY)
         goto unlock_and_fail;
 
-    ss.channels = ao->channels.num;
-    ss.rate = ao->samplerate;
+    if (!(format = pa_format_info_new()))
+        goto unlock_and_fail;
 
     ao->format = af_fmt_from_planar(ao->format);
 
-    const struct format_map *fmt_map = format_maps;
-    while (fmt_map->mp_format != ao->format) {
-        if (fmt_map->mp_format == AF_FORMAT_UNKNOWN) {
-            MP_VERBOSE(ao, "Unsupported format, using default\n");
-            fmt_map = format_maps;
-            break;
-        }
-        fmt_map++;
-    }
-    ao->format = fmt_map->mp_format;
-    ss.format = fmt_map->pa_format;
+    format->encoding = map_digital_format(ao->format);
+    if (format->encoding == PA_ENCODING_PCM) {
+        const struct format_map *fmt_map = format_maps;
 
-    if (!pa_sample_spec_valid(&ss)) {
-        MP_ERR(ao, "Invalid sample spec\n");
-        goto unlock_and_fail;
+        while (fmt_map->mp_format != ao->format) {
+            if (fmt_map->mp_format == AF_FORMAT_UNKNOWN) {
+                MP_VERBOSE(ao, "Unsupported format, using default\n");
+                fmt_map = format_maps;
+                break;
+            }
+            fmt_map++;
+        }
+        ao->format = fmt_map->mp_format;
+
+        pa_format_info_set_sample_format(format, fmt_map->pa_format);
     }
 
     if (!select_chmap(ao, &map))
@@ -346,13 +365,27 @@ static int init(struct ao *ao)
     (void)pa_proplist_sets(proplist, PA_PROP_MEDIA_ICON_NAME,
                            PULSE_CLIENT_NAME);
 
-    if (!(priv->stream = pa_stream_new_with_proplist(priv->context,
-                                                     "audio stream", &ss,
-                                                     &map, proplist)))
+    pa_format_info_set_rate(format, ao->samplerate);
+    pa_format_info_set_channels(format, ao->channels.num);
+    pa_format_info_set_channel_map(format, &map);
+
+    if (!pa_format_info_valid(format)) {
+        MP_ERR(ao, "Invalid audio format\n");
+        goto unlock_and_fail;
+    }
+
+    if (!(priv->stream = pa_stream_new_extended(priv->context, "audio stream",
+                                                &format, 1, proplist)))
         goto unlock_and_fail;
 
     pa_proplist_free(proplist);
     proplist = NULL;
+
+    pa_sample_spec ss;
+    pa_channel_map map2;
+
+    if (pa_format_info_to_sample_spec(format, &ss, &map2) < 0)
+        goto unlock_and_fail;
 
     pa_stream_set_state_callback(priv->stream, stream_state_cb, ao);
     pa_stream_set_write_callback(priv->stream, stream_request_cb, ao);
@@ -376,10 +409,14 @@ static int init(struct ao *ao)
         goto unlock_and_fail;
 
     /* Wait until the stream is ready */
-    pa_threaded_mainloop_wait(priv->mainloop);
-
-    if (pa_stream_get_state(priv->stream) != PA_STREAM_READY)
-        goto unlock_and_fail;
+    while (1) {
+        int state = pa_stream_get_state(priv->stream);
+        if (state == PA_STREAM_READY)
+            break;
+        if (!PA_STREAM_IS_GOOD(state))
+            goto unlock_and_fail;
+        pa_threaded_mainloop_wait(priv->mainloop);
+    }
 
     pa_threaded_mainloop_unlock(priv->mainloop);
 
@@ -391,6 +428,8 @@ unlock_and_fail:
         pa_threaded_mainloop_unlock(priv->mainloop);
 
 fail:
+    if (format)
+        pa_format_info_free(format);
     if (priv->context) {
         if (!(pa_context_errno(priv->context) == PA_ERR_CONNECTIONREFUSED
               && ao->probing))
@@ -581,7 +620,7 @@ static int control(struct ao *ao, enum aocontrol cmd, void *arg)
         pa_threaded_mainloop_lock(priv->mainloop);
         if (!waitop(priv, pa_context_get_sink_input_info(priv->context, devidx,
                                                          info_func, ao))) {
-            GENERIC_ERR_MSG("pa_stream_get_sink_input_info() failed");
+            GENERIC_ERR_MSG("pa_context_get_sink_input_info() failed");
             return CONTROL_ERROR;
         }
         // Warning: some information in pi might be unaccessible, because
@@ -643,6 +682,9 @@ static int control(struct ao *ao, enum aocontrol cmd, void *arg)
         pa_threaded_mainloop_unlock(priv->mainloop);
         return CONTROL_OK;
     }
+
+    case AOCONTROL_HAS_PER_APP_VOLUME:
+        return CONTROL_TRUE;
 
     case AOCONTROL_UPDATE_STREAM_TITLE: {
         char *title = (char *)arg;

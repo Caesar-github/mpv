@@ -47,11 +47,10 @@ struct sub {
 
 struct sd_lavc_priv {
     AVCodecContext *avctx;
-    struct sub subs[MAX_QUEUE]; // lowest pts first
+    struct sub subs[MAX_QUEUE]; // most recent event first
     struct sub_bitmap *outbitmaps;
     int64_t displayed_id;
     int64_t new_id;
-    bool unknown_pts;           // at least one sub with MP_NOPTS_VALUE start
     struct mp_image_params video_params;
 };
 
@@ -199,17 +198,12 @@ static void decode(struct sd *sd, struct demux_packet *packet)
     if (duration == 0)
         duration = -1;
 
-    if (pts == MP_NOPTS_VALUE) {
+    if (pts == MP_NOPTS_VALUE)
         MP_WARN(sd, "Subtitle with unknown start time.\n");
-        priv->unknown_pts = true;
-    }
 
     av_init_packet(&pkt);
     pkt.data = packet->buffer;
     pkt.size = packet->len;
-    pkt.pts = AV_NOPTS_VALUE;
-    if (duration >= 0)
-        pkt.convergence_duration = duration * 1000;
     int got_sub;
     int res = avcodec_decode_subtitle2(ctx, &sub, &got_sub, &pkt);
     if (res < 0 || !got_sub)
@@ -317,11 +311,8 @@ static void reset(struct sd *sd)
 {
     struct sd_lavc_priv *priv = sd->priv;
 
-    if (priv->unknown_pts) {
-        for (int n = 0; n < MAX_QUEUE; n++)
-            clear_sub(&priv->subs[n]);
-        priv->unknown_pts = false;
-    }
+    for (int n = 0; n < MAX_QUEUE; n++)
+        clear_sub(&priv->subs[n]);
     // lavc might not do this right for all codecs; may need close+reopen
     avcodec_flush_buffers(priv->avctx);
 }

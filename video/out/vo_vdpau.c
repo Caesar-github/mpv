@@ -99,6 +99,7 @@ struct vdpctx {
     int                                chroma_deint;
     int                                flip_offset_window;
     int                                flip_offset_fs;
+    int                                flip_offset_ms;
     bool                               flip;
 
     VdpRect                            src_rect_vid;
@@ -250,11 +251,11 @@ static void resize(struct vo *vo)
     vc->src_rect_vid.y0 = vc->flip ? src_rect.y1 : src_rect.y0;
     vc->src_rect_vid.y1 = vc->flip ? src_rect.y0 : src_rect.y1;
 
-    int flip_offset_ms = vo->opts->fullscreen ?
+    vc->flip_offset_ms = vo->opts->fullscreen ?
                          vc->flip_offset_fs :
                          vc->flip_offset_window;
 
-    vo->flip_queue_offset = flip_offset_ms / 1000.;
+    vo_set_flip_queue_offset(vo, vc->flip_offset_ms * 1000);
 
     if (vc->output_surface_width < vo->dwidth
         || vc->output_surface_height < vo->dheight) {
@@ -328,33 +329,11 @@ static int win_x11_init_vdpau_flip_queue(struct vo *vo)
         CHECK_VDP_WARNING(vo, "Error setting colorkey");
     }
 
-    vc->vsync_interval = 1;
     if (vc->composite_detect && vo_x11_screen_is_composited(vo)) {
         MP_INFO(vo, "Compositing window manager detected. Assuming timing info "
                 "is inaccurate.\n");
-    } else if (vc->user_fps > 0) {
-        vc->vsync_interval = 1e9 / vc->user_fps;
-        MP_INFO(vo, "Assuming user-specified display refresh rate of %.3f Hz.\n",
-                vc->user_fps);
-    } else if (vc->user_fps == 0) {
-#if HAVE_XF86VM
-        double fps = vo_x11_vm_get_fps(vo);
-        if (!fps)
-            MP_WARN(vo, "Failed to get display FPS\n");
-        else {
-            vc->vsync_interval = 1e9 / fps;
-            // This is verbose, but I'm not yet sure how common wrong values are
-            MP_INFO(vo, "Got display refresh rate %.3f Hz.\n", fps);
-            MP_INFO(vo, "If that value looks wrong give the "
-                    "-vo vdpau:fps=X suboption manually.\n");
-        }
-#else
-        MP_INFO(vo, "This binary has been compiled without XF86VidMode support.\n");
-        MP_INFO(vo, "Can't use vsync-aware timing without manually provided "
-                "-vo vdpau:fps=X suboption.\n");
-#endif
-    } else
-        MP_VERBOSE(vo, "framedrop/timing logic disabled by user.\n");
+        vc->user_fps = -1;
+    }
 
     return 0;
 }
@@ -732,15 +711,23 @@ static inline uint64_t prev_vsync(struct vdpctx *vc, uint64_t ts)
     return ts - offset;
 }
 
-static void flip_page_timed(struct vo *vo, int64_t pts_us, int duration)
+static int flip_page_timed(struct vo *vo, int64_t pts_us, int duration)
 {
     struct vdpctx *vc = vo->priv;
     struct vdp_functions *vdp = vc->vdp;
     VdpStatus vdp_st;
-    uint32_t vsync_interval = vc->vsync_interval;
+
+    vc->dropped_frame = true; // changed at end if false
 
     if (!check_preemption(vo))
-        return;
+        return 0;
+
+    vc->vsync_interval = 1;
+    if (vc->user_fps > 0) {
+        vc->vsync_interval = 1e9 / vc->user_fps;
+    } else if (vc->user_fps == 0) {
+        vc->vsync_interval = vo_get_vsync_interval(vo) * 1000;
+    }
 
     if (duration > INT_MAX / 1000)
         duration = -1;
@@ -765,12 +752,12 @@ static void flip_page_timed(struct vo *vo, int64_t pts_us, int duration)
 
     /* This should normally never happen.
      * - The last queued frame can't have a PTS that goes more than 50ms in the
-     *   future. This is guaranteed by the playloop, which currently actually
-     *   roughly queues 50ms ahead, plus the flip queue offset. Just to be sure
+     *   future. This is guaranteed by vo.c, which currently actually queues
+     *   ahead by roughly 50ms, plus the flip queue offset. Just to be sure
      *   give some additional room by doubling the time.
      * - The last vsync can never be in the future.
      */
-    int64_t max_pts_ahead = (vo->flip_queue_offset + 0.050) * 2 * 1e9;
+    int64_t max_pts_ahead = (vc->flip_offset_ms + 50) * 1000 * 1000 * 2;
     if (vc->last_queue_time > now + max_pts_ahead ||
         vc->recent_vsync_time > now)
     {
@@ -788,7 +775,7 @@ static void flip_page_timed(struct vo *vo, int64_t pts_us, int duration)
      * not make the target time in reality. Without this check we could drop
      * every frame, freezing the display completely if video lags behind.
      */
-    if (now > PREV_VSYNC(FFMAX(pts, vc->last_queue_time + vsync_interval)))
+    if (now > PREV_VSYNC(FFMAX(pts, vc->last_queue_time + vc->vsync_interval)))
         npts = UINT64_MAX;
 
     /* Allow flipping a frame at a vsync if its presentation time is a
@@ -807,28 +794,27 @@ static void flip_page_timed(struct vo *vo, int64_t pts_us, int duration)
      * there would unnecessarily be a vsync without a frame change.
      */
     uint64_t vsync = PREV_VSYNC(pts);
-    if (pts < vsync + vsync_interval / 4
+    if (pts < vsync + vc->vsync_interval / 4
         && (vsync - PREV_VSYNC(vc->last_queue_time)
-            > pts - vc->last_ideal_time + vsync_interval / 2
+            > pts - vc->last_ideal_time + vc->vsync_interval / 2
             || vc->dropped_frame && vsync > vc->dropped_time))
-        pts -= vsync_interval / 2;
+        pts -= vc->vsync_interval / 2;
 
-    vc->dropped_frame = true; // changed at end if false
     vc->dropped_time = ideal_pts;
 
-    pts = FFMAX(pts, vc->last_queue_time + vsync_interval);
+    pts = FFMAX(pts, vc->last_queue_time + vc->vsync_interval);
     pts = FFMAX(pts, now);
-    if (npts < PREV_VSYNC(pts) + vsync_interval)
-        return;
+    if (npts < PREV_VSYNC(pts) + vc->vsync_interval)
+        return 0;
 
     int num_flips = update_presentation_queue_status(vo);
     vsync = vc->recent_vsync_time + num_flips * vc->vsync_interval;
     pts = FFMAX(pts, now);
-    pts = FFMAX(pts, vsync + (vsync_interval >> 2));
+    pts = FFMAX(pts, vsync + (vc->vsync_interval >> 2));
     vsync = PREV_VSYNC(pts);
-    if (npts < vsync + vsync_interval)
-        return;
-    pts = vsync + (vsync_interval >> 2);
+    if (npts < vsync + vc->vsync_interval)
+        return 0;
+    pts = vsync + (vc->vsync_interval >> 2);
     VdpOutputSurface frame = vc->output_surfaces[vc->surface_num];
     vdp_st = vdp->presentation_queue_display(vc->flip_queue, frame,
                                              vo->dwidth, vo->dheight, pts);
@@ -842,6 +828,7 @@ static void flip_page_timed(struct vo *vo, int64_t pts_us, int duration)
     vc->last_ideal_time = ideal_pts;
     vc->dropped_frame = false;
     vc->surface_num = WRAP_ADD(vc->surface_num, 1, vc->num_output_surfaces);
+    return 1;
 }
 
 static void draw_image(struct vo *vo, struct mp_image *mpi)
@@ -1025,8 +1012,6 @@ static int preinit(struct vo *vo)
 
     vc->video_eq.capabilities = MP_CSP_EQ_CAPS_COLORMATRIX;
 
-    vo->max_video_queue = 2;
-
     return 0;
 }
 
@@ -1139,6 +1124,7 @@ static int control(struct vo *vo, uint32_t request, void *data)
 const struct vo_driver video_out_vdpau = {
     .description = "VDPAU with X11",
     .name = "vdpau",
+    .caps = VO_CAP_FRAMEDROP,
     .preinit = preinit,
     .query_format = query_format,
     .reconfig = reconfig,

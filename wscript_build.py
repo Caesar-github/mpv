@@ -155,9 +155,6 @@ def build(ctx):
         ( "audio/out/pull.c" ),
         ( "audio/out/push.c" ),
 
-        ## Bstr
-        ( "bstr/bstr.c" ),
-
         ## Core
         ( "common/av_common.c" ),
         ( "common/av_log.c" ),
@@ -193,10 +190,13 @@ def build(ctx):
         ( "input/event.c" ),
         ( "input/input.c" ),
         ( "input/keycodes.c" ),
+        ( "input/pipe-unix.c",                   "!mingw" ),
+        ( "input/pipe-win32.c",                  "waio" ),
         ( "input/joystick.c",                    "joystick" ),
         ( "input/lirc.c",                        "lirc" ),
 
         ## Misc
+        ( "misc/bstr.c" ),
         ( "misc/charset_conv.c" ),
         ( "misc/dispatch.c" ),
         ( "misc/ring.c" ),
@@ -355,7 +355,6 @@ def build(ctx):
         ( "video/out/pnm_loader.c",              "gl" ),
         ( "video/out/vo.c" ),
         ( "video/out/vo_caca.c",                 "caca" ),
-        ( "video/out/vo_corevideo.c",            "corevideo"),
         ( "video/out/vo_direct3d.c",             "direct3d" ),
         ( "video/out/vo_image.c" ),
         ( "video/out/vo_lavc.c",                 "encoding" ),
@@ -370,6 +369,8 @@ def build(ctx):
         ( "video/out/vo_xv.c",                   "xv" ),
         ( "video/out/w32_common.c",              "gdi" ),
         ( "video/out/wayland_common.c",          "wayland" ),
+        ( "video/out/wayland/buffer.c",          "wayland" ),
+        ( "video/out/wayland/memfile.c",         "wayland" ),
         ( "video/out/win_state.c"),
         ( "video/out/x11_common.c",              "x11" ),
 
@@ -384,8 +385,8 @@ def build(ctx):
         ( "osdep/ar/HIDRemote.m",                "cocoa" ),
         ( "osdep/macosx_application.m",          "cocoa-application" ),
         ( "osdep/macosx_events.m",               "cocoa" ),
+        ( "osdep/semaphore_osx.c" ),
         ( "osdep/path-macosx.m",                 "cocoa" ),
-
         ( "osdep/path-win.c",                    "os-win32" ),
         ( "osdep/path-win.c",                    "os-cygwin" ),
         ( "osdep/glob-win.c",                    "glob-win32-replacement" ),
@@ -451,7 +452,9 @@ def build(ctx):
     build_static = ctx.dependency_satisfied('libmpv-static')
     if build_shared or build_static:
         if build_shared:
-            ctx.load("syms")
+            import os
+            waftoolsdir = os.path.join(os.path.dirname(__file__), "waftools")
+            ctx.load("syms", tooldir=waftoolsdir)
         vre = '^#define MPV_CLIENT_API_VERSION MPV_MAKE_VERSION\((.*), (.*)\)$'
         libmpv_header = ctx.path.find_node("libmpv/client.h").read()
         major, minor = re.search(vre, libmpv_header, re.M).groups()

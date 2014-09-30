@@ -37,8 +37,6 @@
 #include "ad.h"
 #include "audio/fmt-conversion.h"
 
-#include "compat/libav.h"
-
 struct priv {
     AVCodecContext *avctx;
     AVFrame *avframe;
@@ -73,74 +71,6 @@ const struct m_sub_options ad_lavc_conf = {
     },
 };
 
-struct pcm_map
-{
-    int tag;
-    const char *codecs[6]; // {any, 1byte, 2bytes, 3bytes, 4bytes, 8bytes}
-};
-
-// NOTE: these are needed to make rawaudio with demux_mkv work.
-static const struct pcm_map tag_map[] = {
-    // Microsoft PCM
-    {0x0,           {NULL, "pcm_u8", "pcm_s16le", "pcm_s24le", "pcm_s32le"}},
-    {0x1,           {NULL, "pcm_u8", "pcm_s16le", "pcm_s24le", "pcm_s32le"}},
-    // MS PCM, Extended
-    {0xfffe,        {NULL, "pcm_u8", "pcm_s16le", "pcm_s24le", "pcm_s32le"}},
-    // IEEE float
-    {0x3,           {"pcm_f32le", [5] = "pcm_f64le"}},
-    // 'raw '
-    {0x20776172,    {"pcm_s16be", [1] = "pcm_u8"}},
-    // 'twos', used by demux_mkv.c internally
-    {MKTAG('t', 'w', 'o', 's'),
-                    {NULL, "pcm_s8", "pcm_s16be", "pcm_s24be", "pcm_s32be"}},
-    {-1},
-};
-
-// For demux_rawaudio.c; needed because ffmpeg doesn't have these sample
-// formats natively.
-static const struct pcm_map af_map[] = {
-    {AF_FORMAT_U8,              {"pcm_u8"}},
-    {AF_FORMAT_S8,              {"pcm_u8"}},
-    {AF_FORMAT_U16_LE,          {"pcm_u16le"}},
-    {AF_FORMAT_U16_BE,          {"pcm_u16be"}},
-    {AF_FORMAT_S16_LE,          {"pcm_s16le"}},
-    {AF_FORMAT_S16_BE,          {"pcm_s16be"}},
-    {AF_FORMAT_U24_LE,          {"pcm_u24le"}},
-    {AF_FORMAT_U24_BE,          {"pcm_u24be"}},
-    {AF_FORMAT_S24_LE,          {"pcm_s24le"}},
-    {AF_FORMAT_S24_BE,          {"pcm_s24be"}},
-    {AF_FORMAT_U32_LE,          {"pcm_u32le"}},
-    {AF_FORMAT_U32_BE,          {"pcm_u32be"}},
-    {AF_FORMAT_S32_LE,          {"pcm_s32le"}},
-    {AF_FORMAT_S32_BE,          {"pcm_s32be"}},
-    {AF_FORMAT_FLOAT_LE,        {"pcm_f32le"}},
-    {AF_FORMAT_FLOAT_BE,        {"pcm_f32be"}},
-    {AF_FORMAT_DOUBLE_LE,       {"pcm_f64le"}},
-    {AF_FORMAT_DOUBLE_BE,       {"pcm_f64be"}},
-    {-1},
-};
-
-static const char *find_pcm_decoder(const struct pcm_map *map, int format,
-                                    int bits_per_sample)
-{
-    int bytes = (bits_per_sample + 7) / 8;
-    if (bytes == 8)
-        bytes = 5; // 64 bit entry
-    for (int n = 0; map[n].tag != -1; n++) {
-        const struct pcm_map *entry = &map[n];
-        if (entry->tag == format) {
-            const char *dec = NULL;
-            if (bytes >= 1 && bytes <= 5)
-                dec = entry->codecs[bytes];
-            if (!dec)
-                dec = entry->codecs[0];
-            if (dec)
-                return dec;
-        }
-    }
-    return NULL;
-}
-
 static void set_data_from_avframe(struct dec_audio *da)
 {
     struct priv *priv = da->priv;
@@ -172,18 +102,6 @@ static void set_data_from_avframe(struct dec_audio *da)
         da->decoded.planes[n] = priv->avframe->data[n];
 }
 
-static void set_from_wf(AVCodecContext *avctx, MP_WAVEFORMATEX *wf)
-{
-    avctx->channels = wf->nChannels;
-    avctx->sample_rate = wf->nSamplesPerSec;
-    avctx->bit_rate = wf->nAvgBytesPerSec * 8;
-    avctx->block_align = wf->nBlockAlign;
-    avctx->bits_per_coded_sample = wf->wBitsPerSample;
-
-    if (wf->cbSize > 0)
-        mp_lavc_set_extradata(avctx, wf + 1, wf->cbSize);
-}
-
 static int init(struct dec_audio *da, const char *decoder)
 {
     struct MPOpts *mpopts = da->opts;
@@ -196,13 +114,7 @@ static int init(struct dec_audio *da, const char *decoder)
     struct priv *ctx = talloc_zero(NULL, struct priv);
     da->priv = ctx;
 
-    if (sh_audio->wf && strcmp(decoder, "pcm") == 0) {
-        decoder = find_pcm_decoder(tag_map, sh->format,
-                                   sh_audio->wf->wBitsPerSample);
-    } else if (sh_audio->wf && strcmp(decoder, "mp-pcm") == 0) {
-        decoder = find_pcm_decoder(af_map, sh->format, 0);
-        ctx->force_channel_map = true;
-    }
+    ctx->force_channel_map = sh_audio->force_channels;
 
     lavc_codec = avcodec_find_decoder_by_name(decoder);
     if (!lavc_codec) {
@@ -232,12 +144,13 @@ static int init(struct dec_audio *da, const char *decoder)
     lavc_context->codec_tag = sh->format;
     lavc_context->sample_rate = sh_audio->samplerate;
     lavc_context->bit_rate = sh_audio->bitrate;
-    lavc_context->channel_layout = mp_chmap_to_lavc(&sh_audio->channels);
+    lavc_context->block_align = sh_audio->block_align;
+    lavc_context->bits_per_coded_sample = sh_audio->bits_per_coded_sample;
+    lavc_context->channels = sh_audio->channels.num;
+    if (!mp_chmap_is_unknown(&sh_audio->channels))
+        lavc_context->channel_layout = mp_chmap_to_lavc(&sh_audio->channels);
 
-    if (sh_audio->wf)
-        set_from_wf(lavc_context, sh_audio->wf);
-
-    // demux_mkv, demux_mpg
+    // demux_mkv
     if (sh_audio->codecdata_len && sh_audio->codecdata &&
             !lavc_context->extradata) {
         mp_lavc_set_extradata(lavc_context, sh_audio->codecdata,
@@ -258,8 +171,6 @@ static int init(struct dec_audio *da, const char *decoder)
 
     if (lavc_context->bit_rate != 0)
         da->bitrate = lavc_context->bit_rate;
-    else if (sh_audio->wf && sh_audio->wf->nAvgBytesPerSec)
-        da->bitrate = sh_audio->wf->nAvgBytesPerSec * 8;
 
     return 1;
 }
@@ -362,8 +273,6 @@ static int decode_packet(struct dec_audio *da)
 static void add_decoders(struct mp_decoder_list *list)
 {
     mp_add_lavc_decoders(list, AVMEDIA_TYPE_AUDIO);
-    mp_add_decoder(list, "lavc", "pcm", "pcm", "Raw PCM");
-    mp_add_decoder(list, "lavc", "mp-pcm", "mp-pcm", "Raw PCM");
 }
 
 const struct ad_functions ad_lavc = {

@@ -84,13 +84,13 @@ extern const struct m_obj_list ao_obj_list;
 const m_option_t mp_opts[] = {
     // handled in command line pre-parser (parse_commandline.c)
     {"v", CONF_TYPE_STORE, CONF_GLOBAL | CONF_NOCFG, .offset = -1},
-    {"playlist", CONF_TYPE_STRING, CONF_NOCFG | M_OPT_MIN | M_OPT_FIXED,
+    {"playlist", CONF_TYPE_STRING, CONF_NOCFG | M_OPT_MIN | M_OPT_FIXED | M_OPT_FILE,
      .min = 1, .offset = -1},
     {"{", CONF_TYPE_STORE, CONF_NOCFG | M_OPT_FIXED, .offset = -1},
     {"}", CONF_TYPE_STORE, CONF_NOCFG | M_OPT_FIXED, .offset = -1},
 
     // handled in m_config.c
-    { "include", CONF_TYPE_STRING, M_OPT_FIXED, .offset = -1},
+    { "include", CONF_TYPE_STRING, M_OPT_FIXED | M_OPT_FILE, .offset = -1},
     { "profile", CONF_TYPE_STRING_LIST, M_OPT_FIXED, .offset = -1},
     { "show-profile", CONF_TYPE_STRING, CONF_NOCFG | M_OPT_FIXED, .offset = -1},
     { "list-options", CONF_TYPE_STORE, CONF_NOCFG | M_OPT_FIXED, .offset = -1},
@@ -127,7 +127,7 @@ const m_option_t mp_opts[] = {
     OPT_STRINGLIST("reset-on-next-file", reset_options, M_OPT_GLOBAL),
 
 #if HAVE_LUA
-    OPT_STRINGLIST("lua", lua_files, CONF_GLOBAL),
+    OPT_STRINGLIST("lua", lua_files, CONF_GLOBAL | M_OPT_FILE),
     OPT_KEYVALUELIST("lua-opts", lua_opts, M_OPT_GLOBAL),
     OPT_FLAG("osc", lua_load_osc, CONF_GLOBAL),
     OPT_FLAG("load-scripts", auto_load_scripts, CONF_GLOBAL),
@@ -142,14 +142,11 @@ const m_option_t mp_opts[] = {
                       ({"no", 0})),
     OPT_INTRANGE("cache-initial", stream_cache.initial, 0, 0, 0x7fffffff),
     OPT_INTRANGE("cache-seek-min", stream_cache.seek_min, 0, 0, 0x7fffffff),
-    OPT_STRING("cache-file", stream_cache.file, 0),
+    OPT_STRING("cache-file", stream_cache.file, M_OPT_FILE),
     OPT_INTRANGE("cache-file-size", stream_cache.file_max, 0, 0, 0x7fffffff),
-    OPT_CHOICE_OR_INT("cache-pause-below", stream_cache_pause, 0, 0, 0x7fffffff,
-                      ({"no", 0})),
-    OPT_INTRANGE("cache-pause-restart", stream_cache_unpause, 0, 0, 0x7fffffff),
 
 #if HAVE_DVDREAD || HAVE_DVDNAV
-    OPT_STRING("dvd-device", dvd_device, 0),
+    OPT_STRING("dvd-device", dvd_device, M_OPT_FILE),
     OPT_INT("dvd-speed", dvd_speed, 0),
     OPT_INTRANGE("dvd-angle", dvd_angle, 0, 1, 99),
 #endif /* HAVE_DVDREAD */
@@ -157,7 +154,7 @@ const m_option_t mp_opts[] = {
     OPT_CHOICE_OR_INT("edition", edition_id, 0, 0, 8190,
                       ({"auto", -1})),
 #if HAVE_LIBBLURAY
-    OPT_STRING("bluray-device", bluray_device, 0),
+    OPT_STRING("bluray-device", bluray_device, M_OPT_FILE),
     OPT_INTRANGE("bluray-angle", bluray_angle, 0, 0, 999),
 #endif /* HAVE_LIBBLURAY */
 
@@ -165,14 +162,14 @@ const m_option_t mp_opts[] = {
     OPT_STRING("user-agent", network_useragent, 0),
     OPT_STRING("referrer", network_referrer, 0),
     OPT_FLAG("cookies", network_cookies_enabled, 0),
-    OPT_STRING("cookies-file", network_cookies_file, 0),
+    OPT_STRING("cookies-file", network_cookies_file, M_OPT_FILE),
     OPT_CHOICE("rtsp-transport", network_rtsp_transport, 0,
                ({"lavf", 0},
                 {"udp", 1},
                 {"tcp", 2},
                 {"http", 3})),
     OPT_FLAG("tls-verify", network_tls_verify, 0),
-    OPT_STRING("tls-ca-file", network_tls_ca_file, 0),
+    OPT_STRING("tls-ca-file", network_tls_ca_file, M_OPT_FILE),
 
 // ------------------------- demuxer options --------------------
 
@@ -205,19 +202,26 @@ const m_option_t mp_opts[] = {
     OPT_STRING("quvi-format", quvi_format, 0),
     OPT_FLAG("quvi-fetch-subtitles", quvi_fetch_subtitles, 0),
 
+    OPT_CHOICE("hls-bitrate", hls_bitrate, M_OPT_FIXED,
+               ({"no", 0}, {"min", 1}, {"max", 2})),
+
 #if HAVE_CDDA
     OPT_SUBSTRUCT("cdda", stream_cdda_opts, stream_cdda_conf, 0),
-    OPT_STRING("cdrom-device", cdrom_device, 0),
+    OPT_STRING("cdrom-device", cdrom_device, M_OPT_FILE),
 #endif
 
     // demuxer.c - select audio/sub file/demuxer
-    OPT_STRING_APPEND_LIST("audio-file", audio_files, 0),
+    OPT_STRING_APPEND_LIST("audio-file", audio_files, M_OPT_FILE),
     OPT_STRING("demuxer", demuxer_name, 0),
     OPT_STRING("audio-demuxer", audio_demuxer_name, 0),
     OPT_STRING("sub-demuxer", sub_demuxer_name, 0),
     OPT_FLAG("demuxer-thread", demuxer_thread, 0),
+    OPT_DOUBLE("demuxer-readahead-secs", demuxer_min_secs, M_OPT_MIN, .min = 0),
     OPT_INTRANGE("demuxer-readahead-packets", demuxer_min_packs, 0, 0, MAX_PACKS),
     OPT_INTRANGE("demuxer-readahead-bytes", demuxer_min_bytes, 0, 0, MAX_PACK_BYTES),
+
+    OPT_DOUBLE("cache-secs", demuxer_min_secs_cache, M_OPT_MIN, .min = 0),
+    OPT_FLAG("cache-pause", cache_pausing, 0),
 
     OPT_DOUBLE("mf-fps", mf_fps, 0),
     OPT_STRING("mf-type", mf_type, 0),
@@ -297,7 +301,7 @@ const m_option_t mp_opts[] = {
 
 // ------------------------- subtitles options --------------------
 
-    OPT_STRING_APPEND_LIST("sub-file", sub_name, 0),
+    OPT_STRING_APPEND_LIST("sub-file", sub_name, M_OPT_FILE),
     OPT_PATHLIST("sub-paths", sub_paths, 0),
     OPT_STRING("sub-codepage", sub_cp, 0),
     OPT_FLOAT("sub-delay", sub_delay, 0),
@@ -322,7 +326,7 @@ const m_option_t mp_opts[] = {
     OPT_FLAG("ass-vsfilter-blur-compat", ass_vsfilter_blur_compat, 0),
     OPT_FLAG("embeddedfonts", use_embedded_fonts, 0),
     OPT_STRINGLIST("ass-force-style", ass_force_style_list, 0),
-    OPT_STRING("ass-styles", ass_styles_file, 0),
+    OPT_STRING("ass-styles", ass_styles_file, M_OPT_FILE),
     OPT_CHOICE("ass-hinting", ass_hinting, 0,
                ({"none", 0}, {"light", 1}, {"normal", 2}, {"native", 3})),
     OPT_CHOICE("ass-shaper", ass_shaper, 0,
@@ -337,6 +341,7 @@ const m_option_t mp_opts[] = {
     OPT_FLOATRANGE("osd-bar-h", osd_bar_h, 0, 0.1, 50),
     OPT_SUBSTRUCT("osd", osd_style, osd_style_conf, 0),
     OPT_SUBSTRUCT("sub-text", sub_text_style, osd_style_conf, 0),
+    OPT_FLAG("sub-clear-on-seek", sub_clear_on_seek, 0),
 
 //---------------------- libao/libvo options ------------------------
     OPT_SETTINGSLIST("vo", vo.video_driver_list, 0, &vo_obj_list),
@@ -355,7 +360,6 @@ const m_option_t mp_opts[] = {
                 {"yes", SOFTVOL_YES},
                 {"auto", SOFTVOL_AUTO})),
     OPT_FLOATRANGE("softvol-max", softvol_max, 0, 10, 10000),
-    OPT_INTRANGE("volstep", volstep, 0, 0, 100),
     OPT_FLOATRANGE("volume", mixer_init_volume, 0, -1, 100),
     OPT_CHOICE("mute", mixer_init_mute, M_OPT_OPTIONAL_PARAM,
                ({"auto", -1},
@@ -366,6 +370,8 @@ const m_option_t mp_opts[] = {
                ({"no", 0},
                 {"yes", 1}, {"", 1},
                 {"weak", -1})),
+    OPT_DOUBLE("audio-buffer", audio_buffer, M_OPT_MIN | M_OPT_MAX,
+               .min = 0, .max = 10),
 
     OPT_GEOMETRY("geometry", vo.geometry, 0),
     OPT_SIZE_BOX("autofit", vo.autofit, 0),
@@ -374,6 +380,7 @@ const m_option_t mp_opts[] = {
     // vo name (X classname) and window title strings
     OPT_STRING("x11-name", vo.winname, 0),
     OPT_STRING("title", wintitle, 0),
+    OPT_STRING("media-title", media_title, 0),
     // set aspect ratio of monitor - useful for 16:9 TV-out
     OPT_FLOATRANGE("monitoraspect", vo.force_monitor_aspect, 0, 0.0, 9.0),
     OPT_FLOATRANGE("monitorpixelaspect", vo.monitor_pixel_aspect, 0, 0.2, 9.0),
@@ -413,6 +420,7 @@ const m_option_t mp_opts[] = {
                 {"BT.2020", MP_CSP_PRIM_BT_2020})),
     OPT_CHOICE_OR_INT("video-rotate", video_rotate, 0, 0, 359,
                       ({"no", -1})),
+    OPT_VID_STEREO_MODE("video-stereo-mode", video_stereo_mode, 0),
 
     OPT_CHOICE_OR_INT("cursor-autohide", cursor_autohide_delay, 0,
                       0, 30000, ({"no", -1}, {"always", -2})),
@@ -457,24 +465,30 @@ const m_option_t mp_opts[] = {
 
     OPT_CHOICE("framedrop", frame_dropping, 0,
                ({"no", 0},
-                {"yes", 1})),
+                {"vo", 1},
+                {"decoder", 2},
+                {"decoder+vo", 3})),
+
+    OPT_DOUBLE("display-fps", frame_drop_fps, M_OPT_MIN, .min = 0),
 
     OPT_FLAG("untimed", untimed, M_OPT_FIXED),
 
-    OPT_STRING("stream-capture", stream_capture, M_OPT_FIXED),
-    OPT_STRING("stream-dump", stream_dump, M_OPT_FIXED),
+    OPT_STRING("stream-capture", stream_capture, M_OPT_FIXED | M_OPT_FILE),
+    OPT_STRING("stream-dump", stream_dump, M_OPT_FIXED | M_OPT_FILE),
 
     OPT_CHOICE_OR_INT("loop", loop_times, M_OPT_GLOBAL, 2, 10000,
                       ({"no", -1}, {"1", -1},
                        {"inf", 0})),
-    OPT_FLAG("loop-file", loop_file, 0),
+    OPT_CHOICE_OR_INT("loop-file", loop_file, M_OPT_OPTIONAL_PARAM, 0, 10000,
+                      ({"yes", -1}, {"", -1}, {"no", 0}, // compat
+                       {"inf", -1})),
 
     OPT_FLAG("resume-playback", position_resume, 0),
     OPT_FLAG("save-position-on-quit", position_save_on_quit, 0),
     OPT_FLAG("write-filename-in-watch-later-config", write_filename_in_watch_later_config, 0),
 
     OPT_FLAG("ordered-chapters", ordered_chapters, 0),
-    OPT_STRING("ordered-chapters-files", ordered_chapters_files, 0),
+    OPT_STRING("ordered-chapters-files", ordered_chapters_files, M_OPT_FILE),
     OPT_INTRANGE("chapter-merge-threshold", chapter_merge_threshold, 0, 0, 10000),
 
     OPT_DOUBLE("chapter-seek-threshold", chapter_seek_threshold, 0),
@@ -494,8 +508,6 @@ const m_option_t mp_opts[] = {
     OPT_CHOICE_OR_INT("autosync", autosync, 0, 0, 10000,
                       ({"no", -1})),
 
-    OPT_FLAG("softsleep", softsleep, 0),
-
     OPT_CHOICE("term-osd", term_osd, 0,
                ({"force", 1},
                 {"auto", 2},
@@ -505,8 +517,12 @@ const m_option_t mp_opts[] = {
     OPT_STRING("term-osd-bar-chars", term_osd_bar_chars, 0),
 
     OPT_STRING("term-playing-msg", playing_msg, 0),
+    OPT_STRING("osd-playing-msg", osd_playing_msg, 0),
     OPT_STRING("term-status-msg", status_msg, 0),
     OPT_STRING("osd-status-msg", osd_status_msg, 0),
+    OPT_STRING("osd-msg1", osd_msg[0], 0),
+    OPT_STRING("osd-msg2", osd_msg[1], 0),
+    OPT_STRING("osd-msg3", osd_msg[2], 0),
 
     OPT_FLAG("idle", player_idle_mode, M_OPT_GLOBAL),
     OPT_FLAG("input-terminal", consolecontrols, CONF_GLOBAL),
@@ -544,8 +560,8 @@ const struct MPOpts mp_default_opts = {
     .softvol_max = 200,
     .mixer_init_volume = -1,
     .mixer_init_mute = -1,
-    .volstep = 3,
     .gapless_audio = -1,
+    .audio_buffer = 0.2,
     .vo = {
         .video_driver_list = NULL,
         .monitor_pixel_aspect = 1.0,
@@ -592,18 +608,20 @@ const struct MPOpts mp_default_opts = {
         .seek_min = 500,
         .file_max = 1024 * 1024,
     },
-    .stream_cache_pause = 50,
-    .stream_cache_unpause = 100,
-    .demuxer_thread = 0,
-    .demuxer_min_packs = MIN_PACKS,
-    .demuxer_min_bytes = MIN_PACK_BYTES,
+    .demuxer_thread = 1,
+    .demuxer_min_packs = 0,
+    .demuxer_min_bytes = 0,
+    .demuxer_min_secs = 0.2,
     .network_rtsp_transport = 2,
+    .demuxer_min_secs_cache = 2,
+    .cache_pausing = 1,
     .chapterrange = {-1, -1},
     .edition_id = -1,
     .default_max_pts_correction = -1,
     .correct_pts = 1,
     .user_pts_assoc_mode = 1,
     .initial_audio_sync = 1,
+    .frame_dropping = 1,
     .term_osd = 2,
     .term_osd_bar_chars = "[-+-]",
     .consolecontrols = 1,
