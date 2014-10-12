@@ -531,9 +531,12 @@ static void handle_osd_redraw(struct MPContext *mpctx)
             return;
     }
     // Don't redraw immediately during a seek (makes it significantly slower).
-    if (mpctx->d_video && mp_time_sec() - mpctx->start_timestamp < 0.1)
+    if (mpctx->d_video && mp_time_sec() - mpctx->start_timestamp < 0.1) {
+        mpctx->sleeptime = MPMIN(mpctx->sleeptime, 0.1);
         return;
-    bool want_redraw = osd_query_and_reset_want_redraw(mpctx->osd);
+    }
+    bool want_redraw = osd_query_and_reset_want_redraw(mpctx->osd) ||
+                       vo_want_redraw(mpctx->video_out);
     if (!want_redraw)
         return;
     vo_redraw(mpctx->video_out);
@@ -817,7 +820,6 @@ void handle_force_window(struct MPContext *mpctx, bool reconfig)
             .d_w = w, .d_h = h,
         };
         vo_reconfig(vo, &p, 0);
-        vo_control(vo, VOCTRL_SET_CURSOR_VISIBILITY, &(bool){true});
         vo_control(vo, VOCTRL_RESTORE_SCREENSAVER, NULL);
         vo_set_paused(vo, true);
         vo_redraw(vo);
@@ -986,6 +988,7 @@ void idle_loop(struct MPContext *mpctx)
         mp_wait_events(mpctx, mpctx->sleeptime);
         mpctx->sleeptime = 100.0;
         mp_process_input(mpctx);
+        handle_cursor_autohide(mpctx);
         update_osd_msg(mpctx);
         handle_osd_redraw(mpctx);
     }

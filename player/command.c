@@ -3024,7 +3024,7 @@ static const struct property_osd_display {
     { "clock", "Clock" },
     // audio
     { "volume", "Volume",
-      .msg = "Volume: ${volume}% ${?mute==yes:(Muted)}",
+      .msg = "Volume: ${?volume:${volume}% ${?mute==yes:(Muted)}}${!volume:${volume}}",
       .osd_progbar = OSD_VOLUME },
     { "mute", "Mute" },
     { "audio-delay", "A-V delay" },
@@ -3695,11 +3695,10 @@ int run_command(MPContext *mpctx, mp_cmd_t *cmd)
             opts->osd_level = (opts->osd_level + 1) % (MAX_OSD_LEVEL + 1);
         else
             opts->osd_level = MPCLAMP(v, 0, MAX_OSD_LEVEL);
-        if (opts->osd_level > 0) {
+        if (opts->osd_level > 0 && (on_osd & MP_ON_OSD_MSG))
             set_osd_msg(mpctx, osdl, osd_duration, "OSD level: %d", opts->osd_level);
-        } else {
+        if (opts->osd_level == 0)
             set_osd_msg(mpctx, 0, 0, "");
-        }
         break;
     }
 

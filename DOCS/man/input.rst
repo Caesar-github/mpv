@@ -11,8 +11,9 @@ value (upper case if combined with ``Shift``), or a name for special keys. For
 example, ``a`` maps to the ``a`` key without shift, and ``A`` maps to ``a``
 with shift.
 
-The file is normally located in ``~/.config/mpv/input.conf`` (some platforms
-may use different paths). The default bindings are defined here::
+The file is located in the mpv configuration directory (normally at
+``~/.config/mpv/input.conf`` depending on platform). The default bindings are
+defined here::
 
     https://github.com/mpv-player/mpv/blob/master/etc/input.conf
 
@@ -667,9 +668,6 @@ Property list
     calculating it out of other properties is that it properly falls back to
     estimating the playback position from the byte position, if the file
     duration is not known.
-
-``ratio-pos`` (RW)
-    Position in current file (0.0-1.0). higher precision that ``percent-pos``.
 
 ``time-pos`` (RW)
     Position in current file in seconds.
