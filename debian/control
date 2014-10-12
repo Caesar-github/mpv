@@ -44,7 +44,7 @@ Build-Depends: debhelper (>= 9),
  pkg-config,
  python,
  python-docutils,
-Standards-Version: 3.9.5
+Standards-Version: 3.9.6
 Homepage: http://mpv.io/
 Vcs-Git: git://anonscm.debian.org/pkg-multimedia/mpv.git
 Vcs-Browser: http://anonscm.debian.org/gitweb/?p=pkg-multimedia/mpv.git
