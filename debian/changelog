@@ -1,9 +1,13 @@
-mpv (0.6.0-2) UNRELEASED; urgency=medium
+mpv (0.6.1-1) UNRELEASED; urgency=medium
 
+  * New upstream release
+    - Fix the autodetection of the input format in the vf_stereo3d filter
+      (Closes: #763904)
+    - Don't create 0x0 windows on X11 (Closes: #764419)
   * Remove unused build deps
   * Enable support for xrandr
 
- -- Alessandro Ghedini <alessandro@ghedini.me>  Sun, 12 Oct 2014 14:31:39 +0200
+ -- Alessandro Ghedini <ghedo@debian.org>  Sun, 12 Oct 2014 14:32:17 +0200
 
 mpv (0.6.0-1) unstable; urgency=medium
 
