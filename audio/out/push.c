@@ -44,14 +44,12 @@ struct ao_push_state {
     pthread_t thread;
     pthread_mutex_t lock;
     pthread_cond_t wakeup;
-    pthread_cond_t wakeup_drain;
 
     // --- protected by lock
 
     struct mp_audio_buffer *buffer;
 
     bool terminate;
-    bool drain;
     bool wait_on_ao;
     bool still_playing;
     bool need_wakeup;
@@ -92,15 +90,7 @@ static double unlocked_get_delay(struct ao *ao)
     double driver_delay = 0;
     if (ao->driver->get_delay)
         driver_delay = ao->driver->get_delay(ao);
-    double delay = driver_delay + mp_audio_buffer_seconds(p->buffer);
-    if (delay >= AO_EOF_DELAY && p->expected_end_time) {
-        if (mp_time_sec() > p->expected_end_time) {
-            MP_ERR(ao, "Audio device EOF reporting is broken!\n");
-            MP_ERR(ao, "Please report this problem.\n");
-            delay = 0;
-        }
-    }
-    return delay;
+    return driver_delay + mp_audio_buffer_seconds(p->buffer);
 }
 
 static float get_delay(struct ao *ao)
@@ -153,20 +143,27 @@ static void drain(struct ao *ao)
 {
     struct ao_push_state *p = ao->api_priv;
 
+    MP_VERBOSE(ao, "draining...\n");
+
     pthread_mutex_lock(&p->lock);
-    if (p->paused) {
-        pthread_mutex_unlock(&p->lock);
-        return;
-    }
+    if (p->paused)
+        goto done;
+
     p->final_chunk = true;
-    p->drain = true;
     wakeup_playthread(ao);
-    while (p->drain)
-        pthread_cond_wait(&p->wakeup_drain, &p->lock);
+    while (p->still_playing && mp_audio_buffer_samples(p->buffer) > 0)
+        pthread_cond_wait(&p->wakeup, &p->lock);
+
+    if (ao->driver->drain) {
+        ao->driver->drain(ao);
+    } else {
+        double time = unlocked_get_delay(ao);
+        mp_sleep_us(MPMIN(time, ao->buffer / (double)ao->samplerate + 1) * 1e6);
+    }
+
+done:
     pthread_mutex_unlock(&p->lock);
 
-    if (!ao->driver->drain)
-        mp_sleep_us(get_delay(ao) * 1000000);
     reset(ao);
 }
 
@@ -235,7 +232,6 @@ static int play(struct ao *ao, void **data, int samples, int flags)
 
     bool got_data = write_samples > 0 || p->paused || p->final_chunk != is_final;
 
-    p->expected_end_time = 0;
     p->final_chunk = is_final;
     p->paused = false;
     p->still_playing |= write_samples > 0;
@@ -279,11 +275,8 @@ static void ao_play_data(struct ao *ao)
         r = max;
     }
     mp_audio_buffer_skip(p->buffer, r);
-    if (p->final_chunk && mp_audio_buffer_samples(p->buffer) == 0) {
-        p->expected_end_time = mp_time_sec() + AO_EOF_DELAY + 0.25; // + margin
-        if (ao->driver->get_delay)
-            p->expected_end_time += ao->driver->get_delay(ao);
-    }
+    if (r > 0)
+        p->expected_end_time = 0;
     // Nothing written, but more input data than space - this must mean the
     // AO's get_space() doesn't do period alignment correctly.
     bool stuck = r == 0 && max >= space && space > 0;
@@ -312,13 +305,6 @@ static void *playthread(void *arg)
         if (!p->paused)
             ao_play_data(ao);
 
-        if (p->drain && (!p->wait_on_ao || p->paused)) {
-            if (ao->driver->drain)
-                ao->driver->drain(ao);
-            p->drain = false;
-            pthread_cond_signal(&p->wakeup_drain);
-        }
-
         if (!p->need_wakeup) {
             MP_STATS(ao, "start audio wait");
             if (!p->wait_on_ao || p->paused) {
@@ -332,14 +318,22 @@ static void *playthread(void *arg)
 
                 bool was_playing = p->still_playing;
                 double timeout = -1;
-                if (p->still_playing && !p->paused) {
-                    timeout = unlocked_get_delay(ao);
-                    if (timeout < AO_EOF_DELAY)
+                if (p->still_playing && !p->paused && p->final_chunk &&
+                    !mp_audio_buffer_samples(p->buffer))
+                {
+                    double now = mp_time_sec();
+                    if (!p->expected_end_time)
+                        p->expected_end_time = now + unlocked_get_delay(ao);
+                    if (p->expected_end_time < now) {
                         p->still_playing = false;
+                    } else {
+                        timeout = p->expected_end_time - now;
+                    }
                 }
 
                 if (was_playing && !p->still_playing)
                     mp_input_wakeup(ao->input_ctx);
+                pthread_cond_signal(&p->wakeup); // for draining
 
                 if (p->still_playing && timeout > 0) {
                     mpthread_cond_timedwait_rel(&p->wakeup, &p->lock, timeout);
@@ -347,6 +341,7 @@ static void *playthread(void *arg)
                     pthread_cond_wait(&p->wakeup, &p->lock);
                 }
             } else {
+                // Wait until the device wants us to write more data to it.
                 if (!ao->driver->wait || ao->driver->wait(ao, &p->lock) < 0) {
                     // Fallback to guessing.
                     double timeout = 0;
@@ -374,7 +369,6 @@ static void destroy_no_thread(struct ao *ao)
         close(p->wakeup_pipe[n]);
 
     pthread_cond_destroy(&p->wakeup);
-    pthread_cond_destroy(&p->wakeup_drain);
     pthread_mutex_destroy(&p->lock);
 }
 
@@ -398,7 +392,6 @@ static int init(struct ao *ao)
 
     pthread_mutex_init(&p->lock, NULL);
     pthread_cond_init(&p->wakeup, NULL);
-    pthread_cond_init(&p->wakeup_drain, NULL);
     mp_make_wakeup_pipe(p->wakeup_pipe);
 
     if (ao->device_buffer <= 0) {
