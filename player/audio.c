@@ -214,9 +214,8 @@ void reinit_audio_chain(struct MPContext *mpctx)
 init_error:
     uninit_player(mpctx, INITIALIZED_ACODEC | INITIALIZED_AO);
 no_audio:
-    mp_deselect_track(mpctx, track);
     if (track)
-        MP_INFO(mpctx, "Audio: no audio\n");
+        error_on_track(mpctx, track);
 }
 
 // Return pts value corresponding to the end point of audio written to the
@@ -382,6 +381,7 @@ void fill_audio_out_buffers(struct MPContext *mpctx, double endpts)
             return;
         }
         reinit_audio_chain(mpctx);
+        mpctx->sleeptime = 0;
         return; // try again next iteration
     }
 
@@ -520,8 +520,8 @@ void fill_audio_out_buffers(struct MPContext *mpctx, double endpts)
 // Drop data queued for output, or which the AO is currently outputting.
 void clear_audio_output_buffers(struct MPContext *mpctx)
 {
-    if (mpctx->ao) {
+    if (mpctx->ao)
         ao_reset(mpctx->ao);
+    if (mpctx->ao_buffer)
         mp_audio_buffer_clear(mpctx->ao_buffer);
-    }
 }

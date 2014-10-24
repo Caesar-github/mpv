@@ -310,7 +310,7 @@ err_out:
 no_video:
     uninit_player(mpctx, INITIALIZED_VCODEC | (opts->force_vo ? 0 : INITIALIZED_VO));
     if (track)
-        mp_deselect_track(mpctx, track);
+        error_on_track(mpctx, track);
     handle_force_window(mpctx, true);
     return 0;
 }
@@ -579,7 +579,9 @@ static int video_output_image(struct MPContext *mpctx, double endpts)
                        && mpctx->video_status == STATUS_SYNCING;
             if (hrseek && img->pts < mpctx->hrseek_pts - .005)
                 drop = true;
-            if (endpts != MP_NOPTS_VALUE && img->pts >= endpts) {
+            if ((endpts != MP_NOPTS_VALUE && img->pts >= endpts) ||
+                mpctx->max_frames == 0)
+            {
                 drop = true;
                 r = VD_EOF;
             }
@@ -806,7 +808,7 @@ void write_video(struct MPContext *mpctx, double endpts)
                 pause_player(mpctx);
         }
         if (mpctx->max_frames == 0)
-            mpctx->stop_play = PT_NEXT_ENTRY;
+            mpctx->stop_play = AT_END_OF_FILE;
         if (mpctx->max_frames > 0)
             mpctx->max_frames--;
     }
@@ -820,9 +822,7 @@ error:
     if (!opts->force_vo)
         uninit |= INITIALIZED_VO;
     uninit_player(mpctx, uninit);
-    if (!mpctx->current_track[STREAM_AUDIO])
-        mpctx->stop_play = PT_NEXT_ENTRY;
-    mpctx->error_playing = true;
+    error_on_track(mpctx, mpctx->current_track[STREAM_VIDEO][0]);
     handle_force_window(mpctx, true);
     mpctx->sleeptime = 0;
 }
