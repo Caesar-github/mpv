@@ -52,6 +52,7 @@ Vcs-Browser: http://anonscm.debian.org/gitweb/?p=pkg-multimedia/mpv.git
 Package: mpv
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}
+Recommends: youtube-dl (>= 2014.11.09)
 Multi-Arch: foreign
 Description: video player based on MPlayer/mplayer2
  mpv is a movie player based on MPlayer and mplayer2. It supports a wide
@@ -85,6 +86,7 @@ Package: libmpv1
 Section: libs
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}
+Recommends: youtube-dl (>= 2014.11.09)
 Pre-Depends: ${misc:Pre-Depends}
 Multi-Arch: same
 Description: video player based on MPlayer/mplayer2 (client library)
