@@ -6,7 +6,7 @@ export DEB_BUILD_MAINT_OPTIONS:=hardening=+all # #741439
 	dh $@
 
 override_dh_auto_configure:
-	python ./waf -v --nocache configure			\
+	python ./waf -v configure			\
 			--prefix=/usr				\
 			--libdir=/usr/lib/$(DEB_HOST_MULTIARCH)	\
 			--confdir=/etc/mpv			\
@@ -17,10 +17,10 @@ override_dh_auto_configure:
 			--enable-libmpv-shared
 
 override_dh_auto_build:
-	python ./waf -v --nocache build
+	python ./waf -v build
 
 override_dh_auto_install:
-	python ./waf -v --nocache install --destdir=debian/tmp
+	python ./waf -v install --destdir=debian/tmp
 
 override_dh_install:
 	dh_install --sourcedir=debian/tmp
@@ -29,7 +29,7 @@ override_dh_installchangelogs:
 	dh_installchangelogs RELEASE_NOTES
 
 override_dh_auto_clean:
-	python ./waf -v --nocache distclean
+	python ./waf -v distclean
 	find . -name "*.pyc" -delete
 
 override_dh_strip:
