@@ -7,7 +7,7 @@ Last-Update: 2014-08-12
 
 --- a/DOCS/man/mpv.rst
 +++ b/DOCS/man/mpv.rst
-@@ -307,8 +307,8 @@
+@@ -323,8 +323,8 @@
  
  You can put all of the options in configuration files which will be read every
  time mpv is run. The system-wide configuration file 'mpv.conf' is in your
@@ -18,7 +18,7 @@ Last-Update: 2014-08-12
  User-specific options override system-wide options and options given on the
  command line override either. The syntax of the configuration files is
  ``option=<value>``; everything after a *#* is considered a comment. Options
-@@ -635,7 +635,7 @@
+@@ -703,7 +703,7 @@
  FILES
  =====
  
