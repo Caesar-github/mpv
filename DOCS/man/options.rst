@@ -45,6 +45,15 @@ Track Selection
 ``--vid=<ID|auto|no>``
     Select video channel. ``auto`` selects the default, ``no`` disables video.
 
+``--ff-aid=<ID|auto|no>``, ``--ff-sid=<ID|auto|no>``, ``--ff-vid=<ID|auto|no>``
+    Select audio/subtitle/video streams by the FFmpeg stream index. The FFmpeg
+    stream index is relatively arbitrary, but useful when interacting with
+    other software using FFmpeg (consider ``ffprobe``).
+
+    Note that with external tracks (added with ``--sub-file`` and similar
+    options) will have duplicate IDs. In that case, the first stream in order
+    is selected.
+
 ``--edition=<ID|auto>``
     (Matroska files only)
     Specify the edition (set of chapters) to use, where 0 is the first. If set
@@ -95,6 +104,9 @@ Playback Control
 ``--speed=<0.01-100>``
     Slow down or speed up playback by the factor given as parameter.
 
+    If ``--audio-pitch-correction`` is used, playing with a speed higher than
+    normal automatically inserts the ``scaletempo`` audio filter.
+
 ``--loop=<N|inf|no>``
     Loops playback ``N`` times. A value of ``1`` plays it one time (default),
     ``2`` two times, etc. ``inf`` means forever. ``no`` is the same as ``1`` and
@@ -116,21 +128,23 @@ Playback Control
     no format is detected, t will be treated as list of files, separated by
     newline characters. Note that XML playlist formats are not supported.)
 
+    You can play playlists directly and without this option, however, this
+    option disables any security mechanisms that might be in place. You may
+    also need this option to load plaintext files as playlist.
+
     .. warning::
 
-        The way mpv uses playlist files is not safe against maliciously
-        constructed files. Such files may trigger harmful actions.
+        The way mpv uses playlist files via ``--playlist`` is not safe against
+        maliciously constructed files. Such files may trigger harmful actions.
         This has been the case for all mpv and MPlayer versions, but
         unfortunately this fact was not well documented earlier, and some people
         have even misguidedly recommended use of ``--playlist`` with untrusted
         sources. Do NOT use ``--playlist`` with random internet sources or files
         you do not trust!
 
-        The main problem is that playlists can point to arbitrary network
-        addresses (including local addresses inside of your LAN), and thus
-        can't be considered secure. Playlists also can contain entries using
-        other protocols, such as local files, or (most severely), special
-        protocols like ``avdevice://``, which are inherently unsafe.
+        Playlist can contain entries using other protocols, such as local files,
+        or (most severely), special protocols like ``avdevice://``, which are
+        inherently unsafe.
 
 ``--chapter-merge-threshold=<number>``
     Threshold for merging almost consecutive ordered chapter parts in
@@ -215,6 +229,12 @@ Playback Control
     between the two option is that this option performs a seek on loop, instead
     of reloading the file.
 
+``--ab-loop-a=<time>``, ``--ab-loop-b=<time>``
+    Set loop points. If playback passes the ``b`` timestamp, it will seek to
+    the ``a`` timestamp. Seeking past the ``b`` point doesn't loop (this is
+    intentional). The loop-points can be adjusted at runtime with the
+    corresponding properties. See also ``ab_loop`` command.
+
 ``--ordered-chapters``, ``--no-ordered-chapters``
     Enabled by default.
     Disable support for Matroska ordered chapters. mpv will not load or
@@ -233,6 +253,10 @@ Playback Control
     Note: a playlist can be as simple as a text file containing filenames
     separated by newlines.
 
+``--chapters-file=<filename>``
+    Load chapters from this file, instead of using the chapter metadata found
+    in the main file.
+
 ``--sstep=<sec>``
     Skip <sec> seconds after every frame.
 
@@ -240,6 +264,12 @@ Playback Control
 
         Without ``--hr-seek``, skipping will snap to keyframes.
 
+``--stop-playback-on-init-failure=<yes|no>``
+    Stop playback if either audio or video fails to initialize. Currently,
+    the default behavior is ``no`` for the command line player, but ``yes``
+    for libmpv. With ``no``, playback will continue in video-only or audio-only
+    mode if one of them fails. This doesn't affect playback of audio-only or
+    video-only files.
 
 Program Behavior
 ----------------
@@ -328,7 +358,7 @@ Program Behavior
 ``--merge-files``
     Pretend that all files passed to mpv are concatenated into a single, big
     file. This uses timeline/EDL support internally. Note that this won't work
-    for ordered chapter files or quvi-resolved URLs (such as YouTube links).
+    for ordered chapter files.
 
     This option is interpreted at program start, and doesn't affect for
     example files or playlists loaded with the ``loadfile`` or ``loadlist``
@@ -392,6 +422,24 @@ Program Behavior
 
         May be dangerous if playing from untrusted media.
 
+``--ytdl``, ``--no-ytdl``
+    Enable the youtube-dl hook-script. It will look at the input URL, and will
+    play the video located on the website. This works with many streaming sites,
+    not just the one the scripts are named after. This requires a recent version
+    of youtube-dl to be installed on the system.
+
+    If the script can't do anything with an URL, it will do nothing.
+
+    Currently disabled by default, because youtube-dl's generic extractor can
+    get stuck on some URL, preventing playback.
+
+    (Note: this is the replacement for the now removed libquvi support.)
+
+``--ytdl-format=<best|worst|mp4|webm|...>``
+    Video format/quality that is directly passed to youtube-dl. The possible
+    values are specific to the website and the video, for a given url the
+    available formats can be found with the command
+    ``youtube-dl --list-formats URL``.
 
 Video
 -----
@@ -480,15 +528,18 @@ Video
     :vaapi:     requires ``--vo=opengl`` or ``--vo=vaapi`` (Linux with Intel GPUs only)
     :vaapi-copy: copies video back into system RAM (Linux with Intel GPUs only)
     :vda:       requires ``--vo=opengl`` (OS X only)
+    :dxva2-copy: copies video back to system RAM (Windows only) (experimental)
 
     ``auto`` tries to automatically enable hardware decoding using the first
     available method. This still depends what VO you are using. For example,
-    if you are not using ``--vo=vdpau``, vdpau decoding will never be enabled.
-    Also note that if the first found method doesn't actually work, it will
-    always fall back to software decoding, instead of trying the next method.
+    if you are not using ``--vo=vdpau`` or ``--vo=opengl``, vdpau decoding will
+    never be enabled. Also note that if the first found method doesn't actually
+    work, it will always fall back to software decoding, instead of trying the
+    next method (might matter on some Linux systems).
 
-    The ``vaapi-copy`` function allows you to use vaapi with any VO. Because
-    this copies the decoded video back to system RAM, it's quite inefficient.
+    The ``vaapi-copy`` mode allows you to use vaapi with any VO. Because
+    this copies the decoded video back to system RAM, it's likely less efficient
+    than the ``vaapi`` mode.
 
     .. note::
 
@@ -663,26 +714,6 @@ Video
         ``mpv --hwdec=vdpau --vo=vdpau --hwdec-codecs=h264,mpeg2video``
             Enable vdpau decoding for h264 and mpeg2 only.
 
-``--quvi-format=<best|default|...>``
-    Video format/quality that is directly passed to libquvi (default: ``best``).
-    This is used when opening links to streaming sites like YouTube. The
-    interpretation of this value is highly specific to the streaming site and
-    the video.
-
-    libquvi 0.4.x:
-
-        The only well-defined values that work on all sites are ``best``
-        (best quality/highest bandwidth, default), and ``default`` (lowest
-        quality).
-
-        The quvi command line tool can be used to find out which formats are
-        supported for a given URL: ``quvi --query-formats URL``.
-
-    libquvi 0.9.x:
-
-        The following explanations are relevant:
-        `<http://quvi.sourceforge.net/r/api/0.9/glossary_termino.html#m_stream_id>`_
-
 ``--vd-lavc-check-hw-profile=<yes|no>``
     Check hardware decoder profile (default: yes). If ``no`` is set, the
     highest profile of the hardware decoder is unconditionally selected, and
@@ -755,6 +786,30 @@ Video
 
 Audio
 -----
+
+``--audio-pitch-correction=<yes|no>``
+    If this is enabled (default), playing with a speed higher than normal
+    automatically inserts the ``scaletempo`` audio filter. For details, see
+    audio filter section.
+
+``--audio-device=<name>``
+    Use the given audio device. This consists of the audio output name, e.g.
+    ``alsa``, followed by ``/``, followed by the audio output specific device
+    name.
+
+    You can list audio devices with ``--audio-device=help``. This outputs the
+    device name in quotes, followed by a description. The device name is what
+    you have to pass to the ``--audio-device`` option.
+
+    The default value for this option is ``auto``, which tries every audio
+    output in preference order with the default device.
+
+    Note that many AOs have a ``device`` sub-option, which overrides the
+    device selection of this option (but not the audio output selection).
+    Likewise, forcing an AO with ``--ao`` will override the audio output
+    selection of ``--audio-device`` (but not the device selecton).
+
+    Currently not implemented for most AOs.
 
 ``--ao=<driver1[:suboption1[=value]:...],driver2,...[,]>``
     Specify a priority list of audio output drivers to be used. For
@@ -884,8 +939,9 @@ Audio
     lists speaker names, which can be used to express arbitrary channel
     layouts (e.g. ``fl-fr-lfe`` is 2.1).
 
-    You can use ``--audio-channels=empty`` to disable this. In this case, the AO
-    use the channel layout as the audio filter chain indicates.
+    You can use ``--audio-channels=auto`` to disable this. In this case, the AO
+    use the channel layout as the audio filter chain indicates. (``empty`` is
+    an accepted obsolete for ``auto``.)
 
     This will also request the channel layout from the decoder. If the decoder
     does not support the layout, it will fall back to its native channel layout.
@@ -922,7 +978,7 @@ Audio
     of the current media, the lavrresample audio filter will be inserted into
     the audio filter layer to compensate for the difference.
 
-``--gapless-audio=<no|yes|weak``
+``--gapless-audio=<no|yes|weak>``
     Try to play consecutive audio files with no silence or disruption at the
     point of file change. Default: ``weak``.
 
@@ -976,6 +1032,11 @@ Audio
         This means that with ``--softvol-max=200``, ``--volume=100`` sets
         maximum amplification, i.e. amplify by 200%. The default volume (no
         change in volume) will be ``50`` in this case.
+
+``--audio-client-name=<name>``
+    The application name the player reports to the audio API. Can be useful
+    if you want to force a different audio profile (e.g. with PulseAudio),
+    or to set your own application name when using libmpv.
 
 ``--volume-restore-data=<string>``
     Used internally for use by playback resume (e.g. with ``quit_watch_later``).
@@ -1061,7 +1122,7 @@ Subtitles
         This affects ASS subtitles as well, and may lead to incorrect subtitle
         rendering. Use with care, or use ``--sub-text-font-size`` instead.
 
-``--sub-scale-with-window=yes|no``
+``--sub-scale-with-window=<yes|no>``
     Make the subtitle font size relative to the window, instead of the video.
     This is useful if you always want the same font size, even if the video
     doesn't covert the window fully, e.g. because screen aspect and window
@@ -1104,7 +1165,7 @@ Subtitles
 
         Using this option may lead to incorrect subtitle rendering.
 
-``--ass-hinting=none|light|normal|native``
+``--ass-hinting=<none|light|normal|native>``
     Set font hinting type. <type> can be:
 
     :none:       no hinting (default)
@@ -1122,7 +1183,7 @@ Subtitles
 ``--ass-line-spacing=<value>``
     Set line spacing value for SSA/ASS renderer.
 
-``--ass-shaper=simple|complex``
+``--ass-shaper=<simple|complex>``
     Set the text layout engine used by libass.
 
     :simple:   uses Fribidi only, fast, doesn't render some languages correctly
@@ -1206,15 +1267,6 @@ Subtitles
     the video color space, and it's for example in theory not possible to reuse
     a subtitle script with another video file. The ``--ass-style-override``
     option doesn't affect how this option is interpreted.
-
-``--quvi-fetch-subtitles=<yes|no>``
-    Toggles fetching of subtitles from streaming sites with libquvi. Disabled
-    by default, because it's unreliable and slow. Note that when enabled,
-    subtitles will always be fetched, even if subtitles are explicitly
-    disabled with ``--no-sub`` (because you might want to enable subtitles
-    at runtime).
-
-    Supported when using libquvi 0.9.x.
 
 ``--stretch-dvd-subs=<yes|no>``
     Stretch DVD subtitles when playing anamorphic videos for better looking
@@ -1611,13 +1663,6 @@ Window
     there is a change in video parameters, video stream or file. This used to
     be the default behavior. Currently only affects X11 VOs.
 
-``--fs-missioncontrol``
-    (OS X only)
-    Use OS X Mission Control's fullscreen feature instead of the custom one
-    provided by mpv. This can potentially break a lot of stuff like
-    ``--geometry`` and is disabled by default. On the other hand it provides
-    a more 'OS X-like' user experience.
-
 ``--heartbeat-cmd=<command>``
     Command that is executed every 30 seconds during playback via *system()* -
     i.e. using the shell. The time between the commands can be customized with
@@ -1659,6 +1704,13 @@ Window
     disable the window manager hints that force the window aspect ratio.
     (Ignored in fullscreen mode.)
 
+``--no-keepaspect-window``, ``--keepaspect-window``
+    ``--keepaspect-window`` (the default) will lock the window size to the
+    video aspect. ``--no-keepaspect-window`` disables this behavior, and will
+    instead add black bars if window aspect and video aspect mismatch. Whether
+    this actually works depends on the VO backend.
+    (Ignored in fullscreen mode.)
+
 ``--monitoraspect=<ratio>``
     Set the aspect ratio of your monitor or TV screen. A value of 0 disables a
     previous setting (e.g. in the config file). Overrides the
@@ -1686,14 +1738,25 @@ Window
     to to work this around using ``--heartbeat-cmd`` instead.
 
 ``--wid=<ID>``
-    (X11 and Windows only)
-    This tells mpv to attach to an existing window. The ID is interpreted as
-    "Window" on X11, and as HWND on Windows. If a VO is selected that supports
-    this option, a new window will be created and the given window will be set
-    as parent. The window will always be resized to cover the parent window
-    fully, and will add black bars to compensate for the video aspect ratio.
+    This tells mpv to attach to an existing window. If a VO is selected that
+    supports this option, it will use that window for video output. mpv will
+    scale the video to the size of this window, and will add black bars to
+    compensate if the aspect ratio of the video is different.
 
-    See also ``--slave-broken``.
+    On X11, the ID is interpreted as a ``Window`` on X11. Unlike
+    MPlayer/mplayer2, mpv always creates its own window, and sets the wid
+    window as parent. The window will always be resized to cover the parent
+    window fully. The value ``0`` is interpreted specially, and mpv will
+    draw directly on the root window.
+
+    On win32, the ID is interpreted as ``HWND``. Pass it as value cast to
+    ``intptr_t``. mpv will create its own window, and set the wid window as
+    parent, like with X11.
+
+    On OSX/Cocoa. the ID is interpreted as ``NSView*``. Pass it as value cast
+    to ``intptr_t``. mpv will creates its own sub-view. Because OSX does not
+    support window embedding of foreign processes, this works only with libmpv,
+    and will crash when used from the command line.
 
 ``--no-window-dragging``
     Don't move the window when clicking on it and moving the mouse pointer.
@@ -1701,16 +1764,26 @@ Window
 ``--x11-name``
     Set the window class name for X11-based video output methods.
 
-``--x11-netwm=no``
+``--x11-netwm=<yes|no|auto>``
     (X11 only)
-    Disable use of the NetWM protocol when switching to or from fullscreen.
+    Control the use of NetWM protocol features.
+
     This may or may not help with broken window managers. This provides some
     functionality that was implemented by the now removed ``--fstype`` option.
     Actually, it is not known to the developers to which degree this option
     was needed, so feedback is welcome.
 
-    By default, NetWM support is autodetected, and using this option forces
-    autodetection to fail.
+    Specifically, ``yes`` will force use of NetWM fullscreen support, even if
+    not advertised by the WM. This can be useful for WMs that are broken on
+    purpose, like XMonad. (XMonad supposedly doesn't advertise fullscreen
+    support, because Flash uses it. Apparently, applications which want to
+    use fullscreen anyway are supposed to either ignore the NetWM support hints,
+    or provide a workaround. Shame on XMonad for deliberately breaking X
+    protocols (as if X isn't bad enough already).
+
+    By default, NetWM support is autodetected (``auto``).
+
+    This option might be removed in the future.
 
 
 Disc Devices
@@ -1770,7 +1843,7 @@ Disc Devices
     Add ``<value>`` sectors to the values reported when addressing tracks.
     May be negative.
 
-``--cdda-skip=<es|no``
+``--cdda-skip=<yes|no>``
     (Never) accept imperfect data reconstruction.
 
 ``--dvd-speed=<speed>``
@@ -1989,12 +2062,38 @@ Demuxer
     and hr-seeks, and this option changes behavior with relative or imprecise
     seeks only.
 
+    You can use the ``--demuxer-mkv-subtitle-preroll-secs`` option to specify
+    how mach data the demuxer should pre-read at most in order to find subtitle
+    packets that may overlap. Setting this to 0 will effectively disable this
+    preroll mechanism. Setting a very large value can make seeking very slow,
+    and an extremely large value would completely reread the entire file from
+    start to seek target on every seek - seeking can become slower towards the
+    end of the file. The details are messy, and the value is actually rounded
+    down to the cluster with the previous video keyframe.
+
+    Some files, especially files muxed with newer mkvmerge versions, have
+    information embedded that can be used to determine what subtitle packets
+    overlap with a seek target. In these cases, mpv will reduce the amount
+    of data read to a minimum. (Although it will still read *all* data between
+    the cluster that contains the first wanted subtitle packet, and the seek
+    target.)
+
     See also ``--hr-seek-demuxer-offset`` option. This option can achieve a
     similar effect, but only if hr-seek is active. It works with any demuxer,
     but makes seeking much slower, as it has to decode audio and video data
     instead of just skipping over it.
 
     ``--mkv-subtitle-preroll`` is a deprecated alias.
+
+``--demuxer-mkv-subtitle-preroll-secs=<value>``
+    See ``--demuxer-mkv-subtitle-preroll``.
+
+``--demuxer-mkv-probe-video-duration``
+    When opening the file, seek to the end of it, and check what timestamp the
+    last video packet has, and report that as file duration. This is strictly
+    for compatibility with Haali only. In this mode, it's possible that opening
+    will be slower (especially when playing over http), or that behavior with
+    broken files is much worse. So don't use this option.
 
 ``--demuxer-rawaudio-channels=<value>``
     Number of channels (or channel layout) if ``--demuxer=rawaudio`` is used
@@ -2042,7 +2141,7 @@ Demuxer
     playback, but on the other hand can add delays to seeking or track
     switching.
 
-``--demuxer-readahead-secs=N``
+``--demuxer-readahead-secs=<seconds>``
     If ``--demuxer-thread`` is enabled, this controls how much the demuxer
     should buffer ahead in seconds (default: 0.2). As long as no packet has
     a timestamp difference higher than the readahead amount relative to the
@@ -2051,7 +2150,7 @@ Demuxer
     (This value tends to be fuzzy, because many file formats don't store linear
     timestamps.)
 
-``--demuxer-readahead-packets=N``
+``--demuxer-readahead-packets=<packets>``
     If ``--demuxer-thread`` is enabled, this controls how much the demuxer
     should buffer ahead. As long as the number of packets in the packet queue
     doesn't exceed ``--demuxer-readahead-packets``, and the total number of
@@ -2063,7 +2162,7 @@ Demuxer
 
     See ``--list-options`` for defaults and value range.
 
-``--demuxer-readahead-bytes=N``
+``--demuxer-readahead-bytes=<bytes>``
     See ``--demuxer-readahead-packets``.
 
 
@@ -2114,7 +2213,11 @@ Input
     like any other binding). See `INPUT.CONF`_.
 
 ``--input-file=<filename>``
-    Read commands from the given file. Mostly useful with a FIFO.
+    Read commands from the given file. Mostly useful with a FIFO. Since
+    mpv 0.7.0 also understands JSON commands (see `JSON IPC`_), but you can't
+    get replies or events. Use ``--input-unix-socket`` for something
+    bi-directional. On MS Windows, JSON commands are not available.
+
     See also ``--slave-broken``.
 
     .. note::
@@ -2131,8 +2234,16 @@ Input
     or intend to read from stdin later on via the loadfile or loadlist slave
     commands.
 
-``--input-appleremote``, ``--no-input-appleremote``
-    Enable/disable AppleIR remote support. Enabled by default.
+``--input-unix-socket=<filename>``
+    Enable the IPC support and create the listening socket at the given path.
+
+    See `JSON IPC`_ for details.
+
+    Not available on MS Windows.
+
+``--input-appleremote=<yes|no>``
+    (OS X only)
+    Enable/disable Apple Remote support. Enabled by default (except for libmpv).
 
 ``--input-cursor``, ``--no-input-cursor``
     Permit mpv to receive pointer events reported by the video output
@@ -2152,16 +2263,18 @@ Input
     (LIRC only)
     Specifies a configuration file for LIRC (default: ``~/.lircrc``).
 
-``--input-media-keys``, ``--no-input-media-keys``
-    OS X only: Enabled by default. Enables/disable media keys support.
+``--input-media-keys=<yes|no>``
+    (OS X only)
+    Enable/disable media keys support. Enabled by default (except for libmpv).
 
 ``--input-right-alt-gr``, ``--no-input-right-alt-gr``
     (Cocoa and Windows only)
     Use the right Alt key as Alt Gr to produce special characters. If disabled,
     count the right Alt as an Alt modifier key. Enabled by default.
 
-``--input-x11-keyboard=<yes|no>``
-    Disable all keyboard input on the X11 VO window. Generally useful for
+``--input-vo-keyboard=<yes|no>``
+    Disable all keyboard input on for VOs which can't participate in proper
+    keyboard input dispatching. This currently affects X11. Generally useful for
     embedding only.
 
     On X11, a sub-window with input enabled grabs all keyboard input as long
@@ -2178,6 +2291,13 @@ Input
 
     As a workaround, this option is disabled by default in libmpv. (Note that
     ``input-default-bindings`` is disabled by default in libmpv as well.)
+
+    (This option was renamed from ``--input-x11-keyboard``.)
+
+``--input-app-events=<yes|no>``
+    (OS X only)
+    Enable/disable application wide keyboard events so that keyboard shortcuts
+    can be processed without a window. Enabled by default (except for libmpv).
 
 OSD
 ---
@@ -2217,7 +2337,7 @@ OSD
     height: if the window height is larger or smaller than 720, the actual size
     of the text increases or decreases as well.
 
-    Default: 45.
+    Default: 55.
 
 ``--osd-msg1=<string>``
     Show this string as message on OSD with OSD level 1 (visible by default).
@@ -2291,7 +2411,7 @@ OSD
     Size of the OSD/sub font border in scaled pixels (see ``--osd-font-size``
     for details). A value of 0 disables borders.
 
-    Default: 2.5.
+    Default: 3.
 
 ``--osd-color=<color>``, ``--sub-text-color=<color>``
     Specify the color used for OSD/unstyled text subtitles.
@@ -2349,12 +2469,12 @@ OSD
     for unstyled text subtitles. If you just want to raise the vertical
     subtitle position, use ``--sub-pos``.
 
-    Default: 10.
+    Default: 22.
 
 ``--osd-scale=<factor>``
     OSD font size multiplier, multiplied with ``--osd-font-size`` value.
 
-``--osd-scale-by-window=yes|no``
+``--osd-scale-by-window=<yes|no>``
     Whether to scale the OSD with the window size (default: yes). If this is
     disabled, ``--osd-font-size`` and other OSD options that use scaled pixels
     are always in actual pixels. The effect is that changing the window size
@@ -2375,6 +2495,16 @@ OSD
     values are allowed.
 
     Default: 0.
+
+``--use-text-osd=<yes|no>``
+    Disable text OSD rendering completely. (This includes the complete OSC as
+    well.) This is mostly useful for avoiding loading fontconfig in situations
+    where fontconfig does not behave well, and OSD is unused - this could for
+    example allow GUI programs using libmpv to workaround fontconfig issues.
+
+    Note that selecting subtitles of any kind still initializes fontconfig.
+
+    Default: ``no``.
 
 
 Screenshot

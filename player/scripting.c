@@ -26,6 +26,7 @@
 #include "config.h"
 
 #include "osdep/io.h"
+#include "osdep/threads.h"
 
 #include "common/common.h"
 #include "common/msg.h"
@@ -78,6 +79,10 @@ static void *script_thread(void *p)
 
     struct thread_arg *arg = p;
 
+    char name[90];
+    snprintf(name, sizeof(name), "lua (%s)", mpv_client_name(arg->client));
+    mpthread_set_name(name);
+
     if (arg->backend->load(arg->client, arg->fname) < 0)
         MP_ERR(arg, "Could not load script %s\n", arg->fname);
 
@@ -90,10 +95,8 @@ static void *script_thread(void *p)
 
 static void wait_loaded(struct MPContext *mpctx)
 {
-    while (!mp_clients_all_initialized(mpctx)) {
-        mp_wait_events(mpctx, 1e9);
-        mp_process_input(mpctx);
-    }
+    while (!mp_clients_all_initialized(mpctx))
+        mp_idle(mpctx);
 }
 
 static void mp_load_script(struct MPContext *mpctx, const char *fname)
@@ -159,7 +162,7 @@ static char **list_script_files(void *talloc_ctx, char *path)
     while ((ep = readdir(dp))) {
         char *fname = mp_path_join(talloc_ctx, bstr0(path), bstr0(ep->d_name));
         struct stat s;
-        if (!mp_stat(fname, &s) && S_ISREG(s.st_mode))
+        if (!stat(fname, &s) && S_ISREG(s.st_mode))
             MP_TARRAY_APPEND(talloc_ctx, files, count, fname);
     }
     closedir(dp);
@@ -174,6 +177,8 @@ void mp_load_scripts(struct MPContext *mpctx)
     // Load scripts from options
     if (mpctx->opts->lua_load_osc)
         mp_load_script(mpctx, "@osc.lua");
+    if (mpctx->opts->lua_load_ytdl)
+        mp_load_script(mpctx, "@ytdl_hook.lua");
     char **files = mpctx->opts->lua_files;
     for (int n = 0; files && files[n]; n++) {
         if (files[n][0])

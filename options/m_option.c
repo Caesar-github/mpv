@@ -35,11 +35,13 @@
 #include <libavutil/avstring.h>
 
 #include "libmpv/client.h"
+#include "player/client.h"
 
 #include "talloc.h"
 #include "common/common.h"
 #include "common/msg.h"
 #include "common/msg_control.h"
+#include "misc/json.h"
 #include "m_option.h"
 #include "m_config.h"
 
@@ -694,7 +696,7 @@ static char *print_choice(const m_option_t *opt, const void *val)
 }
 
 const struct m_option_type m_option_type_choice = {
-    .name  = "String",  // same as arbitrary strings in option list for now
+    .name  = "Choice",
     .size  = sizeof(int),
     .parse = parse_choice,
     .print = print_choice,
@@ -2178,7 +2180,9 @@ static int parse_time(struct mp_log *log, const m_option_t *opt,
     if (param.len == 0)
         return M_OPT_MISSING_PARAM;
 
-    if (!parse_timestring(param, &time, 0)) {
+    if (opt->min == MP_NOPTS_VALUE && bstr_equals0(param, "no")) {
+        time = MP_NOPTS_VALUE;
+    } else if (!parse_timestring(param, &time, 0)) {
         mp_err(log, "Option %.*s: invalid time: '%.*s'\n",
                BSTR_P(name), BSTR_P(param));
         return M_OPT_INVALID;
@@ -2191,7 +2195,10 @@ static int parse_time(struct mp_log *log, const m_option_t *opt,
 
 static char *pretty_print_time(const m_option_t *opt, const void *val)
 {
-    return mp_format_time(*(double *)val, false);
+    double pts = *(double *)val;
+    if (pts == MP_NOPTS_VALUE && opt->min == MP_NOPTS_VALUE)
+        return talloc_strdup(NULL, "no"); // symmetry with parsing
+    return mp_format_time(pts, false);
 }
 
 const m_option_type_t m_option_type_time = {
@@ -2281,23 +2288,20 @@ bool m_obj_list_find(struct m_obj_desc *dst, const struct m_obj_list *l,
         if (bstr_equals0(name, dst->name))
             return true;
     }
-    if (l->aliases) {
-        for (int i = 0; l->aliases[i][0]; i++) {
-            const char *aname = l->aliases[i][0];
-            const char *alias = l->aliases[i][1];
-            const char *opts  = l->aliases[i][2];
-            if (bstr_equals0(name, aname) &&
-                m_obj_list_find(dst, l, bstr0(alias)))
-            {
-                if (opts) {
-                    dst->init_options = opts;
-                } else {
-                    // Assume it's deprecated in this case.
-                    // Also, it's used by the VO code only, so whatever.
-                    dst->replaced_name = aname;
-                }
-                return true;
+    for (int i = 0; l->aliases[i][0]; i++) {
+        const char *aname = l->aliases[i][0];
+        const char *alias = l->aliases[i][1];
+        const char *opts  = l->aliases[i][2];
+        if (bstr_equals0(name, aname) && m_obj_list_find(dst, l, bstr0(alias)))
+        {
+            if (opts) {
+                dst->init_options = opts;
+            } else {
+                // Assume it's deprecated in this case.
+                // Also, it's used by the VO code only, so whatever.
+                dst->replaced_name = aname;
             }
+            return true;
         }
     }
     return false;
@@ -3040,7 +3044,12 @@ static int parse_node(struct mp_log *log, const m_option_t *opt,
 
 static char *print_node(const m_option_t *opt, const void *val)
 {
-    return NULL;
+    char *t = talloc_strdup(NULL, "");
+    if (json_write(&t, &VAL(val)) < 0) {
+        talloc_free(t);
+        t = NULL;
+    }
+    return t;
 }
 
 static void dup_node(void *ta_parent, struct mpv_node *node)
@@ -3092,7 +3101,7 @@ static void copy_node(const m_option_t *opt, void *dst, const void *src)
     dup_node(NULL, &VAL(dst));
 }
 
-static void *node_get_alloc(struct mpv_node *node)
+void *node_get_alloc(struct mpv_node *node)
 {
     // Assume it was allocated with copy_node(), which allocates all
     // sub-nodes with the parent node as talloc parent.

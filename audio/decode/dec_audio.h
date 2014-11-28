@@ -33,13 +33,13 @@ struct dec_audio {
     struct mpv_global *global;
     const struct ad_functions *ad_driver;
     struct sh_stream *header;
-    struct mp_audio_buffer *decode_buffer;
     struct af_stream *afilter;
     char *decoder_desc;
-    struct replaygain_data *replaygain_data;
     int init_retries;
+    struct mp_audio_pool *pool;
+    struct mp_audio decode_format;
+    struct mp_audio *waiting;   // used on format-change
     // set by decoder
-    struct mp_audio decoded;    // decoded audio set by last decode_packet() call
     int bitrate;                // input bitrate, can change with VBR sources
     // last known pts value in output from decoder
     double pts;
@@ -64,9 +64,5 @@ int audio_decode(struct dec_audio *d_audio, struct mp_audio_buffer *outbuf,
 int initial_audio_decode(struct dec_audio *d_audio);
 void audio_reset_decoding(struct dec_audio *d_audio);
 void audio_uninit(struct dec_audio *d_audio);
-
-int audio_init_filters(struct dec_audio *d_audio, int in_samplerate,
-                       int *out_samplerate, struct mp_chmap *out_channels,
-                       int *out_format);
 
 #endif /* MPLAYER_DEC_AUDIO_H */

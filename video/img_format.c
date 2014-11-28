@@ -121,7 +121,8 @@ static struct mp_imgfmt_desc mp_only_imgfmt_desc(int mpfmt)
         return (struct mp_imgfmt_desc) {
             .id = mpfmt,
             .avformat = AV_PIX_FMT_NONE,
-            .flags = MP_IMGFLAG_BE | MP_IMGFLAG_LE | MP_IMGFLAG_RGB,
+            .flags = MP_IMGFLAG_BE | MP_IMGFLAG_LE | MP_IMGFLAG_RGB |
+                     MP_IMGFLAG_HWACCEL,
         };
     }
     return (struct mp_imgfmt_desc) {0};
@@ -131,7 +132,8 @@ struct mp_imgfmt_desc mp_imgfmt_get_desc(int mpfmt)
 {
     enum AVPixelFormat fmt = imgfmt2pixfmt(mpfmt);
     const AVPixFmtDescriptor *pd = av_pix_fmt_desc_get(fmt);
-    if (!pd || fmt == AV_PIX_FMT_NONE)
+    if (!pd || pd->nb_components > 4 || fmt == AV_PIX_FMT_NONE ||
+        fmt == AV_PIX_FMT_UYYVYY411)
         return mp_only_imgfmt_desc(mpfmt);
 
     struct mp_imgfmt_desc desc = {
@@ -143,12 +145,14 @@ struct mp_imgfmt_desc mp_imgfmt_get_desc(int mpfmt)
 
     int planedepth[4] = {0};
     int el_size = (pd->flags & AV_PIX_FMT_FLAG_BITSTREAM) ? 1 : 8;
+    bool need_endian = false; // single component is spread over >1 bytes
     for (int c = 0; c < pd->nb_components; c++) {
         AVComponentDescriptor d = pd->comp[c];
         // multiple components per plane -> Y is definitive, ignore chroma
         if (!desc.bpp[d.plane])
             desc.bpp[d.plane] = (d.step_minus1 + 1) * el_size;
         planedepth[d.plane] += d.depth_minus1 + 1;
+        need_endian |= (d.depth_minus1 + 1 + d.shift) > 8;
     }
 
     for (int p = 0; p < 4; p++) {
@@ -156,20 +160,32 @@ struct mp_imgfmt_desc mp_imgfmt_get_desc(int mpfmt)
             desc.num_planes++;
     }
 
-    // Packed RGB formats are the only formats that have less than 8 bits per
-    // component, and still require endian dependent access.
-    if (pd->comp[0].depth_minus1 + 1 <= 8 &&
-        !(mpfmt >= IMGFMT_RGB444_LE && mpfmt <= IMGFMT_BGR565_BE))
-    {
+    desc.plane_bits = planedepth[0];
+
+    // Check whether any components overlap other components (per plane).
+    // We're cheating/simplifying here: we assume that this happens if a shift
+    // is set - which is wrong in general (could be needed for padding, instead
+    // of overlapping bits of another component). Needed for rgb444le/be.
+    bool component_byte_overlap = false;
+    for (int c = 0; c < pd->nb_components; c++) {
+        AVComponentDescriptor d = pd->comp[c];
+        component_byte_overlap |= d.shift > 0 && planedepth[d.plane] > 8;
+    }
+
+    // If every component sits in its own byte, or all components are within
+    // a single byte, no endian-dependent access is needed. If components
+    // stride bytes (like with packed 2 byte RGB formats), endian-dependent
+    // access is needed.
+    need_endian |= component_byte_overlap;
+
+    if (!need_endian) {
         desc.flags |= MP_IMGFLAG_LE | MP_IMGFLAG_BE;
     } else {
         desc.flags |= (pd->flags & AV_PIX_FMT_FLAG_BE)
                       ? MP_IMGFLAG_BE : MP_IMGFLAG_LE;
     }
 
-    desc.plane_bits = planedepth[0];
-
-    if (mpfmt == IMGFMT_XYZ12_LE || mpfmt == IMGFMT_XYZ12_BE) {
+    if (fmt == AV_PIX_FMT_XYZ12LE || fmt == AV_PIX_FMT_XYZ12BE) {
         desc.flags |= MP_IMGFLAG_XYZ;
     } else if (!(pd->flags & AV_PIX_FMT_FLAG_RGB) &&
                fmt != AV_PIX_FMT_MONOBLACK &&
@@ -224,6 +240,9 @@ struct mp_imgfmt_desc mp_imgfmt_get_desc(int mpfmt)
     if ((desc.bpp[0] % 8) != 0)
         desc.align_x = 8 / desc.bpp[0]; // expect power of 2
 
+    if (pd->flags & AV_PIX_FMT_FLAG_HWACCEL)
+        desc.flags |= MP_IMGFLAG_HWACCEL;
+
     return desc;
 }
 
@@ -241,3 +260,66 @@ int mp_imgfmt_find_yuv_planar(int xs, int ys, int planes, int component_bits)
     }
     return 0;
 }
+
+#if 0
+
+#include <libavutil/frame.h>
+#include "sws_utils.h"
+
+int main(int argc, char **argv)
+{
+    const AVPixFmtDescriptor *avd = av_pix_fmt_desc_next(NULL);
+    for (; avd; avd = av_pix_fmt_desc_next(avd)) {
+        enum AVPixelFormat fmt = av_pix_fmt_desc_get_id(avd);
+        if (fmt == AV_PIX_FMT_YUVJ420P || fmt == AV_PIX_FMT_YUVJ422P ||
+            fmt == AV_PIX_FMT_YUVJ444P || fmt == AV_PIX_FMT_YUVJ440P)
+            continue;
+        printf("%s (%d)", avd->name, (int)fmt);
+        int mpfmt = pixfmt2imgfmt(fmt);
+        bool generic = mpfmt >= IMGFMT_AVPIXFMT_START &&
+                       mpfmt < IMGFMT_AVPIXFMT_END;
+        printf(" mp=%d%s\n  ", mpfmt, generic ? " [GENERIC]" : "");
+        struct mp_imgfmt_desc d = mp_imgfmt_get_desc(mpfmt);
+        if (d.id)
+            assert(d.avformat == fmt);
+#define FLAG(t, c) if (d.flags & (t)) printf("[%s]", c);
+        FLAG(MP_IMGFLAG_BYTE_ALIGNED, "BA")
+        FLAG(MP_IMGFLAG_ALPHA, "a")
+        FLAG(MP_IMGFLAG_PLANAR, "P")
+        FLAG(MP_IMGFLAG_YUV_P, "YUVP")
+        FLAG(MP_IMGFLAG_YUV, "yuv")
+        FLAG(MP_IMGFLAG_RGB, "rgb")
+        FLAG(MP_IMGFLAG_XYZ, "xyz")
+        FLAG(MP_IMGFLAG_LE, "le")
+        FLAG(MP_IMGFLAG_BE, "be")
+        FLAG(MP_IMGFLAG_PAL, "pal")
+        FLAG(MP_IMGFLAG_HWACCEL, "hw")
+        printf("\n");
+        printf("  planes=%d, chroma=%d:%d align=%d:%d bits=%d\n", d.num_planes,
+               d.chroma_xs, d.chroma_ys, d.align_x, d.align_y, d.plane_bits);
+        printf("  {");
+        for (int n = 0; n < MP_MAX_PLANES; n++)
+            printf("%d/%d/[%d:%d] ", d.bytes[n], d.bpp[n], d.xs[n], d.ys[n]);
+        printf("}\n");
+        if (mpfmt && !(d.flags & MP_IMGFLAG_HWACCEL) && fmt != AV_PIX_FMT_UYYVYY411)
+        {
+            AVFrame *fr = av_frame_alloc();
+            fr->format = fmt;
+            fr->width = 128;
+            fr->height = 128;
+            int err = av_frame_get_buffer(fr, SWS_MIN_BYTE_ALIGN);
+            assert(err >= 0);
+            struct mp_image *mpi = mp_image_alloc(mpfmt, fr->width, fr->height);
+            assert(mpi);
+            // A rather fuzzy test, which might fail even if there's no bug.
+            for (int n = 0; n < 4; n++) {
+                assert(!!mpi->planes[n] == !!fr->data[n]);
+                assert(mpi->stride[n] == fr->linesize[n]);
+            }
+            talloc_free(mpi);
+            av_frame_free(&fr);
+        }
+    }
+}
+
+#endif

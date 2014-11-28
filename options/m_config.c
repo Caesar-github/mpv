@@ -196,7 +196,8 @@ struct m_config *m_config_new(void *talloc_ctx, struct mp_log *log,
 {
     struct m_config *config = talloc(talloc_ctx, struct m_config);
     talloc_set_destructor(config, config_destroy);
-    *config = (struct m_config) {.log = log};
+    *config = (struct m_config)
+        {.log = log, .size = size, .defaults = defaults, .options = options};
     // size==0 means a dummy object is created
     if (size) {
         config->optstruct = talloc_zero_size(config, size);
@@ -907,6 +908,18 @@ void *m_sub_options_copy(void *talloc_ctx, const struct m_sub_options *opts,
     return new;
 }
 
+struct m_config *m_config_dup(void *talloc_ctx, struct m_config *config)
+{
+    struct m_config *new = m_config_new(talloc_ctx, config->log, config->size,
+                                        config->defaults, config->options);
+    assert(new->num_opts == config->num_opts);
+    for (int n = 0; n < new->num_opts; n++) {
+        assert(new->opts[n].opt->type == config->opts[n].opt->type);
+        m_option_copy(new->opts[n].opt, new->opts[n].data, config->opts[n].data);
+    }
+    return new;
+}
+
 // This is used for printing error messages on unknown options.
 static const char *const replaced_opts =
     "|a52drc#--ad-lavc-ac3drc=level"
@@ -975,7 +988,6 @@ static const char *const replaced_opts =
     "|right-alt-gr#--input-right-alt-gr"
     "|autosub#--sub-auto"
     "|autosub-match#--sub-auto"
-    "|native-fs#--fs-missioncontrol"
     "|status-msg#--term-status-msg"
     "|idx#--index"
     "|forceidx#--index"

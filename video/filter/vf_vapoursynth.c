@@ -23,13 +23,15 @@
 #include <assert.h>
 
 #include <VapourSynth.h>
-#include <VSScript.h>
 #include <VSHelper.h>
 
 #include <libavutil/rational.h>
 
+#include "config.h"
+
 #include "common/msg.h"
 #include "options/m_option.h"
+#include "options/path.h"
 
 #include "video/img_format.h"
 #include "video/mp_image.h"
@@ -39,9 +41,18 @@
 struct vf_priv_s {
     VSCore *vscore;
     const VSAPI *vsapi;
-    VSScript *se;
     VSNodeRef *out_node;
     VSNodeRef *in_node;
+
+    const struct script_driver *drv;
+    // drv_vss
+    struct VSScript *se;
+    // drv_lazy
+    struct lua_State *ls;
+    VSNodeRef **gc_noderef;
+    int num_gc_noderef;
+    VSMap **gc_map;
+    int num_gc_map;
 
     struct mp_image_params fmt_in;
 
@@ -60,6 +71,7 @@ struct vf_priv_s {
     int max_requests;           // upper bound for requested[] array
     bool failed;                // frame callback returned with an error
     bool shutdown;              // ask node to return
+    bool initializing;          // filters are being built
     bool in_node_active;        // node might still be called
 
     // --- options
@@ -70,6 +82,14 @@ struct vf_priv_s {
 
 // priv->requested[n] points to this if a request for frame n is in-progress
 static const struct mp_image dummy_img;
+
+struct script_driver {
+    int (*init)(struct vf_instance *vf);        // first time init
+    void (*uninit)(struct vf_instance *vf);     // last time uninit
+    int (*load_core)(struct vf_instance *vf);   // make vsapi/vscore available
+    int (*load)(struct vf_instance *vf, VSMap *vars); // also set p->out_node
+    void (*unload)(struct vf_instance *vf);     // unload script and maybe vs
+};
 
 struct mpvs_fmt {
     VSPresetFormat vs;
@@ -113,8 +133,8 @@ static int mp_from_vs(VSPresetFormat vs)
     return pfNone;
 }
 
-static void copy_mp_to_vs_frame_props(struct vf_priv_s *p, VSMap *map,
-                                      struct mp_image *img)
+static void copy_mp_to_vs_frame_props_map(struct vf_priv_s *p, VSMap *map,
+                                          struct mp_image *img)
 {
     struct mp_image_params *params = &img->params;
     if (params->d_w > 0 && params->d_h > 0) {
@@ -148,6 +168,25 @@ static void copy_mp_to_vs_frame_props(struct vf_priv_s *p, VSMap *map,
             !!(img->fields & MP_IMGFIELD_INTERLACED), 0);
     p->vsapi->propSetInt(map, "_Field",
             !!(img->fields & MP_IMGFIELD_TOP_FIRST), 0);
+}
+
+static int set_vs_frame_props(struct vf_priv_s *p, VSFrameRef *frame,
+                              struct mp_image *img, int dur_num, int dur_den)
+{
+    VSMap *map = p->vsapi->getFramePropsRW(frame);
+    if (!map)
+        return -1;
+    p->vsapi->propSetInt(map, "_DurationNum", dur_num, 0);
+    p->vsapi->propSetInt(map, "_DurationDen", dur_den, 0);
+    copy_mp_to_vs_frame_props_map(p, map, img);
+    return 0;
+}
+
+static VSFrameRef *alloc_vs_frame(struct vf_priv_s *p, struct mp_image_params *fmt)
+{
+    const VSFormat *vsfmt =
+        p->vsapi->getFormatPreset(mp_to_vs(fmt->imgfmt), p->vscore);
+    return p->vsapi->newVideoFrame(vsfmt, fmt->w, fmt->h, NULL, p->vscore);
 }
 
 static struct mp_image map_vs_frame(struct vf_priv_s *p, const VSFrameRef *ref,
@@ -378,6 +417,22 @@ static const VSFrameRef *VS_CC infiltGetFrame(int frameno, int activationReason,
     while (1) {
         if (p->shutdown) {
             p->vsapi->setFilterError("EOF or filter reinit/uninit", frameCtx);
+            MP_DBG(vf, "returning error on EOF/reset\n");
+            break;
+        }
+        if (p->initializing) {
+            MP_WARN(vf, "Frame requested during init! This is unsupported.\n"
+                        "Returning black dummy frame with 0 duration.\n");
+            ret = alloc_vs_frame(p, &vf->fmt_in);
+            if (!ret) {
+                p->vsapi->setFilterError("Could not allocate VS frame", frameCtx);
+                break;
+            }
+            struct mp_image vsframe = map_vs_frame(p, ret, true);
+            mp_image_clear(&vsframe, 0, 0, vf->fmt_in.w, vf->fmt_in.h);
+            struct mp_image dummy = {0};
+            mp_image_set_params(&dummy, &vf->fmt_in);
+            set_vs_frame_props(p, ret, &dummy, 0, 1);
             break;
         }
         if (frameno < p->in_frameno) {
@@ -401,23 +456,16 @@ static const VSFrameRef *VS_CC infiltGetFrame(int frameno, int activationReason,
         }
         if (frameno < p->in_frameno + p->num_buffered) {
             struct mp_image *img = p->buffered[frameno - p->in_frameno];
-            const VSFormat *vsfmt =
-                vsapi->getFormatPreset(mp_to_vs(img->imgfmt), core);
-            ret = vsapi->newVideoFrame(vsfmt, img->w, img->h, NULL, core);
+            ret = alloc_vs_frame(p, &img->params);
             if (!ret) {
                 p->vsapi->setFilterError("Could not allocate VS frame", frameCtx);
                 break;
             }
             struct mp_image vsframe = map_vs_frame(p, ret, true);
             mp_image_copy(&vsframe, img);
-            VSMap *map = p->vsapi->getFramePropsRW(ret);
-            if (map) {
-                int res = 1e6;
-                int dur = img->pts * res + 0.5;
-                p->vsapi->propSetInt(map, "_DurationNum", dur, 0);
-                p->vsapi->propSetInt(map, "_DurationDen", res, 0);
-                copy_mp_to_vs_frame_props(p, map, img);
-            }
+            int res = 1e6;
+            int dur = img->pts * res + 0.5;
+            set_vs_frame_props(p, ret, img, dur, res);
             break;
         }
         pthread_cond_wait(&p->wakeup, &p->lock);
@@ -456,6 +504,7 @@ static void destroy_vs(struct vf_instance *vf)
 
     // Wait until our frame callbacks return.
     pthread_mutex_lock(&p->lock);
+    p->initializing = false;
     p->shutdown = true;
     pthread_cond_broadcast(&p->wakeup);
     while (num_requested(p))
@@ -470,12 +519,7 @@ static void destroy_vs(struct vf_instance *vf)
         p->vsapi->freeNode(p->out_node);
     p->in_node = p->out_node = NULL;
 
-    if (p->se)
-        vsscript_freeScript(p->se);
-
-    p->se = NULL;
-    p->vsapi = NULL;
-    p->vscore = NULL;
+    p->drv->unload(vf);
 
     assert(!p->in_node_active);
     assert(num_requested(p) == 0); // async callback didn't return?
@@ -506,14 +550,9 @@ static int reinit_vs(struct vf_instance *vf)
     destroy_vs(vf);
 
     MP_DBG(vf, "initializing...\n");
+    p->initializing = true;
 
-    // First load an empty script to get a VSScript, so that we get the vsapi
-    // and vscore.
-    if (vsscript_evaluateScript(&p->se, "", NULL, 0))
-        goto error;
-    p->vsapi = vsscript_getVSApi();
-    p->vscore = vsscript_getCore(p->se);
-    if (!p->vsapi || !p->vscore) {
+    if (p->drv->load_core(vf) < 0 || !p->vsapi || !p->vscore) {
         MP_FATAL(vf, "Could not get vapoursynth API handle.\n");
         goto error;
     }
@@ -539,13 +578,8 @@ static int reinit_vs(struct vf_instance *vf)
     p->vsapi->propSetInt(vars, "video_in_dw", p->fmt_in.d_w, 0);
     p->vsapi->propSetInt(vars, "video_in_dh", p->fmt_in.d_h, 0);
 
-    vsscript_setVariable(p->se, vars);
-
-    if (vsscript_evaluateFile(&p->se, p->cfg_file, 0)) {
-        MP_FATAL(vf, "Script evaluation failed:\n%s\n", vsscript_getError(p->se));
+    if (p->drv->load(vf, vars) < 0)
         goto error;
-    }
-    p->out_node = vsscript_getOutput(p->se, 0);
     if (!p->out_node) {
         MP_FATAL(vf, "Could not get script output node.\n");
         goto error;
@@ -557,6 +591,9 @@ static int reinit_vs(struct vf_instance *vf)
         goto error;
     }
 
+    pthread_mutex_lock(&p->lock);
+    p->initializing = false;
+    pthread_mutex_unlock(&p->lock);
     MP_DBG(vf, "initialized.\n");
     res = 0;
 error:
@@ -607,9 +644,10 @@ static int query_format(struct vf_instance *vf, unsigned int fmt)
 
 static int control(vf_instance_t *vf, int request, void *data)
 {
+    struct vf_priv_s *p = vf->priv;
     switch (request) {
     case VFCTRL_SEEK_RESET:
-        if (reinit_vs(vf) < 0)
+        if (p->out_node && reinit_vs(vf) < 0)
             return CONTROL_ERROR;
         return CONTROL_OK;
     }
@@ -621,23 +659,22 @@ static void uninit(struct vf_instance *vf)
     struct vf_priv_s *p = vf->priv;
 
     destroy_vs(vf);
-    vsscript_finalize();
+    p->drv->uninit(vf);
 
     pthread_cond_destroy(&p->wakeup);
     pthread_mutex_destroy(&p->lock);
 }
-
 static int vf_open(vf_instance_t *vf)
 {
     struct vf_priv_s *p = vf->priv;
-    if (!vsscript_init()) {
-        MP_FATAL(vf, "Could not initialize VapourSynth scripting.\n");
+    if (p->drv->init(vf) < 0)
         return 0;
-    }
     if (!p->cfg_file || !p->cfg_file[0]) {
         MP_FATAL(vf, "'file' parameter must be set.\n");
         return 0;
     }
+    talloc_steal(vf, p->cfg_file);
+    p->cfg_file = mp_get_user_path(vf, vf->chain->global, p->cfg_file);
 
     pthread_mutex_init(&p->lock, NULL);
     pthread_cond_init(&p->wakeup, NULL);
@@ -663,10 +700,326 @@ static const m_option_t vf_opts_fields[] = {
     {0}
 };
 
+#if HAVE_VAPOURSYNTH
+
+#include <VSScript.h>
+
+static int drv_vss_init(struct vf_instance *vf)
+{
+    if (!vsscript_init()) {
+        MP_FATAL(vf, "Could not initialize VapourSynth scripting.\n");
+        return -1;
+    }
+    return 0;
+}
+
+static void drv_vss_uninit(struct vf_instance *vf)
+{
+    vsscript_finalize();
+}
+
+static int drv_vss_load_core(struct vf_instance *vf)
+{
+    struct vf_priv_s *p = vf->priv;
+
+    // First load an empty script to get a VSScript, so that we get the vsapi
+    // and vscore.
+    if (vsscript_evaluateScript(&p->se, "", NULL, 0))
+        return -1;
+    p->vsapi = vsscript_getVSApi();
+    p->vscore = vsscript_getCore(p->se);
+    return 0;
+}
+
+static int drv_vss_load(struct vf_instance *vf, VSMap *vars)
+{
+    struct vf_priv_s *p = vf->priv;
+
+    vsscript_setVariable(p->se, vars);
+
+    if (vsscript_evaluateFile(&p->se, p->cfg_file, 0)) {
+        MP_FATAL(vf, "Script evaluation failed:\n%s\n", vsscript_getError(p->se));
+        return -1;
+    }
+    p->out_node = vsscript_getOutput(p->se, 0);
+    return 0;
+}
+
+static void drv_vss_unload(struct vf_instance *vf)
+{
+    struct vf_priv_s *p = vf->priv;
+
+    if (p->se)
+        vsscript_freeScript(p->se);
+    p->se = NULL;
+    p->vsapi = NULL;
+    p->vscore = NULL;
+}
+
+static const struct script_driver drv_vss = {
+    .init = drv_vss_init,
+    .uninit = drv_vss_uninit,
+    .load_core = drv_vss_load_core,
+    .load = drv_vss_load,
+    .unload = drv_vss_unload,
+};
+
+static int vf_open_vss(vf_instance_t *vf)
+{
+    struct vf_priv_s *p = vf->priv;
+    p->drv = &drv_vss;
+    return vf_open(vf);
+}
+
 const vf_info_t vf_info_vapoursynth = {
-    .description = "vapoursynth bridge",
+    .description = "VapourSynth bridge (Python)",
     .name = "vapoursynth",
-    .open = vf_open,
+    .open = vf_open_vss,
     .priv_size = sizeof(struct vf_priv_s),
     .options = vf_opts_fields,
 };
+
+#endif
+
+#if HAVE_VAPOURSYNTH_LAZY
+
+#include <lua.h>
+#include <lualib.h>
+#include <lauxlib.h>
+
+#if LUA_VERSION_NUM <= 501
+#define mp_cpcall lua_cpcall
+#define FUCKYOUOHGODWHY(L) lua_pushvalue(L, LUA_GLOBALSINDEX)
+#else
+// Curse whoever had this stupid idea. Curse whoever thought it would be a good
+// idea not to include an emulated lua_cpcall() even more.
+static int mp_cpcall (lua_State *L, lua_CFunction func, void *ud)
+{
+    lua_pushcfunction(L, func); // doesn't allocate in 5.2 (but does in 5.1)
+    lua_pushlightuserdata(L, ud);
+    return lua_pcall(L, 1, 0, 0);
+}
+// Hey, let's replace old mechanisms with something slightly different!
+#define FUCKYOUOHGODWHY lua_pushglobaltable
+#endif
+
+static int drv_lazy_init(struct vf_instance *vf)
+{
+    struct vf_priv_s *p = vf->priv;
+    p->ls = luaL_newstate();
+    if (!p->ls)
+        return -1;
+    p->vsapi = getVapourSynthAPI(VAPOURSYNTH_API_VERSION);
+    p->vscore = p->vsapi ? p->vsapi->createCore(0) : NULL;
+    if (!p->vscore) {
+        MP_FATAL(vf, "Could not load VapourSynth.\n");
+        lua_close(p->ls);
+        return -1;
+    }
+    return 0;
+}
+
+static void drv_lazy_uninit(struct vf_instance *vf)
+{
+    struct vf_priv_s *p = vf->priv;
+    lua_close(p->ls);
+    p->vsapi->freeCore(p->vscore);
+}
+
+static int drv_lazy_load_core(struct vf_instance *vf)
+{
+    // not needed
+    return 0;
+}
+
+static struct vf_instance *get_vf(lua_State *L)
+{
+    lua_getfield(L, LUA_REGISTRYINDEX, "p"); // p
+    struct vf_instance *vf = lua_touserdata(L, -1); // p
+    lua_pop(L, 1); // -
+    return vf;
+}
+
+static void vsmap_to_table(lua_State *L, int index, VSMap *map)
+{
+    struct vf_instance *vf = get_vf(L);
+    struct vf_priv_s *p = vf->priv;
+    const VSAPI *vsapi = p->vsapi;
+    for (int n = 0; n < vsapi->propNumKeys(map); n++) {
+        const char *key = vsapi->propGetKey(map, n);
+        VSPropTypes t = vsapi->propGetType(map, key);
+        switch (t) {
+        case ptInt:
+            lua_pushnumber(L, vsapi->propGetInt(map, key, 0, NULL));
+            break;
+        case ptNode: {
+            VSNodeRef *r = vsapi->propGetNode(map, key, 0, NULL);
+            MP_TARRAY_APPEND(p, p->gc_noderef, p->num_gc_noderef, r);
+            lua_pushlightuserdata(L, r);
+            break;
+        }
+        default:
+            luaL_error(L, "unknown map type");
+        }
+        lua_setfield(L, index, key);
+    }
+}
+
+static VSMap *table_to_vsmap(lua_State *L, int index)
+{
+    struct vf_instance *vf = get_vf(L);
+    struct vf_priv_s *p = vf->priv;
+    const VSAPI *vsapi = p->vsapi;
+    assert(index > 0);
+    VSMap *map = vsapi->createMap();
+    MP_TARRAY_APPEND(p, p->gc_map, p->num_gc_map, map);
+    if (!map)
+        luaL_error(L, "out of memory");
+    lua_pushnil(L); // nil
+    while (lua_next(L, index) != 0) { // key value
+        if (lua_type(L, -2) != LUA_TSTRING) {
+            luaL_error(L, "key must be a string, but got %s",
+                       lua_typename(L, -2));
+        }
+        const char *key = lua_tostring(L, -2);
+        switch (lua_type(L, -1)) {
+        case LUA_TNUMBER: {
+            // gross hack because we hate everything
+            if (strncmp(key, "i_", 2) == 0) {
+                vsapi->propSetInt(map, key + 2, lua_tointeger(L, -1), 0);
+            } else {
+                vsapi->propSetFloat(map, key, lua_tonumber(L, -1), 0);
+            }
+            break;
+        }
+        case LUA_TSTRING: {
+            const char *s = lua_tostring(L, -1);
+            vsapi->propSetData(map, key, s, strlen(s), 0);
+            break;
+        }
+        case LUA_TLIGHTUSERDATA: { // assume it's VSNodeRef*
+            VSNodeRef *node = lua_touserdata(L, -1);
+            vsapi->propSetNode(map, key, node, 0);
+            break;
+        }
+        default:
+            luaL_error(L, "unknown type");
+            break;
+        }
+        lua_pop(L, 1); // key
+    }
+    return map;
+}
+
+static int l_invoke(lua_State *L)
+{
+    struct vf_instance *vf = get_vf(L);
+    struct vf_priv_s *p = vf->priv;
+    const VSAPI *vsapi = p->vsapi;
+
+    VSPlugin *plugin = vsapi->getPluginByNs(luaL_checkstring(L, 1), p->vscore);
+    if (!plugin)
+        luaL_error(L, "plugin not found");
+    VSMap *map = table_to_vsmap(L, 3);
+    VSMap *r = vsapi->invoke(plugin, luaL_checkstring(L, 2), map);
+    MP_TARRAY_APPEND(p, p->gc_map, p->num_gc_map, r);
+    if (!r)
+        luaL_error(L, "?");
+    const char *err = vsapi->getError(r);
+    if (err)
+        luaL_error(L, "error calling invoke(): %s", err);
+    int err2 = 0;
+    VSNodeRef *node = vsapi->propGetNode(r, "clip", 0, &err2);
+    MP_TARRAY_APPEND(p, p->gc_noderef, p->num_gc_noderef, node);
+    if (node)
+        lua_pushlightuserdata(L, node);
+    return 1;
+}
+
+struct load_ctx {
+    struct vf_instance *vf;
+    VSMap *vars;
+    int status;
+};
+
+static int load_stuff(lua_State *L)
+{
+    struct load_ctx *ctx = lua_touserdata(L, -1);
+    lua_pop(L, 1); // -
+    struct vf_instance *vf = ctx->vf;
+    struct vf_priv_s *p = vf->priv;
+
+    // setup stuff; should be idempotent
+    lua_pushlightuserdata(L, vf);
+    lua_setfield(L, LUA_REGISTRYINDEX, "p"); // -
+    lua_pushcfunction(L, l_invoke);
+    lua_setglobal(L, "invoke");
+
+    FUCKYOUOHGODWHY(L);
+    vsmap_to_table(L, lua_gettop(L), ctx->vars);
+    if (luaL_dofile(L, p->cfg_file))
+        lua_error(L);
+    lua_pop(L, 1);
+
+    lua_getglobal(L, "video_out"); // video_out
+    if (!lua_islightuserdata(L, -1))
+        luaL_error(L, "video_out not set or has wrong type");
+    p->out_node = p->vsapi->cloneNodeRef(lua_touserdata(L, -1));
+    return 0;
+}
+
+static int drv_lazy_load(struct vf_instance *vf, VSMap *vars)
+{
+    struct vf_priv_s *p = vf->priv;
+    struct load_ctx ctx = {vf, vars, 0};
+    if (mp_cpcall(p->ls, load_stuff, &ctx)) {
+        MP_FATAL(vf, "filter creation failed: %s\n", lua_tostring(p->ls, -1));
+        lua_pop(p->ls, 1);
+        ctx.status = -1;
+    }
+    assert(lua_gettop(p->ls) == 0);
+    return ctx.status;
+}
+
+static void drv_lazy_unload(struct vf_instance *vf)
+{
+    struct vf_priv_s *p = vf->priv;
+
+    for (int n = 0; n < p->num_gc_noderef; n++) {
+        VSNodeRef *ref = p->gc_noderef[n];
+        if (ref)
+            p->vsapi->freeNode(ref);
+    }
+    p->num_gc_noderef = 0;
+    for (int n = 0; n < p->num_gc_map; n++) {
+        VSMap *map = p->gc_map[n];
+        if (map)
+            p->vsapi->freeMap(map);
+    }
+    p->num_gc_map = 0;
+}
+
+static const struct script_driver drv_lazy = {
+    .init = drv_lazy_init,
+    .uninit = drv_lazy_uninit,
+    .load_core = drv_lazy_load_core,
+    .load = drv_lazy_load,
+    .unload = drv_lazy_unload,
+};
+
+static int vf_open_lazy(vf_instance_t *vf)
+{
+    struct vf_priv_s *p = vf->priv;
+    p->drv = &drv_lazy;
+    return vf_open(vf);
+}
+
+const vf_info_t vf_info_vapoursynth_lazy = {
+    .description = "VapourSynth bridge (Lua)",
+    .name = "vapoursynth-lazy",
+    .open = vf_open_lazy,
+    .priv_size = sizeof(struct vf_priv_s),
+    .options = vf_opts_fields,
+};
+
+#endif

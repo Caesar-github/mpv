@@ -20,10 +20,13 @@
 #include <stdlib.h>
 #include <assert.h>
 
-#include <libavutil/mem.h>
+#include <libavutil/buffer.h>
+#include <libavutil/frame.h>
+#include <libavutil/version.h>
 
 #include "talloc.h"
 #include "common/common.h"
+#include "fmt-conversion.h"
 #include "audio.h"
 
 static void update_redundant_info(struct mp_audio *mpa)
@@ -88,18 +91,12 @@ bool mp_audio_config_valid(const struct mp_audio *mpa)
         && mpa->rate >= 1 && mpa->rate < 10000000;
 }
 
-char *mp_audio_fmt_to_str(int srate, const struct mp_chmap *chmap, int format)
+char *mp_audio_config_to_str_buf(char *buf, size_t buf_sz, struct mp_audio *mpa)
 {
-    char *chstr = mp_chmap_to_str(chmap);
-    char *res = talloc_asprintf(NULL, "%dHz %s %dch %s", srate, chstr,
-                                chmap->num, af_fmt_to_str(format));
-    talloc_free(chstr);
-    return res;
-}
-
-char *mp_audio_config_to_str(struct mp_audio *mpa)
-{
-    return mp_audio_fmt_to_str(mpa->rate, &mpa->channels, mpa->format);
+    snprintf(buf, buf_sz, "%dHz %s %dch %s", mpa->rate,
+             mp_chmap_to_str(&mpa->channels), mpa->channels.num,
+             af_fmt_to_str(mpa->format));
+    return buf;
 }
 
 void mp_audio_force_interleaved_format(struct mp_audio *mpa)
@@ -116,19 +113,27 @@ int mp_audio_psize(struct mp_audio *mpa)
 
 void mp_audio_set_null_data(struct mp_audio *mpa)
 {
-    for (int n = 0; n < MP_NUM_CHANNELS; n++)
+    for (int n = 0; n < MP_NUM_CHANNELS; n++) {
         mpa->planes[n] = NULL;
+        mpa->allocated[n] = NULL;
+    }
     mpa->samples = 0;
+}
+
+static int get_plane_size(const struct mp_audio *mpa, int samples)
+{
+    if (samples < 0 || !mp_audio_config_valid(mpa))
+        return -1;
+    if (samples >= INT_MAX / mpa->sstride)
+        return -1;
+    return MPMAX(samples * mpa->sstride, 1);
 }
 
 static void mp_audio_destructor(void *ptr)
 {
     struct mp_audio *mpa = ptr;
-    for (int n = 0; n < MP_NUM_CHANNELS; n++) {
-        // Note: don't free if not allocated by mp_audio_realloc
-        if (mpa->allocated[n])
-            av_free(mpa->planes[n]);
-    }
+    for (int n = 0; n < MP_NUM_CHANNELS; n++)
+        av_buffer_unref(&mpa->allocated[n]);
 }
 
 /* Reallocate the data stored in mpa->planes[n] so that enough samples are
@@ -147,27 +152,19 @@ static void mp_audio_destructor(void *ptr)
  */
 void mp_audio_realloc(struct mp_audio *mpa, int samples)
 {
-    assert(samples >= 0);
-    if (samples >= INT_MAX / mpa->sstride)
-        abort(); // oom
-    int size = MPMAX(samples * mpa->sstride, 1);
+    int size = get_plane_size(mpa, samples);
+    if (size < 0)
+        abort(); // oom or invalid parameters
     for (int n = 0; n < mpa->num_planes; n++) {
-        if (size != mpa->allocated[n]) {
-            // Note: av_realloc() can't be used (see libavutil doxygen)
-            void *new = av_malloc(size);
-            if (!new)
-                abort();
-            if (mpa->allocated[n])
-                memcpy(new, mpa->planes[n], MPMIN(mpa->allocated[n], size));
-            av_free(mpa->planes[n]);
-            mpa->planes[n] = new;
-            mpa->allocated[n] = size;
+        if (!mpa->allocated[n] || size != mpa->allocated[n]->size) {
+            if (av_buffer_realloc(&mpa->allocated[n], size) < 0)
+                abort(); // OOM
+            mpa->planes[n] = mpa->allocated[n]->data;
         }
     }
     for (int n = mpa->num_planes; n < MP_NUM_CHANNELS; n++) {
-        av_free(mpa->planes[n]);
+        av_buffer_unref(&mpa->allocated[n]);
         mpa->planes[n] = NULL;
-        mpa->allocated[n] = 0;
     }
     talloc_set_destructor(mpa, mp_audio_destructor);
 }
@@ -194,7 +191,7 @@ int mp_audio_get_allocated_size(struct mp_audio *mpa)
 {
     int size = 0;
     for (int n = 0; n < mpa->num_planes; n++) {
-        int s = mpa->allocated[n] / mpa->sstride;
+        int s = mpa->allocated[n] ? mpa->allocated[n]->size / mpa->sstride : 0;
         size = n == 0 ? s : MPMIN(size, s);
     }
     return size;
@@ -239,4 +236,137 @@ void mp_audio_skip_samples(struct mp_audio *data, int samples)
         data->planes[n] = (uint8_t *)data->planes[n] + samples * data->sstride;
 
     data->samples -= samples;
+}
+
+// Make sure the frame owns the audio data, and if not, copy the data.
+// Return negative value on failure (which means it can't be made writeable).
+// Non-refcounted frames are always considered writeable.
+int mp_audio_make_writeable(struct mp_audio *data)
+{
+    bool ok = true;
+    for (int n = 0; n < MP_NUM_CHANNELS; n++) {
+        if (data->allocated[n])
+            ok &= av_buffer_is_writable(data->allocated[n]);
+    }
+    if (!ok) {
+        struct mp_audio *new = talloc(NULL, struct mp_audio);
+        *new = *data;
+        mp_audio_set_null_data(new); // use format only
+        mp_audio_realloc(new, data->samples);
+        new->samples = data->samples;
+        mp_audio_copy(new, 0, data, 0, data->samples);
+        // "Transfer" the reference.
+        mp_audio_destructor(data);
+        *data = *new;
+        talloc_set_destructor(new, NULL);
+        talloc_free(new);
+    }
+    return 0;
+}
+
+struct mp_audio *mp_audio_from_avframe(struct AVFrame *avframe)
+{
+    AVFrame *tmp = NULL;
+    struct mp_audio *new = talloc_zero(NULL, struct mp_audio);
+    talloc_set_destructor(new, mp_audio_destructor);
+
+    mp_audio_set_format(new, af_from_avformat(avframe->format));
+
+    struct mp_chmap lavc_chmap;
+    mp_chmap_from_lavc(&lavc_chmap, avframe->channel_layout);
+
+#if LIBAVUTIL_VERSION_MICRO >= 100
+    // FFmpeg being special again
+    if (lavc_chmap.num != avframe->channels)
+        mp_chmap_from_channels(&lavc_chmap, avframe->channels);
+#endif
+
+    new->rate = avframe->sample_rate;
+
+    mp_audio_set_channels(new, &lavc_chmap);
+
+    // Force refcounted frame.
+    if (!avframe->buf[0]) {
+        tmp = av_frame_alloc();
+        if (!tmp)
+            goto fail;
+        if (av_frame_ref(tmp, avframe) < 0)
+            goto fail;
+        avframe = tmp;
+    }
+
+    // If we can't handle the format (e.g. too many channels), bail out.
+    if (!mp_audio_config_valid(new) || avframe->nb_extended_buf)
+        goto fail;
+
+    for (int n = 0; n < AV_NUM_DATA_POINTERS; n++) {
+        if (!avframe->buf[n])
+            break;
+        if (n >= MP_NUM_CHANNELS)
+            goto fail;
+        new->allocated[n] = av_buffer_ref(avframe->buf[n]);
+        if (!new->allocated[n])
+            goto fail;
+    }
+
+    for (int n = 0; n < new->num_planes; n++)
+        new->planes[n] = avframe->data[n];
+    new->samples = avframe->nb_samples;
+
+    return new;
+
+fail:
+    talloc_free(new);
+    av_frame_free(&tmp);
+    return NULL;
+}
+
+struct mp_audio_pool {
+    AVBufferPool *avpool;
+    int element_size;
+};
+
+struct mp_audio_pool *mp_audio_pool_create(void *ta_parent)
+{
+    return talloc_zero(ta_parent, struct mp_audio_pool);
+}
+
+static void mp_audio_pool_destructor(void *p)
+{
+    struct mp_audio_pool *pool = p;
+    av_buffer_pool_uninit(&pool->avpool);
+}
+
+// Allocate data using the given format and number of samples.
+// Returns NULL on error.
+struct mp_audio *mp_audio_pool_get(struct mp_audio_pool *pool,
+                                   const struct mp_audio *fmt, int samples)
+{
+    int size = get_plane_size(fmt, samples);
+    if (size < 0)
+        return NULL;
+    if (!pool->avpool || size > pool->element_size) {
+        size_t alloc = ta_calc_prealloc_elems(size);
+        if (alloc >= INT_MAX)
+            return NULL;
+        av_buffer_pool_uninit(&pool->avpool);
+        pool->avpool = av_buffer_pool_init(alloc, NULL);
+        if (!pool->avpool)
+            return NULL;
+        talloc_set_destructor(pool, mp_audio_pool_destructor);
+    }
+    struct mp_audio *new = talloc_ptrtype(NULL, new);
+    talloc_set_destructor(new, mp_audio_destructor);
+    *new = *fmt;
+    mp_audio_set_null_data(new);
+    new->samples = samples;
+    for (int n = 0; n < new->num_planes; n++) {
+        new->allocated[n] = av_buffer_pool_get(pool->avpool);
+        if (!new->allocated[n]) {
+            talloc_free(new);
+            return NULL;
+        }
+        new->planes[n] = new->allocated[n]->data;
+    }
+    return new;
 }

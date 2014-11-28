@@ -47,6 +47,7 @@
 #include "video/vfcap.h"
 #include "sub/osd.h"
 #include "osdep/io.h"
+#include "osdep/threads.h"
 
 extern const struct vo_driver video_out_x11;
 extern const struct vo_driver video_out_vdpau;
@@ -128,6 +129,7 @@ struct vo_internal {
     bool request_redraw;            // redraw request from player to VO
     bool want_redraw;               // redraw request from VO to player
     bool paused;
+    int queued_events;
 
     int64_t flip_queue_offset; // queue flip events at most this much in advance
 
@@ -666,6 +668,8 @@ static void *vo_thread(void *ptr)
     struct vo *vo = ptr;
     struct vo_internal *in = vo->in;
 
+    mpthread_set_name("vo");
+
     int r = vo->driver->preinit(vo) ? -1 : 0;
     mp_rendezvous(vo, r); // init barrier
     if (r < 0)
@@ -833,6 +837,30 @@ void vo_set_flip_queue_offset(struct vo *vo, int64_t us)
 int64_t vo_get_vsync_interval(struct vo *vo)
 {
     return vo->in->vsync_interval;
+}
+
+// Set specific event flags, and wakeup the playback core if needed.
+// vo_query_and_reset_events() can retrieve the events again.
+void vo_event(struct vo *vo, int event)
+{
+    struct vo_internal *in = vo->in;
+    pthread_mutex_lock(&in->lock);
+    if ((in->queued_events & event & VO_EVENTS_USER) != (event & VO_EVENTS_USER))
+        mp_input_wakeup(vo->input_ctx);
+    in->queued_events |= event;
+    pthread_mutex_unlock(&in->lock);
+}
+
+// Check event flags set with vo_event(). Return the mask of events that was
+// set and included in the events parameter. Clear the returned events.
+int vo_query_and_reset_events(struct vo *vo, int events)
+{
+    struct vo_internal *in = vo->in;
+    pthread_mutex_lock(&in->lock);
+    int r = in->queued_events & events;
+    in->queued_events &= ~(unsigned)r;
+    pthread_mutex_unlock(&in->lock);
+    return r;
 }
 
 /**

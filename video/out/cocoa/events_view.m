@@ -22,19 +22,30 @@
 
 #include "osdep/macosx_compat.h"
 #include "video/out/cocoa_common.h"
-#import  "video/out/cocoa/additions.h"
+#include "events_view.h"
 
-#include "view.h"
+@interface MpvEventsView()
+@property(nonatomic, assign) BOOL hasMouseDown;
+@property(nonatomic, retain) NSTrackingArea *tracker;
+- (void)signalMousePosition;
+- (BOOL)hasDock:(NSScreen*)screen;
+- (BOOL)hasMenubar:(NSScreen*)screen;
+- (int)mpvButtonNumber:(NSEvent*)event;
+- (void)mouseDownEvent:(NSEvent *)event;
+- (void)mouseUpEvent:(NSEvent *)event;
+@end
 
-@implementation MpvVideoView
+@implementation MpvEventsView
 @synthesize adapter = _adapter;
 @synthesize tracker = _tracker;
+@synthesize hasMouseDown = _mouse_down;
 
 - (id)initWithFrame:(NSRect)frame {
     self = [super initWithFrame:frame];
     if (self) {
         [self registerForDraggedTypes:@[NSFilenamesPboardType,
                                         NSURLPboardType]];
+        [self setAutoresizingMask:NSViewWidthSizable|NSViewHeightSizable];
     }
     return self;
 }
@@ -45,14 +56,14 @@
         NSApplicationPresentationOptions popts =
             NSApplicationPresentationDefault;
 
-        if ([[self.adapter fsScreen] hasMenubar])
+        if ([self hasMenubar:[self.adapter fsScreen]])
             // Cocoa raises an exception when autohiding the menubar but
             // not the dock. They probably got bored while programming the
             // multi screen support and took some shortcuts (tested on 10.8).
             popts |= NSApplicationPresentationAutoHideMenuBar |
                      NSApplicationPresentationAutoHideDock;
 
-        if ([[self.adapter fsScreen] hasDock])
+        if ([self hasDock:[self.adapter fsScreen]])
             popts |= NSApplicationPresentationAutoHideDock;
 
         NSDictionary *fsopts = @{
@@ -85,7 +96,11 @@
 
 - (void)updateTrackingAreas
 {
-    if (self.tracker) [self removeTrackingArea:self.tracker];
+    if (self.tracker)
+        [self removeTrackingArea:self.tracker];
+
+    if (![self.adapter mouseEnabled])
+        return;
 
     NSTrackingAreaOptions trackingOptions =
         NSTrackingEnabledDuringMouseDrag |
@@ -118,29 +133,45 @@
     return CGRectContainsPoint(clippedBounds, pt);
 }
 
-- (BOOL)acceptsFirstMouse:(NSEvent *)theEvent { return YES; }
-- (BOOL)acceptsFirstResponder { return YES; }
-- (BOOL)becomeFirstResponder { return YES; }
+- (BOOL)acceptsFirstMouse:(NSEvent *)theEvent
+{
+    return [self.adapter mouseEnabled];
+}
+- (BOOL)acceptsFirstResponder {
+    return [self.adapter keyboardEnabled] || [self.adapter mouseEnabled];
+}
+
+- (BOOL)becomeFirstResponder {
+    return [self.adapter keyboardEnabled] || [self.adapter mouseEnabled];
+}
+
 - (BOOL)resignFirstResponder { return YES; }
 
-- (NSRect)frameInPixels
-{
-    return [self convertRectToBacking:[self frame]];
+- (void)keyDown:(NSEvent *)event {
+    [self.adapter putKeyEvent:event];
+}
+
+- (void)keyUp:(NSEvent *)event {
+    [self.adapter putKeyEvent:event];
 }
 
 - (BOOL)canHideCursor
 {
-    return !self->hasMouseDown && [self containsMouseLocation];
+    return !self.hasMouseDown && [self containsMouseLocation];
 }
 
 - (void)mouseEntered:(NSEvent *)event
 {
-    // do nothing!
+    [super mouseEntered:event];
 }
 
 - (void)mouseExited:(NSEvent *)event
 {
-    [self.adapter putKey:MP_KEY_MOUSE_LEAVE withModifiers:0];
+    if ([self.adapter mouseEnabled]) {
+        [self.adapter putKey:MP_KEY_MOUSE_LEAVE withModifiers:0];
+    } else {
+        [super mouseExited:event];
+    }
 }
 
 - (void)setFrameSize:(NSSize)size
@@ -171,14 +202,75 @@
     [self.adapter signalMouseMovement:p];
 }
 
-- (void)mouseMoved:(NSEvent *)event   { [self signalMouseMovement:event]; }
-- (void)mouseDragged:(NSEvent *)event { [self signalMouseMovement:event]; }
-- (void)mouseDown:(NSEvent *)evt      { [self mouseDownEvent:evt]; }
-- (void)mouseUp:(NSEvent *)evt        { [self mouseUpEvent:evt]; }
-- (void)rightMouseDown:(NSEvent *)evt { [self mouseDownEvent:evt]; }
-- (void)rightMouseUp:(NSEvent *)evt   { [self mouseUpEvent:evt]; }
-- (void)otherMouseDown:(NSEvent *)evt { [self mouseDownEvent:evt]; }
-- (void)otherMouseUp:(NSEvent *)evt   { [self mouseUpEvent:evt]; }
+- (void)mouseMoved:(NSEvent *)event
+{
+    if ([self.adapter mouseEnabled]) {
+        [self signalMouseMovement:event];
+    } else {
+        [super mouseMoved:event];
+    }
+}
+
+- (void)mouseDragged:(NSEvent *)event
+{
+    if ([self.adapter mouseEnabled]) {
+        [self signalMouseMovement:event];
+    } else {
+        [super mouseDragged:event];
+    }
+}
+
+- (void)mouseDown:(NSEvent *)event
+{
+    if ([self.adapter mouseEnabled]) {
+        [self mouseDownEvent:event];
+    } else {
+        [super mouseDown:event];
+    }
+}
+- (void)mouseUp:(NSEvent *)event
+{
+    if ([self.adapter mouseEnabled]) {
+        [self mouseUpEvent:event];
+    } else {
+        [super mouseUp:event];
+    }
+}
+- (void)rightMouseDown:(NSEvent *)event
+{
+    if ([self.adapter mouseEnabled]) {
+        [self mouseDownEvent:event];
+    } else {
+        [super rightMouseUp:event];
+    }
+}
+
+- (void)rightMouseUp:(NSEvent *)event
+{
+    if ([self.adapter mouseEnabled]) {
+        [self mouseUpEvent:event];
+    } else {
+        [super rightMouseUp:event];
+    }
+}
+
+- (void)otherMouseDown:(NSEvent *)event
+{
+    if ([self.adapter mouseEnabled]) {
+        [self mouseDownEvent:event];
+    } else {
+        [super otherMouseDown:event];
+    }
+}
+
+- (void)otherMouseUp:(NSEvent *)event
+{
+     if ([self.adapter mouseEnabled]) {
+        [self mouseUpEvent:event];
+    } else {
+        [super otherMouseUp:event];
+    }
+}
 
 - (void)preciseScroll:(NSEvent *)event
 {
@@ -198,6 +290,11 @@
 
 - (void)scrollWheel:(NSEvent *)event
 {
+    if (![self.adapter mouseEnabled]) {
+        [super scrollWheel:event];
+        return;
+    }
+
     if ([event hasPreciseScrollingDeltas]) {
         [self preciseScroll:event];
     } else {
@@ -222,15 +319,9 @@
 
 - (void)putMouseEvent:(NSEvent *)event withState:(int)state
 {
-    self->hasMouseDown = (state == MP_KEY_STATE_DOWN);
-    int mpkey = (MP_MOUSE_BTN0 + [event mpvButtonNumber]);
+    self.hasMouseDown = (state == MP_KEY_STATE_DOWN);
+    int mpkey = (MP_MOUSE_BTN0 + [self mpvButtonNumber:event]);
     [self.adapter putKey:(mpkey | state) withModifiers:[event modifierFlags]];
-}
-
-- (void)drawRect:(NSRect)rect
-{
-    [self.adapter performAsyncResize:[self frameInPixels].size];
-    [self.adapter setNeedsResize];
 }
 
 - (NSDragOperation)draggingEntered:(id <NSDraggingInfo>)sender
@@ -257,5 +348,36 @@
         return YES;
     }
     return NO;
+}
+
+- (BOOL)hasDock:(NSScreen*)screen
+{
+    NSRect vF = [screen visibleFrame];
+    NSRect f  = [screen frame];
+    return
+        // The visible frame's width is smaller: dock is on left or right end
+        // of this method's receiver.
+        vF.size.width < f.size.width ||
+        // The visible frame's veritical origin is bigger: dock is
+        // on the bottom of this method's receiver.
+        vF.origin.y > f.origin.y;
+
+}
+
+- (BOOL)hasMenubar:(NSScreen*)screen
+{
+    NSRect vF = [screen visibleFrame];
+    NSRect f  = [screen frame];
+    return f.size.height + f.origin.y > vF.size.height + vF.origin.y;
+}
+
+- (int)mpvButtonNumber:(NSEvent*)event
+{
+    int buttonNumber = [event buttonNumber];
+    switch (buttonNumber) {
+        case 1:  return 2;
+        case 2:  return 1;
+        default: return buttonNumber;
+    }
 }
 @end

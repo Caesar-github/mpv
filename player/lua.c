@@ -25,6 +25,7 @@
 #include <math.h>
 
 #include "osdep/io.h"
+#include "osdep/atomics.h"
 
 #include <lua.h>
 #include <lualib.h>
@@ -40,8 +41,11 @@
 #include "input/input.h"
 #include "options/path.h"
 #include "misc/bstr.h"
+#include "misc/json.h"
+#include "osdep/subprocess.h"
 #include "osdep/timer.h"
 #include "osdep/threads.h"
+#include "stream/stream.h"
 #include "sub/osd.h"
 #include "core.h"
 #include "command.h"
@@ -63,6 +67,9 @@ static const char * const builtin_lua_scripts[][2] = {
     {"@osc.lua",
 #   include "player/lua/osc.inc"
     },
+    {"@ytdl_hook.lua",
+#   include "player/lua/ytdl_hook.inc"
+    },
     {0}
 };
 
@@ -79,6 +86,7 @@ struct script_ctx {
 
 #if LUA_VERSION_NUM <= 501
 #define mp_cpcall lua_cpcall
+#define mp_lua_len lua_objlen
 #else
 // Curse whoever had this stupid idea. Curse whoever thought it would be a good
 // idea not to include an emulated lua_cpcall() even more.
@@ -88,7 +96,54 @@ static int mp_cpcall (lua_State *L, lua_CFunction func, void *ud)
     lua_pushlightuserdata(L, ud);
     return lua_pcall(L, 1, 0, 0);
 }
+#define mp_lua_len lua_rawlen
 #endif
+
+// Ensure that the given argument exists, even if it's nil. Can be used to
+// avoid confusing the last missing optional arg with the first temporary value
+// pushed to the stack.
+static void mp_lua_optarg(lua_State *L, int arg)
+{
+    while (arg > lua_gettop(L))
+        lua_pushnil(L);
+}
+
+static int destroy_crap(lua_State *L)
+{
+    void **data = luaL_checkudata(L, 1, "ohthispain");
+    talloc_free(data[0]);
+    data[0] = NULL;
+    return 0;
+}
+
+// Creates a small userdata object and pushes it to the Lua stack. The function
+// will (on the C level) return a talloc object that will be released by the
+// userdata gc routine.
+// This can be used to free temporary C data structures correctly if Lua errors
+// happen.
+// You can't free the talloc context directly; the Lua __gc handler does this.
+// In my cases, talloc_free_children(returnval) will be used to free attached
+// memory in advance when it's known not to be needed anymore (a minor
+// optimization). Freeing it completely must be left to the Lua GC.
+static void *mp_lua_PITA(lua_State *L)
+{
+    void **data = lua_newuserdata(L, sizeof(void *)); // u
+    if (luaL_newmetatable(L, "ohthispain")) { // u metatable
+        lua_pushvalue(L, -1);  // u metatable metatable
+        lua_setfield(L, -2, "__index");  // u metatable
+        lua_pushcfunction(L, destroy_crap); // u metatable gc
+        lua_setfield(L, -2, "__gc"); // u metatable
+    }
+    lua_setmetatable(L, -2); // u
+    *data = talloc_new(NULL);
+    return *data;
+}
+
+// Perform the equivalent of mpv_free_node_contents(node) when tmp is freed.
+static void auto_free_node(void *tmp, mpv_node *node)
+{
+    talloc_steal(tmp, node_get_alloc(node));
+}
 
 static struct script_ctx *get_ctx(lua_State *L)
 {
@@ -111,7 +166,7 @@ static int error_handler(lua_State *L)
     if (luaL_loadstring(L, "return debug.traceback('', 3)") == 0) { // e fn|err
         lua_call(L, 0, 1); // e backtrace
         const char *tr = lua_tostring(L, -1);
-        MP_WARN(ctx, "%s\n", tr);
+        MP_WARN(ctx, "%s\n", tr ? tr : "(unknown)");
     }
     lua_pop(L, 1); // e
 
@@ -296,8 +351,10 @@ static int run_lua(lua_State *L)
     // run this under an error handler that can do backtraces
     lua_pushcfunction(L, error_handler); // errf
     lua_pushcfunction(L, load_scripts); // errf fn
-    if (lua_pcall(L, 0, 0, -2)) // errf [error]
-        MP_FATAL(ctx, "Lua error: %s\n", lua_tostring(L, -1));
+    if (lua_pcall(L, 0, 0, -2)) { // errf [error]
+        const char *e = lua_tostring(L, -1);
+        MP_FATAL(ctx, "Lua error: %s\n", e ? e : "(unknown)");
+    }
 
     return 0;
 }
@@ -407,16 +464,20 @@ static int script_resume(lua_State *L)
     return 0;
 }
 
-static int script_resume_all(lua_State *L)
+static void resume_all(struct script_ctx *ctx)
 {
-    struct script_ctx *ctx = get_ctx(L);
     if (ctx->suspended)
         mpv_resume(ctx->client);
     ctx->suspended = 0;
+}
+
+static int script_resume_all(lua_State *L)
+{
+    resume_all(get_ctx(L));
     return 0;
 }
 
-static bool pushnode(lua_State *L, mpv_node *node, int depth);
+static void pushnode(lua_State *L, mpv_node *node);
 
 static int script_wait_event(lua_State *L)
 {
@@ -456,15 +517,6 @@ static int script_wait_event(lua_State *L)
         lua_setfield(L, -2, "text"); // event
         break;
     }
-    case MPV_EVENT_SCRIPT_INPUT_DISPATCH: {
-        mpv_event_script_input_dispatch *msg = event->data;
-
-        lua_pushinteger(L, msg->arg0); // event i
-        lua_setfield(L, -2, "arg0"); // event
-        lua_pushstring(L, msg->type); // event s
-        lua_setfield(L, -2, "type"); // event
-        break;
-    }
     case MPV_EVENT_CLIENT_MESSAGE: {
         mpv_event_client_message *msg = event->data;
 
@@ -483,8 +535,7 @@ static int script_wait_event(lua_State *L)
         lua_setfield(L, -2, "name");
         switch (prop->format) {
         case MPV_FORMAT_NODE:
-            if (!pushnode(L, prop->data, 50))
-                luaL_error(L, "stack overflow");
+            pushnode(L, prop->data);
             break;
         case MPV_FORMAT_DOUBLE:
             lua_pushnumber(L, *(double *)prop->data);
@@ -693,7 +744,6 @@ static void makenode(void *tmp, mpv_node *dst, lua_State *L, int t)
                 MP_TARRAY_GROW(tmp, list->keys, list->num);
                 makenode(tmp, &list->values[list->num], L, -1);
                 if (lua_type(L, -2) != LUA_TSTRING) {
-                    talloc_free(tmp);
                     luaL_error(L, "key must be a string, but got %s",
                                lua_typename(L, -2));
                 }
@@ -706,7 +756,6 @@ static void makenode(void *tmp, mpv_node *dst, lua_State *L, int t)
     }
     default:
         // unknown type
-        talloc_free(tmp);
         luaL_error(L, "disallowed Lua type found: %s\n", lua_typename(L, t));
     }
 }
@@ -716,10 +765,10 @@ static int script_set_property_native(lua_State *L)
     struct script_ctx *ctx = get_ctx(L);
     const char *p = luaL_checkstring(L, 1);
     struct mpv_node node;
-    void *tmp = talloc_new(NULL);
+    void *tmp = mp_lua_PITA(L);
     makenode(tmp, &node, L, 2);
     int res = mpv_set_property(ctx->client, p, MPV_FORMAT_NODE, &node);
-    talloc_free(tmp);
+    talloc_free_children(tmp);
     return check_error(L, res);
 
 }
@@ -783,11 +832,8 @@ static int script_get_property_number(lua_State *L)
     }
 }
 
-static bool pushnode(lua_State *L, mpv_node *node, int depth)
+static void pushnode(lua_State *L, mpv_node *node)
 {
-    depth--;
-    if (depth < 0)
-        return false;
     luaL_checkstack(L, 6, "stack overflow");
 
     switch (node->format) {
@@ -811,8 +857,7 @@ static bool pushnode(lua_State *L, mpv_node *node, int depth)
         lua_getfield(L, LUA_REGISTRYINDEX, "ARRAY"); // table mt
         lua_setmetatable(L, -2); // table
         for (int n = 0; n < node->u.list->num; n++) {
-            if (!pushnode(L, &node->u.list->values[n], depth)) // table value
-                return false;
+            pushnode(L, &node->u.list->values[n]); // table value
             lua_rawseti(L, -2, n + 1); // table
         }
         break;
@@ -822,8 +867,7 @@ static bool pushnode(lua_State *L, mpv_node *node, int depth)
         lua_setmetatable(L, -2); // table
         for (int n = 0; n < node->u.list->num; n++) {
             lua_pushstring(L, node->u.list->keys[n]); // table key
-            if (!pushnode(L, &node->u.list->values[n], depth)) // table key value
-                return false;
+            pushnode(L, &node->u.list->values[n]); // table key value
             lua_rawset(L, -3);
         }
         break;
@@ -835,26 +879,25 @@ static bool pushnode(lua_State *L, mpv_node *node, int depth)
         lua_setmetatable(L, -2); // table
         break;
     }
-    return true;
 }
 
 static int script_get_property_native(lua_State *L)
 {
     struct script_ctx *ctx = get_ctx(L);
     const char *name = luaL_checkstring(L, 1);
+    mp_lua_optarg(L, 2);
+    void *tmp = mp_lua_PITA(L);
 
     mpv_node node;
     int err = mpv_get_property(ctx->client, name, MPV_FORMAT_NODE, &node);
-    const char *errstr = mpv_error_string(err);
     if (err >= 0) {
-        bool ok = pushnode(L, &node, 50);
-        mpv_free_node_contents(&node);
-        if (ok)
-            return 1;
-        errstr = "value too large";
+        auto_free_node(tmp, &node);
+        pushnode(L, &node);
+        talloc_free_children(tmp);
+        return 1;
     }
     lua_pushvalue(L, 2);
-    lua_pushstring(L, errstr);
+    lua_pushstring(L, mpv_error_string(err));
     return 2;
 }
 
@@ -889,6 +932,26 @@ static int script_raw_unobserve_property(lua_State *L)
     uint64_t id = luaL_checknumber(L, 1);
     lua_pushnumber(L, mpv_unobserve_property(ctx->client, id));
     return 1;
+}
+
+static int script_command_native(lua_State *L)
+{
+    struct script_ctx *ctx = get_ctx(L);
+    mp_lua_optarg(L, 2);
+    struct mpv_node node;
+    struct mpv_node result;
+    void *tmp = mp_lua_PITA(L);
+    makenode(tmp, &node, L, 1);
+    int err = mpv_command_node(ctx->client, &node, &result);
+    if (err >= 0) {
+        auto_free_node(tmp, &result);
+        pushnode(L, &result);
+        talloc_free_children(tmp);
+        return 1;
+    }
+    lua_pushvalue(L, 2);
+    lua_pushstring(L, mpv_error_string(err));
+    return 2;
 }
 
 static int script_set_osd_ass(lua_State *L)
@@ -1068,7 +1131,7 @@ static int script_readdir(lua_State *L)
                 fullpath[0] = '\0';
             fullpath = talloc_asprintf_append(fullpath, "%s/%s", path, name);
             struct stat st;
-            if (mp_stat(fullpath, &st))
+            if (stat(fullpath, &st))
                 continue;
             if (!(((t & 1) && S_ISREG(st.st_mode)) ||
                   ((t & 2) && S_ISDIR(st.st_mode))))
@@ -1101,6 +1164,109 @@ static int script_join_path(lua_State *L)
     return 1;
 }
 
+#if HAVE_POSIX_SPAWN || defined(__MINGW32__)
+struct subprocess_cb_ctx {
+    struct mp_log *log;
+    void* talloc_ctx;
+    int64_t max_size;
+    bstr output;
+};
+
+static void subprocess_stdout(void *p, char *data, size_t size)
+{
+    struct subprocess_cb_ctx *ctx = p;
+    if (ctx->output.len < ctx->max_size)
+        bstr_xappend(ctx->talloc_ctx, &ctx->output, (bstr){data, size});
+}
+
+static void subprocess_stderr(void *p, char *data, size_t size)
+{
+    struct subprocess_cb_ctx *ctx = p;
+    MP_INFO(ctx, "%.*s", (int)size, data);
+}
+
+static int script_subprocess(lua_State *L)
+{
+    struct script_ctx *ctx = get_ctx(L);
+    luaL_checktype(L, 1, LUA_TTABLE);
+    void *tmp = mp_lua_PITA(L);
+
+    resume_all(ctx);
+
+    lua_getfield(L, 1, "args"); // args
+    int num_args = mp_lua_len(L, -1);
+    char *args[256];
+    if (num_args > MP_ARRAY_SIZE(args) - 1) // last needs to be NULL
+        luaL_error(L, "too many arguments");
+    if (num_args < 1)
+        luaL_error(L, "program name missing");
+    for (int n = 0; n < num_args; n++) {
+        lua_pushinteger(L, n + 1); // args n
+        lua_gettable(L, -2); // args arg
+        args[n] = talloc_strdup(tmp, lua_tostring(L, -1));
+        if (!args[n])
+            luaL_error(L, "program arguments must be strings");
+        lua_pop(L, 1); // args
+    }
+    args[num_args] = NULL;
+    lua_pop(L, 1); // -
+
+    lua_getfield(L, 1, "cancellable"); // c
+    struct mp_cancel *cancel = NULL;
+    if (lua_isnil(L, -1) ? true : lua_toboolean(L, -1))
+        cancel = ctx->mpctx->playback_abort;
+    lua_pop(L, 1); // -
+
+    lua_getfield(L, 1, "max_size"); // m
+    int64_t max_size = lua_isnil(L, -1) ? 16 * 1024 * 1024 : lua_tointeger(L, -1);
+
+    struct subprocess_cb_ctx cb_ctx = {
+        .log = ctx->log,
+        .talloc_ctx = tmp,
+        .max_size = max_size,
+    };
+
+    char *error = NULL;
+    int status = mp_subprocess(args, cancel, &cb_ctx, subprocess_stdout,
+                               subprocess_stderr, &error);
+
+    lua_newtable(L); // res
+    if (error) {
+        lua_pushstring(L, error); // res e
+        lua_setfield(L, -2, "error"); // res
+    }
+    lua_pushinteger(L, status); // res s
+    lua_setfield(L, -2, "status"); // res
+    lua_pushlstring(L, cb_ctx.output.start, cb_ctx.output.len); // res d
+    lua_setfield(L, -2, "stdout"); // res
+    return 1;
+}
+#endif
+
+static int script_parse_json(lua_State *L)
+{
+    mp_lua_optarg(L, 2);
+    void *tmp = mp_lua_PITA(L);
+    char *text = talloc_strdup(tmp, luaL_checkstring(L, 1));
+    bool trail = lua_toboolean(L, 2);
+    bool ok = false;
+    struct mpv_node node;
+    if (json_parse(tmp, &node, &text, 32) >= 0) {
+        json_skip_whitespace(&text);
+        ok = !text[0] || trail;
+    }
+    if (ok) {
+        pushnode(L, &node);
+        lua_pushnil(L);
+    } else {
+        lua_pushnil(L);
+        lua_pushstring(L, "error");
+    }
+    lua_pushstring(L, text);
+    talloc_free_children(tmp);
+    return 3;
+}
+
 #define FN_ENTRY(name) {#name, script_ ## name}
 struct fn_entry {
     const char *name;
@@ -1117,6 +1283,7 @@ static const struct fn_entry main_fns[] = {
     FN_ENTRY(find_config_file),
     FN_ENTRY(command),
     FN_ENTRY(commandv),
+    FN_ENTRY(command_native),
     FN_ENTRY(get_property_bool),
     FN_ENTRY(get_property_number),
     FN_ENTRY(get_property_native),
@@ -1146,6 +1313,10 @@ static const struct fn_entry utils_fns[] = {
     FN_ENTRY(readdir),
     FN_ENTRY(split_path),
     FN_ENTRY(join_path),
+#if HAVE_POSIX_SPAWN || defined(__MINGW32__)
+    FN_ENTRY(subprocess),
+#endif
+    FN_ENTRY(parse_json),
     {0}
 };
 

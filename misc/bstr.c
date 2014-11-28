@@ -33,7 +33,9 @@
 
 int bstrcmp(struct bstr str1, struct bstr str2)
 {
-    int ret = memcmp(str1.start, str2.start, FFMIN(str1.len, str2.len));
+    int ret = 0;
+    if (str1.len && str2.len)
+        ret = memcmp(str1.start, str2.start, FFMIN(str1.len, str2.len));
 
     if (!ret) {
         if (str1.len == str2.len)
@@ -48,7 +50,9 @@ int bstrcmp(struct bstr str1, struct bstr str2)
 
 int bstrcasecmp(struct bstr str1, struct bstr str2)
 {
-    int ret = strncasecmp(str1.start, str2.start, FFMIN(str1.len, str2.len));
+    int ret = 0;
+    if (str1.len && str2.len)
+        ret = strncasecmp(str1.start, str2.start, FFMIN(str1.len, str2.len));
 
     if (!ret) {
         if (str1.len == str2.len)
@@ -273,7 +277,7 @@ int bstr_decode_utf8(struct bstr s, struct bstr *out_next)
     s.start++; s.len--;
     if (codepoint >= 128) {
         int bytes = bstr_parse_utf8_code_length(codepoint);
-        if (bytes < 0 || s.len < bytes - 1)
+        if (bytes < 1 || s.len < bytes - 1)
             return -1;
         codepoint &= 127 >> bytes;
         for (int n = 1; n < bytes; n++) {
@@ -375,6 +379,8 @@ static void resize_append(void *talloc_ctx, bstr *s, size_t append_min)
 // talloc_ctx will be used as parent context, if s->start is NULL.
 void bstr_xappend(void *talloc_ctx, bstr *s, bstr append)
 {
+    if (!append.len)
+        return;
     resize_append(talloc_ctx, s, append.len + 1);
     memcpy(s->start + s->len, append.start, append.len);
     s->len += append.len;

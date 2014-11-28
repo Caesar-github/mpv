@@ -53,7 +53,6 @@
 #include "audio/mixer.h"
 #include "demux/demux.h"
 #include "stream/stream.h"
-#include "sub/ass_mp.h"
 #include "sub/osd.h"
 #include "video/decode/dec_video.h"
 #include "video/out/vo.h"
@@ -73,6 +72,8 @@
 
 #if HAVE_COCOA_APPLICATION
 #include "osdep/macosx_application.h"
+#endif
+#if HAVE_COCOA
 #include "osdep/macosx_events.h"
 #endif
 
@@ -81,6 +82,12 @@
 #endif
 
 static bool terminal_initialized;
+
+enum exit_reason {
+  EXIT_NONE,
+  EXIT_NORMAL,
+  EXIT_ERROR,
+};
 
 const char mp_help_text[] =
 "Usage:   mpv [options] [url|path/]filename\n"
@@ -113,13 +120,19 @@ static void shutdown_clients(struct MPContext *mpctx)
         mp_dispatch_queue_process(mpctx->dispatch, 0);
         mp_wait_events(mpctx, 10000);
     }
-    mp_clients_destroy(mpctx);
 }
 
 void mp_destroy(struct MPContext *mpctx)
 {
-    if (mpctx->initialized)
-        uninit_player(mpctx, INITIALIZED_ALL);
+#if !defined(__MINGW32__)
+    mp_uninit_ipc(mpctx->ipc_ctx);
+    mpctx->ipc_ctx = NULL;
+#endif
+
+    shutdown_clients(mpctx);
+
+    uninit_audio_out(mpctx);
+    uninit_video_out(mpctx);
 
 #if HAVE_ENCODING
     encode_lavc_finish(mpctx->encode_lavc_ctx);
@@ -128,16 +141,11 @@ void mp_destroy(struct MPContext *mpctx)
 
     mpctx->encode_lavc_ctx = NULL;
 
-    shutdown_clients(mpctx);
-
     command_uninit(mpctx);
 
-    osd_free(mpctx->osd);
+    mp_clients_destroy(mpctx);
 
-#if HAVE_LIBASS
-    if (mpctx->ass_library)
-        ass_library_done(mpctx->ass_library);
-#endif
+    osd_free(mpctx->osd);
 
     if (mpctx->opts->use_terminal && terminal_initialized) {
         terminal_uninit();
@@ -159,45 +167,45 @@ void mp_destroy(struct MPContext *mpctx)
 static MP_NORETURN void exit_player(struct MPContext *mpctx,
                                     enum exit_reason how)
 {
-    int rc;
-
 #if HAVE_COCOA_APPLICATION
     cocoa_set_input_context(NULL);
 #endif
 
-    if (how != EXIT_NONE) {
-        const char *reason;
-        switch (how) {
-        case EXIT_SOMENOTPLAYED:
-        case EXIT_PLAYED:
-            reason = "End of file";
-            break;
-        case EXIT_NOTPLAYED:
-            reason = "No files played";
-            break;
-        case EXIT_ERROR:
-            reason = "Fatal error";
-            break;
-        default:
+    int rc = 0;
+    const char *reason = NULL;
+
+    if (how == EXIT_ERROR) {
+        reason = "Fatal error";
+        rc = 1;
+    } else if (how == EXIT_NORMAL) {
+        if (mpctx->stop_play == PT_QUIT) {
             reason = "Quit";
+            rc = 0;
+        } else if (mpctx->files_played) {
+            if (mpctx->files_errored || mpctx->files_broken) {
+                reason = "Some errors happened";
+                rc = 3;
+            } else {
+                reason = "End of file";
+                rc = 0;
+            }
+        } else if (mpctx->files_broken && !mpctx->files_errored) {
+            reason = "Errors when loading file";
+            rc = 2;
+        } else if (mpctx->files_errored) {
+            reason = "Interrupted by error";
+            rc = 2;
+        } else {
+            reason = "No files played";
+            rc = 0;
         }
-        MP_INFO(mpctx, "\nExiting... (%s)\n", reason);
     }
 
-    if (mpctx->has_quit_custom_rc) {
+    if (reason)
+        MP_INFO(mpctx, "\nExiting... (%s)\n", reason);
+
+    if (mpctx->has_quit_custom_rc)
         rc = mpctx->quit_custom_rc;
-    } else {
-        switch (how) {
-            case EXIT_ERROR:
-                rc = 1; break;
-            case EXIT_NOTPLAYED:
-                rc = 2; break;
-            case EXIT_SOMENOTPLAYED:
-                rc = 3; break;
-            default:
-                rc = 0;
-        }
-    }
 
     mp_destroy(mpctx);
 
@@ -233,6 +241,10 @@ static bool handle_help_options(struct MPContext *mpctx)
         (opts->sub_demuxer_name && strcmp(opts->sub_demuxer_name, "help") == 0)) {
         demuxer_help(log);
         MP_INFO(mpctx, "\n");
+        opt_exit = 1;
+    }
+    if (opts->audio_device && strcmp(opts->audio_device, "help") == 0) {
+        ao_print_devices(mpctx->global, log);
         opt_exit = 1;
     }
 #if HAVE_ENCODING
@@ -408,10 +420,7 @@ int mp_initialize(struct MPContext *mpctx)
     if (opts->use_terminal && opts->consolecontrols && terminal_initialized)
         terminal_setup_getch(mpctx->input);
 
-#if HAVE_LIBASS
-    mpctx->ass_log = mp_log_new(mpctx, mpctx->global->log, "!libass");
-    mpctx->ass_library = mp_ass_init(mpctx->global, mpctx->ass_log);
-#else
+#if !HAVE_LIBASS
     MP_WARN(mpctx, "Compiled without libass.\n");
     MP_WARN(mpctx, "There will be no OSD and no text subtitles.\n");
 #endif
@@ -423,9 +432,8 @@ int mp_initialize(struct MPContext *mpctx)
 
     mp_get_resume_defaults(mpctx);
 
-#if HAVE_COCOA_APPLICATION
-    if (mpctx->is_cplayer)
-        cocoa_set_input_context(mpctx->input);
+#if HAVE_COCOA
+    cocoa_set_input_context(mpctx->input);
 #endif
 
     if (opts->force_vo) {
@@ -439,12 +447,15 @@ int mp_initialize(struct MPContext *mpctx)
             return -1;
         }
         mpctx->mouse_cursor_visible = true;
-        mpctx->initialized_flags |= INITIALIZED_VO;
     }
 
     // Lua user scripts (etc.) can call arbitrary functions. Load them at a point
     // where this is safe.
     mp_load_scripts(mpctx);
+
+#if !defined(__MINGW32__)
+    mpctx->ipc_ctx = mp_init_ipc(mpctx->clients, mpctx->global);
+#endif
 
     if (opts->shuffle)
         playlist_shuffle(mpctx->playlist);
@@ -467,8 +478,6 @@ int mpv_main(int argc, char *argv[])
 
     struct MPContext *mpctx = mp_create();
     struct MPOpts *opts = mpctx->opts;
-
-    mpctx->is_cplayer = true;
 
     char *verbose_env = getenv("MPV_VERBOSE");
     if (verbose_env)
@@ -524,8 +533,6 @@ int mpv_main(int argc, char *argv[])
         exit_player(mpctx, EXIT_ERROR);
 
     mp_play_files(mpctx);
-
-    exit_player(mpctx, mpctx->stop_play == PT_QUIT ? EXIT_QUIT : mpctx->quit_player_rc);
-
+    exit_player(mpctx, EXIT_NORMAL);
     return 1;
 }

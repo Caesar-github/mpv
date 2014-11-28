@@ -22,8 +22,8 @@
 #include <stdbool.h>
 #include <pthread.h>
 
-#include "audio/chmap.h"
-#include "audio/chmap_sel.h"
+#include "osdep/atomics.h"
+#include "audio/out/ao.h"
 
 /* global data used by ao.c and ao drivers */
 struct ao {
@@ -44,6 +44,19 @@ struct ao {
     struct encode_lavc_context *encode_lavc_ctx;
     struct input_ctx *input_ctx;
     struct mp_log *log; // Using e.g. "[ao/coreaudio]" as prefix
+
+    // The device as selected by the user, usually using ao_device_desc.name
+    // from an entry from the list returned by driver->list_devices. If the
+    // default device should be used, this is set to NULL.
+    char *device;
+
+    // Application name to report to the audio API.
+    char *client_name;
+
+    // Used during init: if init fails, redirect to this ao
+    char *redirect;
+
+    atomic_bool request_reload;
 
     int buffer;
     double def_buffer;
@@ -122,7 +135,7 @@ struct ao_driver {
     // push based: see ao_play()
     int (*play)(struct ao *ao, void **data, int samples, int flags);
     // push based: see ao_get_delay()
-    float (*get_delay)(struct ao *ao);
+    double (*get_delay)(struct ao *ao);
     // push based: block until all queued audio is played (optional)
     void (*drain)(struct ao *ao);
     // Optional. Return true if audio has stopped in any way.
@@ -141,6 +154,20 @@ struct ao_driver {
     int (*wait)(struct ao *ao, pthread_mutex_t *lock);
     // In combination with wait(). Lock may or may not be held.
     void (*wakeup)(struct ao *ao);
+
+    // Return the list of devices currently available in the system. Use
+    // ao_device_list_add() to add entries. The selected device will be set as
+    // ao->device (using ao_device_desc.name).
+    // Warning: the ao struct passed doesn't necessarily have ao_driver->init()
+    //          called on it - in this case, ->uninit() won't be called either
+    //          after this function. The idea is that list_devs can be called
+    //          both when no audio or when audio is active. the latter can
+    //          happen if the audio config change at runtime, and in this case
+    //          we don't want to force a new connection to the audio server
+    //          just to update the device list. For runtime updates, ->init()
+    //          will have been called. In both cases, ao->priv is properly
+    //          allocated. (Runtime updates are not used/supported yet.)
+    void (*list_devs)(struct ao *ao, struct ao_device_list *list);
 
     // For option parsing (see vo.h)
     int priv_size;
@@ -161,5 +188,10 @@ bool ao_chmap_sel_adjust(struct ao *ao, const struct mp_chmap_sel *s,
                          struct mp_chmap *map);
 bool ao_chmap_sel_get_def(struct ao *ao, const struct mp_chmap_sel *s,
                           struct mp_chmap *map, int num);
+
+// Add a deep copy of e to the list.
+// Call from ao_driver->list_devs callback only.
+void ao_device_list_add(struct ao_device_list *list, struct ao *ao,
+                        struct ao_device_desc *e);
 
 #endif

@@ -61,7 +61,8 @@ enum mp_speaker_id {
     MP_SPEAKER_ID_UNKNOWN0 = 64,
     MP_SPEAKER_ID_UNKNOWN_LAST = MP_SPEAKER_ID_UNKNOWN0 + MP_NUM_CHANNELS - 1,
 
-    // Including the unassigned IDs in between. This is not a valid ID anymore.
+    // Including the unassigned IDs in between. This is not a valid ID anymore,
+    // but is still within uint8_t.
     MP_SPEAKER_ID_COUNT,
 };
 
@@ -119,7 +120,9 @@ void mp_chmap_reorder_to_lavc(struct mp_chmap *map);
 void mp_chmap_get_reorder(int dst[MP_NUM_CHANNELS], const struct mp_chmap *from,
                           const struct mp_chmap *to);
 
-char *mp_chmap_to_str(const struct mp_chmap *src);
+char *mp_chmap_to_str_buf(char *buf, size_t buf_size, const struct mp_chmap *src);
+#define mp_chmap_to_str(m) mp_chmap_to_str_buf((char[64]){0}, 64, (m))
+
 bool mp_chmap_from_str(struct mp_chmap *dst, bstr src);
 
 struct mp_log;

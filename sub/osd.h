@@ -157,7 +157,6 @@ struct osd_sub_state {
     bool render_bitmap_subs;
 };
 void osd_set_sub(struct osd_state *osd, int obj, struct osd_sub_state *substate);
-void osd_get_sub(struct osd_state *osd, int obj, struct osd_sub_state *substate);
 
 bool osd_get_render_subs_in_filter(struct osd_state *osd);
 void osd_set_render_subs_in_filter(struct osd_state *osd, bool s);
@@ -219,8 +218,8 @@ void osd_destroy_backend(struct osd_state *osd);
 
 // doesn't need locking
 void osd_get_function_sym(char *buffer, size_t buffer_size, int osd_function);
-extern const char *osd_ass_0;
-extern const char *osd_ass_1;
+extern const char *const osd_ass_0;
+extern const char *const osd_ass_1;
 
 // defined in backend, but locks if required
 void osd_object_get_resolution(struct osd_state *osd, int obj,

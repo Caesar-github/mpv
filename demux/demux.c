@@ -33,6 +33,7 @@
 #include "talloc.h"
 #include "common/msg.h"
 #include "common/global.h"
+#include "osdep/threads.h"
 
 #include "stream/stream.h"
 #include "demux.h"
@@ -122,12 +123,15 @@ struct demux_internal {
     double seek_pts;
 
     // Cached state.
+    bool force_cache_update;
     double time_length;
     struct mp_tags *stream_metadata;
     int64_t stream_size;
     int64_t stream_cache_size;
     int64_t stream_cache_fill;
     int stream_cache_idle;
+    // Updated during init only.
+    char *stream_base_filename;
 };
 
 struct demux_stream {
@@ -145,9 +149,11 @@ struct demux_stream {
     struct demux_packet *tail;
 };
 
+// Return "a", or if that is NOPTS, return "def".
+#define PTS_OR_DEF(a, def) ((a) == MP_NOPTS_VALUE ? (def) : (a))
 // If one of the values is NOPTS, always pick the other one.
-#define MP_PTS_MIN(a, b) ((a) == MP_NOPTS_VALUE || ((a) > (b)) ? (b) : (a))
-#define MP_PTS_MAX(a, b) ((a) == MP_NOPTS_VALUE || ((a) < (b)) ? (b) : (a))
+#define MP_PTS_MIN(a, b) MPMIN(PTS_OR_DEF(a, b), PTS_OR_DEF(b, a))
+#define MP_PTS_MAX(a, b) MPMAX(PTS_OR_DEF(a, b), PTS_OR_DEF(b, a))
 
 static void demuxer_sort_chapters(demuxer_t *demuxer);
 static void *demux_thread(void *pctx);
@@ -189,6 +195,7 @@ struct sh_stream *new_sh_stream(demuxer_t *demuxer, enum stream_type type)
     *sh = (struct sh_stream) {
         .type = type,
         .index = demuxer->num_streams,
+        .ff_index = demuxer->num_streams,
         .demuxer_id = demuxer_id, // may be overwritten by demuxer
         .ds = talloc(sh, struct demux_stream),
     };
@@ -383,9 +390,8 @@ static bool read_packet(struct demux_internal *in)
     pthread_mutex_unlock(&in->lock);
     struct demuxer *demux = in->d_thread;
     bool eof = !demux->desc->fill_buffer || demux->desc->fill_buffer(demux) <= 0;
-    pthread_mutex_lock(&in->lock);
-
     update_cache(in);
+    pthread_mutex_lock(&in->lock);
 
     if (eof) {
         for (int n = 0; n < in->d_buffer->num_streams; n++) {
@@ -455,6 +461,7 @@ static void execute_seek(struct demux_internal *in)
 static void *demux_thread(void *pctx)
 {
     struct demux_internal *in = pctx;
+    mpthread_set_name("demux");
     pthread_mutex_lock(&in->lock);
     while (!in->thread_terminate) {
         in->thread_paused = in->thread_request_pause > 0;
@@ -475,7 +482,13 @@ static void *demux_thread(void *pctx)
             if (read_packet(in))
                 continue; // read_packet unlocked, so recheck conditions
         }
-        update_cache(in);
+        if (in->force_cache_update) {
+            pthread_mutex_unlock(&in->lock);
+            update_cache(in);
+            pthread_mutex_lock(&in->lock);
+            in->force_cache_update = false;
+            continue;
+        }
         pthread_cond_signal(&in->wakeup);
         pthread_cond_wait(&in->wakeup, &in->lock);
     }
@@ -753,9 +766,9 @@ void demux_changed(demuxer_t *demuxer, int events)
 
     demuxer->events |= events;
 
-    pthread_mutex_lock(&in->lock);
-
     update_cache(in);
+
+    pthread_mutex_lock(&in->lock);
 
     if (demuxer->events & DEMUX_EVENT_INIT)
         demuxer_sort_chapters(demuxer);
@@ -774,13 +787,24 @@ void demux_update(demuxer_t *demuxer)
     assert(demuxer == demuxer->in->d_user);
     struct demux_internal *in = demuxer->in;
 
-    pthread_mutex_lock(&in->lock);
     if (!in->threading)
         update_cache(in);
+
+    pthread_mutex_lock(&in->lock);
     demux_copy(demuxer, in->d_buffer);
     if (in->stream_metadata && (demuxer->events & DEMUX_EVENT_METADATA))
         mp_tags_merge(demuxer->metadata, in->stream_metadata);
     pthread_mutex_unlock(&in->lock);
+}
+
+static void demux_init_cache(struct demuxer *demuxer)
+{
+    struct demux_internal *in = demuxer->in;
+    struct stream *stream = demuxer->stream;
+
+    char *base = NULL;
+    stream_control(stream, STREAM_CTRL_GET_BASE_FILENAME, &base);
+    in->stream_base_filename = talloc_steal(demuxer, base);
 }
 
 static struct demuxer *open_given_type(struct mpv_global *global,
@@ -830,12 +854,17 @@ static struct demuxer *open_given_type(struct mpv_global *global,
     in->d_user->metadata = talloc_zero(in->d_user, struct mp_tags);
     in->d_buffer->metadata = talloc_zero(in->d_buffer, struct mp_tags);
 
-    int64_t start_pos = stream_tell(stream);
-
     mp_verbose(log, "Trying demuxer: %s (force-level: %s)\n",
                desc->name, d_level(check));
 
     in->d_thread->params = params; // temporary during open()
+
+    if (stream->seekable) // not for DVD/BD/DVB in particular
+        stream_seek(stream, 0);
+
+    // Peek this much data to avoid that stream_read() run by some demuxers
+    // or stream filters will flush previous peeked data.
+    stream_peek(stream, STREAM_BUFFER_SIZE);
 
     int ret = demuxer->desc->open(in->d_thread, check);
     if (ret >= 0) {
@@ -845,19 +874,20 @@ static struct demuxer *open_given_type(struct mpv_global *global,
                        in->d_thread->filetype, desc->desc);
         else
             mp_verbose(log, "Detected file format: %s\n", desc->desc);
+        if (!in->d_thread->seekable)
+            mp_warn(log, "Stream is not seekable.\n");
         // Pretend we can seek if we can't seek, but there's a cache.
         if (!in->d_thread->seekable && stream->uncached_stream) {
-            mp_warn(log,
-                    "File is not seekable, but there's a cache: enabling seeking.\n");
+            mp_warn(log, "Enabling seeking because stream cache is active.\n");
             in->d_thread->seekable = true;
         }
+        demux_init_cache(demuxer);
         demux_changed(in->d_thread, DEMUX_EVENT_ALL);
         demux_update(demuxer);
         return demuxer;
     }
 
     free_demuxer(demuxer);
-    stream_seek(stream, start_pos);
     return NULL;
 }
 
@@ -892,10 +922,6 @@ struct demuxer *demux_open(struct stream *stream, char *force_format,
             goto done;
         }
     }
-
-    // Peek this much data to avoid that stream_read() run by some demuxers
-    // or stream filters will flush previous peeked data.
-    stream_peek(stream, STREAM_BUFFER_SIZE);
 
     // Test demuxers from first to last, one pass for each check_levels[] entry
     for (int pass = 0; check_levels[pass] != -1; pass++) {
@@ -937,7 +963,7 @@ void demux_flush(demuxer_t *demuxer)
     pthread_mutex_unlock(&demuxer->in->lock);
 }
 
-int demux_seek(demuxer_t *demuxer, float rel_seek_secs, int flags)
+int demux_seek(demuxer_t *demuxer, double rel_seek_secs, int flags)
 {
     struct demux_internal *in = demuxer->in;
     assert(demuxer == in->d_user);
@@ -947,8 +973,21 @@ int demux_seek(demuxer_t *demuxer, float rel_seek_secs, int flags)
         return 0;
     }
 
+    if ((flags & SEEK_FACTOR) && !(flags & SEEK_ABSOLUTE)) {
+        MP_WARN(demuxer, "Invalid seek flags.\n");
+        return 0;
+    }
+
     if (rel_seek_secs == MP_NOPTS_VALUE && (flags & SEEK_ABSOLUTE))
         return 0;
+
+    if (!(flags & (SEEK_BACKWARD | SEEK_FORWARD))) {
+        if (flags & SEEK_ABSOLUTE || rel_seek_secs < 0) {
+            flags |= SEEK_BACKWARD;
+        } else {
+            flags |= SEEK_FORWARD;
+        }
+    }
 
     pthread_mutex_lock(&in->lock);
 
@@ -1047,9 +1086,9 @@ static int chapter_compare(const void *p1, const void *p2)
     struct demux_chapter *c1 = (void *)p1;
     struct demux_chapter *c2 = (void *)p2;
 
-    if (c1->start > c2->start)
+    if (c1->pts > c2->pts)
         return 1;
-    else if (c1->start < c2->start)
+    else if (c1->pts < c2->pts)
         return -1;
     return c1->original_index > c2->original_index ? 1 :-1; // never equal
 }
@@ -1061,12 +1100,11 @@ static void demuxer_sort_chapters(demuxer_t *demuxer)
 }
 
 int demuxer_add_chapter(demuxer_t *demuxer, struct bstr name,
-                        uint64_t start, uint64_t end, uint64_t demuxer_id)
+                        double pts, uint64_t demuxer_id)
 {
     struct demux_chapter new = {
         .original_index = demuxer->num_chapters,
-        .start = start,
-        .end = end,
+        .pts = pts,
         .name = name.len ? bstrdup0(demuxer, name) : NULL,
         .metadata = talloc_zero(demuxer, struct mp_tags),
         .demuxer_id = demuxer_id,
@@ -1084,42 +1122,53 @@ double demuxer_get_time_length(struct demuxer *demuxer)
     return -1;
 }
 
-// must be called locked
+// must be called not locked
 static void update_cache(struct demux_internal *in)
 {
     struct demuxer *demuxer = in->d_thread;
     struct stream *stream = demuxer->stream;
 
-    in->time_length = -1;
+    // Don't lock while querying the stream.
+    double time_length = -1;
+    struct mp_tags *stream_metadata = NULL;
+    int64_t stream_size = -1;
+    int64_t stream_cache_size = -1;
+    int64_t stream_cache_fill = -1;
+    int stream_cache_idle = -1;
+
     if (demuxer->desc->control) {
         demuxer->desc->control(demuxer, DEMUXER_CTRL_GET_TIME_LENGTH,
-                               &in->time_length);
+                               &time_length);
     }
 
-    struct mp_tags *s_meta = NULL;
-    stream_control(stream, STREAM_CTRL_GET_METADATA, &s_meta);
-    if (s_meta) {
+    stream_control(stream, STREAM_CTRL_GET_METADATA, &stream_metadata);
+    stream_control(stream, STREAM_CTRL_GET_SIZE, &stream_size);
+    stream_control(stream, STREAM_CTRL_GET_CACHE_SIZE, &stream_cache_size);
+    stream_control(stream, STREAM_CTRL_GET_CACHE_FILL, &stream_cache_fill);
+    stream_control(stream, STREAM_CTRL_GET_CACHE_IDLE, &stream_cache_idle);
+
+    pthread_mutex_lock(&in->lock);
+    in->time_length = time_length;
+    in->stream_size = stream_size;
+    in->stream_cache_size = stream_cache_size;
+    in->stream_cache_fill = stream_cache_fill;
+    in->stream_cache_idle = stream_cache_idle;
+    if (stream_metadata) {
         talloc_free(in->stream_metadata);
-        in->stream_metadata = talloc_steal(in, s_meta);
+        in->stream_metadata = talloc_steal(in, stream_metadata);
         in->d_buffer->events |= DEMUX_EVENT_METADATA;
     }
-
-    in->stream_size = -1;
-    stream_control(stream, STREAM_CTRL_GET_SIZE, &in->stream_size);
-    in->stream_cache_size = -1;
-    stream_control(stream, STREAM_CTRL_GET_CACHE_SIZE, &in->stream_cache_size);
-    in->stream_cache_fill = -1;
-    stream_control(stream, STREAM_CTRL_GET_CACHE_FILL, &in->stream_cache_fill);
-    in->stream_cache_idle = -1;
-    stream_control(stream, STREAM_CTRL_GET_CACHE_IDLE, &in->stream_cache_idle);
+    pthread_mutex_unlock(&in->lock);
 }
 
 // must be called locked
 static int cached_stream_control(struct demux_internal *in, int cmd, void *arg)
 {
     // If the cache is active, wake up the thread to possibly update cache state.
-    if (in->stream_cache_size >= 0)
+    if (in->stream_cache_size >= 0) {
+        in->force_cache_update = true;
         pthread_cond_signal(&in->wakeup);
+    }
 
     switch (cmd) {
     case STREAM_CTRL_GET_CACHE_SIZE:
@@ -1141,6 +1190,11 @@ static int cached_stream_control(struct demux_internal *in, int cmd, void *arg)
         if (in->stream_size < 0)
             return STREAM_UNSUPPORTED;
         *(int64_t *)arg = in->stream_size;
+        return STREAM_OK;
+    case STREAM_CTRL_GET_BASE_FILENAME:
+        if (!in->stream_base_filename)
+            return STREAM_UNSUPPORTED;
+        *(char **)arg = talloc_strdup(NULL, in->stream_base_filename);
         return STREAM_OK;
     }
     return STREAM_ERROR;
@@ -1174,18 +1228,24 @@ static int cached_demux_control(struct demux_internal *in, int cmd, void *arg)
             .ts_range = {MP_NOPTS_VALUE, MP_NOPTS_VALUE},
             .ts_duration = -1,
         };
+        int num_packets = 0;
         for (int n = 0; n < in->d_user->num_streams; n++) {
             struct demux_stream *ds = in->d_user->streams[n]->ds;
             if (ds->active) {
-                r->underrun |= !ds->head;
-                r->ts_range[0] = MP_PTS_MAX(r->ts_range[0], ds->base_ts);
-                r->ts_range[1] = MP_PTS_MIN(r->ts_range[1], ds->last_ts);
+                r->underrun |= !ds->head && !ds->eof;
+                if (!ds->eof) {
+                    r->ts_range[0] = MP_PTS_MAX(r->ts_range[0], ds->base_ts);
+                    r->ts_range[1] = MP_PTS_MIN(r->ts_range[1], ds->last_ts);
+                }
+                num_packets += ds->packs;
             }
         }
         r->idle = (in->idle && !r->underrun) || r->eof;
         r->underrun &= !r->idle;
         if (r->ts_range[0] != MP_NOPTS_VALUE && r->ts_range[1] != MP_NOPTS_VALUE)
-            r->ts_duration = r->ts_range[1] - r->ts_range[0];
+            r->ts_duration = MPMAX(0, r->ts_range[1] - r->ts_range[0]);
+        if (!num_packets || in->seeking)
+            r->ts_duration = 0;
         return DEMUXER_CTRL_OK;
     }
     }
@@ -1265,4 +1325,15 @@ void demux_unpause(demuxer_t *demuxer)
     in->thread_request_pause--;
     pthread_cond_signal(&in->wakeup);
     pthread_mutex_unlock(&in->lock);
+}
+
+struct demux_chapter *demux_copy_chapter_data(struct demux_chapter *c, int num)
+{
+    struct demux_chapter *new = talloc_array(NULL, struct demux_chapter, num);
+    for (int n = 0; n < num; n++) {
+        new[n] = c[n];
+        new[n].name = talloc_strdup(new, new[n].name);
+        new[n].metadata = mp_tags_dup(new, new[n].metadata);
+    }
+    return new;
 }

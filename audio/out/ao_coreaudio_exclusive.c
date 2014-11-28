@@ -333,10 +333,6 @@ struct priv {
     bool changed_mixing;
     int stream_asbd_changed;
     bool muted;
-
-    // options
-    int opt_device_id;
-    int opt_list;
 };
 
 static int get_ring_size(struct ao *ao)
@@ -402,9 +398,7 @@ static int init(struct ao *ao)
 {
     struct priv *p = ao->priv;
 
-    if (p->opt_list) ca_print_device_list(ao);
-
-    OSStatus err = ca_select_device(ao, p->opt_device_id, &p->device);
+    OSStatus err = ca_select_device(ao, ao->device, &p->device);
     CHECK_CA_ERROR("failed to select device");
 
     ao->format = af_fmt_from_planar(ao->format);
@@ -587,12 +581,12 @@ static int get_space(struct ao *ao)
     return mp_ring_available(p->buffer) / ao->sstride;
 }
 
-static float get_delay(struct ao *ao)
+static double get_delay(struct ao *ao)
 {
     // FIXME: should also report the delay of coreaudio itself (hardware +
     // internal buffers)
     struct priv *p = ao->priv;
-    return mp_ring_buffered(p->buffer) / (float)ao->bps;
+    return mp_ring_buffered(p->buffer) / (double)ao->bps;
 }
 
 static void uninit(struct ao *ao)
@@ -660,6 +654,7 @@ const struct ao_driver audio_out_coreaudio_exclusive = {
     .reset     = reset,
     .pause     = audio_pause,
     .resume    = audio_resume,
+    .list_devs = ca_get_device_list,
     .priv_size = sizeof(struct priv),
     .priv_defaults = &(const struct priv){
         .muted = false,
@@ -668,10 +663,5 @@ const struct ao_driver audio_out_coreaudio_exclusive = {
         .stream = 0,
         .stream_idx = -1,
         .changed_mixing = false,
-    },
-    .options = (const struct m_option[]) {
-        OPT_INT("device_id", opt_device_id, 0, OPTDEF_INT(-1)),
-        OPT_FLAG("list", opt_list, 0),
-        {0}
     },
 };

@@ -111,7 +111,8 @@ static int init(struct ao *ao)
 
     struct af_to_par {
         int format, bits, sig;
-    } static const af_to_par[] = {
+    };
+    static const struct af_to_par af_to_par[] = {
         {AF_FORMAT_U8,   8, 0},
         {AF_FORMAT_S8,   8, 1},
         {AF_FORMAT_U16, 16, 0},
@@ -120,7 +121,8 @@ static int init(struct ao *ao)
         {AF_FORMAT_S24, 24, 1},
         {AF_FORMAT_U32, 32, 0},
         {AF_FORMAT_S32, 32, 1},
-    }, *ap;
+    };
+    const struct af_to_par *ap;
     int i;
 
     p->hdl = sio_open(p->dev, SIO_PLAY, 1);
@@ -280,7 +282,7 @@ static int get_space(struct ao *ao)
 /*
  * return: delay in seconds between first and last sample in buffer
  */
-static float get_delay(struct ao *ao)
+static double get_delay(struct ao *ao)
 {
     struct priv *p = ao->priv;
 

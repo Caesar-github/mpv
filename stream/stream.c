@@ -18,20 +18,16 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <unistd.h>
-
 #include <sys/types.h>
-#include <sys/stat.h>
-#ifndef __MINGW32__
-#include <sys/ioctl.h>
-#include <sys/wait.h>
-#endif
-#include <fcntl.h>
+#include <unistd.h>
+#include <errno.h>
+
 #include <strings.h>
 #include <assert.h>
 
 #include <libavutil/common.h>
 #include "osdep/atomics.h"
+#include "osdep/io.h"
 
 #include "talloc.h"
 
@@ -48,6 +44,10 @@
 
 #include "options/m_option.h"
 #include "options/m_config.h"
+
+#ifdef __MINGW32__
+#include <windows.h>
+#endif
 
 // Includes additional padding in case sizes get rounded up by sector size.
 #define TOTAL_BUFFER_SIZE (STREAM_MAX_BUFFER_SIZE + STREAM_MAX_SECTOR_SIZE)
@@ -316,7 +316,7 @@ static int open_internal(const stream_info_t *sinfo, struct stream *underlying,
         }
     }
 
-    int r = sinfo->open(s);
+    int r = (sinfo->open)(s);
     if (r != STREAM_OK) {
         talloc_free(s);
         return r;
@@ -329,7 +329,7 @@ static int open_internal(const stream_info_t *sinfo, struct stream *underlying,
 
     s->uncached_type = s->type;
 
-    MP_VERBOSE(s, "Opened: [%s] %s\n", sinfo->name, url);
+    MP_VERBOSE(s, "Opened: %s\n", url);
 
     if (s->mime_type)
         MP_VERBOSE(s, "Mime-type: '%s'\n", s->mime_type);
@@ -371,7 +371,9 @@ struct stream *stream_create(const char *url, int flags,
     }
 
     if (!s) {
-        mp_err(log, "No stream found to handle url %s\n", url);
+        mp_err(log, "No protocol handler found to open URL %s\n", url);
+        mp_err(log, "The protocol is either unsupported, or was disabled "
+                    "at compile-time.\n");
         goto done;
     }
 
@@ -440,6 +442,16 @@ static int stream_reconnect(stream_t *s)
     return 0;
 }
 
+static void stream_capture_write(stream_t *s, void *buf, size_t len)
+{
+    if (s->capture_file && len > 0) {
+        if (fwrite(buf, len, 1, s->capture_file) < 1) {
+            MP_ERR(s, "Error writing capture file: %s\n", strerror(errno));
+            stream_set_capture_file(s, NULL);
+        }
+    }
+}
+
 void stream_set_capture_file(stream_t *s, const char *filename)
 {
     if (!bstr_equals(bstr0(s->capture_filename), bstr0(filename))) {
@@ -452,19 +464,11 @@ void stream_set_capture_file(stream_t *s, const char *filename)
             s->capture_file = fopen(filename, "wb");
             if (s->capture_file) {
                 s->capture_filename = talloc_strdup(NULL, filename);
+                if (s->buf_pos < s->buf_len)
+                    stream_capture_write(s, s->buffer, s->buf_len);
             } else {
                 MP_ERR(s, "Error opening capture file: %s\n", strerror(errno));
             }
-        }
-    }
-}
-
-static void stream_capture_write(stream_t *s, void *buf, size_t len)
-{
-    if (s->capture_file && len > 0) {
-        if (fwrite(buf, len, 1, s->capture_file) < 1) {
-            MP_ERR(s, "Error writing capture file: %s\n", strerror(errno));
-            stream_set_capture_file(s, NULL);
         }
     }
 }
@@ -631,6 +635,7 @@ static int stream_skip_read(struct stream *s, int64_t len)
 // logical stream position by the amount of buffered but not yet read data.
 void stream_drop_buffers(stream_t *s)
 {
+    s->pos = stream_tell(s);
     s->buf_pos = s->buf_len = 0;
     s->eof = 0;
 }
@@ -856,8 +861,8 @@ static uint16_t stream_read_word_endian(stream_t *s, bool big_endian)
 {
     unsigned int y = stream_read_char(s);
     y = (y << 8) | stream_read_char(s);
-    if (big_endian)
-        y = (y >> 8) | ((y << 8) & 0xFF);
+    if (!big_endian)
+        y = ((y >> 8) & 0xFF) | (y << 8);
     return y;
 }
 
@@ -985,12 +990,31 @@ struct bstr stream_read_complete(struct stream *s, void *talloc_ctx,
 
 struct mp_cancel {
     atomic_bool triggered;
+#ifdef __MINGW32__
+    HANDLE event;
+#endif
+    int wakeup_pipe[2];
 };
+
+static void cancel_destroy(void *p)
+{
+    struct mp_cancel *c = p;
+#ifdef __MINGW32__
+    CloseHandle(c->event);
+#endif
+    close(c->wakeup_pipe[0]);
+    close(c->wakeup_pipe[1]);
+}
 
 struct mp_cancel *mp_cancel_new(void *talloc_ctx)
 {
     struct mp_cancel *c = talloc_ptrtype(talloc_ctx, c);
+    talloc_set_destructor(c, cancel_destroy);
     *c = (struct mp_cancel){.triggered = ATOMIC_VAR_INIT(false)};
+#ifdef __MINGW32__
+    c->event = CreateEventW(NULL, TRUE, FALSE, NULL);
+#endif
+    mp_make_wakeup_pipe(c->wakeup_pipe);
     return c;
 }
 
@@ -998,12 +1022,27 @@ struct mp_cancel *mp_cancel_new(void *talloc_ctx)
 void mp_cancel_trigger(struct mp_cancel *c)
 {
     atomic_store(&c->triggered, true);
+#ifdef __MINGW32__
+    SetEvent(c->event);
+#endif
+    write(c->wakeup_pipe[1], &(char){0}, 1);
 }
 
 // Restore original state. (Allows reusing a mp_cancel.)
 void mp_cancel_reset(struct mp_cancel *c)
 {
     atomic_store(&c->triggered, false);
+#ifdef __MINGW32__
+    ResetEvent(c->event);
+#endif
+    // Flush it fully.
+    while (1) {
+        int r = read(c->wakeup_pipe[0], &(char[256]){0}, 256);
+        if (r < 0 && errno == EINTR)
+            continue;
+        if (r <= 0)
+            break;
+    }
 }
 
 // Return whether the caller should abort.
@@ -1011,6 +1050,20 @@ void mp_cancel_reset(struct mp_cancel *c)
 bool mp_cancel_test(struct mp_cancel *c)
 {
     return c ? atomic_load(&c->triggered) : false;
+}
+
+#ifdef __MINGW32__
+void *mp_cancel_get_event(struct mp_cancel *c)
+{
+    return c->event;
+}
+#endif
+
+// The FD becomes readable if mp_cancel_test() would return true.
+// Don't actually read from it, just use it for poll().
+int mp_cancel_get_fd(struct mp_cancel *c)
+{
+    return c->wakeup_pipe[0];
 }
 
 void stream_print_proto_list(struct mp_log *log)

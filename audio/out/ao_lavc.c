@@ -56,6 +56,8 @@ struct priv {
 
     AVRational worst_time_base;
     int worst_time_base_is_stream;
+
+    bool shutdown;
 };
 
 static void select_format(struct ao *ao, AVCodec *codec)
@@ -174,6 +176,7 @@ static int init(struct ao *ao)
 
 fail:
     pthread_mutex_unlock(&ao->encode_lavc_ctx->lock);
+    ac->shutdown = true;
     return -1;
 }
 
@@ -183,6 +186,9 @@ static void uninit(struct ao *ao)
 {
     struct priv *ac = ao->priv;
     struct encode_lavc_context *ectx = ao->encode_lavc_ctx;
+
+    if (!ac || ac->shutdown)
+        return;
 
     pthread_mutex_lock(&ectx->lock);
 
@@ -201,6 +207,8 @@ static void uninit(struct ao *ao)
     }
 
     pthread_mutex_unlock(&ectx->lock);
+
+    ac->shutdown = true;
 }
 
 // return: how many bytes can be played without blocking
@@ -234,8 +242,9 @@ static int encode(struct ao *ao, double apts, void **data)
         frame->format = af_to_avformat(ao->format);
         frame->nb_samples = ac->aframesize;
 
-        assert(ao->channels.num <= AV_NUM_DATA_POINTERS);
-        for (int n = 0; n < ao->channels.num; n++)
+        size_t num_planes = af_fmt_is_planar(ao->format) ? ao->channels.num : 1;
+        assert(num_planes <= AV_NUM_DATA_POINTERS);
+        for (int n = 0; n < num_planes; n++)
             frame->extended_data[n] = data[n];
 
         frame->linesize[0] = frame->nb_samples * ao->sstride;
@@ -345,12 +354,12 @@ static int play(struct ao *ao, void **data, int samples, int flags)
     size_t num_planes = af_fmt_is_planar(ao->format) ? ao->channels.num : 1;
 
     void *tempdata = NULL;
+    void *padded[MP_NUM_CHANNELS];
 
     if ((flags & AOPLAY_FINAL_CHUNK) && (samples % ac->aframesize)) {
        tempdata = talloc_new(NULL);
        size_t bytelen = samples * ao->sstride;
        size_t extralen = (ac->aframesize - 1) * ao->sstride;
-       void *padded[MP_NUM_CHANNELS];
        for (int n = 0; n < num_planes; n++) {
            padded[n] = talloc_size(tempdata, bytelen + extralen);
            memcpy(padded[n], data[n], bytelen);
@@ -430,7 +439,7 @@ static int play(struct ao *ao, void **data, int samples, int flags)
     outpts += encode_lavc_getoffset(ectx, ac->stream);
 
     while (samples - bufpos >= ac->aframesize) {
-        void *start[MP_NUM_CHANNELS];
+        void *start[MP_NUM_CHANNELS] = {0};
         for (int n = 0; n < num_planes; n++)
             start[n] = (char *)data[n] + bufpos * ao->sstride;
         encode(ao, outpts + bufpos / (double) ao->samplerate, start);

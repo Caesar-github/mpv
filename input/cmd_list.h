@@ -31,6 +31,7 @@ struct mp_cmd_def {
     const char *name;   // user-visible name (as used in input.conf)
     const struct m_option args[MP_CMD_MAX_ARGS];
     bool allow_auto_repeat; // react to repeated key events
+    bool on_updown;     // always emit it on both up and down key events
     bool vararg;        // last argument can be given 0 to multiple times
 };
 
@@ -78,8 +79,13 @@ enum mp_command_type {
 
     MP_CMD_DISCNAV,
 
+    MP_CMD_AB_LOOP,
+
+    MP_CMD_DROP_BUFFERS,
+
     /// Audio Filter commands
     MP_CMD_AF,
+    MP_CMD_AO_RELOAD,
 
     /// Video filter commands
     MP_CMD_VF,
@@ -88,7 +94,7 @@ enum mp_command_type {
     MP_CMD_VO_CMDLINE,
 
     /// Internal for Lua scripts
-    MP_CMD_SCRIPT_DISPATCH,
+    MP_CMD_SCRIPT_BINDING,
     MP_CMD_SCRIPT_MESSAGE,
     MP_CMD_SCRIPT_MESSAGE_TO,
 
@@ -96,6 +102,9 @@ enum mp_command_type {
     MP_CMD_OVERLAY_REMOVE,
 
     MP_CMD_WRITE_WATCH_LATER_CONFIG,
+
+    MP_CMD_HOOK_ADD,
+    MP_CMD_HOOK_ACK,
 
     // Internal
     MP_CMD_COMMAND_LIST, // list of sub-commands in args[0].v.p

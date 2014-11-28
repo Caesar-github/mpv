@@ -8,10 +8,19 @@
 
 #import <Cocoa/Cocoa.h>
 
+@interface CocoaWindow : NSWindow
+@end
+
+@implementation CocoaWindow
+- (BOOL)canBecomeMainWindow { return YES; }
+- (BOOL)canBecomeKeyWindow { return YES; }
+@end
+
 @interface AppDelegate : NSObject <NSApplicationDelegate>
 {
     mpv_handle *mpv;
     dispatch_queue_t queue;
+    NSWindow *w;
 }
 @end
 
@@ -19,7 +28,39 @@ static void wakeup(void *);
 
 @implementation AppDelegate
 
+- (void)createWindow {
+
+    int mask = NSTitledWindowMask|NSClosableWindowMask|
+               NSMiniaturizableWindowMask|NSResizableWindowMask;
+
+    self->w = [[CocoaWindow alloc]
+        initWithContentRect:NSMakeRect(0,0, 1280, 720)
+                  styleMask:mask
+                    backing:NSBackingStoreBuffered
+                      defer:NO];
+
+    [self->w setTitle:@"cocoabasic example"];
+    [self->w makeMainWindow];
+    [self->w makeKeyAndOrderFront:nil];
+
+    NSMenu *m = [[NSMenu alloc] initWithTitle:@"AMainMenu"];
+    NSMenuItem *item = [m addItemWithTitle:@"Apple" action:nil keyEquivalent:@""];
+    NSMenu *sm = [[NSMenu alloc] initWithTitle:@"Apple"];
+    [m setSubmenu:sm forItem:item];
+    [sm addItemWithTitle: @"Shutdown mpv" action:@selector(shutdown) keyEquivalent:@"s"];
+    [NSApp setMenu:m];
+    [NSApp activateIgnoringOtherApps:YES];
+}
+
 - (void) applicationDidFinishLaunching:(NSNotification *)notification {
+    [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+    atexit_b(^{
+        // Because activation policy has just been set to behave like a real
+        // application, that policy must be reset on exit to prevent, among
+        // other things, the menubar created here from remaining on screen.
+        [NSApp setActivationPolicy:NSApplicationActivationPolicyProhibited];
+    });
+
     // Read filename
     NSArray *args = [NSProcessInfo processInfo].arguments;
     if (args.count < 2) {
@@ -27,6 +68,8 @@ static void wakeup(void *);
         exit(1);
     }
     NSString *filename = args[1];
+
+    [self createWindow];
 
     // Deal with MPV in the background.
     queue = dispatch_queue_create("mpv", DISPATCH_QUEUE_SERIAL);
@@ -38,9 +81,20 @@ static void wakeup(void *);
             exit(1);
         }
 
+        int64_t wid = (intptr_t) [self->w contentView];
+        check_error(mpv_set_option(mpv, "wid", MPV_FORMAT_INT64, &wid));
+
         // Maybe set some options here, like default key bindings.
         // NOTE: Interaction with the window seems to be broken for now.
         check_error(mpv_set_option_string(mpv, "input-default-bindings", "yes"));
+
+        // for testing!
+        check_error(mpv_set_option_string(mpv, "input-media-keys", "yes"));
+        check_error(mpv_set_option_string(mpv, "input-cursor", "no"));
+        check_error(mpv_set_option_string(mpv, "input-vo-keyboard", "yes"));
+
+        // request important errors
+        check_error(mpv_request_log_messages(mpv, "warn"));
 
         check_error(mpv_initialize(mpv));
 
@@ -56,17 +110,27 @@ static void wakeup(void *);
 - (void) handleEvent:(mpv_event *)event
 {
     switch (event->event_id) {
-        case MPV_EVENT_SHUTDOWN:
-            // Clean up and shut down.
-            mpv_terminate_destroy(mpv);
-            mpv = NULL;
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [[NSApplication sharedApplication] terminate:nil];
-            });
-            break;
+    case MPV_EVENT_SHUTDOWN:
+        // Clean up and shut down.
+        mpv_terminate_destroy(mpv);
+        mpv = NULL;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [[NSApplication sharedApplication] terminate:nil];
+        });
+        break;
 
-        default:
-            printf("event: %s\n", mpv_event_name(event->event_id));
+    case MPV_EVENT_LOG_MESSAGE: {
+        struct mpv_event_log_message *msg = (struct mpv_event_log_message *)event->data;
+        printf("[%s] %s: %s", msg->prefix, msg->level, msg->text);
+    }
+
+    case MPV_EVENT_VIDEO_RECONFIG:
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self->w selectNextKeyView:nil];
+        });
+
+    default:
+        printf("event: %s\n", mpv_event_name(event->event_id));
     }
 }
 
@@ -91,6 +155,8 @@ static void wakeup(void *context) {
 - (BOOL) windowShouldClose:(id)sender
 {
     [self shutdown];
+    if (self->w)
+        [self->w release];
     return YES;
 }
 
@@ -103,12 +169,10 @@ static void wakeup(void *context) {
 }
 @end
 
-
-
 // Delete this if you already have a main.m.
 int main(int argc, const char * argv[]) {
     @autoreleasepool {
-        NSApplication *app = [NSApplication new];
+        NSApplication *app = [NSApplication sharedApplication];
         AppDelegate *delegate = [AppDelegate new];
         app.delegate = delegate;
         [app run];

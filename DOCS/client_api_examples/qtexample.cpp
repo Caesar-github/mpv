@@ -2,14 +2,23 @@
 
 // This example can be built with: qmake && make
 
+#include <clocale>
 #include <sstream>
 
+#include <QtGlobal>
 #include <QFileDialog>
 #include <QStatusBar>
 #include <QMenuBar>
 #include <QMenu>
 #include <QGridLayout>
 #include <QApplication>
+#include <QTextEdit>
+
+#if QT_VERSION >= 0x050000
+#include <QJsonDocument>
+#endif
+
+#include <mpv/qthelper.hpp>
 
 #include "qtexample.h"
 
@@ -26,6 +35,9 @@ static void wakeup(void *ctx)
 MainWindow::MainWindow(QWidget *parent) :
     QMainWindow(parent)
 {
+    setWindowTitle("Qt embedding demo");
+    setMinimumSize(640, 480);
+
     QMenu *menu = menuBar()->addMenu(tr("&File"));
     QAction *on_open = new QAction(tr("&Open"), this);
     on_open->setShortcuts(QKeySequence::Open);
@@ -35,15 +47,23 @@ MainWindow::MainWindow(QWidget *parent) :
 
     statusBar();
 
+    QMainWindow *log_window = new QMainWindow(this);
+    log = new QTextEdit(log_window);
+    log->setReadOnly(true);
+    log_window->setCentralWidget(log);
+    log_window->setWindowTitle("mpv log window");
+    log_window->setMinimumSize(500, 50);
+    log_window->show();
+
     mpv = mpv_create();
     if (!mpv)
         throw "can't create mpv instance";
 
     // Create a video child window. Force Qt to create a native window, and
-    // pass the window ID to the mpv wid option. This doesn't work on OSX,
-    // because Cocoa doesn't support this form of embedding.
+    // pass the window ID to the mpv wid option. Works on: X11, win32, Cocoa
     mpv_container = new QWidget(this);
     setCentralWidget(mpv_container);
+    mpv_container->setAttribute(Qt::WA_DontCreateNativeAncestors);
     mpv_container->setAttribute(Qt::WA_NativeWindow);
     // If you have a HWND, use: int64_t wid = (intptr_t)hwnd;
     int64_t wid = mpv_container->winId();
@@ -54,12 +74,19 @@ MainWindow::MainWindow(QWidget *parent) :
     mpv_set_option_string(mpv, "input-default-bindings", "yes");
 
     // Enable keyboard input on the X11 window. For the messy details, see
-    // --input-x11-keyboard on the manpage.
-    mpv_set_option_string(mpv, "input-x11-keyboard", "yes");
+    // --input-vo-keyboard on the manpage.
+    mpv_set_option_string(mpv, "input-vo-keyboard", "yes");
 
     // Let us receive property change events with MPV_EVENT_PROPERTY_CHANGE if
     // this property changes.
     mpv_observe_property(mpv, 0, "time-pos", MPV_FORMAT_DOUBLE);
+
+    mpv_observe_property(mpv, 0, "track-list", MPV_FORMAT_NODE);
+    mpv_observe_property(mpv, 0, "chapter-list", MPV_FORMAT_NODE);
+
+    // Request log messages with level "info" or higher.
+    // They are received as MPV_EVENT_LOG_MESSAGE.
+    mpv_request_log_messages(mpv, "info");
 
     // From this point on, the wakeup function will be called. The callback
     // can come from any thread, so we use the Qt QEvent mechanism to relay
@@ -86,6 +113,19 @@ void MainWindow::handle_mpv_event(mpv_event *event)
                 // was stopped.
                 statusBar()->showMessage("");
             }
+        } else if (strcmp(prop->name, "chapter-list") == 0 ||
+                   strcmp(prop->name, "track-list") == 0)
+        {
+            // Dump the properties as JSON for demo purposes.
+#if QT_VERSION >= 0x050000
+            if (prop->format == MPV_FORMAT_NODE) {
+                QVariant v = mpv::qt::node_to_variant((mpv_node *)prop->data);
+                // Abuse JSON support for easily printing the mpv_node contents.
+                QJsonDocument d = QJsonDocument::fromVariant(v);
+                append_log("Change property " + QString(prop->name) + ":\n");
+                append_log(d.toJson().data());
+            }
+#endif
         }
         break;
     }
@@ -105,6 +145,13 @@ void MainWindow::handle_mpv_event(mpv_event *event)
             ss << "Reconfig: " << w << " " << h;
             statusBar()->showMessage(QString::fromStdString(ss.str()));
         }
+        break;
+    }
+    case MPV_EVENT_LOG_MESSAGE: {
+        struct mpv_event_log_message *msg = (struct mpv_event_log_message *)event->data;
+        std::stringstream ss;
+        ss << "[" << msg->prefix << "] " << msg->level << ": " << msg->text;
+        append_log(QString::fromStdString(ss.str()));
         break;
     }
     case MPV_EVENT_SHUTDOWN: {
@@ -143,6 +190,14 @@ void MainWindow::on_file_open()
     }
 }
 
+void MainWindow::append_log(const QString &text)
+{
+    QTextCursor cursor = log->textCursor();
+    cursor.movePosition(QTextCursor::End);
+    cursor.insertText(text);
+    log->setTextCursor(cursor);
+}
+
 MainWindow::~MainWindow()
 {
     if (mpv)
@@ -152,6 +207,11 @@ MainWindow::~MainWindow()
 int main(int argc, char *argv[])
 {
     QApplication a(argc, argv);
+
+    // Qt sets the locale in the QApplication constructor, but libmpv requires
+    // the LC_NUMERIC category to be set to "C", so change it back.
+    std::setlocale(LC_NUMERIC, "C");
+
     MainWindow w;
     w.show();
 

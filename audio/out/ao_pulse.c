@@ -35,8 +35,6 @@
 #include "ao.h"
 #include "internal.h"
 
-#define PULSE_CLIENT_NAME "mpv"
-
 #define VOL_PA2MP(v) ((v) * 100 / PA_VOLUME_NORM)
 #define VOL_MP2PA(v) ((v) * PA_VOLUME_NORM / 100)
 
@@ -287,14 +285,11 @@ static void uninit(struct ao *ao)
     pthread_mutex_destroy(&priv->wakeup_lock);
 }
 
-static int init(struct ao *ao)
+static int pa_init_boilerplate(struct ao *ao)
 {
-    struct pa_channel_map map;
-    pa_proplist *proplist = NULL;
-    pa_format_info *format = NULL;
     struct priv *priv = ao->priv;
     char *host = priv->cfg_host && priv->cfg_host[0] ? priv->cfg_host : NULL;
-    char *sink = priv->cfg_sink && priv->cfg_sink[0] ? priv->cfg_sink : NULL;
+    bool locked = false;
 
     pthread_mutex_init(&priv->wakeup_lock, NULL);
     pthread_cond_init(&priv->wakeup, NULL);
@@ -304,8 +299,15 @@ static int init(struct ao *ao)
         goto fail;
     }
 
+    if (pa_threaded_mainloop_start(priv->mainloop) < 0)
+        goto fail;
+
+    pa_threaded_mainloop_lock(priv->mainloop);
+    locked = true;
+
     if (!(priv->context = pa_context_new(pa_threaded_mainloop_get_api(
-                                 priv->mainloop), PULSE_CLIENT_NAME))) {
+                                         priv->mainloop), ao->client_name)))
+    {
         MP_ERR(ao, "Failed to allocate context\n");
         goto fail;
     }
@@ -321,16 +323,46 @@ static int init(struct ao *ao)
     if (pa_context_connect(priv->context, host, 0, NULL) < 0)
         goto fail;
 
-    pa_threaded_mainloop_lock(priv->mainloop);
-
-    if (pa_threaded_mainloop_start(priv->mainloop) < 0)
-        goto unlock_and_fail;
-
     /* Wait until the context is ready */
-    pa_threaded_mainloop_wait(priv->mainloop);
+    while (1) {
+        int state = pa_context_get_state(priv->context);
+        if (state == PA_CONTEXT_READY)
+            break;
+        if (!PA_CONTEXT_IS_GOOD(state))
+            goto fail;
+        pa_threaded_mainloop_wait(priv->mainloop);
+    }
 
-    if (pa_context_get_state(priv->context) != PA_CONTEXT_READY)
-        goto unlock_and_fail;
+    pa_threaded_mainloop_unlock(priv->mainloop);
+    return 0;
+
+fail:
+    if (locked)
+        pa_threaded_mainloop_unlock(priv->mainloop);
+
+    if (priv->context) {
+        pa_threaded_mainloop_lock(priv->mainloop);
+        if (!(pa_context_errno(priv->context) == PA_ERR_CONNECTIONREFUSED
+              && ao->probing))
+            GENERIC_ERR_MSG("Init failed");
+        pa_threaded_mainloop_unlock(priv->mainloop);
+    }
+    uninit(ao);
+    return -1;
+}
+
+static int init(struct ao *ao)
+{
+    struct pa_channel_map map;
+    pa_proplist *proplist = NULL;
+    pa_format_info *format = NULL;
+    struct priv *priv = ao->priv;
+    char *sink = priv->cfg_sink && priv->cfg_sink[0] ? priv->cfg_sink : ao->device;
+
+    if (pa_init_boilerplate(ao) < 0)
+        return -1;
+
+    pa_threaded_mainloop_lock(priv->mainloop);
 
     if (!(format = pa_format_info_new()))
         goto unlock_and_fail;
@@ -362,8 +394,7 @@ static int init(struct ao *ao)
         goto unlock_and_fail;
     }
     (void)pa_proplist_sets(proplist, PA_PROP_MEDIA_ROLE, "video");
-    (void)pa_proplist_sets(proplist, PA_PROP_MEDIA_ICON_NAME,
-                           PULSE_CLIENT_NAME);
+    (void)pa_proplist_sets(proplist, PA_PROP_MEDIA_ICON_NAME, ao->client_name);
 
     pa_format_info_set_rate(format, ao->samplerate);
     pa_format_info_set_channels(format, ao->channels.num);
@@ -419,22 +450,13 @@ static int init(struct ao *ao)
     }
 
     pa_threaded_mainloop_unlock(priv->mainloop);
-
     return 0;
 
 unlock_and_fail:
+    pa_threaded_mainloop_unlock(priv->mainloop);
 
-    if (priv->mainloop)
-        pa_threaded_mainloop_unlock(priv->mainloop);
-
-fail:
     if (format)
         pa_format_info_free(format);
-    if (priv->context) {
-        if (!(pa_context_errno(priv->context) == PA_ERR_CONNECTIONREFUSED
-              && ao->probing))
-            GENERIC_ERR_MSG("Init failed");
-    }
 
     if (proplist)
         pa_proplist_free(proplist);
@@ -508,7 +530,7 @@ static int get_space(struct ao *ao)
     return space / ao->sstride;
 }
 
-static float get_delay_hackfixed(struct ao *ao)
+static double get_delay_hackfixed(struct ao *ao)
 {
     /* This code basically does what pa_stream_get_latency() _should_
      * do, but doesn't due to multiple known bugs in PulseAudio (at
@@ -563,7 +585,7 @@ static float get_delay_hackfixed(struct ao *ao)
     return latency / 1e6;
 }
 
-static float get_delay_pulse(struct ao *ao)
+static double get_delay_pulse(struct ao *ao)
 {
     struct priv *priv = ao->priv;
     pa_usec_t latency = (pa_usec_t) -1;
@@ -581,7 +603,7 @@ static float get_delay_pulse(struct ao *ao)
 }
 
 // Return the current latency in seconds
-static float get_delay(struct ao *ao)
+static double get_delay(struct ao *ao)
 {
     struct priv *priv = ao->priv;
     if (priv->cfg_latency_hacks) {
@@ -703,6 +725,42 @@ static int control(struct ao *ao, enum aocontrol cmd, void *arg)
     }
 }
 
+struct sink_cb_ctx {
+    struct ao *ao;
+    struct ao_device_list *list;
+};
+
+static void sink_info_cb(pa_context *c, const pa_sink_info *i, int eol, void *ud)
+{
+    struct sink_cb_ctx *ctx = ud;
+    struct priv *priv = ctx->ao->priv;
+
+    if (eol) {
+        pa_threaded_mainloop_signal(priv->mainloop, 0); // wakeup waitop()
+        return;
+    }
+
+    struct ao_device_desc entry = {.name = i->name, .desc = i->description};
+    ao_device_list_add(ctx->list, ctx->ao, &entry);
+}
+
+static void list_devs(struct ao *ao, struct ao_device_list *list)
+{
+    struct priv *priv = ao->priv;
+    bool need_uninit = !priv->mainloop;
+    struct sink_cb_ctx ctx = {ao, list};
+
+    if (need_uninit && pa_init_boilerplate(ao) < 0)
+        return;
+
+    pa_threaded_mainloop_lock(priv->mainloop);
+    waitop(priv, pa_context_get_sink_info_list(priv->context, sink_info_cb, &ctx));
+
+    if (need_uninit)
+        uninit(ao);
+}
+
+
 #define OPT_BASE_STRUCT struct priv
 
 const struct ao_driver audio_out_pulse = {
@@ -720,6 +778,7 @@ const struct ao_driver audio_out_pulse = {
     .drain     = drain,
     .wait      = wait_audio,
     .wakeup    = wakeup,
+    .list_devs = list_devs,
     .priv_size = sizeof(struct priv),
     .priv_defaults = &(const struct priv) {
         .cfg_buffer = 250,

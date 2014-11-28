@@ -31,13 +31,16 @@ int wasapi_fill_VistaBlob(wasapi_state *state);
 
 const char *wasapi_explain_err(const HRESULT hr);
 
-int wasapi_enumerate_devices(struct mp_log *log);
+int wasapi_enumerate_devices(struct mp_log *log, struct ao *ao,
+                             struct ao_device_list *list);
 
 int wasapi_validate_device(struct mp_log *log, const m_option_t *opt,
                            struct bstr name, struct bstr param);
 
-int wasapi_thread_init(struct ao *ao);
-void wasapi_thread_uninit(wasapi_state *state);
+
+void wasapi_dispatch(void);
+HRESULT wasapi_thread_init(struct ao *ao);
+void wasapi_thread_uninit(struct ao *ao);
 
 HRESULT wasapi_setup_proxies(wasapi_state *state);
 void wasapi_release_proxies(wasapi_state *state);

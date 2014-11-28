@@ -162,8 +162,6 @@ options_state_machine() {
 
     opt_yes_no _gl          "OpenGL video output"
     opt_yes_no _libguess    "libguess"
-    opt_yes_no _terminfo    "terminfo database for key codes" no
-    opt_yes_no _termcap     "termcap database for key codes" no
     opt_yes_no _termios     "termios database for key codes"
     opt_yes_no _iconv       "iconv for encoding conversion"
     opt_yes_no _lirc        "LIRC (remote control) support"
@@ -175,8 +173,6 @@ options_state_machine() {
     opt_yes_no _libv4l2     "libv4l2"
     opt_yes_no _pvr         "Video4Linux2 MPEG PVR"
     opt_yes_no _smb         "Samba (SMB) input"
-    opt_yes_no _libquvi4    "libquvi 0.4.x"
-    opt_yes_no _libquvi9    "libquvi 0.9.x"
     opt_yes_no _lcms2       "LCMS2 support"
     opt_yes_no _bluray      "Blu-ray support"
     opt_yes_no _dvdread     "libdvdread"
@@ -186,7 +182,6 @@ options_state_machine() {
     opt_yes_no _libpostproc "postprocess filter (vf_pp)"
     opt_yes_no _libavdevice "libavdevice demuxers"
     opt_yes_no _libavfilter "libavfilter"
-    opt_yes_no _vapoursynth "VapourSynth filter bridge"
     opt_yes_no _jpeg        "support for writing JPEG screenshots"
     opt_yes_no _libcdio     "libcdio support"
     opt_yes_no _ffmpeg      "skip FFmpeg/Libav autodetection"
@@ -215,6 +210,8 @@ options_state_machine() {
     opt_yes_no _openal      "OpenAL audio output"
     opt_yes_no _shm         "X11/Xv shared memory"
     opt_yes_no _lua         "Lua scripting"
+    opt_yes_no _vapoursynth "VapourSynth filter bridge (Python)"
+    opt_yes_no _vapoursynth_lazy "VapourSynth filter bridge (Lua)"
     opt_yes_no _encoding    "encoding functionality" yes
     opt_yes_no _build_man   "building manpage"
 }
@@ -532,10 +529,6 @@ test $(defretval) = yes && _soundcard_header=soundcard.h
 
 check_statement_libs "sys/videoio.h" auto SYS_VIDEOIO_H sys/videoio.h
 
-check_statement_libs "terminfo" $_terminfo TERMINFO term.h 'setupterm(0, 1, 0)' "-lncurses" "-lncursesw"
-
-check_statement_libs "termcap" $_termcap TERMCAP term.h 'tgetent(0, 0)' " " "-lncurses" "-ltinfo" "-ltermcap"
-
 _termios_ok=no
 check_statement_libs "termios.h" $_termios TERMIOS_H termios.h
 test $(defretval) = yes && _termios_ok=yes && _termios=no
@@ -578,17 +571,6 @@ check_pkg_config() {
 check_pkg_config "libguess support" $_libguess LIBGUESS 'libguess >= 1.0'
 
 check_pkg_config "Samba support (libsmbclient)" $_smb LIBSMBCLIENT 'smbclient >= 0.2.0'
-
-check_pkg_config "libquvi 0.4.x support" $_libquvi4 LIBQUVI4 'libquvi >= 0.4.1'
-_libquvi4=$(defretval)
-
-test $_libquvi4 = yes && _libquvi9=no
-check_pkg_config "libquvi 0.9.x support" $_libquvi9 LIBQUVI9 'libquvi-0.9 >= 0.9.0'
-_libquvi9=$(defretval)
-
-_libquvi=no
-(test "$_libquvi9" = yes || test "$_libquvi4" = yes) && _libquvi=yes
-define_yes_no $_libquvi HAVE_LIBQUVI
 
 _wlver="1.6.0"
 check_pkg_config "Wayland" $_wayland WAYLAND "wayland-client >= $_wlver wayland-cursor >= $_wlver xkbcommon >= 0.3.0"
@@ -646,12 +628,13 @@ check_yes_no $_dvbin DVBIN
 
 check_statement_libs "JPEG support" $_jpeg JPEG "stdio.h jpeglib.h" "" "-ljpeg $_ld_lm"
 
+_gl_x11_egl=no
 (test "$_x11" = no && test "$_wayland" = no) && _gl=no
 echocheck "OpenGL"
 #Note: this test is run even with --enable-gl since we autodetect linker flags
 if test "$_gl" != no ; then
   cat > $TMPC << EOF
-#if defined(GL_WAYLAND)
+#if defined(GL_WAYLAND) || defined(EGL_X11)
 #include <EGL/egl.h>
 #else
 #include <X11/Xlib.h>
@@ -688,6 +671,10 @@ EOF
     libs_mplayer="$libs_mplayer -lGL -lEGL"
     test "$_gl_wayland" = yes && res_comment="$res_comment wayland"
   fi
+  if test "$_x11" = yes && test "$_gl" = yes && pkg_config_add "egl"; then
+    _gl_x11_egl=yes
+    res_comment="$res_comment x11egl"
+  fi
 else
   _gl=no
 fi
@@ -695,9 +682,11 @@ fi
 if test "$_gl" = no ; then
     _gl_x11=no
     _gl_wayland=no
+    _gl_x11_egl=no
 fi
 check_yes_no $_gl GL
 check_yes_no $_gl_x11 GL_X11
+check_yes_no $_gl_x11_egl EGL_X11
 check_yes_no $_gl_wayland GL_WAYLAND
 echores "$_gl"
 
@@ -758,8 +747,6 @@ check_statement_libs "LADSPA plugin support" $_ladspa LADSPA ladspa.h 'LADSPA_De
 check_pkg_config "libbs2b audio filter support" $_libbs2b LIBBS2B 'libbs2b'
 
 check_pkg_config "LCMS2 support" $_lcms2 LCMS2 'lcms2 >= 2.6'
-
-check_pkg_config "VapourSynth support" $_vapoursynth VAPOURSYNTH 'vapoursynth >= 23 vapoursynth-script >= 23'
 
 check_pkg_config "FFmpeg/Libav" $_ffmpeg FFMPEG \
     "libavutil >= 52.48.101 libavcodec >= 55.34.1 libavformat >= 55.12.0 libswscale >= 2.1.2"
@@ -829,6 +816,12 @@ api_statement_check \
     'av_frame_get_metadata(NULL)'
 
 api_statement_check \
+    "libavutil AVFrame skip samples metadata" \
+    HAVE_AVFRAME_SKIP_SAMPLES \
+    libavutil/frame.h \
+    'enum AVFrameSideDataType type = AV_FRAME_DATA_SKIP_SAMPLES'
+
+api_statement_check \
     "libavutil QP API" \
     HAVE_AVUTIL_QP_API \
     libavutil/frame.h \
@@ -876,6 +869,24 @@ test_lua "lua >= 5.2.0"
 test_lua "lua5.2 >= 5.2.0" # debian
 
 test "$_lua" != yes && check_yes_no no LUA
+
+if ! ( $_pkg_config 'vapoursynth >= 23' ) ; then
+    _vapoursynth=no
+    _vapoursynth_lazy=no
+fi
+check_pkg_config "VapourSynth support (Python)" $_vapoursynth VAPOURSYNTH 'vapoursynth >= 23 vapoursynth-script >= 23'
+_vapoursynth=$(defretval)
+if test "$_lua" = no ; then
+    _vapoursynth_lazy=no
+fi
+check_pkg_config "VapourSynth support (Lua)" $_vapoursynth_lazy VAPOURSYNTH_LAZY 'vapoursynth >= 23'
+_vapoursynth_lazy=$(defretval)
+
+_vapoursynth_core=yes
+if test "$_vapoursynth" = no && test "$_vapoursynth_lazy" = no ; then
+    _vapoursynth_core=no
+fi
+check_trivial "VapourSynth core" $_vapoursynth_core VAPOURSYNTH_CORE
 
 check_trivial "joystick" $_joystick JOYSTICK
 
@@ -966,6 +977,12 @@ cat > $TMPC << EOF
 #define HAVE_NANOSLEEP 1
 #define HAVE_SDL1 0
 #define HAVE_WAIO 0
+#define HAVE_POSIX_SPAWN 1
+#define HAVE_GLIBC_THREAD_NAME (!!__GLIBC__)
+#define HAVE_OSX_THREAD_NAME 0
+#define HAVE_BSD_THREAD_NAME 0
+#define HAVE_NETBSD_THREAD_NAME 0
+#define HAVE_DXVA2_HWACCEL 0
 
 #define DEFAULT_CDROM_DEVICE "/dev/cdrom"
 #define DEFAULT_DVD_DEVICE   "/dev/dvd"

@@ -12,8 +12,7 @@ a media player
 SYNOPSIS
 ========
 
-| **mpv** [options] [file|URL|-]
-| **mpv** [options] --playlist=PLAYLIST
+| **mpv** [options] [file|URL|PLAYLIST|-]
 | **mpv** [options] files
 
 DESCRIPTION
@@ -47,6 +46,10 @@ UP and DOWN
     Seek forward/backward 1 minute. Shift+arrow does a 5 second exact seek (see
     ``--hr-seek``).
 
+Ctrl+LEFT and Ctrl+RIGHT
+    Seek to the previous/next subtitle. Subject to some restrictions and
+    might not work always; see ``sub_seek`` command.
+
 [ and ]
     Decrease/increase current playback speed by 10%.
 
@@ -60,7 +63,7 @@ BACKSPACE
     Go backward/forward in the playlist.
 
 ENTER
-    Go forward in the playlist, even over the end.
+    Go forward in the playlist.
 
 p / SPACE
     Pause (pressing again unpauses).
@@ -125,6 +128,9 @@ j and J
 
 x and z
     Adjust subtitle delay by +/- 0.1 seconds.
+
+l
+    Set/clear A-B loop points. See ``ab_loop`` command for details.
 
 Ctrl + and Ctrl -
     Adjust audio delay by +/- 0.1 seconds.
@@ -356,7 +362,7 @@ You can also write file-specific configuration files. If you wish to have a
 configuration file for a file called 'video.avi', create a file named
 'video.avi.conf' with the file-specific options in it and put it in
 ``~/.config/mpv/``. You can also put the configuration file in the same directory
-as the file to be played, as long as you give the ``--use-filedir-conf``
+as the file to be played. Both require you to set the ``--use-filedir-conf``
 option (either on the command line or in your global config file). If a
 file-specific configuration file is found in the same directory, no
 file-specific configuration is loaded from ``~/.config/mpv``. In addition, the
@@ -445,14 +451,15 @@ listed.
   if there is audio "missing", or not enough frames can be dropped. Usually
   this will indicate a problem. (``total-avsync-change`` property.)
 - Encoding state in ``{...}``, only shown in encoding mode.
-- Decoder-dropped video frames, e.g. ``SD: 2``. Shows up only if the count is
-  not 0. Normally should never show up, unless ``--framedrop`` is set to enable
-  this mode, and your CPU is too slow. (``drop-frame-count`` property.)
-- VO-dropped video frames, e.g. ``D: 4``. Shows up only if the count is not 0.
-  Can grow if the video framerate is higher than that of the display, or if
-  video rendering is too slow. Also can be incremented on "hiccups" and when
-  the video frame couldn't be displayed on time. (``vo-drop-frame-count``
-  property.)
+- Dropped frames, e.g. ``Dropped: 4``. Shows up only if the count is not 0. Can
+  grow if the video framerate is higher than that of the display, or if video
+  rendering is too slow. Also can be incremented on "hiccups" and when the video
+  frame couldn't be displayed on time. (``vo-drop-frame-count`` property.)
+  If the decoder drops frames, the number of decoder-dropped frames is appended
+  to the display as well, e.g.: ``Dropped: 4/34``. This should almost never
+  happen, unless decoder-framedropping is enabled with one of the
+  ``--framedrop`` options, the stream contains errors, or a weird codec is in
+  use. (``drop-frame-count`` property.)
 - Cache state, e.g. ``Cache:  2s+134KB``. Visible if the stream cache is enabled.
   The first value shows the amount of video buffered in the demuxer in seconds,
   the second value shows *additional* data buffered in the stream cache in
@@ -466,6 +473,10 @@ PROTOCOLS
     Many network protocols are supported, but the protocol prefix must always
     be specified. mpv will never attempt to guess whether a filename is
     actually a network address. A protocol prefix is always required.
+
+    Note that not all prefixes are documented here. Undocumented prefixes are
+    either aliases to documented protocols, or are just redirections to
+    protocols implemented and documented in FFmpeg.
 
 ``-``
     Play data from stdin.
@@ -555,6 +566,8 @@ PROTOCOLS
 .. include:: osc.rst
 
 .. include:: lua.rst
+
+.. include:: ipc.rst
 
 .. include:: changes.rst
 
@@ -710,6 +723,39 @@ override the standard directory ``~/.config/mpv/``.
 
 Also, the old config location at ``~/.mpv/`` is still read, and if the XDG
 variant does not exist, will still be preferred.
+
+FILES ON WINDOWS
+================
+
+On win32 (if compiled with MinGW, but not Cygwin), the default config file
+locations are different:
+
+``%APPDATA%/mpv/mpv.conf``
+    Preferred mpv config file. This maps to a system and user-specific path,
+    for example ``C:\users\USERNAME\Application Data\mpv\mpv.conf``. You can
+    find the exact path by running ``echo %APPDATA%\mpv\mpv.conf`` in cmd.exe.
+
+``%APPDATA%/mpv/input.conf``
+    key bindings (see `INPUT.CONF`_ section)
+
+``%APPDATA%/mpv/lua/``
+    equivalent of ``~/.config/mpv/lua/`` on Unix.
+
+The environment variable ``$MPV_HOME`` completely overrides these, like on
+UNIX.
+
+Config files located in the same directory as ``mpv.exe`` are loaded with
+lower priority. Some config files are loaded only once, which means that
+e.g. of 2 ``input.conf`` files located in two config directories, only the
+one from the directory with higher priority will be loaded.
+
+A third config directory with lowest priority is the directory named ``mpv``
+in the same directory as ``mpv.exe``. This used to be the directory with
+highest priority, but is now discouraged to use and might be removed in the
+future.
+
+Note that mpv likes to mix ``/`` and ``\`` path separators for simplicity.
+kernel32.dll accepts this, but cmd.exe does not.
 
 EXAMPLES OF MPV USAGE
 =====================

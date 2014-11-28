@@ -34,6 +34,7 @@
 #include "win_state.h"
 #include "w32_common.h"
 #include "osdep/io.h"
+#include "osdep/threads.h"
 #include "osdep/w32_keyboard.h"
 #include "misc/dispatch.h"
 #include "misc/rendezvous.h"
@@ -551,8 +552,8 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam,
         break;
     }
     case WM_SIZING:
-        if (w32->opts->keepaspect && !w32->opts->fullscreen &&
-            w32->opts->WinID < 0)
+        if (w32->opts->keepaspect && w32->opts->keepaspect_window &&
+            !w32->opts->fullscreen && w32->opts->WinID < 0)
         {
             RECT *rc = (RECT*)lParam;
             // get client area of the windows if it had the rect rc
@@ -579,6 +580,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam,
         return 0;
     case WM_DESTROY:
         w32->destroyed = true;
+        w32->window = NULL;
         PostQuitMessage(0);
         return 0;
     case WM_SYSCOMMAND:
@@ -593,6 +595,16 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam,
         }
         break;
     case WM_SYSKEYDOWN:
+        // Open the window menu on Alt+Space. Normally DefWindowProc opens the
+        // window menu in response to WM_SYSCHAR, but since mpv translates its
+        // own keyboard input, WM_SYSCHAR isn't generated, so the window menu
+        // must be opened manually.
+        if (wParam == VK_SPACE) {
+            SendMessage(w32->window, WM_SYSCOMMAND, SC_KEYMENU, ' ');
+            return 0;
+        }
+
+        // Handle all other WM_SYSKEYDOWN messages as WM_KEYDOWN
     case WM_KEYDOWN:
         handle_key_down(w32, wParam, HIWORD(lParam));
         if (wParam == VK_F10)
@@ -988,6 +1000,8 @@ static void *gui_thread(void *ptr)
     struct vo_w32_state *w32 = ptr;
     bool ole_ok = false;
     int res = 0;
+
+    mpthread_set_name("win32 window");
 
     HINSTANCE hInstance = GetModuleHandleW(NULL);
 

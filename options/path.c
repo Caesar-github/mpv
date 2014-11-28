@@ -44,6 +44,7 @@
 #include "osdep/io.h"
 #include "osdep/path.h"
 
+#if !defined(_WIN32) || defined(__CYGWIN__)
 static int mp_add_xdg_config_dirs(struct mpv_global *global, char **dirs, int i)
 {
     void *talloc_ctx = dirs;
@@ -77,6 +78,7 @@ static int mp_add_xdg_config_dirs(struct mpv_global *global, char **dirs, int i)
 
     return i;
 }
+#endif
 
 // Return NULL-terminated array of config directories, from highest to lowest
 // priority
@@ -271,13 +273,13 @@ char *mp_getcwd(void *talloc_ctx)
 bool mp_path_exists(const char *path)
 {
     struct stat st;
-    return path && mp_stat(path, &st) == 0;
+    return path && stat(path, &st) == 0;
 }
 
 bool mp_path_isdir(const char *path)
 {
     struct stat st;
-    return mp_stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+    return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
 }
 
 // Return false if it's considered a normal local filesystem path.

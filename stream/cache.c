@@ -112,6 +112,7 @@ struct priv {
     int64_t stream_size;
     struct mp_tags *stream_metadata;
     double start_pts;
+    bool has_avseek;
 };
 
 enum {
@@ -361,6 +362,7 @@ static void update_cached_controls(struct priv *s)
     s->stream_size = -1;
     if (stream_control(s->stream, STREAM_CTRL_GET_SIZE, &i64) == STREAM_OK)
         s->stream_size = i64;
+    s->has_avseek = stream_control(s->stream, STREAM_CTRL_HAS_AVSEEK, NULL) > 0;
 }
 
 // the core might call these every frame, so cache them...
@@ -391,6 +393,8 @@ static int cache_get_cached_control(stream_t *cache, int cmd, void *arg)
         *(double *)arg = s->start_pts;
         return STREAM_OK;
     }
+    case STREAM_CTRL_HAS_AVSEEK:
+        return s->has_avseek ? STREAM_OK : STREAM_UNSUPPORTED;
     case STREAM_CTRL_GET_METADATA: {
         if (s->stream_metadata) {
             ta_set_parent(s->stream_metadata, NULL);
@@ -404,6 +408,10 @@ static int cache_get_cached_control(stream_t *cache, int cmd, void *arg)
         s->idle = s->eof = false;
         pthread_cond_signal(&s->wakeup);
         return STREAM_OK;
+    case STREAM_CTRL_AVSEEK:
+        if (!s->has_avseek)
+            return STREAM_UNSUPPORTED;
+        break;
     }
     return STREAM_ERROR;
 }
@@ -457,6 +465,7 @@ static void cache_execute_control(struct priv *s)
 static void *cache_thread(void *arg)
 {
     struct priv *s = arg;
+    mpthread_set_name("cache");
     pthread_mutex_lock(&s->mutex);
     update_cached_controls(s);
     double last = mp_time_sec();

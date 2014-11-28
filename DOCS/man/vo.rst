@@ -233,18 +233,29 @@ Available video output drivers are:
         Always force textures to power of 2, even if the device reports
         non-power-of-2 texture sizes as supported.
 
-    ``texture-memory=N``
+    ``texture-memory=<mode>``
         Only affects operation with shaders/texturing enabled, and (E)OSD.
-        Values for N:
+        Possible values:
 
-            0
-                default, will often use an additional shadow texture + copy
-            1
-                use ``D3DPOOL_MANAGED``
-            2
-                use ``D3DPOOL_DEFAULT``
-            3
-                use ``D3DPOOL_SYSTEMMEM``, but without shadow texture
+        ``default`` (default)
+            Use ``D3DPOOL_DEFAULT``, with a ``D3DPOOL_SYSTEMMEM`` texture for
+            locking. If the driver supports ``D3DDEVCAPS_TEXTURESYSTEMMEMORY``,
+            ``D3DPOOL_SYSTEMMEM`` is used directly.
+
+        ``default-pool``
+            Use ``D3DPOOL_DEFAULT``. (Like ``default``, but never use a
+            shadow-texture.)
+
+        ``default-pool-shadow``
+            Use ``D3DPOOL_DEFAULT``, with a ``D3DPOOL_SYSTEMMEM`` texture for
+            locking. (Like ``default``, but always force the shadow-texture.)
+
+        ``managed``
+            Use ``D3DPOOL_MANAGED``.
+
+        ``scratch``
+            Use ``D3DPOOL_SCRATCH``, with a ``D3DPOOL_SYSTEMMEM`` texture for
+            locking.
 
     ``swap-discard``
         Use ``D3DSWAPEFFECT_DISCARD``, which might be faster.
@@ -438,11 +449,16 @@ Available video output drivers are:
         this options will make rendering a single operation.
         Note that chroma scalers are always done as 1-pass filters.
 
-    ``cscale=<n>``
+    ``cscale=<filter>``
         As ``lscale``, but for chroma (2x slower with little visible effect).
         Note that with some scaling filters, upscaling is always done in
         RGB. If chroma is not subsampled, this option is ignored, and the
         luma scaler is used instead. Setting this option is often useless.
+
+    ``lscale-down=<filter>``, ``cscale-down=<filter>``
+        Like ``lscale`` and ``cscale``, but apply these filters on downscaling
+        instead. If these options are unset, the filter implied by ``lscale``
+        (and ``cscale``, respectively) will be applied.
 
     ``cparam1``, ``cparam2``, ``cradius``
         Set filter parameters and radius for ``cscale``.

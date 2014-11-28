@@ -343,7 +343,7 @@ static const struct gl_functions gl_functions[] = {
     },
     {
         .extension = "GLX_SGI_video_sync",
-        .functions = (struct gl_function[]) {
+        .functions = (const struct gl_function[]) {
             DEF_FN_NAMES(GetVideoSync, "glXGetVideoSyncSGI"),
             DEF_FN_NAMES(WaitVideoSync, "glXWaitVideoSyncSGI"),
             {0},
@@ -879,6 +879,9 @@ static const struct backend backends[] = {
 #endif
 #if HAVE_GL_X11
     {"x11", mpgl_set_backend_x11},
+#endif
+#if HAVE_EGL_X11
+    {"x11egl", mpgl_set_backend_x11egl},
 #endif
     {0}
 };

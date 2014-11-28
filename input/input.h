@@ -34,6 +34,7 @@ enum mp_cmd_flags {
     MP_ON_OSD_BAR = 2,          // force a bar, if applicable
     MP_ON_OSD_MSG = 4,          // force a message, if applicable
     MP_EXPAND_PROPERTIES = 8,   // expand strings as properties
+    MP_ALLOW_REPEAT = 16,       // if used as keybinding, allow key repeat
 
     MP_ON_OSD_FLAGS = MP_ON_OSD_NO | MP_ON_OSD_AUTO |
                       MP_ON_OSD_BAR | MP_ON_OSD_MSG,
@@ -75,13 +76,17 @@ typedef struct mp_cmd {
     int flags; // mp_cmd_flags bitfield
     bstr original;
     char *input_section;
-    bool key_up_follows;
-    bool repeated;
-    bool mouse_move;
+    bool is_up_down : 1;
+    bool is_up : 1;
+    bool emit_on_up : 1;
+    bool is_mouse_button : 1;
+    bool repeated : 1;
+    bool mouse_move : 1;
     int mouse_x, mouse_y;
     struct mp_cmd *queue_next;
     double scale;               // for scaling numeric arguments
     const struct mp_cmd_def *def;
+    char *sender; // name of the client API user which sent this
 } mp_cmd_t;
 
 struct mp_input_src {
@@ -156,7 +161,7 @@ void mp_input_get_mouse_pos(struct input_ctx *ictx, int *x, int *y);
 // Return whether we want/accept mouse input.
 bool mp_input_mouse_enabled(struct input_ctx *ictx);
 
-bool mp_input_x11_keyboard_enabled(struct input_ctx *ictx);
+bool mp_input_vo_keyboard_enabled(struct input_ctx *ictx);
 
 /* Make mp_input_set_mouse_pos() mangle the mouse coordinates. Hack for certain
  * VOs. dst=NULL, src=NULL reset it. src can be NULL.
@@ -247,13 +252,18 @@ void mp_input_set_cancel(struct input_ctx *ictx, struct mp_cancel *cancel);
 bool mp_input_use_alt_gr(struct input_ctx *ictx);
 
 // Like mp_input_parse_cmd_strv, but also run the command.
-void mp_input_run_cmd(struct input_ctx *ictx, int def_flags, const char **cmd,
-                      const char *location);
+void mp_input_run_cmd(struct input_ctx *ictx, const char **cmd);
+
+void mp_input_set_repeat_info(struct input_ctx *ictx, int rate, int delay);
 
 void mp_input_pipe_add(struct input_ctx *ictx, const char *filename);
 void mp_input_joystick_add(struct input_ctx *ictx, char *dev);
 void mp_input_lirc_add(struct input_ctx *ictx, char *lirc_configfile);
 
-void mp_input_set_repeat_info(struct input_ctx *ictx, int rate, int delay);
+struct mp_ipc_ctx;
+struct mp_client_api;
+struct mp_ipc_ctx *mp_init_ipc(struct mp_client_api *client_api,
+                               struct mpv_global *global);
+void mp_uninit_ipc(struct mp_ipc_ctx *ctx);
 
 #endif /* MPLAYER_INPUT_H */

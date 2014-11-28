@@ -101,6 +101,7 @@ typedef struct lavf_priv {
     AVFormatContext *avfc;
     AVIOContext *pb;
     int64_t last_pts;
+    bool init_pts;
     struct sh_stream **streams; // NULL for unknown streams
     int num_streams;
     int cur_program;
@@ -189,8 +190,11 @@ static int64_t mp_read_seek(void *opaque, int stream_idx, int64_t ts, int flags)
         .flags = flags,
     };
 
-    int ret = stream_control(stream, STREAM_CTRL_AVSEEK, &cmd);
-    return ret < 1 ? AVERROR(ENOSYS) : 0;
+    if (stream_control(stream, STREAM_CTRL_AVSEEK, &cmd) == STREAM_OK) {
+        stream_drop_buffers(stream);
+        return 0;
+    }
+    return AVERROR(ENOSYS);
 }
 
 static void list_formats(struct demuxer *demuxer)
@@ -587,6 +591,7 @@ static void handle_stream(demuxer_t *demuxer, int i)
     MP_TARRAY_APPEND(priv, priv->streams, priv->num_streams, sh);
 
     if (sh) {
+        sh->ff_index = st->index;
         sh->codec = mp_codec_from_av_codec_id(codec->codec_id);
         sh->lav_headers = codec;
 
@@ -706,9 +711,13 @@ static int demux_open_lavf(demuxer_t *demuxer, enum demux_check check)
                    "analyzeduration to %f\n", analyze_duration);
     }
 
+    AVDictionary *dopts = NULL;
+
     if ((priv->avif->flags & AVFMT_NOFILE) ||
-        demuxer->stream->type == STREAMTYPE_AVDEVICE)
+        demuxer->stream->type == STREAMTYPE_AVDEVICE ||
+        matches_avinputformat_name(priv, "hls"))
     {
+        mp_setup_av_network_options(&dopts, demuxer->global, demuxer->log, opts);
         // This might be incorrect.
         demuxer->seekable = true;
     } else {
@@ -724,9 +733,9 @@ static int demux_open_lavf(demuxer_t *demuxer, enum demux_check check)
         priv->pb->read_seek = mp_read_seek;
         priv->pb->seekable = demuxer->seekable ? AVIO_SEEKABLE_NORMAL : 0;
         avfc->pb = priv->pb;
+        if (stream_control(demuxer->stream, STREAM_CTRL_HAS_AVSEEK, NULL) > 0)
+            demuxer->seekable = true;
     }
-
-    AVDictionary *dopts = NULL;
 
     if (matches_avinputformat_name(priv, "rtsp")) {
         const char *transport = NULL;
@@ -761,13 +770,9 @@ static int demux_open_lavf(demuxer_t *demuxer, enum demux_check check)
 
     for (i = 0; i < avfc->nb_chapters; i++) {
         AVChapter *c = avfc->chapters[i];
-        uint64_t start = av_rescale_q(c->start, c->time_base,
-                                      (AVRational){1, 1000000000});
-        uint64_t end   = av_rescale_q(c->end, c->time_base,
-                                      (AVRational){1, 1000000000});
         t = av_dict_get(c->metadata, "title", NULL, 0);
         int index = demuxer_add_chapter(demuxer, t ? bstr0(t->value) : bstr0(""),
-                                        start, end, i);
+                                        c->start * av_q2d(c->time_base), i);
         mp_tags_copy_from_av_dictionary(demuxer->chapters[index].metadata, c->metadata);
     }
 
@@ -828,6 +833,12 @@ static int demux_lavf_fill_buffer(demuxer_t *demux)
         return 1;
     }
 
+    if (!priv->init_pts && (priv->avfc->flags & AVFMT_NOTIMESTAMPS)) {
+        if (pkt->pts == AV_NOPTS_VALUE && pkt->dts == AV_NOPTS_VALUE)
+            pkt->dts = 0;
+        priv->init_pts = true;
+    }
+
     if (pkt->pts != AV_NOPTS_VALUE)
         dp->pts = pkt->pts * av_q2d(st->time_base);
     if (pkt->dts != AV_NOPTS_VALUE)
@@ -851,6 +862,8 @@ static void demux_seek_lavf(demuxer_t *demuxer, double rel_seek_secs, int flags)
 {
     lavf_priv_t *priv = demuxer->priv;
     int avsflags = 0;
+
+    priv->init_pts = false;
 
     if (flags & SEEK_ABSOLUTE)
         priv->last_pts = 0;

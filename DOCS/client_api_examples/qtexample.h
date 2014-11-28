@@ -5,6 +5,8 @@
 
 #include <mpv/client.h>
 
+class QTextEdit;
+
 class MainWindow : public QMainWindow
 {
     Q_OBJECT
@@ -22,6 +24,9 @@ private slots:
 private:
     QWidget *mpv_container;
     mpv_handle *mpv;
+    QTextEdit *log;
+
+    void append_log(const QString &text);
 
     void create_player();
     void handle_mpv_event(mpv_event *event);

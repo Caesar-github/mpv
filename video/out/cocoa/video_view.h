@@ -16,12 +16,9 @@
  */
 
 #import <Cocoa/Cocoa.h>
+#import "video/out/cocoa/mpvadapter.h"
 
-@interface NSScreen (mpvadditions)
-- (BOOL)hasDock;
-- (BOOL)hasMenubar;
-@end
-
-@interface NSEvent (mpvadditions)
-- (int)mpvButtonNumber;
+@interface MpvVideoView : NSView
+@property(nonatomic, retain) MpvCocoaAdapter *adapter;
+- (NSRect)frameInPixels;
 @end

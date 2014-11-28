@@ -1,9 +1,10 @@
 import re
+import os
 
 def _add_rst_manual_dependencies(ctx):
     manpage_sources_basenames = """
         options.rst ao.rst vo.rst af.rst vf.rst encode.rst
-        input.rst osc.rst lua.rst changes.rst""".split()
+        input.rst osc.rst lua.rst ipc.rst changes.rst""".split()
 
     manpage_sources = ['DOCS/man/'+x for x in manpage_sources_basenames]
 
@@ -56,21 +57,11 @@ def build(ctx):
         source = "sub/osd_font.otf",
         target = "sub/osd_font.h")
 
-    ctx.file2string(
-        source = "player/lua/defaults.lua",
-        target = "player/lua/defaults.inc")
-
-    ctx.file2string(
-        source = "player/lua/assdraw.lua",
-        target = "player/lua/assdraw.inc")
-
-    ctx.file2string(
-        source = "player/lua/options.lua",
-        target = "player/lua/options.inc")
-
-    ctx.file2string(
-        source = "player/lua/osc.lua",
-        target = "player/lua/osc.inc")
+    lua_files = ["defaults.lua", "assdraw.lua", "options.lua", "osc.lua",
+                 "ytdl_hook.lua"]
+    for fn in lua_files:
+        fn = "player/lua/" + fn
+        ctx.file2string(source = fn, target = os.path.splitext(fn)[0] + ".inc")
 
     ctx.matroska_header(
         source = "demux/ebml.c demux/demux_mkv.c",
@@ -114,6 +105,7 @@ def build(ctx):
         ( "audio/filter/af_equalizer.c" ),
         ( "audio/filter/af_export.c",            "sys-mman-h" ),
         ( "audio/filter/af_extrastereo.c" ),
+        ( "audio/filter/af_forcespeed.c" ),
         ( "audio/filter/af_format.c" ),
         ( "audio/filter/af_hrtf.c" ),
         ( "audio/filter/af_karaoke.c" ),
@@ -134,7 +126,7 @@ def build(ctx):
         ( "audio/out/ao.c" ),
         ( "audio/out/ao_alsa.c",                 "alsa" ),
         ( "audio/out/ao_coreaudio.c",            "coreaudio" ),
-        ( "audio/out/ao_coreaudio_device.c",     "coreaudio" ),
+        ( "audio/out/ao_coreaudio_exclusive.c",  "coreaudio" ),
         ( "audio/out/ao_coreaudio_properties.c", "coreaudio" ),
         ( "audio/out/ao_coreaudio_utils.c",      "coreaudio" ),
         ( "audio/out/ao_dsound.c",               "dsound" ),
@@ -152,6 +144,7 @@ def build(ctx):
         ( "audio/out/ao_sndio.c",                "sndio" ),
         ( "audio/out/ao_wasapi.c",               "wasapi" ),
         ( "audio/out/ao_wasapi_utils.c",         "wasapi" ),
+        ( "audio/out/ao_wasapi_changenotify.c",  "wasapi" ),
         ( "audio/out/pull.c" ),
         ( "audio/out/push.c" ),
 
@@ -189,8 +182,8 @@ def build(ctx):
         ( "input/cmd_parse.c" ),
         ( "input/event.c" ),
         ( "input/input.c" ),
+        ( "input/ipc.c",                         "!mingw" ),
         ( "input/keycodes.c" ),
-        ( "input/pipe-unix.c",                   "!mingw" ),
         ( "input/pipe-win32.c",                  "waio" ),
         ( "input/joystick.c",                    "joystick" ),
         ( "input/lirc.c",                        "lirc" ),
@@ -199,6 +192,7 @@ def build(ctx):
         ( "misc/bstr.c" ),
         ( "misc/charset_conv.c" ),
         ( "misc/dispatch.c" ),
+        ( "misc/json.c" ),
         ( "misc/ring.c" ),
         ( "misc/rendezvous.c" ),
 
@@ -263,8 +257,6 @@ def build(ctx):
         ( "stream/tv.c",                         "tv" ),
         ( "stream/tvi_dummy.c",                  "tv" ),
         ( "stream/tvi_v4l2.c",                   "tv-v4l2"),
-        ( "stream/resolve/resolve_quvi.c",       "libquvi4" ),
-        ( "stream/resolve/resolve_quvi9.c",      "libquvi9" ),
 
         ## Subtitles
         ( "sub/ass_mp.c",                        "libass"),
@@ -295,6 +287,7 @@ def build(ctx):
         ( "video/vdpau.c",                       "vdpau" ),
         ( "video/vdpau_mixer.c",                 "vdpau" ),
         ( "video/decode/dec_video.c"),
+        ( "video/decode/dxva2.c",                "dxva2-hwaccel" ),
         ( "video/decode/vaapi.c",                "vaapi-hwaccel" ),
         ( "video/decode/vd_lavc.c" ),
         ( "video/decode/vda.c",                  "vda-hwaccel" ),
@@ -329,14 +322,14 @@ def build(ctx):
         ( "video/filter/vf_sub.c" ),
         ( "video/filter/vf_swapuv.c" ),
         ( "video/filter/vf_unsharp.c" ),
-        ( "video/filter/vf_vapoursynth.c",       "vapoursynth" ),
+        ( "video/filter/vf_vapoursynth.c",       "vapoursynth-core" ),
         ( "video/filter/vf_vavpp.c",             "vaapi-vpp"),
         ( "video/filter/vf_vdpaupp.c",           "vdpau" ),
         ( "video/filter/vf_yadif.c" ),
         ( "video/out/aspect.c" ),
         ( "video/out/bitmap_packer.c" ),
-        ( "video/out/cocoa/additions.m",         "cocoa" ),
-        ( "video/out/cocoa/view.m",              "cocoa" ),
+        ( "video/out/cocoa/video_view.m",        "cocoa" ),
+        ( "video/out/cocoa/events_view.m",       "cocoa" ),
         ( "video/out/cocoa/window.m",            "cocoa" ),
         ( "video/out/cocoa_common.m",            "cocoa" ),
         ( "video/out/dither.c" ),
@@ -352,6 +345,7 @@ def build(ctx):
         ( "video/out/gl_w32.c",                  "gl-win32" ),
         ( "video/out/gl_wayland.c",              "gl-wayland" ),
         ( "video/out/gl_x11.c",                  "gl-x11" ),
+        ( "video/out/gl_x11egl.c",               "egl-x11" ),
         ( "video/out/pnm_loader.c",              "gl" ),
         ( "video/out/vo.c" ),
         ( "video/out/vo_caca.c",                 "caca" ),
@@ -382,10 +376,12 @@ def build(ctx):
         ( timer_c ),
         ( "osdep/threads.c" ),
 
-        ( "osdep/ar/HIDRemote.m",                "cocoa" ),
+        ( "osdep/ar/HIDRemote.m",                "apple-remote" ),
         ( "osdep/macosx_application.m",          "cocoa-application" ),
         ( "osdep/macosx_events.m",               "cocoa" ),
         ( "osdep/semaphore_osx.c" ),
+        ( "osdep/subprocess-posix.c",            "posix-spawn" ),
+        ( "osdep/subprocess-win.c",              "os-win32" ),
         ( "osdep/path-macosx.m",                 "cocoa" ),
         ( "osdep/path-win.c",                    "os-win32" ),
         ( "osdep/path-win.c",                    "os-cygwin" ),
@@ -418,24 +414,6 @@ def build(ctx):
                 ctx.path.find_node('osdep/mpv.rc'),
                 ctx.path.find_node(node))
 
-    cprog_kwargs = {}
-    if ctx.dependency_satisfied('macosx-bundle'):
-        import os
-        basepath = 'TOOLS/osxbundle/mpv.app/Contents'
-        cprog_kwargs['mac_app']   = True
-        cprog_kwargs['mac_plist'] = os.path.join(basepath, 'Info.plist')
-
-        resources_glob  = os.path.join(basepath, 'Resources', '*')
-        resources_nodes = ctx.srcnode.ant_glob(resources_glob)
-        resources       = [node.srcpath() for node in resources_nodes]
-        cprog_kwargs['mac_resources'] = resources
-
-        for resource in resources:
-            res_basename = os.path.basename(resource)
-            install_name = '/mpv.app/Contents/Resources/' + res_basename
-            ctx.install_as(ctx.env.BINDIR + install_name, resource)
-
-
     if ctx.dependency_satisfied('cplayer'):
         ctx(
             target       = "mpv",
@@ -444,20 +422,31 @@ def build(ctx):
             includes     = [ctx.bldnode.abspath(), ctx.srcnode.abspath()] + \
                            ctx.dependencies_includes(),
             features     = "c cprogram",
-            install_path = ctx.env.BINDIR,
-            **cprog_kwargs
+            install_path = ctx.env.BINDIR
         )
         for f in ['example.conf', 'input.conf', 'mplayer-input.conf', \
                   'restore-old-bindings.conf']:
-            import os
             ctx.install_as(os.path.join(ctx.env.DOCDIR, f),
                            os.path.join('etc/', f))
+
+        if ctx.env.DEST_OS == 'win32':
+            wrapctx = ctx(
+                target       = "mpv",
+                source       = ['osdep/win32-console-wrapper.c'],
+                features     = "c cprogram",
+                install_path = ctx.env.BINDIR
+            )
+
+            wrapctx.env.cprogram_PATTERN = "%s.com"
+            wrapflags = ['-municode', '-mconsole']
+            wrapctx.env.CFLAGS = wrapflags
+            wrapctx.env.LAST_LINKFLAGS = wrapflags
+
 
     build_shared = ctx.dependency_satisfied('libmpv-shared')
     build_static = ctx.dependency_satisfied('libmpv-static')
     if build_shared or build_static:
         if build_shared:
-            import os
             waftoolsdir = os.path.join(os.path.dirname(__file__), "waftools")
             ctx.load("syms", tooldir=waftoolsdir)
         vre = '^#define MPV_CLIENT_API_VERSION MPV_MAKE_VERSION\((.*), (.*)\)$'
@@ -505,7 +494,7 @@ def build(ctx):
             PRIV_LIBS    = get_deps(),
         )
 
-        headers = ["client.h"]
+        headers = ["client.h", "qthelper.hpp"]
         for f in headers:
             ctx.install_as(ctx.env.INCDIR + '/mpv/' + f, 'libmpv/' + f)
 
@@ -513,32 +502,20 @@ def build(ctx):
 
     if ctx.dependency_satisfied('client-api-examples'):
         # This assumes all examples are single-file (as examples should be)
-        for f in ["simple"]:
+        examples_sources = [
+            ( "simple.c" ),
+            ( "cocoabasic.m", "cocoa" ),
+        ]
+
+        for source in ctx.filtered_sources(examples_sources):
             ctx(
-                target       = f,
-                source       = "DOCS/client_api_examples/" + f + ".c",
+                target       = os.path.splitext(source)[0],
+                source       = "DOCS/client_api_examples/" + source,
                 includes     = [ctx.bldnode.abspath(), ctx.srcnode.abspath()],
                 use          = "mpv",
                 features     = "c cprogram",
                 install_path = None
             )
-
-    if ctx.env.DEST_OS == 'win32':
-        wrapctx = ctx(
-            target       = "mpv",
-            source       = ['osdep/win32-console-wrapper.c'],
-            features     = "c cprogram",
-            install_path = ctx.env.BINDIR
-        )
-
-        wrapctx.env.cprogram_PATTERN = "%s.com"
-        wrapflags = ['-municode', '-mconsole']
-        wrapctx.env.CFLAGS = wrapflags
-        wrapctx.env.LAST_LINKFLAGS = wrapflags
-
-    if ctx.dependency_satisfied('macosx-bundle'):
-        from waflib import Utils
-        ctx.install_files(ctx.env.BINDIR, 'mpv', chmod=Utils.O755)
 
     if ctx.dependency_satisfied("vf-dlopen-filters"):
         dlfilters = "showqscale telecine tile rectangle framestep \
@@ -561,7 +538,7 @@ def build(ctx):
     if ctx.dependency_satisfied('zsh-comp'):
         ctx.zshcomp(target = "etc/_mpv")
         ctx.install_files(
-            ctx.env.DATADIR + '/zsh/vendor-completions',
+            ctx.env.ZSHDIR,
             ['etc/_mpv'])
 
     ctx.install_files(

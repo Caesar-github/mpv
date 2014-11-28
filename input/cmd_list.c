@@ -51,6 +51,7 @@
 #define OARG_DOUBLE(def)        OPT_DOUBLE(ARG(d), 0, OPTDEF_DOUBLE(def))
 #define OARG_INT(def)           OPT_INT(ARG(i), 0, OPTDEF_INT(def))
 #define OARG_CHOICE(def, c)     OPT_CHOICE(ARG(i), 0, c, OPTDEF_INT(def))
+#define OARG_STRING(def)        OPT_STRING(ARG(s), 0, OPTDEF_STR(def))
 
 #define OARG_CYCLEDIR(def)      OPT_CYCLEDIR(ARG(d), 0, OPTDEF_DOUBLE(def))
 
@@ -72,7 +73,8 @@ const struct mp_cmd_def mp_cmds[] = {
   { MP_CMD_QUIT, "quit", { OARG_INT(0) } },
   { MP_CMD_QUIT_WATCH_LATER, "quit_watch_later", { OARG_INT(0) } },
   { MP_CMD_STOP, "stop", },
-  { MP_CMD_FRAME_STEP, "frame_step", .allow_auto_repeat = true },
+  { MP_CMD_FRAME_STEP, "frame_step", .allow_auto_repeat = true,
+    .on_updown = true },
   { MP_CMD_FRAME_BACK_STEP, "frame_back_step", .allow_auto_repeat = true },
   { MP_CMD_PLAYLIST_NEXT, "playlist_next", {
       OARG_CHOICE(0, ({"weak", 0},              {"0", 0},
@@ -89,7 +91,9 @@ const struct mp_cmd_def mp_cmds[] = {
   { MP_CMD_SHOW_TEXT, "show_text", { ARG_STRING, OARG_INT(-1), OARG_INT(0) },
     .allow_auto_repeat = true},
   { MP_CMD_SHOW_PROGRESS, "show_progress",  .allow_auto_repeat = true},
-  { MP_CMD_SUB_ADD, "sub_add", { ARG_STRING } },
+  { MP_CMD_SUB_ADD, "sub_add", { ARG_STRING,
+      OARG_CHOICE(0, ({"select", 0}, {"auto", 1}, {"cached", 2})),
+      OARG_STRING(""), OARG_STRING("") } },
   { MP_CMD_SUB_REMOVE, "sub_remove", { OARG_INT(-1) } },
   { MP_CMD_SUB_RELOAD, "sub_reload", { OARG_INT(-1) } },
 
@@ -152,13 +156,20 @@ const struct mp_cmd_def mp_cmds[] = {
 
   { MP_CMD_DISCNAV, "discnav", { ARG_STRING } },
 
+  { MP_CMD_AB_LOOP, "ab_loop", },
+
+  { MP_CMD_DROP_BUFFERS, "drop_buffers", },
+
   { MP_CMD_AF, "af", { ARG_STRING, ARG_STRING } },
+  { MP_CMD_AO_RELOAD, "ao_reload", },
 
   { MP_CMD_VF, "vf", { ARG_STRING, ARG_STRING } },
 
   { MP_CMD_VO_CMDLINE, "vo_cmdline", { ARG_STRING } },
 
-  { MP_CMD_SCRIPT_DISPATCH, "script_dispatch", { ARG_STRING, ARG_INT } },
+  { MP_CMD_SCRIPT_BINDING, "script_binding", { ARG_STRING },
+    .allow_auto_repeat = true, .on_updown = true},
+
   { MP_CMD_SCRIPT_MESSAGE, "script_message", { ARG_STRING }, .vararg = true },
   { MP_CMD_SCRIPT_MESSAGE_TO, "script_message_to", { ARG_STRING, ARG_STRING },
     .vararg = true },
@@ -169,6 +180,9 @@ const struct mp_cmd_def mp_cmds[] = {
   { MP_CMD_OVERLAY_REMOVE, "overlay_remove", { ARG_INT } },
 
   { MP_CMD_WRITE_WATCH_LATER_CONFIG, "write_watch_later_config", },
+
+  { MP_CMD_HOOK_ADD, "hook_add", { ARG_STRING, ARG_INT, ARG_INT } },
+  { MP_CMD_HOOK_ACK, "hook_ack", { ARG_STRING } },
 
   {0}
 };
@@ -286,7 +300,8 @@ bool mp_input_is_abort_cmd(struct mp_cmd *cmd)
 bool mp_input_is_repeatable_cmd(struct mp_cmd *cmd)
 {
     return (cmd->def && cmd->def->allow_auto_repeat) ||
-           cmd->id == MP_CMD_COMMAND_LIST;
+           cmd->id == MP_CMD_COMMAND_LIST ||
+           (cmd->flags & MP_ALLOW_REPEAT);
 }
 
 void mp_print_cmd_list(struct mp_log *out)

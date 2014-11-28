@@ -202,9 +202,6 @@ int reinit_video_filters(struct MPContext *mpctx)
     if (need_reconfig)
         filter_reconfig(mpctx, true);
 
-    if (!d_video->vfilter)
-        return 0;
-
     return d_video->vfilter->initialized;
 }
 
@@ -223,17 +220,37 @@ void reset_video_state(struct MPContext *mpctx)
     mpctx->video_pts = MP_NOPTS_VALUE;
     mpctx->video_next_pts = MP_NOPTS_VALUE;
     mpctx->total_avsync_change = 0;
-    mpctx->drop_frame_cnt = 0;
+    mpctx->dropped_frames_total = 0;
     mpctx->dropped_frames = 0;
     mpctx->drop_message_shown = 0;
 
     mpctx->video_status = mpctx->d_video ? STATUS_SYNCING : STATUS_EOF;
 }
 
+void uninit_video_out(struct MPContext *mpctx)
+{
+    uninit_video_chain(mpctx);
+    if (mpctx->video_out)
+        vo_destroy(mpctx->video_out);
+    mpctx->video_out = NULL;
+}
+
+void uninit_video_chain(struct MPContext *mpctx)
+{
+    if (mpctx->d_video) {
+        reset_video_state(mpctx);
+        video_uninit(mpctx->d_video);
+        mpctx->d_video = NULL;
+        mpctx->video_status = STATUS_EOF;
+        mpctx->sync_audio_to_video = false;
+        reselect_demux_streams(mpctx);
+    }
+    mp_notify(mpctx, MPV_EVENT_VIDEO_RECONFIG, NULL);
+}
+
 int reinit_video_chain(struct MPContext *mpctx)
 {
     struct MPOpts *opts = mpctx->opts;
-    assert(!(mpctx->initialized_flags & INITIALIZED_VCODEC));
     assert(!mpctx->d_video);
     struct track *track = mpctx->current_track[0][STREAM_VIDEO];
     struct sh_stream *sh = track ? track->stream : NULL;
@@ -246,17 +263,17 @@ int reinit_video_chain(struct MPContext *mpctx)
                sh->video->fps);
 
     //================== Init VIDEO (codec & libvo) ==========================
-    if (!opts->fixed_vo || !(mpctx->initialized_flags & INITIALIZED_VO)) {
+    if (!opts->fixed_vo || !mpctx->video_out) {
         mpctx->video_out = init_best_video_out(mpctx->global, mpctx->input,
                                                mpctx->osd,
                                                mpctx->encode_lavc_ctx);
         if (!mpctx->video_out) {
             MP_FATAL(mpctx, "Error opening/initializing "
                     "the selected video_out (-vo) device.\n");
+            mpctx->error_playing = MPV_ERROR_VO_INIT_FAILED;
             goto err_out;
         }
         mpctx->mouse_cursor_visible = true;
-        mpctx->initialized_flags |= INITIALIZED_VO;
     }
 
     update_window_title(mpctx, true);
@@ -269,7 +286,6 @@ int reinit_video_chain(struct MPContext *mpctx)
     d_video->header = sh;
     d_video->fps = sh->video->fps;
     d_video->vo = mpctx->video_out;
-    mpctx->initialized_flags |= INITIALIZED_VCODEC;
 
     vo_control(mpctx->video_out, VOCTRL_GET_HWDEC_INFO, &d_video->hwdec_info);
 
@@ -308,7 +324,7 @@ int reinit_video_chain(struct MPContext *mpctx)
 
 err_out:
 no_video:
-    uninit_player(mpctx, INITIALIZED_VCODEC | (opts->force_vo ? 0 : INITIALIZED_VO));
+    uninit_video_chain(mpctx);
     if (track)
         error_on_track(mpctx, track);
     handle_force_window(mpctx, true);
@@ -381,7 +397,7 @@ static int decode_image(struct MPContext *mpctx)
     if (had_packet && !d_video->waiting_decoded_mpi &&
         mpctx->video_status == STATUS_PLAYING)
     {
-        mpctx->drop_frame_cnt++;
+        mpctx->dropped_frames_total++;
         mpctx->dropped_frames++;
     }
 
@@ -663,8 +679,7 @@ static void update_avsync_after_frame(struct MPContext *mpctx)
                 mpctx->time_frame * mpctx->opts->playback_speed;
     if (a_pos == MP_NOPTS_VALUE || mpctx->video_pts == MP_NOPTS_VALUE)
         mpctx->last_av_difference = MP_NOPTS_VALUE;
-    if (mpctx->last_av_difference > 0.5 && mpctx->drop_frame_cnt > 50
-        && !mpctx->drop_message_shown) {
+    if (mpctx->last_av_difference > 0.5 && !mpctx->drop_message_shown) {
         MP_WARN(mpctx, "%s", av_desync_help_text);
         mpctx->drop_message_shown = true;
     }
@@ -743,13 +758,18 @@ void write_video(struct MPContext *mpctx, double endpts)
             return;
 
         const struct vo_driver *info = mpctx->video_out->driver;
-        MP_INFO(mpctx, "VO: [%s] %dx%d => %dx%d %s\n",
-                info->name, p.w, p.h, p.d_w, p.d_h, vo_format_name(p.imgfmt));
+        char extra[20] = {0};
+        if (p.w != p.d_w || p.h != p.d_h)
+            snprintf(extra, sizeof(extra), " => %dx%d", p.d_w, p.d_h);
+        MP_INFO(mpctx, "VO: [%s] %dx%d%s %s\n",
+                info->name, p.w, p.h, extra, vo_format_name(p.imgfmt));
         MP_VERBOSE(mpctx, "VO: Description: %s\n", info->description);
 
         int vo_r = vo_reconfig(vo, &p, 0);
-        if (vo_r < 0)
+        if (vo_r < 0) {
+            mpctx->error_playing = MPV_ERROR_VO_INIT_FAILED;
             goto error;
+        }
         init_vo(mpctx);
         mpctx->time_frame = 0; // display immediately
     }
@@ -818,10 +838,7 @@ void write_video(struct MPContext *mpctx, double endpts)
 
 error:
     MP_FATAL(mpctx, "Could not initialize video chain.\n");
-    int uninit = INITIALIZED_VCODEC;
-    if (!opts->force_vo)
-        uninit |= INITIALIZED_VO;
-    uninit_player(mpctx, uninit);
+    uninit_video_chain(mpctx);
     error_on_track(mpctx, mpctx->current_track[STREAM_VIDEO][0]);
     handle_force_window(mpctx, true);
     mpctx->sleeptime = 0;

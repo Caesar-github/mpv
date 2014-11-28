@@ -122,7 +122,7 @@ static bool mp_image_alloc_planes(struct mp_image *mpi)
 {
     assert(!mpi->planes[0]);
 
-    if (!mp_image_params_valid(&mpi->params))
+    if (!mp_image_params_valid(&mpi->params) || mpi->fmt.flags & MP_IMGFLAG_HWACCEL)
         return false;
 
     // Note: for non-mod-2 4:2:0 YUV frames, we have to allocate an additional
@@ -455,6 +455,32 @@ void mp_image_vflip(struct mp_image *img)
     }
 }
 
+char *mp_image_params_to_str_buf(char *b, size_t bs,
+                                 const struct mp_image_params *p)
+{
+    if (p && p->imgfmt) {
+        snprintf(b, bs, "%dx%d", p->w, p->h);
+        if (p->w != p->d_w || p->h != p->d_h)
+            mp_snprintf_cat(b, bs, "->%dx%d", p->d_w, p->d_h);
+        mp_snprintf_cat(b, bs, " %s", mp_imgfmt_to_name(p->imgfmt));
+        mp_snprintf_cat(b, bs, " %s/%s", mp_csp_names[p->colorspace],
+                        mp_csp_levels_names[p->colorlevels]);
+        mp_snprintf_cat(b, bs, " CL=%s", mp_chroma_names[p->chroma_location]);
+        if (p->outputlevels)
+            mp_snprintf_cat(b, bs, " out=%s", mp_csp_levels_names[p->outputlevels]);
+        if (p->rotate)
+            mp_snprintf_cat(b, bs, " rot=%d", p->rotate);
+        if (p->stereo_in > 0 || p->stereo_out > 0) {
+            mp_snprintf_cat(b, bs, " stereo=%s/%s",
+                            MP_STEREO3D_NAME_DEF(p->stereo_in, "?"),
+                            MP_STEREO3D_NAME_DEF(p->stereo_out, "?"));
+        }
+    } else {
+        snprintf(b, bs, "???");
+    }
+    return b;
+}
+
 // Return whether the image parameters are valid.
 // Some non-essential fields are allowed to be unset (like colorspace flags).
 bool mp_image_params_valid(const struct mp_image_params *p)
@@ -689,6 +715,10 @@ struct AVFrame *mp_image_to_av_frame_and_unref(struct mp_image *img)
     if (!new_ref)
         return NULL;
     AVFrame *frame = av_frame_alloc();
+    if (!frame) {
+        talloc_free(new_ref);
+        return NULL;
+    }
     mp_image_copy_fields_to_av_frame(frame, new_ref);
     // Caveat: if img has shared references, and all other references disappear
     //         at a later point, the AVFrame will still be read-only.

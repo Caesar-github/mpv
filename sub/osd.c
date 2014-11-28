@@ -43,14 +43,14 @@
 
 static const struct osd_style_opts osd_style_opts_def = {
     .font = "sans-serif",
-    .font_size = 45,
+    .font_size = 55,
     .color = {255, 255, 255, 255},
     .border_color = {0, 0, 0, 255},
     .shadow_color = {240, 240, 240, 128},
-    .border_size = 2.5,
+    .border_size = 3,
     .shadow_offset = 0,
     .margin_x = 25,
-    .margin_y = 10,
+    .margin_y = 22,
 };
 
 #define OPT_BASE_STRUCT struct osd_style_opts
@@ -146,13 +146,6 @@ void osd_set_sub(struct osd_state *osd, int obj, struct osd_sub_state *substate)
     pthread_mutex_unlock(&osd->lock);
 }
 
-void osd_get_sub(struct osd_state *osd, int obj, struct osd_sub_state *substate)
-{
-    pthread_mutex_lock(&osd->lock);
-    *substate = osd->objs[obj]->sub_state;
-    pthread_mutex_unlock(&osd->lock);
-}
-
 bool osd_get_render_subs_in_filter(struct osd_state *osd)
 {
     pthread_mutex_lock(&osd->lock);
@@ -203,6 +196,7 @@ void osd_set_external2(struct osd_state *osd, struct sub_bitmaps *imgs)
 {
     pthread_mutex_lock(&osd->lock);
     osd->objs[OSDTYPE_EXTERNAL2]->external2 = imgs;
+    osd_changed_unlocked(osd, OSDTYPE_EXTERNAL2);
     pthread_mutex_unlock(&osd->lock);
 }
 
@@ -465,8 +459,9 @@ struct mp_osd_res osd_get_vo_res(struct osd_state *osd, int obj)
 // Position the subbitmaps in imgs on the screen. Basically, this fits the
 // subtitle canvas (of size frame_w x frame_h) onto the screen, such that it
 // fills the whole video area (especially if the video is magnified, e.g. on
-// fullscreen). If compensate_par is given, adjust the way the subtitles are
-// "stretched" on the screen, and letter-box the result.
+// fullscreen). If compensate_par is >0, adjust the way the subtitles are
+// "stretched" on the screen, and letter-box the result. If compensate_par
+// is <0, strictly letter-box the subtitles. If it is 0, stretch them.
 void osd_rescale_bitmaps(struct sub_bitmaps *imgs, int frame_w, int frame_h,
                          struct mp_osd_res res, double compensate_par)
 {
@@ -474,6 +469,8 @@ void osd_rescale_bitmaps(struct sub_bitmaps *imgs, int frame_w, int frame_h,
     int vidh = res.h - res.mt - res.mb;
     double xscale = (double)vidw / frame_w;
     double yscale = (double)vidh / frame_h;
+    if (compensate_par < 0)
+        compensate_par = xscale / yscale / res.display_par;
     if (compensate_par > 0) {
         if (compensate_par > 1.0) {
             xscale /= compensate_par;
@@ -485,10 +482,10 @@ void osd_rescale_bitmaps(struct sub_bitmaps *imgs, int frame_w, int frame_h,
     int cy = vidh / 2 - (int)(frame_h * yscale) / 2;
     for (int i = 0; i < imgs->num_parts; i++) {
         struct sub_bitmap *bi = &imgs->parts[i];
-        bi->x = bi->x * xscale + cx + res.ml;
-        bi->y = bi->y * yscale + cy + res.mt;
-        bi->dw = bi->w * xscale;
-        bi->dh = bi->h * yscale;
+        bi->x = (int)(bi->x * xscale) + cx + res.ml;
+        bi->y = (int)(bi->y * yscale) + cy + res.mt;
+        bi->dw = (int)(bi->w * xscale + 0.5);
+        bi->dh = (int)(bi->h * yscale + 0.5);
     }
     imgs->scaled = xscale != 1 || yscale != 1;
 }

@@ -105,6 +105,7 @@ enum stream_ctrl {
     STREAM_CTRL_DVB_SET_CHANNEL,
     STREAM_CTRL_DVB_STEP_CHANNEL,
     STREAM_CTRL_AVSEEK,
+    STREAM_CTRL_HAS_AVSEEK,
 };
 
 struct stream_lang_req {
@@ -263,10 +264,19 @@ struct mp_cancel *mp_cancel_new(void *talloc_ctx);
 void mp_cancel_trigger(struct mp_cancel *c);
 bool mp_cancel_test(struct mp_cancel *c);
 void mp_cancel_reset(struct mp_cancel *c);
+void *mp_cancel_get_event(struct mp_cancel *c); // win32 HANDLE
+int mp_cancel_get_fd(struct mp_cancel *c);
 
 // stream_file.c
 char *mp_file_url_to_filename(void *talloc_ctx, bstr url);
 char *mp_file_get_path(void *talloc_ctx, bstr url);
+
+// stream_lavf.c
+struct AVDictionary;
+void mp_setup_av_network_options(struct AVDictionary **dict,
+                                 struct mpv_global *global,
+                                 struct mp_log *log,
+                                 struct MPOpts *opts);
 
 void stream_print_proto_list(struct mp_log *log);
 
