@@ -158,11 +158,13 @@ extern "C" {
  * number is incremented. This affects only C part, and not properties and
  * options.
  *
+ * Every API bump is described in DOCS/client-api-changes.rst
+ *
  * You can use MPV_MAKE_VERSION() and compare the result with integer
  * relational operators (<, >, <=, >=).
  */
 #define MPV_MAKE_VERSION(major, minor) (((major) << 16) | (minor) | 0UL)
-#define MPV_CLIENT_API_VERSION MPV_MAKE_VERSION(1, 5)
+#define MPV_CLIENT_API_VERSION MPV_MAKE_VERSION(1, 10)
 
 /**
  * Return the MPV_CLIENT_API_VERSION the mpv source has been compiled with.
@@ -244,7 +246,30 @@ typedef enum mpv_error {
     /**
      * General error when running a command with mpv_command and similar.
      */
-    MPV_ERROR_COMMAND           = -12
+    MPV_ERROR_COMMAND           = -12,
+    /**
+     * Generic error on loading (used with mpv_event_end_file.error).
+     */
+    MPV_ERROR_LOADING_FAILED    = -13,
+    /**
+     * Initializing the audio output failed.
+     */
+    MPV_ERROR_AO_INIT_FAILED    = -14,
+    /**
+     * Initializing the video output failed.
+     */
+    MPV_ERROR_VO_INIT_FAILED    = -15,
+    /**
+     * There was no audio or video data to play. This also happens if the
+     * file was recognized, but did not contain any audio or video streams,
+     * or no streams were selected.
+     */
+    MPV_ERROR_NOTHING_TO_PLAY   = -16,
+    /**
+     * When trying to load the file, the file format could not be determined,
+     * or the file was too broken to open it.
+     */
+    MPV_ERROR_UNKNOWN_FORMAT    = -17
 } mpv_error;
 
 /**
@@ -611,6 +636,11 @@ typedef struct mpv_node_list {
  * Frees any data referenced by the node. It doesn't free the node itself.
  * Call this only if the mpv client API set the node. If you constructed the
  * node yourself (manually), you have to free it yourself.
+ *
+ * If node->format is MPV_FORMAT_NONE, this call does nothing. Likewise, if
+ * the client API sets a node with this format, this function doesn't need to
+ * be called. (This is just a clarification that there's no danger of anything
+ * strange happening in these cases.)
  */
 void mpv_free_node_contents(mpv_node *node);
 
@@ -656,6 +686,26 @@ int mpv_set_option_string(mpv_handle *ctx, const char *name, const char *data);
 int mpv_command(mpv_handle *ctx, const char **args);
 
 /**
+ * Same as mpv_command(), but allows passing structured data in any format.
+ * In particular, calling mpv_command() is exactly like calling
+ * mpv_command_node() with the format set to MPV_FORMAT_NODE_ARRAY, and
+ * every arg passed in order as MPV_FORMAT_STRING.
+ *
+ * @param[in] args mpv_node with format set to MPV_FORMAT_NODE_ARRAY; each entry
+ *                 is an argument using an arbitrary format (the format must be
+ *                 compatible to the used command). Usually, the first item is
+ *                 the command name (as MPV_FORMAT_STRING).
+ * @param[out] result Optional, pass NULL if unused. If not NULL, and if the
+ *                    function succeeds, this is set to command-specific return
+ *                    data. You must call mpv_free_node_contents() to free it
+ *                    (again, only if the command actually succeeds).
+ *                    Currently, no command uses this, but that can change in
+ *                    the future.
+ * @return error code (the result parameter is not set on error)
+ */
+int mpv_command_node(mpv_handle *ctx, mpv_node *args, mpv_node *result);
+
+/**
  * Same as mpv_command, but use input.conf parsing for splitting arguments.
  * This is slightly simpler, but also more error prone, since arguments may
  * need quoting/escaping.
@@ -669,12 +719,29 @@ int mpv_command_string(mpv_handle *ctx, const char *args);
  * MPV_EVENT_COMMAND_REPLY event. (This event will also have an
  * error code set if running the command failed.)
  *
- * @param reply_userdata see section about asynchronous calls
+ * @param reply_userdata the value mpv_event.reply_userdata of the reply will
+ *                       be set to (see section about asynchronous calls)
  * @param args NULL-terminated list of strings (see mpv_command())
- * @return error code
+ * @return error code (if parsing or queuing the command fails)
  */
 int mpv_command_async(mpv_handle *ctx, uint64_t reply_userdata,
                       const char **args);
+
+/**
+ * Same as mpv_command_node(), but run it asynchronously. Basically, this
+ * function is to mpv_command_node() what mpv_command_async() is to
+ * mpv_command().
+ *
+ * See mpv_command_async() for details. Retrieving the result is not
+ * supported yet.
+ *
+ * @param reply_userdata the value mpv_event.reply_userdata of the reply will
+ *                       be set to (see section about asynchronous calls)
+ * @param args as in mpv_command_node()
+ * @return error code (if parsing or queuing the command fails)
+ */
+int mpv_command_node_async(mpv_handle *ctx, uint64_t reply_userdata,
+                           mpv_node *args);
 
 /**
  * Set a property to a given value. Properties are essentially variables which
@@ -779,37 +846,44 @@ int mpv_get_property_async(mpv_handle *ctx, uint64_t reply_userdata,
 /**
  * Get a notification whenever the given property changes. You will receive
  * updates as MPV_EVENT_PROPERTY_CHANGE. Note that this is not very precise:
- * it can send updates even if the property in fact did not change, or (in
- * some cases) not send updates even if the property changed - it usually
- * depends on the property. It's a valid feature request to ask for better
- * update handling of a specific property.
+ * for some properties, it may not send updates even if the property changed.
+ * This depends on the property, and it's a valid feature request to ask for
+ * better update handling of a specific property. (For some properties, like
+ * ``clock``, which shows the wall clock, this mechanism doesn't make too
+ * much sense anyway.)
  *
  * Property changes are coalesced: the change events are returned only once the
  * event queue becomes empty (e.g. mpv_wait_event() would block or return
  * MPV_EVENT_NONE), and then only one event per changed property is returned.
  *
- * If the format parameter is set to something other than MPV_FORMAT_NONE, the
- * current property value will be returned as part of mpv_event_property. In
- * this case, the API will also suppress redundant change events by comparing
- * the raw value against the previous value.
+ * Normally, change events are sent only if the property value changes according
+ * to the requested format. mpv_event_property will contain the property value
+ * as data member.
  *
  * Warning: if a property is unavailable or retrieving it caused an error,
  *          MPV_FORMAT_NONE will be set in mpv_event_property, even if the
  *          format parameter was set to a different value. In this case, the
  *          mpv_event_property.data field is invalid.
  *
- * Observing a property that doesn't exist is allowed, although it may still
- * cause some sporadic change events.
+ * If the property is observed with the format parameter set to MPV_FORMAT_NONE,
+ * you get low-level notifications whether the property _may_ have changed, and
+ * the data member in mpv_event_property will be unset. With this mode, you
+ * will have to determine yourself whether the property really changd. On the
+ * other hand, this mechanism can be faster and uses less resources.
+ *
+ * Observing a property that doesn't exist is allowed. (Although it may still
+ * cause some sporadic change events.)
  *
  * Keep in mind that you will get change notifications even if you change a
  * property yourself. Try to avoid endless feedback loops, which could happen
- * if you react to change notifications which you caused yourself.
+ * if you react to the change notifications triggered by your own change.
  *
  * @param reply_userdata This will be used for the mpv_event.reply_userdata
  *                       field for the received MPV_EVENT_PROPERTY_CHANGE
  *                       events. (Also see section about asynchronous calls,
  *                       although this function is somewhat different from
  *                       actual asynchronous calls.)
+ *                       If you have no use for this, pass 0.
  *                       Also see mpv_unobserve_property().
  * @param name The property name.
  * @param format see enum mpv_format. Can be MPV_FORMAT_NONE to omit values
@@ -878,10 +952,18 @@ typedef enum mpv_event_id {
      * The list of video/audio/subtitle tracks was changed. (E.g. a new track
      * was found. This doesn't necessarily indicate a track switch; for this,
      * MPV_EVENT_TRACK_SWITCHED is used.)
+     *
+     * @deprecated This is equivalent to using mpv_observe_property() on the
+     *             "track-list" property. The event is redundant, and might
+     *             be removed in the far future.
      */
     MPV_EVENT_TRACKS_CHANGED    = 9,
     /**
      * A video/audio/subtitle track was switched on or off.
+     *
+     * @deprecated This is equivalent to using mpv_observe_property() on the
+     *             "vid", "aid", and "sid" properties. The event is redundant,
+     *             and might be removed in the far future.
      */
     MPV_EVENT_TRACK_SWITCHED    = 10,
     /**
@@ -892,14 +974,32 @@ typedef enum mpv_event_id {
      */
     MPV_EVENT_IDLE              = 11,
     /**
-     * Playback was paused. This indicates the logical pause state (like the
-     * property "pause" as opposed to the "core-idle" propetty). This event
-     * is sent whenever any pause state changes, not only the logical state,
-     * so you might get multiple MPV_EVENT_PAUSE events in a row.
+     * Playback was paused. This indicates the user pause state.
+     *
+     * The user pause state is the state the user requested (changed with the
+     * "pause" property). There is an internal pause state too, which is entered
+     * if e.g. the network is too slow (the "core-idle" property generally
+     * indicates whether the core is playing or waiting).
+     *
+     * This event is sent whenever any pause states change, not only the user
+     * state. You might get multiple events in a row while these states change
+     * independently. But the event ID sent always indicates the user pause
+     * state.
+     *
+     * If you don't want to deal with this, use mpv_observe_property() on the
+     * "pause" property and ignore MPV_EVENT_PAUSE/UNPAUSE. Likewise, the
+     * "core-idle" property tells you whether video is actually playing or not.
+     *
+     * @deprecated The event is redundant with mpv_observe_property() as
+     *             mentioned above, and might be removed in the far future.
      */
     MPV_EVENT_PAUSE             = 12,
     /**
      * Playback was unpaused. See MPV_EVENT_PAUSE for not so obvious details.
+     *
+     * @deprecated The event is redundant with mpv_observe_property() as
+     *             explained in the MPV_EVENT_PAUSE comments, and might be
+     *             removed in the far future.
      */
     MPV_EVENT_UNPAUSE           = 13,
     /**
@@ -910,12 +1010,12 @@ typedef enum mpv_event_id {
      */
     MPV_EVENT_TICK              = 14,
     /**
-     * Triggered by the script_dispatch input command. The command uses the
-     * client name (see mpv_client_name()) to dispatch keyboard or mouse input
-     * to a client.
-     * (This is pretty obscure and largely replaced by MPV_EVENT_CLIENT_MESSAGE,
-     * but still the only way to distinguish key down/up events when binding
-     * script_dispatch via input.conf.)
+     * @deprecated This was used internally with the internal "script_dispatch"
+     *             command to dispatch keyboard and mouse input for the OSC.
+     *             It was never useful in general and has been completely
+     *             replaced with "script_binding".
+     *             This event never happens anymore, and is included in this
+     *             header only for compatibility.
      */
     MPV_EVENT_SCRIPT_INPUT_DISPATCH = 15,
     /**
@@ -946,6 +1046,10 @@ typedef enum mpv_event_id {
      * Happens when metadata (like file tags) is possibly updated. (It's left
      * unspecified whether this happens on file start or only when it changes
      * within a file.)
+     *
+     * @deprecated This is equivalent to using mpv_observe_property() on the
+     *             "metadata" property. The event is redundant, and might
+     *             be removed in the far future.
      */
     MPV_EVENT_METADATA_UPDATE   = 19,
     /**
@@ -967,6 +1071,10 @@ typedef enum mpv_event_id {
     MPV_EVENT_PROPERTY_CHANGE   = 22,
     /**
      * Happens when the current chapter changes.
+     *
+     * @deprecated This is equivalent to using mpv_observe_property() on the
+     *             "chapter" property. The event is redundant, and might
+     *             be removed in the far future.
      */
     MPV_EVENT_CHAPTER_CHANGE = 23
     // Internal note: adjust INTERNAL_EVENT_BASE when adding new events.
@@ -994,8 +1102,10 @@ typedef struct mpv_event_property {
      */
     const char *name;
     /**
-     * Format of the given data. See enum mpv_format.
-     * This is always the same format as the requested format.
+     * Format of the data field in the same struct. See enum mpv_format.
+     * This is always the same format as the requested format, except when
+     * the property could not be retrieved (unavailable, or an error happened),
+     * in which case the format is MPV_FORMAT_NONE.
      */
     mpv_format format;
     /**
@@ -1006,57 +1116,105 @@ typedef struct mpv_event_property {
      *
      *    char *value = *(char **)(event_property->data);
      *
-     * Note that this is set to NULL if retrieving the property failed.
+     * Note that this is set to NULL if retrieving the property failed (the
+     * format will be MPV_FORMAT_NONE).
      * See mpv_event.error for the status.
      */
     void *data;
 } mpv_event_property;
 
+/**
+ * Numeric log levels. The lower the number, the more important the message is.
+ * MPV_LOG_LEVEL_NONE is never used when receiving messages. The string in
+ * the comment after the value is the name of the log level as used for the
+ * mpv_request_log_messages() function.
+ * Unused numeric values are unused, but reserved for future use.
+ */
+typedef enum mpv_log_level {
+    MPV_LOG_LEVEL_NONE  = 0,    /// "no"    - disable absolutely all messages
+    MPV_LOG_LEVEL_FATAL = 10,   /// "fatal" - critical/aborting errors
+    MPV_LOG_LEVEL_ERROR = 20,   /// "error" - simple errors
+    MPV_LOG_LEVEL_WARN  = 30,   /// "warn"  - possible problems
+    MPV_LOG_LEVEL_INFO  = 40,   /// "info"  - informational message
+    MPV_LOG_LEVEL_V     = 50,   /// "v"     - noisy informational message
+    MPV_LOG_LEVEL_DEBUG = 60,   /// "debug" - very noisy technical information
+    MPV_LOG_LEVEL_TRACE = 70,   /// "trace" - extremely noisy
+} mpv_log_level;
+
 typedef struct mpv_event_log_message {
     /**
-     * The module prefix, identifies the sender of the message.
+     * The module prefix, identifies the sender of the message. As a special
+     * case, if the message buffer overflows, this will be set to the string
+     * "overflow" (which doesn't appear as prefix otherwise), and the text
+     * field will contain an informative message.
      */
     const char *prefix;
     /**
      * The log level as string. See mpv_request_log_messages() for possible
-     * values.
+     * values. The level "no" is never used here.
      */
     const char *level;
     /**
-     * The log message. Note that this is the direct output of a printf()
-     * style output API. The text will contain embedded newlines, and it's
-     * possible that a single message contains multiple lines, or that a
-     * message contains a partial line.
-     *
-     * It's safe to display messages only if they end with a newline character,
-     * and to buffer them otherwise.
+     * The log message. It consists of 1 line of text, and is terminated with
+     * a newline character. (Before API version 1.6, it could contain multiple
+     * or partial lines.)
      */
     const char *text;
+    /**
+     * The same contents as the level field, but as a numeric ID.
+     * Since API version 1.6.
+     */
+    mpv_log_level log_level;
 } mpv_event_log_message;
+
+/// Since API version 1.9.
+typedef enum mpv_end_file_reason {
+    /**
+     * The end of file was reached. Sometimes this may also happen on
+     * incomplete or corrupted files, or if the network connection was
+     * interrupted when playing a remote file. It also happens if the
+     * playback range was restricted with --end or --frames or similar.
+     */
+    MPV_END_FILE_REASON_EOF = 0,
+    /**
+     * Playback was stopped by an external action (e.g. playlist controls).
+     */
+    MPV_END_FILE_REASON_STOP = 2,
+    /**
+     * Playback was stopped by the quit command or player shutdown.
+     */
+    MPV_END_FILE_REASON_QUIT = 3,
+    /**
+     * Some kind of error happened that lead to playback abort. Does not
+     * necessarily happen on incomplete or broken files (in these cases, both
+     * MPV_END_FILE_REASON_ERROR or MPV_END_FILE_REASON_EOF are possible).
+     *
+     * mpv_event_end_file.error will be set.
+     */
+    MPV_END_FILE_REASON_ERROR = 4,
+} mpv_end_file_reason;
 
 typedef struct mpv_event_end_file {
     /**
-     * Identifies the reason why playback was stopped:
-     *  0: the end of the file was reached or initialization failed
-     *  1: the file is restarted (e.g. edition switching)
-     *  2: playback was aborted by an external action (e.g. playlist controls)
-     *  3: the player received the quit command
-     * Other values should be treated as unknown.
+     * Corresponds to the values in enum mpv_end_file_reason (the "int" type
+     * will be replaced with mpv_end_file_reason on the next ABI bump).
+     *
+     * Unknown values should be treated as unknown.
      */
-  int reason;
+    int reason;
+    /**
+     * If reason==MPV_END_FILE_REASON_ERROR, this contains a mpv error code
+     * (one of MPV_ERROR_...) giving an approximate reason why playback
+     * failed. In other cases, this field is 0 (no error).
+     * Since API version 1.9.
+     */
+    int error;
 } mpv_event_end_file;
 
+/** @deprecated see MPV_EVENT_SCRIPT_INPUT_DISPATCH for remarks
+ */
 typedef struct mpv_event_script_input_dispatch {
-    /**
-     * Arbitrary integer value that was provided as argument to the
-     * script_dispatch input command.
-     */
     int arg0;
-    /**
-     * Type of the input. Currently either "keyup_follows" (basically a key
-     * down event), or "press" (either a single key event, or a key up event
-     * following a "keyup_follows" event).
-     */
     const char *type;
 } mpv_event_script_input_dispatch;
 
@@ -1082,13 +1240,21 @@ typedef struct mpv_event {
      * requests. It contains a status code, which is >= 0 on success, or < 0
      * on error (a mpv_error value). Usually, this will be set if an
      * asynchronous request fails.
+     * Used for:
+     *  MPV_EVENT_GET_PROPERTY_REPLY
+     *  MPV_EVENT_SET_PROPERTY_REPLY
+     *  MPV_EVENT_COMMAND_REPLY
      */
     int error;
     /**
      * If the event is in reply to a request (made with this API and this
      * API handle), this is set to the reply_userdata parameter of the request
-     * call.
-     * Otherwise, this field is 0.
+     * call. Otherwise, this field is 0.
+     * Used for:
+     *  MPV_EVENT_GET_PROPERTY_REPLY
+     *  MPV_EVENT_SET_PROPERTY_REPLY
+     *  MPV_EVENT_COMMAND_REPLY
+     *  MPV_EVENT_PROPERTY_CHANGE
      */
     uint64_t reply_userdata;
     /**
@@ -1096,7 +1262,6 @@ typedef struct mpv_event {
      *  MPV_EVENT_GET_PROPERTY_REPLY:     mpv_event_property*
      *  MPV_EVENT_PROPERTY_CHANGE:        mpv_event_property*
      *  MPV_EVENT_LOG_MESSAGE:            mpv_event_log_message*
-     *  MPV_EVENT_SCRIPT_INPUT_DISPATCH:  mpv_event_script_input_dispatch*
      *  MPV_EVENT_CLIENT_MESSAGE:         mpv_event_client_message*
      *  MPV_EVENT_END_FILE:               mpv_event_end_file*
      *  other: NULL
@@ -1129,6 +1294,7 @@ int mpv_request_event(mpv_handle *ctx, mpv_event_id event, int enable);
  * @param min_level Minimal log level as string. Valid log levels:
  *                      no fatal error warn info status v debug trace
  *                  The value "no" disables all messages. This is the default.
+ *                  Also see mpv_log_level.
  */
 int mpv_request_log_messages(mpv_handle *ctx, const char *min_level);
 
@@ -1142,11 +1308,12 @@ int mpv_request_log_messages(mpv_handle *ctx, const char *min_level);
  * overflow and silently discard further events. If this happens, making
  * asynchronous requests will fail as well (with MPV_ERROR_EVENT_QUEUE_FULL).
  *
- * Only one thread is allowed to call this at a time. The API won't complain
- * if more than one thread calls this, but it will cause race conditions in
- * the client when accessing the shared mpv_event struct. Note that most other
- * API functions are not restricted by this, and no API function internally
- * calls mpv_wait_event().
+ * Only one thread is allowed to call this on the same mpv_handle at a time.
+ * The API won't complain if more than one thread calls this, but it will cause
+ * race conditions in the client when accessing the shared mpv_event struct.
+ * Note that most other API functions are not restricted by this, and no API
+ * function internally calls mpv_wait_event(). This does not apply to concurrent
+ * calls of this function on different mpv_handles: these are always safe.
  *
  * @param timeout Timeout in seconds, after which the function returns even if
  *                no event was received. A MPV_EVENT_NONE is returned on

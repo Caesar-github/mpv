@@ -34,6 +34,7 @@ struct mp_log;
 struct xrandr_display {
     struct mp_rect rc;
     double fps;
+    char *name;
 };
 
 struct vo_x11_state {
@@ -103,11 +104,8 @@ struct vo_x11_state {
     int ShmCompletionWaitCount;
 
     /* drag and drop */
-    Atom dnd_property;
     Atom dnd_requested_format;
     Window dnd_src_window;
-
-    Atom atom_frame_exts;
 
     /* dragging the window */
     bool win_drag_button1_down;

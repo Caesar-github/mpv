@@ -167,6 +167,11 @@ void mp_nav_user_input(struct MPContext *mpctx, char *command)
     struct mp_nav_state *nav = mpctx->nav_state;
     if (!nav)
         return;
+    // In the short time while the demuxer is opened (running in a different
+    // thread) we can't access the stream directly. Once the demuxer is opened,
+    // we can access the stream via demux_stream_control() though.
+    if (!mpctx->demuxer)
+        return;
     if (strcmp(command, "mouse_move") == 0) {
         struct mp_image_params vid = {0};
         if (mpctx->d_video)
@@ -339,7 +344,7 @@ void mp_nav_get_highlight(void *priv, struct mp_osd_res res,
     if (out_imgs->num_parts) {
         out_imgs->parts = nav->outputs;
         out_imgs->format = SUBBITMAP_RGBA;
-        osd_rescale_bitmaps(out_imgs, sizes[0], sizes[1], res, -1);
+        osd_rescale_bitmaps(out_imgs, sizes[0], sizes[1], res, 0);
     }
 
     pthread_mutex_unlock(&nav->osd_lock);

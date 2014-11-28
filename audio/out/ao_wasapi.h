@@ -30,12 +30,26 @@
 
 #include "osdep/atomics.h"
 
+typedef struct change_notify {
+    IMMNotificationClient client; /* this must be first in the structure! */
+    LPWSTR monitored; /* Monitored device */
+    struct ao *ao;
+} change_notify;
+
+HRESULT wasapi_change_init(struct ao* ao);
+void wasapi_change_uninit(struct ao* ao);
+
+#define EXIT_ON_ERROR(hres)  \
+              do { if (FAILED(hres)) { goto exit_label; } } while(0)
+#define SAFE_RELEASE(unk, release) \
+              do { if ((unk) != NULL) { release; (unk) = NULL; } } while(0)
+
 typedef struct wasapi_state {
     struct mp_log *log;
     HANDLE threadLoop;
 
     /* Init phase */
-    int init_ret;
+    HRESULT init_ret;
     HANDLE init_done;
     int share_mode;
 
@@ -49,10 +63,6 @@ typedef struct wasapi_state {
 
     /* Buffers */
     size_t buffer_block_size; /* Size of each block in bytes */
-    REFERENCE_TIME
-        minRequestedDuration; /* minimum wasapi buffer block size, in 100-nanosecond units */
-    REFERENCE_TIME
-        defaultRequestedDuration; /* default wasapi default block size, in 100-nanosecond units */
     UINT32 bufferFrameCount; /* wasapi buffer block size, number of frames, frame size at format.nBlockAlign */
 
     /* WASAPI handles, owned by other thread */
@@ -62,6 +72,8 @@ typedef struct wasapi_state {
     ISimpleAudioVolume *pAudioVolume;
     IAudioEndpointVolume *pEndpointVolume;
     IAudioSessionControl *pSessionControl;
+    IMMDeviceEnumerator *pEnumerator;
+
     HANDLE hFeed; /* wasapi event */
     HANDLE hForceFeed; /* forces writing a buffer (e.g. before audio_resume) */
     HANDLE hFeedDone; /* set only after a hForceFeed */
@@ -100,6 +112,8 @@ typedef struct wasapi_state {
         HANDLE (WINAPI *pAvSetMmThreadCharacteristicsW)(LPCWSTR, LPDWORD);
         WINBOOL (WINAPI *pAvRevertMmThreadCharacteristics)(HANDLE);
     } VistaBlob;
+
+    change_notify change;
 } wasapi_state;
 
 #endif

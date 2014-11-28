@@ -27,13 +27,13 @@ The general simplified syntax is::
     <filename>,<start in seconds>,<length in seconds>
 
 If the start time is omitted, 0 is used. If the length is omitted, the
-estimated duration of the source file is used.
+estimated remaining duration of the source file is used.
 
 Note::
 
-    mpv can't use ordered chapter files or libquvi-resolved URLs in EDL
-    entries. Usage of relative or absolute paths as well as any protocol
-    prefixes is prevented for security reasons.
+    mpv can't use ordered chapter files in EDL entries. Usage of relative or
+    absolute paths as well as any protocol prefixes is prevented for security
+    reasons.
 
 
 Syntax of mpv EDL files

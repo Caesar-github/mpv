@@ -94,6 +94,15 @@ The ``mp`` module is preloaded, although it can be loaded manually with
     the ``expand-properties`` prefix, or the ``mp.get_property`` family of
     functions.
 
+``mp.command_native(table [,def])``
+    Similar to ``mp.commandv``, but pass the argument list as table. This has
+    the advantage that in at least some cases, arguments can be passed as
+    native types.
+
+    Returns a result table on success (usually empty), or ``def, error`` on
+    error. ``def`` is the second parameter provided to the function, and is
+    nil if it's missing.
+
 ``mp.get_property(name [,def])``
     Return the value of the given property as string. These are the same
     properties as used in input.conf. See `Properties`_ for a list of
@@ -172,7 +181,7 @@ The ``mp`` module is preloaded, although it can be loaded manually with
     Return the current mpv internal time in seconds as a number. This is
     basically the system time, with an arbitrary offset.
 
-``mp.add_key_binding(key, name|fn [,fn])``
+``mp.add_key_binding(key, name|fn [,fn [,flags]])``
     Register callback to be run on a key binding. The binding will be mapped to
     the given ``key``, which is a string describing the physical key. This uses
     the same key names as in input.conf, and also allows combinations
@@ -189,8 +198,23 @@ The ``mp`` module is preloaded, although it can be loaded manually with
     overwritten. You can omit the name, in which case a random name is generated
     internally.
 
-    Internally, key bindings are dispatched via the ``script_message_to`` input
-    command and ``mp.register_script_message``.
+    The last argument is used for optional flags. This is a table, which can
+    have the following entries:
+
+        ``repeatable``
+            If set to ``true``, enables key repeat for this specific binding.
+
+        ``complex``
+            If set to ``true``, then ``fn`` is called on both key up and down
+            events (as well as key repeat, if enabled), with the first
+            argument being a table. This table has an ``event`` entry, which
+            is set to one of the strings ``down``, ``repeat``, ``up`` or
+            ``press`` (the latter if key up/down can't be tracked). It further
+            has an ``is_mouse`` entry, which tells whether the event was caused
+            by a mouse button.
+
+    Internally, key bindings are dispatched via the ``script_message_to`` or
+    ``script_binding`` input commands and ``mp.register_script_message``.
 
     Trying to map multiple commands to a key will essentially prefer a random
     binding, while the other bindings are not called. It is guaranteed that
@@ -213,7 +237,7 @@ The ``mp`` module is preloaded, although it can be loaded manually with
 
     ::
 
-        y script_message something
+        y script_binding something
 
 
     This will print the message when the key ``y`` is pressed. (``x`` will
@@ -224,7 +248,7 @@ The ``mp`` module is preloaded, although it can be loaded manually with
 
     ::
 
-        y script_message_to fooscript something
+        y script_binding fooscript.something
 
 ``mp.add_forced_key_binding(...)``
     This works almost the same as ``mp.add_key_binding``, but registers the
@@ -502,6 +526,9 @@ This built-in module provides generic helper functions for Lua, and have
 strictly speaking nothing to do with mpv or video/audio playback. They are
 provided for convenience. Most compensate for Lua's scarce standard library.
 
+Be warned that any of these functions might disappear any time. They are not
+strictly part of the guaranteed API.
+
 ``utils.getcwd()``
     Returns the directory that mpv was launched from. On error, ``nil, error``
     is returned.
@@ -541,6 +568,60 @@ provided for convenience. Most compensate for Lua's scarce standard library.
 ``utils.join_path(p1, p2)``
     Return the concatenation of the 2 paths. Tries to be clever. For example,
     if ```p2`` is an absolute path, p2 is returned without change.
+
+``utils.subprocess(t)``
+    Runs an external process and waits until it exits. Returns process status
+    and the captured output.
+
+    The paramater ``t`` is a table. The function reads the following entries:
+
+        ``args``
+            Array of strings. The first array entry is the executable. This
+            can be either an absolute path, or a filename with no path
+            components, in which case the ``PATH`` environment variable is
+            used to resolve the executable. The other array elements are
+            passed as command line arguments.
+
+        ``cancellable``
+            Optional. If set to ``true`` (default), then if the user stops
+            playback or goes to the next file while the process is running,
+            the process will be killed.
+
+        ``max_size``
+            Optional. The maximum size in bytes of the data that can be captured
+            from stdout. (Default: 16 MB.)
+
+    The function returns a table as result with the following entries:
+
+        ``status``
+            The raw exit status of the process. It will be negative on error.
+
+        ``stdout``
+            Captured output stream as string, limited to ``max_size``.
+
+        ``error``
+            ``nil`` on success. The string ``killed`` if the process was
+            terminated in an unusual way. The string ``init`` if the process
+            could not be started.
+
+            On Windows, ``killed`` is only returned when the process has been
+            killed by mpv as a result of ``cancellable`` being set to ``true``.
+
+    In all cases, ``mp.resume_all()`` is implicitly called.
+
+``utils.parse_json(str [, trail])``
+    Parses the given string argument as JSON, and returns it as a Lua table. On
+    error, returns ``nil, error``. (Currently, ``error`` is just a string
+    reading ``error``, because there is no fine-grained error reporting of any
+    kind.)
+
+    The returned value uses similar conventions as ``mp.get_property_native()``
+    to distinguish empty objects and arrays.
+
+    If the ``trail`` parameter is ``true`` (or any value equal to ``true``),
+    then trailing non-whitespace text is tolerated by the function, and the
+    trailing text is returned as 3rd return value. (The 3rd return value is
+    always there, but with ``trail`` set, no error is raised.)
 
 Events
 ------
@@ -583,27 +664,10 @@ List of events
 ``playback-restart``
     Start of playback after seek or after file was loaded.
 
-``tracks-changed``
-    The list of video/audio/sub tracks was updated. (This happens on playback
-    start, and very rarely during playback.)
-
-``track-switched``
-    A video/audio/subtitle track was switched on or off. This usually happens
-    when the user (or a script) changes the subtitle track and so on.
-
 ``idle``
     Idle mode is entered. This happens when playback ended, and the player was
     started with ``--idle`` or ``--force-window``. This mode is implicitly ended
     when the ``start-file`` or ``shutdown`` events happen.
-
-``pause``
-    Playback was paused. This also happens when for example the player is
-    paused on low network cache. Then the event type indicates the pause state
-    (like the property "pause" as opposed to the "core-idle" property), and you
-    might receive multiple ``pause`` events in a row.
-
-``unpause``
-    Playback was unpaused. See above for details.
 
 ``tick``
     Called after a video frame was displayed. This is a hack, and you should
@@ -664,8 +728,32 @@ List of events
 ``audio-reconfig``
     Happens on audio output or filter reconfig.
 
-``metadata-update``
-    Metadata (like file tags) was updated.
+The following events also happen, but are deprecated: ``tracks-changed``,
+``track-switched``, ``pause``, ``unpause``, ``metadata-update``,
+``chapter-change``. Use ``mp.observe_property()`` instead.
 
-``chapter-change``
-    The current chapter possibly changed.
+Extras
+------
+
+This documents experimental features, or features that are "too special" and
+we don't guarantee a stable interface to it.
+
+``mp.add_hook(type, priority, fn)``
+    Add a hook callback for ``type`` (a string identifying a certain kind of
+    hook). These hooks allow the player to call script functions and wait for
+    their result (normally, the Lua scripting interface is asynchronous from
+    the point of view of the player core). ``priority`` is an arbitrary integer
+    that allows ordering among hooks of the same kind. Using the value 50 is
+    recommended as neutral default value. ``fn`` is the function that will be
+    called during execution of the hook.
+
+    Currently existing hooks:
+
+    ``on_load``
+        Called when a file is to be opened, before anything is actually done.
+        For example, you could read and write the ``stream-open-filename``
+        property to redirect an URL to something else (consider support for
+        streaming sites which rarely give the user a direct media URL), or
+        you could set per-file options with by setting the property
+        ``file-local-options/<option name>``. The player will wait until all
+        hooks are run.

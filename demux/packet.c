@@ -20,6 +20,9 @@
 #include <assert.h>
 
 #include <libavcodec/avcodec.h>
+#include <libavutil/intreadwrite.h>
+
+#include "config.h"
 
 #include "common/av_common.h"
 #include "common/common.h"
@@ -112,4 +115,21 @@ struct demux_packet *demux_copy_packet(struct demux_packet *dp)
     new->dts = dp->dts;
     new->duration = dp->duration;
     return new;
+}
+
+int demux_packet_set_padding(struct demux_packet *dp, int start, int end)
+{
+#if HAVE_AVFRAME_SKIP_SAMPLES
+    if (!start  && !end)
+        return 0;
+    if (!dp->avpacket)
+        return -1;
+    uint8_t *p = av_packet_new_side_data(dp->avpacket, AV_PKT_DATA_SKIP_SAMPLES, 10);
+    if (!p)
+        return -1;
+
+    AV_WL32(p + 0, start);
+    AV_WL32(p + 4, end);
+#endif
+    return 0;
 }

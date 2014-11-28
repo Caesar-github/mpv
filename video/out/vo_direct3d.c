@@ -83,7 +83,7 @@ struct d3dtex {
     // D3DPOOL_DEFAULT texture:
     // - can't be locked (Probably.)
     // - must be used for rendering
-    // This will be NULL on systems with device_texture_sys != 0.
+    // This can be NULL if the system one can be both locked and mapped.
     IDirect3DTexture9 *device;
 };
 
@@ -201,6 +201,8 @@ static const struct fmt_entry fmt_table[] = {
     {IMGFMT_420P,  MAKEFOURCC('I','4','2','0')},
     {IMGFMT_420P,  MAKEFOURCC('I','Y','U','V')},
     {IMGFMT_410P,  MAKEFOURCC('Y','V','U','9')},
+    {IMGFMT_NV12,  MAKEFOURCC('N','V','1','2')},
+    {IMGFMT_NV21,  MAKEFOURCC('N','V','2','1')},
     // packed YUV
     {IMGFMT_YUYV,  D3DFMT_YUY2},
     {IMGFMT_UYVY,  D3DFMT_UYVY},
@@ -350,10 +352,13 @@ static bool d3dtex_allocate(d3d_priv *priv, struct d3dtex *tex, D3DFORMAT fmt,
     int tw = w, th = h;
     d3d_fix_texture_size(priv, &tw, &th);
 
+    bool use_sh = !priv->device_texture_sys;
     int memtype = D3DPOOL_SYSTEMMEM;
     switch (priv->opt_texture_memory) {
-    case 1: memtype = D3DPOOL_MANAGED; break;
-    case 2: memtype = D3DPOOL_DEFAULT; break;
+    case 1: memtype = D3DPOOL_MANAGED; use_sh = false; break;
+    case 2: memtype = D3DPOOL_DEFAULT; use_sh = false; break;
+    case 3: memtype = D3DPOOL_DEFAULT; use_sh = true; break;
+    case 4: memtype = D3DPOOL_SCRATCH; use_sh = true; break;
     }
 
     if (FAILED(IDirect3DDevice9_CreateTexture(priv->d3d_device, tw, th, 1,
@@ -363,7 +368,7 @@ static bool d3dtex_allocate(d3d_priv *priv, struct d3dtex *tex, D3DFORMAT fmt,
         goto error_exit;
     }
 
-    if (!priv->device_texture_sys && !priv->opt_texture_memory) {
+    if (use_sh) {
         if (FAILED(IDirect3DDevice9_CreateTexture(priv->d3d_device, tw, th, 1,
             D3DUSAGE_DYNAMIC, fmt, D3DPOOL_DEFAULT, &tex->device, NULL)))
         {
@@ -1265,6 +1270,8 @@ static int control(struct vo *vo, uint32_t request, void *data)
     if (events & VO_EVENT_EXPOSE)
         vo->want_redraw = true;
 
+    vo_event(vo, events);
+
     return r;
 }
 
@@ -1378,6 +1385,12 @@ static bool get_video_buffer(d3d_priv *priv, struct mp_image *out)
 
         out->planes[0] = base;
         out->stride[0] = stride;
+
+        if (out->num_planes == 2) {
+            // NV12, NV21
+            out->planes[1] = base + stride * out->h;
+            out->stride[1] = stride;
+        }
 
         if (out->num_planes == 3) {
             bool swap = priv->movie_src_fmt == MAKEFOURCC('Y','V','1','2');
@@ -1718,7 +1731,12 @@ static const struct m_option opts[] = {
     OPT_FLAG("only-8bit", opt_only_8bit, 0),
     OPT_FLAG("force-power-of-2", opt_force_power_of_2, 0),
     OPT_FLAG("disable-texture-align", opt_disable_texture_align, 0),
-    OPT_FLAG("texture-memory", opt_texture_memory, 0),
+    OPT_CHOICE("texture-memory", opt_texture_memory, 0,
+               ({"default", 0},
+                {"managed", 1},
+                {"default-pool", 2},
+                {"default-pool-shadow", 3},
+                {"scratch", 4})),
     OPT_FLAG("swap-discard", opt_swap_discard, 0),
     OPT_FLAG("exact-backbuffer", opt_exact_backbuffer, 0),
     {0}

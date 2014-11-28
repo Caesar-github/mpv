@@ -15,16 +15,18 @@
  * with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#import <Cocoa/Cocoa.h>
-#import "video/out/cocoa/mpvadapter.h"
+#ifndef MP_SUBPROCESS_H_
+#define MP_SUBPROCESS_H_
 
-@interface MpvVideoView : NSView <NSDraggingDestination> {
-    BOOL hasMouseDown;
-}
-@property(nonatomic, retain) MpvCocoaAdapter *adapter;
-@property(nonatomic, retain) NSTrackingArea *tracker;
-- (void)setFullScreen:(BOOL)willBeFullscreen;
-- (NSRect)frameInPixels;
-- (BOOL)canHideCursor;
-- (void)signalMousePosition;
-@end
+#include <stddef.h>
+
+struct mp_cancel;
+
+typedef void (*subprocess_read_cb)(void *ctx, char *data, size_t size);
+
+// Start a subprocess. Uses callbacks to read from stdout and stderr.
+int mp_subprocess(char **args, struct mp_cancel *cancel, void *ctx,
+                  subprocess_read_cb on_stdout, subprocess_read_cb on_stderr,
+                  char **error);
+
+#endif

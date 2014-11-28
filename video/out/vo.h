@@ -30,9 +30,17 @@
 #include "common/common.h"
 #include "options/options.h"
 
+// VO needs to redraw
 #define VO_EVENT_EXPOSE 1
+// VO needs to update state to a new window size
 #define VO_EVENT_RESIZE 2
+// The ICC profile needs to be reloaded
 #define VO_EVENT_ICC_PROFILE_PATH_CHANGED 4
+// Some other window state changed
+#define VO_EVENT_WIN_STATE 8
+
+// Set of events the player core may be interested in.
+#define VO_EVENTS_USER (VO_EVENT_RESIZE | VO_EVENT_WIN_STATE)
 
 enum mp_voctrl {
     /* signal a device reset seek */
@@ -76,6 +84,12 @@ enum mp_voctrl {
     // these must access the not-fullscreened window size only).
     VOCTRL_GET_UNFS_WINDOW_SIZE,        // int[2] (w/h)
     VOCTRL_SET_UNFS_WINDOW_SIZE,        // int[2] (w/h)
+
+    VOCTRL_GET_WIN_STATE,               // int* (VO_WIN_STATE_* flags)
+
+    // char *** (NULL terminated array compatible with CONF_TYPE_STRING_LIST)
+    // names for displays the window is on
+    VOCTRL_GET_DISPLAY_NAMES,
 
     // The VO is supposed to set  "known" fields, and leave the others
     // untouched or set to 0.
@@ -123,6 +137,9 @@ struct voctrl_screenshot_args {
     // Whether the VO rendered OSD/subtitles into out_image
     bool has_osd;
 };
+
+// VOCTRL_GET_WIN_STATE
+#define VO_WIN_STATE_MINIMIZED 1
 
 #define VO_TRUE         true
 #define VO_FALSE        false
@@ -298,6 +315,8 @@ void vo_destroy(struct vo *vo);
 void vo_set_paused(struct vo *vo, bool paused);
 int64_t vo_get_drop_count(struct vo *vo);
 int vo_query_format(struct vo *vo, int format);
+void vo_event(struct vo *vo, int event);
+int vo_query_and_reset_events(struct vo *vo, int events);
 
 void vo_set_flip_queue_offset(struct vo *vo, int64_t us);
 int64_t vo_get_vsync_interval(struct vo *vo);

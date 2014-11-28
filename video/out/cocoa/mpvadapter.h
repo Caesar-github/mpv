@@ -21,14 +21,17 @@
 @interface MpvCocoaAdapter : NSObject
 - (void)setNeedsResize;
 - (void)signalMouseMovement:(NSPoint)point;
+- (void)putKeyEvent:(NSEvent*)event;
 - (void)putKey:(int)mpkey withModifiers:(int)modifiers;
 - (void)putAxis:(int)mpkey delta:(float)delta;
 - (void)putCommand:(char*)cmd;
-- (void)performAsyncResize:(NSSize)size;
 - (void)handleFilesArray:(NSArray *)files;
 - (void)didChangeWindowedScreenProfile:(NSScreen *)screen;
+- (void)performAsyncResize:(NSSize)size;
 
 - (BOOL)isInFullScreenMode;
+- (BOOL)keyboardEnabled;
+- (BOOL)mouseEnabled;
 - (NSScreen *)fsScreen;
 @property(nonatomic, assign) struct vo *vout;
 @end

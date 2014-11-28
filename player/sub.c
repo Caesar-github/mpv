@@ -28,8 +28,10 @@
 #include "common/msg.h"
 #include "options/options.h"
 #include "common/common.h"
+#include "common/global.h"
 
 #include "stream/stream.h"
+#include "sub/ass_mp.h"
 #include "sub/dec_sub.h"
 #include "demux/demux.h"
 #include "video/mp_image.h"
@@ -38,7 +40,99 @@
 
 #include "core.h"
 
-void uninit_subs(struct demuxer *demuxer)
+#if HAVE_LIBASS
+
+static const char *const font_mimetypes[] = {
+    "application/x-truetype-font",
+    "application/vnd.ms-opentype",
+    "application/x-font-ttf",
+    "application/x-font", // probably incorrect
+    NULL
+};
+
+static const char *const font_exts[] = {".ttf", ".ttc", ".otf", NULL};
+
+static bool attachment_is_font(struct mp_log *log, struct demux_attachment *att)
+{
+    if (!att->name || !att->type || !att->data || !att->data_size)
+        return false;
+    for (int n = 0; font_mimetypes[n]; n++) {
+        if (strcmp(font_mimetypes[n], att->type) == 0)
+            return true;
+    }
+    // fallback: match against file extension
+    char *ext = strlen(att->name) > 4 ? att->name + strlen(att->name) - 4 : "";
+    for (int n = 0; font_exts[n]; n++) {
+        if (strcasecmp(ext, font_exts[n]) == 0) {
+            mp_warn(log, "Loading font attachment '%s' with MIME type %s. "
+                    "Assuming this is a broken Matroska file, which was "
+                    "muxed without setting a correct font MIME type.\n",
+                    att->name, att->type);
+            return true;
+        }
+    }
+    return false;
+}
+
+static void add_subtitle_fonts_from_sources(struct MPContext *mpctx)
+{
+    if (mpctx->opts->ass_enabled) {
+        for (int j = 0; j < mpctx->num_sources; j++) {
+            struct demuxer *d = mpctx->sources[j];
+            for (int i = 0; i < d->num_attachments; i++) {
+                struct demux_attachment *att = d->attachments + i;
+                if (mpctx->opts->use_embedded_fonts &&
+                    attachment_is_font(mpctx->log, att))
+                {
+                    ass_add_font(mpctx->ass_library, att->name, att->data,
+                                 att->data_size);
+                }
+            }
+        }
+    }
+}
+
+static void init_sub_renderer(struct MPContext *mpctx)
+{
+    struct MPOpts *opts = mpctx->opts;
+
+    if (mpctx->ass_renderer)
+        return;
+
+    if (!mpctx->ass_log)
+        mpctx->ass_log = mp_log_new(mpctx, mpctx->global->log, "!libass");
+
+    mpctx->ass_library = mp_ass_init(mpctx->global, mpctx->ass_log);
+
+    add_subtitle_fonts_from_sources(mpctx);
+
+    if (opts->ass_style_override)
+        ass_set_style_overrides(mpctx->ass_library, opts->ass_force_style_list);
+
+    mpctx->ass_renderer = ass_renderer_init(mpctx->ass_library);
+}
+
+void uninit_sub_renderer(struct MPContext *mpctx)
+{
+    if (mpctx->ass_renderer)
+        ass_renderer_done(mpctx->ass_renderer);
+    mpctx->ass_renderer = NULL;
+    if (mpctx->ass_library)
+        ass_library_done(mpctx->ass_library);
+    mpctx->ass_library = NULL;
+}
+
+#else /* HAVE_LIBASS */
+
+static void init_sub_renderer(struct MPContext *mpctx) {}
+void uninit_sub_renderer(struct MPContext *mpctx) {}
+
+void mp_ass_configure(ASS_Renderer *priv, struct MPOpts *opts,
+                      struct mp_osd_res *dim) {}
+
+#endif
+
+void uninit_stream_sub_decoders(struct demuxer *demuxer)
 {
     for (int i = 0; i < demuxer->num_streams; i++) {
         struct sh_stream *sh = demuxer->streams[i];
@@ -47,6 +141,23 @@ void uninit_subs(struct demuxer *demuxer)
             sh->sub->dec_sub = NULL;
         }
     }
+}
+
+void uninit_sub(struct MPContext *mpctx, int order)
+{
+    if (mpctx->d_sub[order]) {
+        mpctx->d_sub[order] = NULL; // Note: not free'd.
+        int obj = order ? OSDTYPE_SUB2 : OSDTYPE_SUB;
+        osd_set_sub(mpctx->osd, obj, NULL);
+        reset_subtitles(mpctx, order);
+        reselect_demux_streams(mpctx);
+    }
+}
+
+void uninit_sub_all(struct MPContext *mpctx)
+{
+    uninit_sub(mpctx, 0);
+    uninit_sub(mpctx, 1);
 }
 
 // When reading subtitles from a demuxer, and we read video or audio from the
@@ -82,20 +193,44 @@ void reset_subtitle_state(struct MPContext *mpctx)
     reset_subtitles(mpctx, 1);
 }
 
+void get_osd_sub_state(struct MPContext *mpctx, int order,
+                       struct osd_sub_state *out_state)
+{
+    struct MPOpts *opts = mpctx->opts;
+    struct track *track = mpctx->current_track[order][STREAM_SUB];
+    struct dec_sub *dec_sub = mpctx->d_sub[order];
+    int obj = order ? OSDTYPE_SUB2 : OSDTYPE_SUB;
+
+    struct osd_sub_state state = {
+        .dec_sub = dec_sub,
+        // Decides whether to use OSD path or normal subtitle rendering path.
+        .render_bitmap_subs = opts->ass_enabled || !sub_has_get_text(dec_sub),
+        .video_offset = get_track_video_offset(mpctx, track),
+    };
+
+    // Secondary subs are rendered with the "text" renderer to transform them
+    // to toptitles.
+    if (order == 1 && sub_has_get_text(dec_sub))
+        state.render_bitmap_subs = false;
+
+    if (!mpctx->current_track[0][STREAM_VIDEO])
+        state.render_bitmap_subs = false;
+
+    osd_set_sub(mpctx->osd, obj, &state);
+    if (out_state)
+        *out_state = state;
+}
+
 static void update_subtitle(struct MPContext *mpctx, int order)
 {
     struct MPOpts *opts = mpctx->opts;
-    if (order == 0) {
-        if (!(mpctx->initialized_flags & INITIALIZED_SUB))
-            return;
-    } else {
-        if (!(mpctx->initialized_flags & INITIALIZED_SUB2))
-            return;
-    }
-
     struct track *track = mpctx->current_track[order][STREAM_SUB];
     struct dec_sub *dec_sub = mpctx->d_sub[order];
-    assert(track && dec_sub);
+
+    if (!track)
+        return;
+
+    assert(dec_sub);
     int obj = order ? OSDTYPE_SUB2 : OSDTYPE_SUB;
 
     if (mpctx->d_video) {
@@ -105,9 +240,7 @@ static void update_subtitle(struct MPContext *mpctx, int order)
     }
 
     struct osd_sub_state state;
-    osd_get_sub(mpctx->osd, obj, &state);
-    state.video_offset = get_track_video_offset(mpctx, track);
-    osd_set_sub(mpctx->osd, obj, &state);
+    get_osd_sub_state(mpctx, order, &state);
 
     double refpts_s = mpctx->playback_pts - state.video_offset;
     double curpts_s = refpts_s - opts->sub_delay;
@@ -171,10 +304,17 @@ static void reinit_subdec(struct MPContext *mpctx, struct track *track,
     int h = sh_video ? sh_video->disp_h : 0;
     float fps = sh_video ? sh_video->fps : 25;
 
+    init_sub_renderer(mpctx);
+
     sub_set_video_res(dec_sub, w, h);
     sub_set_video_fps(dec_sub, fps);
     sub_set_ass_renderer(dec_sub, mpctx->ass_library, mpctx->ass_renderer);
     sub_init_from_sh(dec_sub, track->stream);
+
+    if (mpctx->ass_renderer) {
+        mp_ass_configure_fonts(mpctx->ass_renderer, opts->sub_text_style,
+                               mpctx->global, mpctx->ass_log);
+    }
 
     // Don't do this if the file has video/audio streams. Don't do it even
     // if it has only sub streams, because reading packets will change the
@@ -187,48 +327,22 @@ static void reinit_subdec(struct MPContext *mpctx, struct track *track,
 
 void reinit_subs(struct MPContext *mpctx, int order)
 {
-    struct MPOpts *opts = mpctx->opts;
     struct track *track = mpctx->current_track[order][STREAM_SUB];
-    int obj = order ? OSDTYPE_SUB2 : OSDTYPE_SUB;
-    int init_flag = order ? INITIALIZED_SUB2 : INITIALIZED_SUB;
 
-    assert(!(mpctx->initialized_flags & init_flag));
+    assert(!mpctx->d_sub[order]);
 
     struct sh_stream *sh = track ? track->stream : NULL;
     if (!sh)
         return;
 
-    if (!sh->sub->dec_sub) {
-        assert(!mpctx->d_sub[order]);
+    // The decoder is cached in the stream header in order to make ordered
+    // chapters work better.
+    if (!sh->sub->dec_sub)
         sh->sub->dec_sub = sub_create(mpctx->global);
-    }
-
-    assert(!mpctx->d_sub[order] || sh->sub->dec_sub == mpctx->d_sub[order]);
-
-    // The decoder is kept in the stream header in order to make ordered
-    // chapters work well.
     mpctx->d_sub[order] = sh->sub->dec_sub;
 
-    mpctx->initialized_flags |= init_flag;
-
     struct dec_sub *dec_sub = mpctx->d_sub[order];
-    assert(dec_sub);
-
     reinit_subdec(mpctx, track, dec_sub);
 
-    struct osd_sub_state state = {
-        .dec_sub = dec_sub,
-        // Decides whether to use OSD path or normal subtitle rendering path.
-        .render_bitmap_subs = opts->ass_enabled || !sub_has_get_text(dec_sub),
-    };
-
-    // Secondary subs are rendered with the "text" renderer to transform them
-    // to toptitles.
-    if (order == 1 && sub_has_get_text(dec_sub))
-        state.render_bitmap_subs = false;
-
-    if (!mpctx->current_track[0][STREAM_VIDEO])
-        state.render_bitmap_subs = false;
-
-    osd_set_sub(mpctx->osd, obj, &state);
+    get_osd_sub_state(mpctx, order, NULL);
 }

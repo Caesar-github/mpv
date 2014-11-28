@@ -93,11 +93,11 @@ static double unlocked_get_delay(struct ao *ao)
     return driver_delay + mp_audio_buffer_seconds(p->buffer);
 }
 
-static float get_delay(struct ao *ao)
+static double get_delay(struct ao *ao)
 {
     struct ao_push_state *p = ao->api_priv;
     pthread_mutex_lock(&p->lock);
-    float delay = unlocked_get_delay(ao);
+    double delay = unlocked_get_delay(ao);
     pthread_mutex_unlock(&p->lock);
     return delay;
 }
@@ -234,7 +234,10 @@ static int play(struct ao *ao, void **data, int samples, int flags)
 
     p->final_chunk = is_final;
     p->paused = false;
-    p->still_playing |= write_samples > 0;
+    if (got_data) {
+        p->still_playing = true;
+        p->expected_end_time = 0;
+    }
 
     // If we don't have new data, the decoder thread basically promises it
     // will send new data as soon as it's available.
@@ -300,6 +303,7 @@ static void *playthread(void *arg)
 {
     struct ao *ao = arg;
     struct ao_push_state *p = ao->api_priv;
+    mpthread_set_name("ao");
     pthread_mutex_lock(&p->lock);
     while (!p->terminate) {
         if (!p->paused)
@@ -348,7 +352,8 @@ static void *playthread(void *arg)
                     if (ao->driver->get_delay)
                         timeout = ao->driver->get_delay(ao);
                     timeout *= 0.25; // wake up if 25% played
-                    mpthread_cond_timedwait_rel(&p->wakeup, &p->lock, timeout);
+                    if (!p->need_wakeup)
+                        mpthread_cond_timedwait_rel(&p->wakeup, &p->lock, timeout);
                 }
             }
             MP_STATS(ao, "end audio wait");
@@ -459,7 +464,7 @@ int ao_wait_poll(struct ao *ao, struct pollfd *fds, int num_fds,
     assert(ao->api == &ao_api_push);
     assert(&p->lock == lock);
 
-    if (num_fds > MAX_POLL_FDS || p->wakeup_pipe[0] < 0)
+    if (num_fds >= MAX_POLL_FDS || p->wakeup_pipe[0] < 0)
         return -1;
 
     struct pollfd p_fds[MAX_POLL_FDS];

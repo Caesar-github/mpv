@@ -24,6 +24,7 @@
 #include "common/msg_control.h"
 #include "input/input.h"
 #include "input/cmd_list.h"
+#include "misc/ctype.h"
 #include "misc/dispatch.h"
 #include "options/m_config.h"
 #include "options/m_option.h"
@@ -81,7 +82,7 @@ struct observe_property {
 
 struct mpv_handle {
     // -- immmutable
-    char *name;
+    char name[MAX_CLIENT_NAME];
     bool owner;
     struct mp_log *log;
     struct MPContext *mpctx;
@@ -120,7 +121,7 @@ struct mpv_handle {
     int properties_updating;
     uint64_t property_event_masks; // or-ed together event masks of all properties
 
-    bool fuzzy_initialized;
+    bool fuzzy_initialized; // see scripting.c wait_loaded()
     struct mp_log_buffer *messages;
 };
 
@@ -187,33 +188,38 @@ static struct mpv_handle *find_client(struct mp_client_api *clients,
     return NULL;
 }
 
+bool mp_client_exists(struct MPContext *mpctx, const char *client_name)
+{
+    pthread_mutex_lock(&mpctx->clients->lock);
+    bool r = find_client(mpctx->clients, client_name);
+    pthread_mutex_unlock(&mpctx->clients->lock);
+    return r;
+}
+
 struct mpv_handle *mp_new_client(struct mp_client_api *clients, const char *name)
 {
-    pthread_mutex_lock(&clients->lock);
-
-    char *unique_name = NULL;
-    if (find_client(clients, name)) {
-        for (int n = 2; n < 1000; n++) {
-            unique_name = talloc_asprintf(NULL, "%s%d", name, n);
-            if (!find_client(clients, unique_name))
-                break;
-            talloc_free(unique_name);
-            unique_name = NULL;
-        }
-        if (!unique_name) {
-            pthread_mutex_unlock(&clients->lock);
-            return NULL;
-        }
+    char nname[MAX_CLIENT_NAME];
+    for (int n = 1; n < 1000; n++) {
+        snprintf(nname, sizeof(nname) - 3, "%s", name); // - space for number
+        for (int i = 0; nname[i]; i++)
+            nname[i] = mp_isalnum(nname[i]) ? nname[i] : '_';
+        if (n > 1)
+            mp_snprintf_cat(nname, sizeof(nname), "%d", n);
+        if (!find_client(clients, nname))
+            break;
+        nname[0] = '\0';
     }
-    if (!unique_name)
-        unique_name = talloc_strdup(NULL, name);
+
+    if (!nname[0])
+        return NULL;
+
+    pthread_mutex_lock(&clients->lock);
 
     int num_events = 1000;
 
     struct mpv_handle *client = talloc_ptrtype(NULL, client);
     *client = (struct mpv_handle){
-        .name = talloc_steal(client, unique_name),
-        .log = mp_log_new(client, clients->mpctx->log, unique_name),
+        .log = mp_log_new(client, clients->mpctx->log, nname),
         .mpctx = clients->mpctx,
         .clients = clients,
         .cur_event = talloc_zero(client, struct mpv_event),
@@ -226,6 +232,7 @@ struct mpv_handle *mp_new_client(struct mp_client_api *clients, const char *name
     pthread_mutex_init(&client->wakeup_lock, NULL);
     pthread_cond_init(&client->wakeup, NULL);
 
+    snprintf(client->name, sizeof(client->name), "%s", nname);
 
     MP_TARRAY_APPEND(clients, clients->clients, clients->num_clients, client);
 
@@ -348,7 +355,8 @@ void mpv_detach_destroy(mpv_handle *ctx)
             }
             talloc_free(ctx);
             ctx = NULL;
-            // shutdown_clients() sleeps to avoid wasting CPU
+            // shutdown_clients() sleeps to avoid wasting CPU.
+            // mp_hook_test_completion() also relies on this a bit.
             if (clients->mpctx->input)
                 mp_input_wakeup(clients->mpctx->input);
             break;
@@ -402,9 +410,14 @@ mpv_handle *mpv_create(void)
         mpv_set_option_string(ctx, "idle", "yes");
         mpv_set_option_string(ctx, "terminal", "no");
         mpv_set_option_string(ctx, "osc", "no");
+        mpv_set_option_string(ctx, "ytdl", "no");
         mpv_set_option_string(ctx, "input-default-bindings", "no");
-        mpv_set_option_string(ctx, "input-x11-keyboard", "no");
+        mpv_set_option_string(ctx, "input-vo-keyboard", "no");
         mpv_set_option_string(ctx, "input-lirc", "no");
+        mpv_set_option_string(ctx, "input-appleremote", "no");
+        mpv_set_option_string(ctx, "input-media-keys", "no");
+        mpv_set_option_string(ctx, "input-app-events", "no");
+        mpv_set_option_string(ctx, "stop-playback-on-init-failure", "yes");
     } else {
         mp_destroy(mpctx);
     }
@@ -415,6 +428,8 @@ static void *playback_thread(void *p)
 {
     struct MPContext *mpctx = p;
     mpctx->autodetach = true;
+
+    mpthread_set_name("playback core");
 
     mp_play_files(mpctx);
 
@@ -575,9 +590,16 @@ void mp_client_broadcast_event(struct MPContext *mpctx, int event, void *data)
     pthread_mutex_unlock(&clients->lock);
 }
 
+// If client_name == NULL, then broadcast and free the event.
 int mp_client_send_event(struct MPContext *mpctx, const char *client_name,
                          int event, void *data)
 {
+    if (!client_name) {
+        mp_client_broadcast_event(mpctx, event, data);
+        talloc_free(data);
+        return 0;
+    }
+
     struct mp_client_api *clients = mpctx->clients;
     int r = 0;
 
@@ -601,11 +623,28 @@ int mp_client_send_event(struct MPContext *mpctx, const char *client_name,
     return r;
 }
 
+int mp_client_send_event_dup(struct MPContext *mpctx, const char *client_name,
+                             int event, void *data)
+{
+    if (!client_name) {
+        mp_client_broadcast_event(mpctx, event, data);
+        return 0;
+    }
+
+    struct mpv_event event_data = {
+        .event_id = event,
+        .data = data,
+    };
+
+    dup_event_data(&event_data);
+    return mp_client_send_event(mpctx, client_name, event, event_data.data);
+}
+
 int mpv_request_event(mpv_handle *ctx, mpv_event_id event, int enable)
 {
     if (!mpv_event_name(event) || enable < 0 || enable > 1)
         return MPV_ERROR_INVALID_PARAMETER;
-    assert(event < INTERNAL_EVENT_BASE); // excluded above; they have no name
+    assert(event < (int)INTERNAL_EVENT_BASE); // excluded above; they have no name
     pthread_mutex_lock(&ctx->lock);
     uint64_t bit = 1ULL << event;
     ctx->event_mask = enable ? ctx->event_mask | bit : ctx->event_mask & ~bit;
@@ -654,6 +693,7 @@ mpv_event *mpv_wait_event(mpv_handle *ctx, double timeout)
                 *cmsg = (struct mpv_event_log_message){
                     .prefix = talloc_steal(event, msg->prefix),
                     .level = mp_log_levels[msg->level],
+                    .log_level = mp_mpv_log_levels[msg->level],
                     .text = talloc_steal(event, msg->text),
                 };
                 event->data = cmsg;
@@ -691,7 +731,7 @@ static const struct m_option type_conv[] = {
 
 static const struct m_option *get_mp_type(mpv_format format)
 {
-    if (format < 0 || format >= MP_ARRAY_SIZE(type_conv))
+    if ((unsigned)format >= MP_ARRAY_SIZE(type_conv))
         return NULL;
     if (!type_conv[format].type)
         return NULL;
@@ -718,6 +758,10 @@ static bool conv_node_to_format(void *dst, mpv_format dst_fmt, mpv_node *src)
     if (dst_fmt == MPV_FORMAT_DOUBLE && src->format == MPV_FORMAT_INT64) {
         *(double *)dst = src->u.int64;
         return true;
+    }
+    if (dst_fmt == MPV_FORMAT_INT64 && src->format == MPV_FORMAT_DOUBLE) {
+        if (src->u.double_ >= INT64_MIN && src->u.double_ <= INT64_MAX)
+            *(int64_t *)dst = src->u.double_;
     }
     return false;
 }
@@ -863,6 +907,8 @@ static int run_client_command(mpv_handle *ctx, struct mp_cmd *cmd)
     if (mp_input_is_abort_cmd(cmd))
         mp_cancel_trigger(ctx->mpctx->playback_abort);
 
+    cmd->sender = ctx->name;
+
     struct cmd_request req = {
         .mpctx = ctx->mpctx,
         .cmd = cmd,
@@ -873,8 +919,15 @@ static int run_client_command(mpv_handle *ctx, struct mp_cmd *cmd)
 
 int mpv_command(mpv_handle *ctx, const char **args)
 {
-    return run_client_command(ctx, mp_input_parse_cmd_strv(ctx->log, 0, args,
-                                                           ctx->name));
+    return run_client_command(ctx, mp_input_parse_cmd_strv(ctx->log, args));
+}
+
+int mpv_command_node(mpv_handle *ctx, mpv_node *args, mpv_node *result)
+{
+    int r = run_client_command(ctx, mp_input_parse_cmd_node(ctx->log, args));
+    if (result && r >= 0)
+        *result = (mpv_node){.format = MPV_FORMAT_NONE};
+    return r;
 }
 
 int mpv_command_string(mpv_handle *ctx, const char *args)
@@ -883,14 +936,14 @@ int mpv_command_string(mpv_handle *ctx, const char *args)
         mp_input_parse_cmd(ctx->mpctx->input, bstr0((char*)args), ctx->name));
 }
 
-int mpv_command_async(mpv_handle *ctx, uint64_t ud, const char **args)
+static int run_cmd_async(mpv_handle *ctx, uint64_t ud, struct mp_cmd *cmd)
 {
     if (!ctx->mpctx->initialized)
         return MPV_ERROR_UNINITIALIZED;
-
-    struct mp_cmd *cmd = mp_input_parse_cmd_strv(ctx->log, 0, args, "<client>");
     if (!cmd)
         return MPV_ERROR_INVALID_PARAMETER;
+
+    cmd->sender = ctx->name;
 
     struct cmd_request *req = talloc_ptrtype(NULL, req);
     *req = (struct cmd_request){
@@ -900,6 +953,16 @@ int mpv_command_async(mpv_handle *ctx, uint64_t ud, const char **args)
         .userdata = ud,
     };
     return run_async(ctx, cmd_fn, req);
+}
+
+int mpv_command_async(mpv_handle *ctx, uint64_t ud, const char **args)
+{
+    return run_cmd_async(ctx, ud, mp_input_parse_cmd_strv(ctx->log, args));
+}
+
+int mpv_command_node_async(mpv_handle *ctx, uint64_t ud, mpv_node *args)
+{
+    return run_cmd_async(ctx, ud, mp_input_parse_cmd_node(ctx->log, args));
 }
 
 static int translate_property_error(int errc)
@@ -938,6 +1001,7 @@ static void setproperty_fn(void *arg)
         // do this, because it tries to be somewhat type-strict. But the client
         // needs a way to set everything by string.
         char *s = *(char **)req->data;
+        MP_VERBOSE(req->mpctx, "Set property string: %s='%s'\n", req->name, s);
         err = mp_property_do(req->name, M_PROPERTY_SET_STRING, s, req->mpctx);
         break;
     }
@@ -952,6 +1016,12 @@ static void setproperty_fn(void *arg)
             // These are basically emulated via mpv_node.
             node.format = req->format;
             memcpy(&node.u, req->data, type->type->size);
+        }
+        if (mp_msg_test(req->mpctx->log, MSGL_V)) {
+            struct m_option ot = {.type = &m_option_type_node};
+            char *t = m_option_print(&ot, &node);
+            MP_VERBOSE(req->mpctx, "Set property: %s=%s\n", req->name, t ? t : "?");
+            talloc_free(t);
         }
         err = mp_property_do(req->name, M_PROPERTY_SET_NODE, &node, req->mpctx);
         break;
@@ -1108,7 +1178,6 @@ static void getproperty_fn(void *arg)
             .event_id = MPV_EVENT_GET_PROPERTY_REPLY,
             .data = prop,
             .error = req->status,
-            .reply_userdata = req->userdata,
         };
         send_reply(req->reply_ctx, req->userdata, &reply);
     }
@@ -1434,6 +1503,11 @@ static const char *const err_table[] = {
     [-MPV_ERROR_PROPERTY_UNAVAILABLE] = "property unavailable",
     [-MPV_ERROR_PROPERTY_ERROR] = "error accessing property",
     [-MPV_ERROR_COMMAND] = "error running command",
+    [-MPV_ERROR_LOADING_FAILED] = "loading failed",
+    [-MPV_ERROR_AO_INIT_FAILED] = "audio output initialization failed",
+    [-MPV_ERROR_VO_INIT_FAILED] = "audio output initialization failed",
+    [-MPV_ERROR_NOTHING_TO_PLAY] = "the file has no audio or video data",
+    [-MPV_ERROR_UNKNOWN_FORMAT] = "unrecognized file format",
 };
 
 const char *mpv_error_string(int error)
@@ -1476,7 +1550,7 @@ static const char *const event_table[] = {
 
 const char *mpv_event_name(mpv_event_id event)
 {
-    if (event < 0 || event >= MP_ARRAY_SIZE(event_table))
+    if ((unsigned)event >= MP_ARRAY_SIZE(event_table))
         return NULL;
     return event_table[event];
 }

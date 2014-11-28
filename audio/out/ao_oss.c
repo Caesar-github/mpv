@@ -322,7 +322,8 @@ static int reopen_device(struct ao *ao, bool allow_format_changes)
 #endif
 
     if (AF_FORMAT_IS_IEC61937(format)) {
-        ioctl(p->audio_fd, SNDCTL_DSP_SPEED, &samplerate);
+        if (ioctl(p->audio_fd, SNDCTL_DSP_SPEED, &samplerate) == -1)
+            goto fail;
         // Probably could be fixed by setting number of channels; needs testing.
         if (channels.num != 2) {
             MP_ERR(ao, "Format %s not implemented.\n", af_fmt_to_str(format));
@@ -374,7 +375,8 @@ static int reopen_device(struct ao *ao, bool allow_format_changes)
         MP_VERBOSE(ao, "using %d channels (requested: %d)\n",
                    channels.num, reqchannels);
         // set rate
-        ioctl(p->audio_fd, SNDCTL_DSP_SPEED, &samplerate);
+        if (ioctl(p->audio_fd, SNDCTL_DSP_SPEED, &samplerate) == -1)
+            goto fail;
         MP_VERBOSE(ao, "using %d Hz samplerate\n", samplerate);
     }
 
@@ -546,7 +548,7 @@ static int play(struct ao *ao, void **data, int samples, int flags)
 }
 
 // return: delay in seconds between first and last sample in buffer
-static float get_delay(struct ao *ao)
+static double get_delay(struct ao *ao)
 {
     struct priv *p = ao->priv;
     if (p->audio_fd < 0) {
@@ -560,18 +562,18 @@ static float get_delay(struct ao *ao)
 #ifdef SNDCTL_DSP_GETODELAY
         int r = 0;
         if (ioctl(p->audio_fd, SNDCTL_DSP_GETODELAY, &r) != -1)
-            return ((float)r) / (float)ao->bps;
+            return r / (double)ao->bps;
 #endif
         p->audio_delay_method = 1; // fallback if not supported
     }
     if (p->audio_delay_method == 1) {
         audio_buf_info zz = {0};
         if (ioctl(p->audio_fd, SNDCTL_DSP_GETOSPACE, &zz) != -1) {
-            return ((float)(p->buffersize - zz.bytes)) / (float)ao->bps;
+            return (p->buffersize - zz.bytes) / (double)ao->bps;
         }
         p->audio_delay_method = 0; // fallback if not supported
     }
-    return ((float)p->buffersize) / (float)ao->bps;
+    return p->buffersize / (double)ao->bps;
 }
 
 
@@ -616,6 +618,17 @@ static void audio_resume(struct ao *ao)
         ao_play_silence(ao, p->prepause_samples);
 }
 
+static int audio_wait(struct ao *ao, pthread_mutex_t *lock)
+{
+    struct priv *p = ao->priv;
+
+    struct pollfd fd = {.fd = p->audio_fd, .events = POLLOUT};
+    int r = ao_wait_poll(ao, &fd, 1, lock);
+    if (fd.revents & (POLLERR | POLLNVAL))
+        return -1;
+    return r;
+}
+
 #define OPT_BASE_STRUCT struct priv
 
 const struct ao_driver audio_out_oss = {
@@ -631,6 +644,8 @@ const struct ao_driver audio_out_oss = {
     .resume    = audio_resume,
     .reset     = reset,
     .drain     = drain,
+    .wait      = audio_wait,
+    .wakeup    = ao_wakeup_poll,
     .priv_size = sizeof(struct priv),
     .priv_defaults = &(const struct priv) {
         .audio_fd = -1,

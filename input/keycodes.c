@@ -274,7 +274,7 @@ static void mp_input_append_key_name(bstr *buf, int key)
     }
 
     // Print the hex key code
-    bstr_xappend_asprintf(NULL, buf, "%#-8x", key);
+    bstr_xappend_asprintf(NULL, buf, "0x%x", key);
 }
 
 char *mp_input_get_key_name(int key)
@@ -305,7 +305,7 @@ int mp_input_get_keys_from_string(char *name, int max_num_keys,
 
     ptr = name;
     n = 0;
-    for (end = strchr(ptr, '-'); ptr != NULL; end = strchr(ptr, '-')) {
+    for (end = strchr(ptr, '-'); ; end = strchr(ptr, '-')) {
         if (end && end[1] != '\0') {
             if (end[1] == '-')
                 end = &end[1];

@@ -96,18 +96,25 @@ main_dependencies = [
         'desc': '-lm',
         'func': check_cc(lib='m')
     }, {
-        'name': 'nanosleep',
-        'desc': 'nanosleep',
-        'func': check_statement('time.h', 'nanosleep(0,0)')
-    }, {
-        'name': 'sys-mman-h',
-        'desc': 'mman.h',
-        'func': check_statement('sys/mman.h', 'mmap(0, 0, 0, 0, 0, 0)')
-    }, {
         'name': 'mingw',
         'desc': 'MinGW',
         'deps': [ 'os-win32' ],
-        'func': check_statement('stddef.h', 'int x = __MINGW32__')
+        'func': check_statement('stddef.h', 'int x = __MINGW32__;'
+                                            'int y = __MINGW64_VERSION_MAJOR'),
+    }, {
+        'name': 'posix',
+        'desc': 'POSIX environment',
+        # This should be good enough.
+        'func': check_statement(['poll.h', 'unistd.h'],
+                    'struct pollfd pfd; poll(&pfd, 1, 0); fork(); int f[2]; pipe(f)'),
+    }, {
+        'name': 'posix-or-mingw',
+        'desc': 'programming environment',
+        'deps_any': [ 'posix', 'mingw' ],
+        'func': check_true,
+        'req': True,
+        'fmsg': 'Unable to find either POSIX or MinGW-w64 environment, ' \
+                'or compiler does not work.',
     }, {
         'name': 'pthreads',
         'desc': 'POSIX threads',
@@ -134,6 +141,7 @@ main_dependencies = [
         'desc': 'compiler support for __sync built-ins',
         'func': check_statement('stdint.h',
                     'int64_t test = 0;'
+                    '__typeof__(test) x = ({int a = 1; a;});'
                     'test = __sync_add_and_fetch(&test, 1)'),
         'deps_neg': [ 'stdatomic', 'atomic-builtins' ],
     }, {
@@ -175,19 +183,6 @@ iconv support use --disable-iconv.",
         'desc': 'videoio.h',
         'func': check_headers('sys/videoio.h')
     }, {
-        'name': '--terminfo',
-        'desc': 'terminfo',
-        'default': 'disable',
-        'func': check_libs(['ncurses', 'ncursesw'],
-            check_statement('term.h', 'setupterm(0, 1, 0)')),
-    }, {
-        'name': '--termcap',
-        'desc': 'termcap',
-        'deps_neg': ['terminfo'],
-        'default': 'disable',
-        'func': check_libs(['ncurses', 'tinfo', 'termcap'],
-            check_statement('term.h', 'tgetent(0, 0)')),
-    }, {
         'name': '--termios',
         'desc': 'termios',
         'func': check_headers('termios.h', 'sys/termios.h'),
@@ -196,6 +191,19 @@ iconv support use --disable-iconv.",
         'desc': 'shm',
         'func': check_statement(['sys/types.h', 'sys/ipc.h', 'sys/shm.h'],
             'shmget(0, 0, 0); shmat(0, 0, 0); shmctl(0, 0, 0)')
+    }, {
+        'name': 'sys-mman-h',
+        'desc': 'mman.h',
+        'func': check_statement('sys/mman.h', 'mmap(0, 0, 0, 0, 0, 0)')
+    }, {
+        'name': 'nanosleep',
+        'desc': 'nanosleep',
+        'func': check_statement('time.h', 'nanosleep(0,0)')
+    }, {
+        'name': 'posix-spawn',
+        'desc': 'POSIX spawnp()/kill()',
+        'func': check_statement(['spawn.h', 'signal.h'],
+            'posix_spawnp(0,0,0,0,0,0); kill(0,0)')
     }, {
         'name': 'glob',
         'desc': 'glob()',
@@ -206,6 +214,32 @@ iconv support use --disable-iconv.",
         'deps_neg': [ 'glob' ],
         'deps_any': [ 'os-win32', 'os-cygwin' ],
         'func': check_true
+    }, {
+        'name': 'glibc-thread-name',
+        'desc': 'GLIBC API for setting thread name',
+        'func': check_statement('pthread.h',
+                                'pthread_setname_np(pthread_self(), "ducks")',
+                                use=['pthreads']),
+    }, {
+        'name': 'osx-thread-name',
+        'desc': 'OSX API for setting thread name',
+        'deps_neg': [ 'glibc-thread-name' ],
+        'func': check_statement('pthread.h',
+                                'pthread_setname_np("ducks")', use=['pthreads']),
+    }, {
+        'name': 'bsd-thread-name',
+        'desc': 'BSD API for setting thread name',
+        'deps_neg': [ 'glibc-thread-name', 'osx-thread-name' ],
+        'func': check_statement(['pthread.h', 'pthread_np.h'],
+                                'pthread_set_name_np(pthread_self(), "ducks")',
+                                use=['pthreads']),
+    }, {
+        'name': 'netbsd-thread-name',
+        'desc': 'NetBSD API for setting thread name',
+        'deps_neg': [ 'glibc-thread-name', 'osx-thread-name', 'bsd-thread-name' ],
+        'func': check_statement('pthread.h',
+                                'pthread_setname_np(pthread_self(), "%s", (void *)"ducks")',
+                                use=['pthreads']),
     }, {
         'name': 'bsd-fstatfs',
         'desc': "BSD's fstatfs()",
@@ -228,21 +262,9 @@ iconv support use --disable-iconv.",
         'func': check_pkg_config('smbclient'),
         'module': 'input',
     }, {
-        'name': '--libquvi4',
-        'desc': 'libquvi 0.4.x support',
-        'groups': [ 'libquvi' ],
-        'func': check_pkg_config('libquvi', '>= 0.4.1'),
-    }, {
-        'name': '--libquvi9',
-        'desc': 'libquvi 0.9.x support',
-        'groups': [ 'libquvi' ],
-        'deps_neg': [ 'libquvi4' ],
-        'func': check_pkg_config('libquvi-0.9', '>= 0.9.0'),
-    }, {
-        'name': '--libquvi',
-        'desc': 'libquvi support',
-        'deps_any': [ 'libquvi4', 'libquvi9' ],
-        'func': check_true
+        'name' : '--lua',
+        'desc' : 'Lua',
+        'func': check_lua,
     }, {
         'name': '--libass',
         'desc': 'SSA/ASS support',
@@ -297,7 +319,6 @@ If you really mean to compile without libass support use --disable-libass."
         'name': '--cdda',
         'desc': 'cdda support (libcdio)',
         'func': check_pkg_config('libcdio_paranoia'),
-        'default': 'disable',
     }, {
         'name': '--enca',
         'desc': 'ENCA support',
@@ -319,9 +340,19 @@ If you really mean to compile without libass support use --disable-libass."
         'desc': 'LCMS2 support',
         'func': check_pkg_config('lcms2', '>= 2.6'),
     }, {
+        'name': 'vapoursynth-core',
+        'desc': 'VapourSynth filter bridge (core)',
+        'func': check_pkg_config('vapoursynth >= 23'),
+    }, {
         'name': '--vapoursynth',
-        'desc': 'VapourSynth filter bridge',
-        'func': check_pkg_config('vapoursynth >= 23 vapoursynth-script >= 23'),
+        'desc': 'VapourSynth filter bridge (Python)',
+        'deps': ['vapoursynth-core'],
+        'func': check_pkg_config('vapoursynth-script >= 23'),
+    }, {
+        'name': '--vapoursynth-lazy',
+        'desc': 'VapourSynth filter bridge (Lazy Lua)',
+        'deps': ['vapoursynth-core', 'lua'],
+        'func': check_true,
     }
 ]
 
@@ -421,6 +452,12 @@ Libav libraries ({0}). Aborting.".format(" ".join(libav_pkg_config_checks))
         'desc': 'libavutil AVFrame metadata',
         'func': check_statement('libavutil/frame.h',
                                 'av_frame_get_metadata(NULL)',
+                                use='libav')
+    }, {
+        'name': 'avframe-skip-samples',
+        'desc': 'libavutil AVFrame skip samples metadata',
+        'func': check_statement('libavutil/frame.h',
+                                'enum AVFrameSideDataType type = AV_FRAME_DATA_SKIP_SAMPLES',
                                 use='libav')
     }
 ]
@@ -593,6 +630,13 @@ video_output_features = [
                    check_cc(fragment=load_fragment('gl_x11.c'),
                             use=['x11', 'libdl', 'pthreads']))
     } , {
+        'name': '--egl-x11',
+        'desc': 'OpenGL X11 EGL Backend',
+        'deps': [ 'x11' ],
+        'groups': [ 'gl' ],
+        'func': check_pkg_config('egl', 'gl'),
+        'default': 'disable',
+    } , {
         'name': '--gl-wayland',
         'desc': 'OpenGL Wayland Backend',
         'deps': [ 'wayland' ],
@@ -690,6 +734,11 @@ hwaccel_features = [
         'desc': 'libavcodec VDPAU hwaccel',
         'deps': [ 'vdpau' ],
         'func': check_true,
+    }, {
+        'name': '--dxva2-hwaccel',
+        'desc': 'libavcodec DXVA2 hwaccel',
+        'deps': [ 'gdi' ],
+        'func': check_true,
     }
 ]
 
@@ -719,14 +768,6 @@ radio_and_tv_features = [
     }
 ]
 
-scripting_features = [
-    {
-        'name' : '--lua',
-        'desc' : 'Lua',
-        'func': check_lua,
-    }
-]
-
 standalone_features = [
     {
         'name': '--cplayer',
@@ -744,10 +785,9 @@ standalone_features = [
         'deps_neg': [ 'libmpv-shared', 'libmpv-static' ],
         'func': check_true
     }, {
-        'name': '--macosx-bundle',
-        'desc': 'compilation of a Mac OS X Application bundle',
-        'deps': [ 'os-darwin' ],
-        'default': 'disable',
+        'name': '--apple-remote',
+        'desc': 'Apple Remote support',
+        'deps': [ 'cocoa' ],
         'func': check_true
     }
 ]
@@ -762,6 +802,7 @@ _INSTALL_DIRS_LIST = [
     ('datadir', '${PREFIX}/share',    'data files'),
     ('mandir',  '${DATADIR}/man',     'man pages '),
     ('docdir',  '${DATADIR}/doc/mpv', 'documentation files'),
+    ('zshdir',  '${DATADIR}/zsh/site-functions', 'zsh completion functions'),
 ]
 
 def options(opt):
@@ -789,10 +830,9 @@ def options(opt):
     opt.parse_features('video outputs',     video_output_features)
     opt.parse_features('hwaccels',          hwaccel_features)
     opt.parse_features('tv features',       radio_and_tv_features)
-    opt.parse_features('scripting',         scripting_features)
     opt.parse_features('standalone app',    standalone_features)
 
-    group = opt.get_option_group("scripting")
+    group = opt.get_option_group("optional feaures")
     group.add_option('--lua',
         type    = 'string',
         dest    = 'LUA_VER',
@@ -808,17 +848,19 @@ def is_debug_build(ctx):
 
 def configure(ctx):
     ctx.resetenv(ctx.options.variant)
-    ctx.check_waf_version(mini='1.7.15')
+    ctx.check_waf_version(mini='1.8.1')
     target = os.environ.get('TARGET')
-    (cc, pkg_config, windres) = ('cc', 'pkg-config', 'windres')
+    (cc, pkg_config, ar, windres) = ('cc', 'pkg-config', 'ar', 'windres')
 
     if target:
         cc         = '-'.join([target, 'gcc'])
         pkg_config = '-'.join([target, pkg_config])
+        ar         = '-'.join([target, ar])
         windres    = '-'.join([target, windres])
 
     ctx.find_program(cc,          var='CC')
     ctx.find_program(pkg_config,  var='PKG_CONFIG')
+    ctx.find_program(ar,          var='AR')
     ctx.find_program('perl',      var='BIN_PERL')
     ctx.find_program('rst2man',   var='RST2MAN',   mandatory=False)
     ctx.find_program('rst2pdf',   var='RST2PDF',   mandatory=False)
@@ -849,7 +891,6 @@ def configure(ctx):
     if ctx.options.LUA_VER:
         ctx.options.enable_lua = True
 
-    ctx.parse_dependencies(scripting_features)
     ctx.parse_dependencies(standalone_features)
 
     ctx.define('HAVE_SYS_SOUNDCARD_H',

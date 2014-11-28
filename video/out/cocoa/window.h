@@ -18,13 +18,13 @@
 #import <Cocoa/Cocoa.h>
 #import "video/out/cocoa/mpvadapter.h"
 
-@interface MpvVideoWindow : NSWindow <NSWindowDelegate>
+@protocol MpvSizing
+- (void)queueNewVideoSize:(NSSize)newSize;
+@end
+
+@interface MpvVideoWindow : NSWindow <NSWindowDelegate, MpvSizing>
 @property(nonatomic, retain) MpvCocoaAdapter *adapter;
-- (void)setFullScreen:(BOOL)willBeFullscreen;
 - (BOOL)canBecomeKeyWindow;
 - (BOOL)canBecomeMainWindow;
 - (void)mulSize:(float)multiplier;
-- (NSRect)frameRect:(NSRect)frameRect forCenteredContentSize:(NSSize)newSize;
-- (void)setCenteredContentSize:(NSSize)newSize;
-- (void)queueNewVideoSize:(NSSize)newSize;
 @end

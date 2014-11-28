@@ -147,6 +147,11 @@ static void add_term_osd_bar(struct MPContext *mpctx, char **line, int width)
     saddf(line, "%.*s", BSTR_P(parts[4]));
 }
 
+static bool is_busy(struct MPContext *mpctx)
+{
+    return !mpctx->restart_complete && mp_time_sec() - mpctx->start_timestamp > 0.3;
+}
+
 static void print_status(struct MPContext *mpctx)
 {
     struct MPOpts *opts = mpctx->opts;
@@ -156,8 +161,7 @@ static void print_status(struct MPContext *mpctx)
     if (!opts->use_terminal)
         return;
 
-    if (opts->quiet || !(mpctx->initialized_flags & INITIALIZED_PLAYBACK) ||
-        !mpctx->playing_msg_shown)
+    if (opts->quiet || !mpctx->playback_initialized || !mpctx->playing_msg_shown)
     {
         term_osd_set_status(mpctx, "");
         return;
@@ -173,7 +177,7 @@ static void print_status(struct MPContext *mpctx)
     char *line = NULL;
 
     // Playback status
-    if (!mpctx->restart_complete && mp_time_sec() - mpctx->start_timestamp > 0.3) {
+    if (is_busy(mpctx)) {
         saddf(&line, "(...) ");
     } else if (mpctx->paused_for_cache && !opts->pause) {
         saddf(&line, "(Buffering) ");
@@ -225,11 +229,12 @@ static void print_status(struct MPContext *mpctx)
     {
         // VO stats
         if (mpctx->d_video) {
-            if (mpctx->drop_frame_cnt)
-                saddf(&line, " SD: %d", mpctx->drop_frame_cnt);
             int64_t c = vo_get_drop_count(mpctx->video_out);
-            if (c > 0)
-                saddf(&line, " D: %"PRId64, c);
+            if (c > 0 || mpctx->dropped_frames_total > 0) {
+                saddf(&line, " Dropped: %"PRId64, c);
+                if (mpctx->dropped_frames_total)
+                    saddf(&line, "/%d", mpctx->dropped_frames_total);
+            }
         }
     }
 
@@ -272,9 +277,11 @@ static bool set_osd_msg_va(struct MPContext *mpctx, int level, int time,
     talloc_free(mpctx->osd_msg_text);
     mpctx->osd_msg_text = talloc_vasprintf(mpctx, fmt, ap);
     mpctx->osd_show_pos = false;
-    mpctx->osd_msg_visible = mp_time_sec() + time / 1000.0;
+    mpctx->osd_msg_next_duration = time / 1000.0;
     mpctx->osd_force_update = true;
     mpctx->sleeptime = 0;
+    if (mpctx->osd_msg_next_duration <= 0)
+        mpctx->osd_msg_visible = mp_time_sec();
     return true;
 }
 
@@ -324,21 +331,31 @@ static void update_osd_bar(struct MPContext *mpctx, int type,
     }
 }
 
-static void set_osd_bar_chapters(struct MPContext *mpctx, int type)
+void set_osd_bar_chapters(struct MPContext *mpctx, int type)
 {
+    struct MPOpts *opts = mpctx->opts;
     if (mpctx->osd_progbar.type != type)
         return;
 
     mpctx->osd_progbar.num_stops = 0;
     double len = get_time_length(mpctx);
     if (len > 0) {
-        int num = get_chapter_count(mpctx);
-        for (int n = 0; n < num; n++) {
-            double time = chapter_start_time(mpctx, n);
-            if (time >= 0) {
-                float pos = time / len;
-                MP_TARRAY_APPEND(mpctx, mpctx->osd_progbar.stops,
-                                    mpctx->osd_progbar.num_stops, pos);
+        if (opts->ab_loop[0] != MP_NOPTS_VALUE &&
+            opts->ab_loop[1] != MP_NOPTS_VALUE)
+        {
+            MP_TARRAY_APPEND(mpctx, mpctx->osd_progbar.stops,
+                        mpctx->osd_progbar.num_stops, opts->ab_loop[0] / len);
+            MP_TARRAY_APPEND(mpctx, mpctx->osd_progbar.stops,
+                        mpctx->osd_progbar.num_stops, opts->ab_loop[1] / len);
+        } else {
+            int num = get_chapter_count(mpctx);
+            for (int n = 0; n < num; n++) {
+                double time = chapter_start_time(mpctx, n);
+                if (time >= 0) {
+                    float pos = time / len;
+                    MP_TARRAY_APPEND(mpctx, mpctx->osd_progbar.stops,
+                                     mpctx->osd_progbar.num_stops, pos);
+                }
             }
         }
     }
@@ -352,6 +369,8 @@ void set_osd_function(struct MPContext *mpctx, int osd_function)
 
     mpctx->osd_function = osd_function;
     mpctx->osd_function_visible = mp_time_sec() + opts->osd_duration / 1000.0;
+    mpctx->osd_force_update = true;
+    mpctx->sleeptime = 0;
 }
 
 /**
@@ -367,7 +386,7 @@ void get_current_osd_sym(struct MPContext *mpctx, char *buf, size_t buf_size)
 {
     int sym = mpctx->osd_function;
     if (!sym) {
-        if (mpctx->paused_for_cache && !mpctx->opts->pause) {
+        if (is_busy(mpctx) || (mpctx->paused_for_cache && !mpctx->opts->pause)) {
             sym = OSD_CLOCK;
         } else if (mpctx->paused || mpctx->step_frames) {
             sym = OSD_PAUSE;
@@ -402,8 +421,11 @@ static void sadd_osd_status(char **buffer, struct MPContext *mpctx, int level)
         } else {
             sadd_hhmmssff(buffer, get_playback_time(mpctx), fractions);
             if (level == 3) {
-                saddf(buffer, " / ");
-                sadd_hhmmssff(buffer, get_time_length(mpctx), fractions);
+                double len = get_time_length(mpctx);
+                if (len >= 0) {
+                    saddf(buffer, " / ");
+                    sadd_hhmmssff(buffer, len, fractions);
+                }
                 sadd_percentage(buffer, get_percent_pos(mpctx));
             }
         }
@@ -440,6 +462,12 @@ static void add_seek_osd_messages(struct MPContext *mpctx)
                      mpctx->master_demuxer->edition + 1,
                      mpctx->master_demuxer->num_editions);
     }
+    if (mpctx->add_osd_seek_info & OSD_SEEK_INFO_CURRENT_FILE) {
+        if (mpctx->filename) {
+            set_osd_msg(mpctx, 1, mpctx->opts->osd_duration, "%s",
+                        mpctx->filename);
+        }
+    }
     mpctx->add_osd_seek_info = 0;
 }
 
@@ -473,9 +501,21 @@ void update_osd_msg(struct MPContext *mpctx)
         }
     }
 
-    if (mpctx->osd_function_visible && now >= mpctx->osd_function_visible) {
-        mpctx->osd_function_visible = 0;
-        mpctx->osd_function = 0;
+    if (mpctx->osd_function_visible) {
+        double sleep = mpctx->osd_function_visible - now;
+        if (sleep > 0) {
+            mpctx->sleeptime = MPMIN(mpctx->sleeptime, sleep);
+        } else {
+            mpctx->osd_function_visible = 0;
+            mpctx->osd_function = 0;
+        }
+    }
+
+    if (mpctx->osd_msg_next_duration > 0) {
+        // This is done to avoid cutting the OSD message short if slow commands
+        // are executed between setting the OSD message and showing it.
+        mpctx->osd_msg_visible = now + mpctx->osd_msg_next_duration;
+        mpctx->osd_msg_next_duration = 0;
     }
 
     if (mpctx->osd_msg_visible) {

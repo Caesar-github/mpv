@@ -40,10 +40,10 @@
 #include "common/msg.h"
 #include "osdep/endian.h"
 
-#define ALSA_PCM_NEW_HW_PARAMS_API
-#define ALSA_PCM_NEW_SW_PARAMS_API
-
 #include <alsa/asoundlib.h>
+
+#define HAVE_CHMAP_API \
+    (defined(SND_CHMAP_API_VERSION) && SND_CHMAP_API_VERSION >= (1 << 16))
 
 #include "ao.h"
 #include "internal.h"
@@ -54,7 +54,7 @@ struct priv {
     snd_pcm_format_t alsa_fmt;
     int can_pause;
     snd_pcm_sframes_t prepause_frames;
-    float delay_before_pause;
+    double delay_before_pause;
     int buffersize; // in frames
     int outburst; // in frames
 
@@ -78,10 +78,12 @@ struct priv {
         } \
     } while (0)
 
-static float get_delay(struct ao *ao);
-static void uninit(struct ao *ao);
+#define CHECK_ALSA_WARN(message) \
+    do { \
+        if (err < 0) \
+            MP_WARN(ao, "%s: %s\n", (message), snd_strerror(err)); \
+    } while (0)
 
-/* to set/get/query special features/parameters */
 static int control(struct ao *ao, enum aocontrol cmd, void *arg)
 {
     struct priv *p = ao->priv;
@@ -103,10 +105,8 @@ static int control(struct ao *ao, enum aocontrol cmd, void *arg)
         if (AF_FORMAT_IS_SPECIAL(ao->format))
             return CONTROL_FALSE;
 
-        //allocate simple id
         snd_mixer_selem_id_alloca(&sid);
 
-        //sets simple-mixer index and name
         snd_mixer_selem_id_set_index(sid, p->cfg_mixer_index);
         snd_mixer_selem_id_set_name(sid, p->cfg_mixer_name);
 
@@ -138,7 +138,6 @@ static int control(struct ao *ao, enum aocontrol cmd, void *arg)
             ao_control_vol_t *vol = arg;
             set_vol = vol->left / f_multi + pmin + 0.5;
 
-            //setting channels
             err = snd_mixer_selem_set_playback_volume
                     (elem, SND_MIXER_SCHN_FRONT_LEFT, set_vol);
             CHECK_ALSA_ERROR("Error setting left channel");
@@ -150,8 +149,7 @@ static int control(struct ao *ao, enum aocontrol cmd, void *arg)
                     (elem, SND_MIXER_SCHN_FRONT_RIGHT, set_vol);
             CHECK_ALSA_ERROR("Error setting right channel");
             MP_DBG(ao, "right=%li, pmin=%li, pmax=%li, mult=%f\n",
-                   set_vol, pmin, pmax,
-                   f_multi);
+                   set_vol, pmin, pmax, f_multi);
             break;
         }
         case AOCONTROL_GET_VOLUME: {
@@ -231,6 +229,98 @@ static int find_alsa_format(int af_format)
     return SND_PCM_FORMAT_UNKNOWN;
 }
 
+#if HAVE_CHMAP_API
+
+static const int alsa_to_mp_channels[][2] = {
+    {SND_CHMAP_FL,      MP_SP(FL)},
+    {SND_CHMAP_FR,      MP_SP(FR)},
+    {SND_CHMAP_RL,      MP_SP(BL)},
+    {SND_CHMAP_RR,      MP_SP(BR)},
+    {SND_CHMAP_FC,      MP_SP(FC)},
+    {SND_CHMAP_LFE,     MP_SP(LFE)},
+    {SND_CHMAP_SL,      MP_SP(SL)},
+    {SND_CHMAP_SR,      MP_SP(SR)},
+    {SND_CHMAP_RC,      MP_SP(BC)},
+    {SND_CHMAP_FLC,     MP_SP(FLC)},
+    {SND_CHMAP_FRC,     MP_SP(FRC)},
+    {SND_CHMAP_FLW,     MP_SP(WL)},
+    {SND_CHMAP_FRW,     MP_SP(WR)},
+    {SND_CHMAP_TC,      MP_SP(TC)},
+    {SND_CHMAP_TFL,     MP_SP(TFL)},
+    {SND_CHMAP_TFR,     MP_SP(TFR)},
+    {SND_CHMAP_TFC,     MP_SP(TFC)},
+    {SND_CHMAP_TRL,     MP_SP(TBL)},
+    {SND_CHMAP_TRR,     MP_SP(TBR)},
+    {SND_CHMAP_TRC,     MP_SP(TBC)},
+    {SND_CHMAP_MONO,    MP_SP(FC)},
+    {SND_CHMAP_LAST,    MP_SPEAKER_ID_COUNT}
+};
+
+static int find_mp_channel(int alsa_channel)
+{
+    for (int i = 0; alsa_to_mp_channels[i][1] != MP_SPEAKER_ID_COUNT; i++) {
+        if (alsa_to_mp_channels[i][0] == alsa_channel)
+            return alsa_to_mp_channels[i][1];
+    }
+
+    return MP_SPEAKER_ID_COUNT;
+}
+
+static int find_alsa_channel(int mp_channel)
+{
+    for (int i = 0; alsa_to_mp_channels[i][1] != MP_SPEAKER_ID_COUNT; i++) {
+        if (alsa_to_mp_channels[i][1] == mp_channel)
+            return alsa_to_mp_channels[i][0];
+    }
+
+    return SND_CHMAP_UNKNOWN;
+}
+
+static bool query_chmaps(struct ao *ao, struct mp_chmap *chmap)
+{
+    struct priv *p = ao->priv;
+    struct mp_chmap_sel chmap_sel = {0};
+
+    snd_pcm_chmap_query_t **maps = snd_pcm_query_chmaps(p->alsa);
+    if (!maps)
+        return false;
+
+    for (int i = 0; maps[i] != NULL; i++) {
+        if (maps[i]->map.channels > MP_NUM_CHANNELS) {
+            MP_VERBOSE(ao, "skipping ALSA channel map with too many channels.\n");
+            continue;
+        }
+
+        struct mp_chmap entry = {.num = maps[i]->map.channels};
+        for (int c = 0; c < entry.num; c++)
+            entry.speaker[c] = find_mp_channel(maps[i]->map.pos[c]);
+
+        if (mp_chmap_is_valid(&entry)) {
+            MP_VERBOSE(ao, "Got supported channel map: %s (type %s)\n",
+                       mp_chmap_to_str(&entry),
+                       snd_pcm_chmap_type_name(maps[i]->type));
+            mp_chmap_sel_add_map(&chmap_sel, &entry);
+        } else {
+            char tmp[128];
+            if (snd_pcm_chmap_print(&maps[i]->map, sizeof(tmp), tmp) > 0)
+                MP_VERBOSE(ao, "skipping unknown ALSA channel map: %s\n", tmp);
+        }
+    }
+
+    snd_pcm_free_chmaps(maps);
+
+    return ao_chmap_sel_adjust(ao, &chmap_sel, chmap);
+}
+
+#else /* HAVE_CHMAP_API */
+
+static bool query_chmaps(struct ao *ao, struct mp_chmap *chmap)
+{
+    return false;
+}
+
+#endif /* else HAVE_CHMAP_API */
+
 // Lists device names and their implied channel map.
 // The second item must be resolvable with mp_chmap_from_str().
 // Source: http://www.alsa-project.org/main/index.php/DeviceNames
@@ -248,11 +338,9 @@ static const char *const device_channel_layouts[][2] = {
     {"surround71",      "fl-fr-bl-br-fc-lfe-sl-sr"},
 };
 
-#define ARRAY_LEN(x) (sizeof(x) / sizeof((x)[0]))
+#define NUM_ALSA_CHMAPS MP_ARRAY_SIZE(device_channel_layouts)
 
-#define NUM_ALSA_CHMAPS ARRAY_LEN(device_channel_layouts)
-
-static const char *select_chmap(struct ao *ao)
+static const char *select_chmap(struct ao *ao, struct mp_chmap *chmap)
 {
     struct mp_chmap_sel sel = {0};
     struct mp_chmap maps[NUM_ALSA_CHMAPS];
@@ -261,18 +349,16 @@ static const char *select_chmap(struct ao *ao)
         mp_chmap_sel_add_map(&sel, &maps[n]);
     };
 
-    if (!ao_chmap_sel_adjust(ao, &sel, &ao->channels))
-        return NULL;
+    if (!ao_chmap_sel_adjust(ao, &sel, chmap))
+        return "default";
 
     for (int n = 0; n < NUM_ALSA_CHMAPS; n++) {
-        if (mp_chmap_equals(&ao->channels, &maps[n]))
+        if (mp_chmap_equals(chmap, &maps[n]))
             return device_channel_layouts[n][0];
     }
 
-    char *name = mp_chmap_to_str(&ao->channels);
     MP_ERR(ao, "channel layout %s (%d ch) not supported.\n",
-           name, ao->channels.num);
-    talloc_free(name);
+           mp_chmap_to_str(chmap), chmap->num);
     return "default";
 }
 
@@ -293,34 +379,44 @@ static int map_iec958_srate(int srate)
     }
 }
 
+// ALSA device strings can have parameters. They are usually appended to the
+// device name. Since there can be various forms, and we (sometimes) want to
+// append them to unknown device strings, which possibly already include params.
+static char *append_params(void *ta_parent, const char *device, const char *p)
+{
+    if (!p || !p[0])
+        return talloc_strdup(ta_parent, device);
+
+    int len = strlen(device);
+    char *end = strchr(device, ':');
+    if (!end) {
+        /* no existing parameters: add it behind device name */
+        return talloc_asprintf(ta_parent, "%s:%s", device, p);
+    } else if (end[1] == '\0') {
+        /* ":" but no parameters */
+        return talloc_asprintf(ta_parent, "%s%s", device, p);
+    } else if (end[1] == '{' && device[len - 1] == '}') {
+        /* parameters in config syntax: add it inside the { } block */
+        return talloc_asprintf(ta_parent, "%.*s %s}", len - 1, device, p);
+    } else {
+        /* a simple list of parameters: add it at the end of the list */
+        return talloc_asprintf(ta_parent, "%s,%s", device, p);
+    }
+    abort();
+}
+
 static int try_open_device(struct ao *ao, const char *device, int open_mode)
 {
     struct priv *p = ao->priv;
 
     if (AF_FORMAT_IS_IEC61937(ao->format)) {
         void *tmp = talloc_new(NULL);
-        /* to set the non-audio bit, use AES0=6 */
         char *params = talloc_asprintf(tmp,
                         "AES0=%d,AES1=%d,AES2=0,AES3=%d",
                         IEC958_AES0_NONAUDIO | IEC958_AES0_PRO_EMPHASIS_NONE,
                         IEC958_AES1_CON_ORIGINAL | IEC958_AES1_CON_PCM_CODER,
                         map_iec958_srate(ao->samplerate));
-        const char *ac3_device = device;
-        int len = strlen(device);
-        char *end = strchr(device, ':');
-        if (!end) {
-            /* no existing parameters: add it behind device name */
-            ac3_device = talloc_asprintf(tmp, "%s:%s", device, params);
-        } else if (end[1] == '\0') {
-            /* ":" but no parameters */
-            ac3_device = talloc_asprintf(tmp, "%s%s", device, params);
-        } else if (end[1] == '{' && device[len - 1] == '}') {
-            /* parameters in config syntax: add it inside the { } block */
-            ac3_device = talloc_asprintf(tmp, "%.*s %s}", len - 1, device, params);
-        } else {
-            /* a simple list of parameters: add it at the end of the list */
-            ac3_device = talloc_asprintf(tmp, "%s,%s", device, params);
-        }
+        const char *ac3_device = append_params(tmp, device, params);
         int err = snd_pcm_open
                     (&p->alsa, ac3_device, SND_PCM_STREAM_PLAYBACK, open_mode);
         talloc_free(tmp);
@@ -331,49 +427,49 @@ static int try_open_device(struct ao *ao, const char *device, int open_mode)
     return snd_pcm_open(&p->alsa, device, SND_PCM_STREAM_PLAYBACK, open_mode);
 }
 
-/*
-    open & setup audio device
-    return: 0=success -1=fail
- */
+static void uninit(struct ao *ao)
+{
+    struct priv *p = ao->priv;
+
+    if (p->alsa) {
+        int err;
+
+        err = snd_pcm_close(p->alsa);
+        CHECK_ALSA_ERROR("pcm close error");
+    }
+
+alsa_error: ;
+}
+
 static int init(struct ao *ao)
 {
-    int err;
-    snd_pcm_uframes_t chunk_size;
-    snd_pcm_uframes_t bufsize;
-    snd_pcm_uframes_t boundary;
-
     struct priv *p = ao->priv;
+    int err;
 
     if (!p->cfg_ni)
         ao->format = af_fmt_from_planar(ao->format);
 
-    /* switch for spdif
-     * sets opening sequence for SPDIF
-     * sets also the playback and other switches 'on the fly'
-     * while opening the abstract alias for the spdif subdevice
-     * 'iec958'
-     */
+    struct mp_chmap implied_chmap = ao->channels;
     const char *device;
     if (AF_FORMAT_IS_IEC61937(ao->format)) {
         device = "iec958";
         MP_VERBOSE(ao, "playing AC3/iec61937/iec958, %i channels\n",
                    ao->channels.num);
     } else {
-        device = select_chmap(ao);
-        if (strcmp(device, "default") != 0 && (ao->format & AF_FORMAT_F)) {
-            // hack - use the converter plugin (why the heck?)
+        device = select_chmap(ao, &implied_chmap);
+        // Not-default likely means a hw device - enable software conversions.
+        if (strcmp(device, "default") != 0)
             device = talloc_asprintf(ao, "plug:%s", device);
-        }
     }
+    if (ao->device)
+        device = ao->device;
     if (p->cfg_device && p->cfg_device[0])
         device = p->cfg_device;
 
     MP_VERBOSE(ao, "using device: %s\n", device);
     MP_VERBOSE(ao, "using ALSA version: %s\n", snd_asoundlib_version());
 
-    int open_mode = p->cfg_block ? 0 : SND_PCM_NONBLOCK;
-    //modes = 0, SND_PCM_NONBLOCK, SND_PCM_ASYNC
-    err = try_open_device(ao, device, open_mode);
+    err = try_open_device(ao, device, p->cfg_block ? 0 : SND_PCM_NONBLOCK);
     if (err < 0) {
         if (err != -EBUSY && !p->cfg_block) {
             MP_WARN(ao, "Open in nonblock-mode "
@@ -396,7 +492,6 @@ static int init(struct ao *ao)
     snd_pcm_hw_params_alloca(&alsa_hwparams);
     snd_pcm_sw_params_alloca(&alsa_swparams);
 
-    // setting hw-parameters
     err = snd_pcm_hw_params_any(p->alsa, alsa_hwparams);
     CHECK_ALSA_ERROR("Unable to get initial parameters");
 
@@ -438,10 +533,23 @@ static int init(struct ao *ao)
     }
     CHECK_ALSA_ERROR("Unable to set access type");
 
+    struct mp_chmap dev_chmap = ao->channels;
+    if (query_chmaps(ao, &dev_chmap)) {
+        ao->channels = dev_chmap;
+    } else {
+        dev_chmap.num = 0;
+        ao->channels = implied_chmap;
+    }
+
     int num_channels = ao->channels.num;
     err = snd_pcm_hw_params_set_channels_near
             (p->alsa, alsa_hwparams, &num_channels);
     CHECK_ALSA_ERROR("Unable to set channels");
+
+    if (num_channels > MP_NUM_CHANNELS) {
+        MP_FATAL(ao, "Too many audio channels (%d).\n", num_channels);
+        goto alsa_error;
+    }
 
     if (num_channels != ao->channels.num) {
         MP_ERR(ao, "Couldn't get requested number of channels.\n");
@@ -461,25 +569,79 @@ static int init(struct ao *ao)
 
     err = snd_pcm_hw_params_set_buffer_time_near
             (p->alsa, alsa_hwparams, &(unsigned int){BUFFER_TIME}, NULL);
-    CHECK_ALSA_ERROR("Unable to set buffer time near");
+    CHECK_ALSA_WARN("Unable to set buffer time near");
 
     err = snd_pcm_hw_params_set_periods_near
             (p->alsa, alsa_hwparams, &(unsigned int){FRAGCOUNT}, NULL);
-    CHECK_ALSA_ERROR("Unable to set periods");
+    CHECK_ALSA_WARN("Unable to set periods");
 
     /* finally install hardware parameters */
     err = snd_pcm_hw_params(p->alsa, alsa_hwparams);
     CHECK_ALSA_ERROR("Unable to set hw-parameters");
 
-    // end setting hw-params
+    /* end setting hw-params */
 
-    // gets buffersize for control
+#if HAVE_CHMAP_API
+    if (mp_chmap_is_valid(&dev_chmap)) {
+        snd_pcm_chmap_t *alsa_chmap =
+            calloc(1, sizeof(*alsa_chmap) +
+                      sizeof(alsa_chmap->pos[0]) * dev_chmap.num);
+        if (!alsa_chmap)
+            goto alsa_error;
+
+        alsa_chmap->channels = dev_chmap.num;
+        for (int c = 0; c < dev_chmap.num; c++)
+            alsa_chmap->pos[c] = find_alsa_channel(dev_chmap.speaker[c]);
+
+        char tmp[128];
+        if (snd_pcm_chmap_print(alsa_chmap, sizeof(tmp), tmp) > 0)
+            MP_VERBOSE(ao, "trying to set ALSA channel map: %s\n", tmp);
+
+        err = snd_pcm_set_chmap(p->alsa, alsa_chmap);
+        if (err == -ENXIO) {
+            MP_WARN(ao, "Device does not support requested channel map\n");
+        } else {
+            CHECK_ALSA_WARN("Channel map setup failed");
+        }
+    }
+
+    snd_pcm_chmap_t *alsa_chmap = snd_pcm_get_chmap(p->alsa);
+    if (alsa_chmap) {
+        char tmp[128];
+        if (snd_pcm_chmap_print(alsa_chmap, sizeof(tmp), tmp) > 0)
+            MP_VERBOSE(ao, "channel map reported by ALSA: %s\n", tmp);
+
+        struct mp_chmap chmap = {.num = alsa_chmap->channels};
+        for (int c = 0; c < chmap.num; c++)
+            chmap.speaker[c] = find_mp_channel(alsa_chmap->pos[c]);
+
+        MP_VERBOSE(ao, "which we understand as: %s\n", mp_chmap_to_str(&chmap));
+
+        if (mp_chmap_is_valid(&chmap)) {
+            if (mp_chmap_equals(&chmap, &ao->channels)) {
+                MP_VERBOSE(ao, "which is what we requested.\n");
+            } else if (chmap.num == ao->channels.num) {
+                MP_VERBOSE(ao, "using the ALSA channel map.\n");
+                ao->channels = chmap;
+            } else {
+                MP_WARN(ao, "ALSA channel map conflicts with channel count!\n");
+            }
+        } else {
+            MP_WARN(ao, "Got unknown channel map from ALSA.\n");
+        }
+
+        free(alsa_chmap);
+    }
+#endif
+
+    snd_pcm_uframes_t bufsize;
     err = snd_pcm_hw_params_get_buffer_size(alsa_hwparams, &bufsize);
     CHECK_ALSA_ERROR("Unable to get buffersize");
 
     p->buffersize = bufsize;
     MP_VERBOSE(ao, "got buffersize=%i samples\n", p->buffersize);
 
+    snd_pcm_uframes_t chunk_size;
     err = snd_pcm_hw_params_get_period_size(alsa_hwparams, &chunk_size, NULL);
     CHECK_ALSA_ERROR("Unable to get period size");
 
@@ -490,6 +652,7 @@ static int init(struct ao *ao)
     err = snd_pcm_sw_params_current(p->alsa, alsa_swparams);
     CHECK_ALSA_ERROR("Unable to get sw-parameters");
 
+    snd_pcm_uframes_t boundary;
     err = snd_pcm_sw_params_get_boundary(alsa_swparams, &boundary);
     CHECK_ALSA_ERROR("Unable to get boundary");
 
@@ -509,46 +672,63 @@ static int init(struct ao *ao)
     CHECK_ALSA_ERROR("Unable to set silence size");
 
     err = snd_pcm_sw_params(p->alsa, alsa_swparams);
-    CHECK_ALSA_ERROR("Unable to get sw-parameters");
+    CHECK_ALSA_ERROR("Unable to set sw-parameters");
 
     /* end setting sw-params */
 
     p->can_pause = snd_pcm_hw_params_can_pause(alsa_hwparams);
-
-    MP_VERBOSE(ao, "opened: %d Hz/%d channels/%d bps/%d samples buffer/%s\n",
-               ao->samplerate, ao->channels.num, af_fmt2bits(ao->format),
-               p->buffersize, snd_pcm_format_description(p->alsa_fmt));
 
     return 0;
 
 alsa_error:
     uninit(ao);
     return -1;
-} // end init
-
-
-/* close audio device */
-static void uninit(struct ao *ao)
-{
-    struct priv *p = ao->priv;
-
-    if (p->alsa) {
-        int err;
-
-        err = snd_pcm_close(p->alsa);
-        CHECK_ALSA_ERROR("pcm close error");
-
-        MP_VERBOSE(ao, "uninit: pcm closed\n");
-    }
-
-alsa_error:
-    p->alsa = NULL;
 }
 
 static void drain(struct ao *ao)
 {
     struct priv *p = ao->priv;
     snd_pcm_drain(p->alsa);
+}
+
+static int get_space(struct ao *ao)
+{
+    struct priv *p = ao->priv;
+    snd_pcm_status_t *status;
+    int err;
+
+    snd_pcm_status_alloca(&status);
+
+    err = snd_pcm_status(p->alsa, status);
+    CHECK_ALSA_ERROR("cannot get pcm status");
+
+    unsigned space = snd_pcm_status_get_avail(status);
+    if (space > p->buffersize) // Buffer underrun?
+        space = p->buffersize;
+    return space / p->outburst * p->outburst;
+
+alsa_error:
+    return 0;
+}
+
+/* delay in seconds between first and last sample in buffer */
+static double get_delay(struct ao *ao)
+{
+    struct priv *p = ao->priv;
+    snd_pcm_sframes_t delay;
+
+    if (snd_pcm_state(p->alsa) == SND_PCM_STATE_PAUSED)
+        return p->delay_before_pause;
+
+    if (snd_pcm_delay(p->alsa, &delay) < 0)
+        return 0;
+
+    if (delay < 0) {
+        /* underrun - move the application pointer forward to catch up */
+        snd_pcm_forward(p->alsa, -delay);
+        delay = 0;
+    }
+    return delay / (double)ao->samplerate;
 }
 
 static void audio_pause(struct ao *ao)
@@ -567,7 +747,7 @@ static void audio_pause(struct ao *ao)
         if (snd_pcm_delay(p->alsa, &p->prepause_frames) < 0
             || p->prepause_frames < 0)
             p->prepause_frames = 0;
-        p->delay_before_pause = p->prepause_frames / (float)ao->samplerate;
+        p->delay_before_pause = p->prepause_frames / (double)ao->samplerate;
 
         err = snd_pcm_drop(p->alsa);
         CHECK_ALSA_ERROR("pcm drop error");
@@ -604,7 +784,6 @@ static void audio_resume(struct ao *ao)
 alsa_error: ;
 }
 
-/* stop playing and empty buffers (for seeking/pause) */
 static void reset(struct ao *ao)
 {
     struct priv *p = ao->priv;
@@ -637,8 +816,7 @@ static int play(struct ao *ao, void **data, int samples, int flags)
             res = snd_pcm_writei(p->alsa, data[0], samples);
         }
 
-        if (res == -EINTR) {
-            /* nothing to do */
+        if (res == -EINTR || res == -EAGAIN) { /* retry */
             res = 0;
         } else if (res == -ESTRPIPE) {  /* suspend */
             audio_resume(ao);
@@ -655,46 +833,6 @@ static int play(struct ao *ao, void **data, int samples, int flags)
 
 alsa_error:
     return -1;
-}
-
-static int get_space(struct ao *ao)
-{
-    struct priv *p = ao->priv;
-    snd_pcm_status_t *status;
-    int err;
-
-    snd_pcm_status_alloca(&status);
-
-    err = snd_pcm_status(p->alsa, status);
-    CHECK_ALSA_ERROR("cannot get pcm status");
-
-    unsigned space = snd_pcm_status_get_avail(status);
-    if (space > p->buffersize) // Buffer underrun?
-        space = p->buffersize;
-    return space / p->outburst * p->outburst;
-
-alsa_error:
-    return 0;
-}
-
-/* delay in seconds between first and last sample in buffer */
-static float get_delay(struct ao *ao)
-{
-    struct priv *p = ao->priv;
-    snd_pcm_sframes_t delay;
-
-    if (snd_pcm_state(p->alsa) == SND_PCM_STATE_PAUSED)
-        return p->delay_before_pause;
-
-    if (snd_pcm_delay(p->alsa, &delay) < 0)
-        return 0;
-
-    if (delay < 0) {
-        /* underrun - move the application pointer forward to catch up */
-        snd_pcm_forward(p->alsa, -delay);
-        delay = 0;
-    }
-    return (float)delay / (float)ao->samplerate;
 }
 
 #define MAX_POLL_FDS 20
@@ -731,10 +869,34 @@ alsa_error:
     return -1;
 }
 
+static void list_devs(struct ao *ao, struct ao_device_list *list)
+{
+    void **hints;
+    if (snd_device_name_hint(-1, "pcm", &hints) < 0)
+        return;
+
+    for (int n = 0; hints[n]; n++) {
+        char *name = snd_device_name_get_hint(hints[n], "NAME");
+        char *desc = snd_device_name_get_hint(hints[n], "DESC");
+        char *io = snd_device_name_get_hint(hints[n], "IOID");
+        if (io && strcmp(io, "Output") != 0)
+            continue;
+        char desc2[1024];
+        snprintf(desc2, sizeof(desc2), "%s", desc ? desc : "");
+        for (int i = 0; desc2[i]; i++) {
+            if (desc2[i] == '\n')
+                desc2[i] = '/';
+        }
+        ao_device_list_add(list, ao, &(struct ao_device_desc){name, desc2});
+    }
+
+    snd_device_name_free_hint(hints);
+}
+
 #define OPT_BASE_STRUCT struct priv
 
 const struct ao_driver audio_out_alsa = {
-    .description = "ALSA-0.9.x-1.x audio output",
+    .description = "ALSA audio output",
     .name      = "alsa",
     .init      = init,
     .uninit    = uninit,
@@ -748,6 +910,7 @@ const struct ao_driver audio_out_alsa = {
     .drain     = drain,
     .wait      = audio_wait,
     .wakeup    = ao_wakeup_poll,
+    .list_devs = list_devs,
     .priv_size = sizeof(struct priv),
     .priv_defaults = &(const struct priv) {
         .cfg_block = 1,

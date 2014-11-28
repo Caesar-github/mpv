@@ -38,7 +38,7 @@ struct mp_audio {
     int bps;            // size of sub-samples (af_fmt2bps(format))
 
     // private
-    int allocated[MP_NUM_CHANNELS]; // use mp_audio_get_allocated_size()
+    struct AVBufferRef *allocated[MP_NUM_CHANNELS];
 };
 
 void mp_audio_set_format(struct mp_audio *mpa, int format);
@@ -49,8 +49,8 @@ void mp_audio_copy_config(struct mp_audio *dst, const struct mp_audio *src);
 bool mp_audio_config_equals(const struct mp_audio *a, const struct mp_audio *b);
 bool mp_audio_config_valid(const struct mp_audio *mpa);
 
-char *mp_audio_fmt_to_str(int srate, const struct mp_chmap *chmap, int format);
-char *mp_audio_config_to_str(struct mp_audio *mpa);
+char *mp_audio_config_to_str_buf(char *buf, size_t buf_sz, struct mp_audio *mpa);
+#define mp_audio_config_to_str(m) mp_audio_config_to_str_buf((char[64]){0}, 64, (m))
 
 void mp_audio_force_interleaved_format(struct mp_audio *mpa);
 
@@ -67,5 +67,14 @@ void mp_audio_fill_silence(struct mp_audio *mpa, int start, int length);
 void mp_audio_copy(struct mp_audio *dst, int dst_offset,
                    struct mp_audio *src, int src_offset, int length);
 void mp_audio_skip_samples(struct mp_audio *data, int samples);
+
+int mp_audio_make_writeable(struct mp_audio *data);
+
+struct AVFrame;
+struct mp_audio *mp_audio_from_avframe(struct AVFrame *avframe);
+
+struct mp_audio_pool *mp_audio_pool_create(void *ta_parent);
+struct mp_audio *mp_audio_pool_get(struct mp_audio_pool *pool,
+                                   const struct mp_audio *fmt, int samples);
 
 #endif

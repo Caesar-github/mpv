@@ -35,16 +35,21 @@
 #include "osdep/macosx_compat.h"
 #import "osdep/macosx_events_objc.h"
 
+#include "config.h"
+
 @interface EventsResponder ()
 {
     struct input_ctx *_inputContext;
     NSCondition *_input_ready;
     CFMachPortRef _mk_tap_port;
+#if HAVE_APPLE_REMOTE
     HIDRemote *_remote;
+#endif
 }
 
 - (BOOL)handleMediaKey:(NSEvent *)event;
 - (NSEvent *)handleKey:(NSEvent *)event;
+- (void)startEventMonitor;
 - (void)startAppleRemote;
 - (void)stopAppleRemote;
 - (void)startMediaKeys;
@@ -110,6 +115,11 @@ static int convert_key(unsigned key, unsigned charcode)
     if (mpkey)
         return mpkey;
     return charcode;
+}
+
+void cocoa_start_event_monitor(void)
+{
+    [[EventsResponder sharedInstance] startEventMonitor];
 }
 
 void cocoa_init_apple_remote(void)
@@ -183,6 +193,11 @@ void cocoa_put_key(int keycode)
         mp_input_put_key(inputContext, keycode);
 }
 
+void cocoa_put_key_event(void *event)
+{
+    [[EventsResponder sharedInstance] handleKey:event];
+}
+
 void cocoa_put_key_with_modifiers(int keycode, int modifiers)
 {
     keycode |= [[EventsResponder sharedInstance] mapKeyModifiers:modifiers];
@@ -211,16 +226,6 @@ void cocoa_set_input_context(struct input_ctx *input_context)
     self = [super init];
     if (self) {
         _input_ready = [NSCondition new];
-
-        [NSEvent addLocalMonitorForEventsMatchingMask:NSKeyDownMask|NSKeyUpMask
-                                              handler:^(NSEvent *event) {
-            BOOL equivalent = [[NSApp mainMenu] performKeyEquivalent:event];
-            if (equivalent) {
-                return (NSEvent *)nil;
-            } else {
-                return [self handleKey:event];
-            }
-        }];
     }
     return self;
 }
@@ -254,8 +259,23 @@ void cocoa_set_input_context(struct input_ctx *input_context)
         return YES;
 }
 
+- (void)startEventMonitor
+{
+    [NSEvent addLocalMonitorForEventsMatchingMask:NSKeyDownMask|NSKeyUpMask
+                                          handler:^(NSEvent *event) {
+        BOOL equivalent = [[NSApp mainMenu] performKeyEquivalent:event];
+        if (equivalent) {
+            return (NSEvent *)nil;
+        } else {
+            return [self handleKey:event];
+        }
+    }];
+}
+
 - (void)startAppleRemote
 {
+
+#if HAVE_APPLE_REMOTE
     dispatch_async(dispatch_get_main_queue(), ^{
         self->_remote = [[HIDRemote alloc] init];
         if (self->_remote) {
@@ -263,14 +283,17 @@ void cocoa_set_input_context(struct input_ctx *input_context)
             [self->_remote startRemoteControl:kHIDRemoteModeExclusiveAuto];
         }
     });
+#endif
 
 }
 - (void)stopAppleRemote
 {
+#if HAVE_APPLE_REMOTE
     dispatch_async(dispatch_get_main_queue(), ^{
         [self->_remote stopRemoteControl];
         [self->_remote release];
     });
+#endif
 }
 - (void)restartMediaKeys
 {

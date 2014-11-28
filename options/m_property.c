@@ -201,7 +201,7 @@ int m_property_do(struct mp_log *log, const struct m_property *prop_list,
         int err = m_option_get_node(&opt, NULL, node, &val);
         if (err == M_OPT_UNKNOWN) {
             r = M_PROPERTY_NOT_IMPLEMENTED;
-        } else if (r < 0) {
+        } else if (err < 0) {
             r = M_PROPERTY_INVALID_FORMAT;
         } else {
             r = M_PROPERTY_OK;
@@ -461,6 +461,7 @@ int m_property_strdup_ro(int action, void* arg, const char *var)
 // This does not support write access.
 int m_property_read_sub(const struct m_sub_property *props, int action, void *arg)
 {
+    m_property_unkey(&action, &arg);
     switch (action) {
     case M_PROPERTY_GET_TYPE:
         *(struct m_option *)arg = (struct m_option){.type = CONF_TYPE_NODE};
@@ -476,10 +477,10 @@ int m_property_read_sub(const struct m_sub_property *props, int action, void *ar
                 continue;
             MP_TARRAY_GROW(list, list->values, list->num);
             MP_TARRAY_GROW(list, list->keys, list->num);
-            struct m_option type = {.type = prop->type};
             mpv_node *val = &list->values[list->num];
-            if (m_option_get_node(&type, list, val, (void*)&prop->value) < 0) {
-                char *s = m_option_print(&type, &prop->value);
+            if (m_option_get_node(&prop->type, list, val, (void*)&prop->value) < 0)
+            {
+                char *s = m_option_print(&prop->type, &prop->value);
                 val->format = MPV_FORMAT_STRING;
                 val->u.string = talloc_steal(list, s);
             }
@@ -499,8 +500,7 @@ int m_property_read_sub(const struct m_sub_property *props, int action, void *ar
             const struct m_sub_property *prop = &props[n];
             if (prop->unavailable)
                 continue;
-            struct m_option type = {.type = prop->type};
-            char *s = m_option_print(&type, &prop->value);
+            char *s = m_option_print(&prop->type, &prop->value);
             ta_xasprintf_append(&res, "%s=%s\n", prop->name, s);
             talloc_free(s);
         }
@@ -520,15 +520,14 @@ int m_property_read_sub(const struct m_sub_property *props, int action, void *ar
             return M_PROPERTY_UNKNOWN;
         if (prop->unavailable)
             return M_PROPERTY_UNAVAILABLE;
-        struct m_option type = {.type = prop->type};
         switch (ka->action) {
         case M_PROPERTY_GET: {
-            memset(ka->arg, 0, type.type->size);
-            m_option_copy(&type, ka->arg, &prop->value);
+            memset(ka->arg, 0, prop->type.type->size);
+            m_option_copy(&prop->type, ka->arg, &prop->value);
             return M_PROPERTY_OK;
         }
         case M_PROPERTY_GET_TYPE:
-            *(struct m_option *)ka->arg = type;
+            *(struct m_option *)ka->arg = prop->type;
             return M_PROPERTY_OK;
         }
     }

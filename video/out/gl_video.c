@@ -156,6 +156,8 @@ struct gl_video {
     struct osd_state *osd_state;
     struct mpgl_osd *osd;
     double osd_pts;
+    float osd_offset[2];
+    bool osd_offset_set;
 
     GLuint lut_3d_texture;
     bool use_lut_3d;
@@ -307,7 +309,7 @@ const struct gl_video_opts gl_video_opts_hq_def = {
 
 static int validate_scaler_opt(struct mp_log *log, const m_option_t *opt,
                                struct bstr name, struct bstr param);
-static void draw_osd_cb(void *ctx, struct sub_bitmaps *imgs);
+static void draw_osd(struct gl_video *p);
 
 #define OPT_BASE_STRUCT struct gl_video_opts
 const struct m_sub_options gl_video_conf = {
@@ -324,6 +326,8 @@ const struct m_sub_options gl_video_conf = {
                     {"quadbuffer",      GL_3D_QUADBUFFER})),
         OPT_STRING_VALIDATE("lscale", scalers[0], 0, validate_scaler_opt),
         OPT_STRING_VALIDATE("cscale", scalers[1], 0, validate_scaler_opt),
+        OPT_STRING_VALIDATE("lscale-down", dscalers[0], 0, validate_scaler_opt),
+        OPT_STRING_VALIDATE("cscale-down", dscalers[1], 0, validate_scaler_opt),
         OPT_FLOAT("lparam1", scaler_params[0][0], 0),
         OPT_FLOAT("lparam2", scaler_params[0][1], 0),
         OPT_FLOAT("cparam1", scaler_params[1][0], 0),
@@ -686,6 +690,8 @@ static void update_uniforms(struct gl_video *p, GLuint program)
     gl->Uniform1f(gl->GetUniformLocation(program, "filter_param1_c"),
                   isnan(sparam1_c) ? 0.5f : sparam1_c);
 
+    gl->Uniform3f(gl->GetUniformLocation(program, "translation"), 0, 0, 0);
+
     gl->UseProgram(0);
 
     debug_check_gl(p, "update_uniforms()");
@@ -958,7 +964,7 @@ static void compile_shaders(struct gl_video *p)
     char *header_final = talloc_strdup(tmp, "");
     char *header_sep = NULL;
 
-    if (p->image_format == IMGFMT_NV12 || p->image_format == IMGFMT_NV21) {
+    if (p->image_desc.id == IMGFMT_NV12 || p->image_desc.id == IMGFMT_NV21) {
         shader_def(&header_conv, "USE_CONV", "CONV_NV12");
     } else if (p->plane_count > 1) {
         shader_def(&header_conv, "USE_CONV", "CONV_PLANAR");
@@ -966,7 +972,7 @@ static void compile_shaders(struct gl_video *p)
 
     if (p->color_swizzle[0])
         shader_def(&header_conv, "USE_COLOR_SWIZZLE", p->color_swizzle);
-    shader_def_opt(&header_conv, "USE_SWAP_UV", p->image_format == IMGFMT_NV21);
+    shader_def_opt(&header_conv, "USE_SWAP_UV", p->image_desc.id == IMGFMT_NV21);
     shader_def_opt(&header_conv, "USE_YGRAY", p->is_yuv && !p->is_packed_yuv
                                               && p->plane_count == 1);
     shader_def_opt(&header_conv, "USE_INPUT_GAMMA", use_input_gamma);
@@ -1259,6 +1265,8 @@ static const char *expected_scaler(struct gl_video *p, int unit)
     {
         return "bilinear";
     }
+    if (p->opts.dscalers[unit] && get_scale_factor(p) < 1.0)
+        return p->opts.dscalers[unit];
     return p->opts.scalers[unit];
 }
 
@@ -1679,10 +1687,7 @@ void gl_video_render_frame(struct gl_video *p)
     debug_check_gl(p, "after video rendering");
 
 draw_osd:
-    assert(p->osd);
-
-    osd_draw(p->osd_state, p->osd_rect, p->osd_pts, 0, p->osd->formats,
-             draw_osd_cb, p);
+    draw_osd(p);
 }
 
 static void update_window_sized_objects(struct gl_video *p)
@@ -1924,13 +1929,56 @@ static void draw_osd_cb(void *ctx, struct sub_bitmaps *imgs)
 
     debug_check_gl(p, "before drawing osd");
 
-    gl->UseProgram(p->osd_programs[osd->format]);
+    int osd_program = p->osd_programs[osd->format];
+    gl->UseProgram(osd_program);
+
+    bool set_offset = p->osd_offset[0] != 0 || p->osd_offset[1] != 0;
+    if (p->osd_offset_set || set_offset) {
+        gl->Uniform3f(gl->GetUniformLocation(osd_program, "translation"),
+                      p->osd_offset[0], p->osd_offset[1], 0);
+        p->osd_offset_set = set_offset;
+    }
+
     mpgl_osd_set_gl_state(p->osd, osd);
     draw_triangles(p, osd->vertices, osd->num_vertices);
     mpgl_osd_unset_gl_state(p->osd, osd);
+
     gl->UseProgram(0);
 
     debug_check_gl(p, "after drawing osd");
+}
+
+// number of screen divisions per axis (x=0, y=1) for the current 3D mode
+static void get_3d_side_by_side(struct gl_video *p, int div[2])
+{
+    int mode = p->image_params.stereo_out;
+    div[0] = div[1] = 1;
+    switch (mode) {
+    case MP_STEREO3D_SBS2L:
+    case MP_STEREO3D_SBS2R: div[0] = 2; break;
+    case MP_STEREO3D_AB2R:
+    case MP_STEREO3D_AB2L:  div[1] = 2; break;
+    }
+}
+
+static void draw_osd(struct gl_video *p)
+{
+    assert(p->osd);
+
+    int div[2];
+    get_3d_side_by_side(p, div);
+
+    for (int x = 0; x < div[0]; x++) {
+        for (int y = 0; y < div[1]; y++) {
+            struct mp_osd_res res = p->osd_rect;
+            res.w = res.w / div[0];
+            res.h = res.h / div[1];
+            p->osd_offset[0] = res.w * x;
+            p->osd_offset[1] = res.h * y;
+            osd_draw(p->osd_state, res, p->osd_pts, 0, p->osd->formats,
+                     draw_osd_cb, p);
+        }
+    }
 }
 
 static bool test_fbo(struct gl_video *p, GLenum format)
@@ -2280,6 +2328,8 @@ void gl_video_config(struct gl_video *p, struct mp_image_params *params)
         uninit_video(p);
         init_video(p, params);
     }
+
+    check_resize(p);
 }
 
 void gl_video_set_output_depth(struct gl_video *p, int r, int g, int b)
@@ -2340,9 +2390,11 @@ void gl_video_set_options(struct gl_video *p, struct gl_video_opts *opts)
     p->opts = *opts;
     for (int n = 0; n < 2; n++) {
         p->opts.scalers[n] = (char *)handle_scaler_opt(p->opts.scalers[n]);
-        assert(p->opts.scalers[n]);
-        p->scalers[n].name = p->opts.scalers[n];
+        p->opts.dscalers[n] = (char *)handle_scaler_opt(p->opts.dscalers[n]);
     }
+
+    if (!p->opts.gamma && p->video_eq.values[MP_CSP_EQ_GAMMA] != 0)
+        p->opts.gamma = 1.0f;
 
     check_gl_features(p);
     reinit_rendering(p);

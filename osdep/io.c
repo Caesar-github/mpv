@@ -17,7 +17,6 @@
  * You should have received a copy of the GNU General Public License along
  * with mplayer2.  If not, see <http://www.gnu.org/licenses/>.
  */
-
 #include <unistd.h>
 #include <errno.h>
 
@@ -44,22 +43,38 @@ bool mp_set_cloexec(int fd)
 }
 
 #ifdef __MINGW32__
-int mp_make_wakeup_pipe(int pipes[2])
+int mp_make_cloexec_pipe(int pipes[2])
 {
     pipes[0] = pipes[1] = -1;
     return -1;
 }
 #else
-// create a pipe, and set it to non-blocking (and also set FD_CLOEXEC)
-int mp_make_wakeup_pipe(int pipes[2])
+int mp_make_cloexec_pipe(int pipes[2])
 {
     if (pipe(pipes) != 0) {
         pipes[0] = pipes[1] = -1;
         return -1;
     }
 
-    for (int i = 0; i < 2; i++) {
+    for (int i = 0; i < 2; i++)
         mp_set_cloexec(pipes[i]);
+    return 0;
+}
+#endif
+
+#ifdef __MINGW32__
+int mp_make_wakeup_pipe(int pipes[2])
+{
+    return mp_make_cloexec_pipe(pipes);
+}
+#else
+// create a pipe, and set it to non-blocking (and also set FD_CLOEXEC)
+int mp_make_wakeup_pipe(int pipes[2])
+{
+    if (mp_make_cloexec_pipe(pipes) < 0)
+        return -1;
+
+    for (int i = 0; i < 2; i++) {
         int val = fcntl(pipes[i], F_GETFL) | O_NONBLOCK;
         fcntl(pipes[i], F_SETFL, val);
     }
@@ -131,11 +146,36 @@ void mp_get_converted_argv(int *argc, char ***argv)
     *argv = win32_argv_utf8;
 }
 
-int mp_stat(const char *path, struct stat *buf)
+static void copy_stat(struct mp_stat *dst, struct _stat64 *src)
 {
+    dst->st_dev = src->st_dev;
+    dst->st_ino = src->st_ino;
+    dst->st_mode = src->st_mode;
+    dst->st_nlink = src->st_nlink;
+    dst->st_uid = src->st_uid;
+    dst->st_gid = src->st_gid;
+    dst->st_rdev = src->st_rdev;
+    dst->st_size = src->st_size;
+    dst->st_atime = src->st_atime;
+    dst->st_mtime = src->st_mtime;
+    dst->st_ctime = src->st_ctime;
+}
+
+int mp_stat(const char *path, struct mp_stat *buf)
+{
+    struct _stat64 buf_;
     wchar_t *wpath = mp_from_utf8(NULL, path);
-    int res = _wstati64(wpath, buf);
+    int res = _wstat64(wpath, &buf_);
     talloc_free(wpath);
+    copy_stat(buf, &buf_);
+    return res;
+}
+
+int mp_fstat(int fd, struct mp_stat *buf)
+{
+    struct _stat64 buf_;
+    int res = _fstat64(fd, &buf_);
+    copy_stat(buf, &buf_);
     return res;
 }
 
@@ -393,6 +433,16 @@ char *mp_getenv(const char *name)
             || utf8_environ[i][l] != '='); i++) {}
     if (utf8_environ[i]) return utf8_environ[i] + l+1;
     return NULL;
+}
+
+off_t mp_lseek(int fd, off_t offset, int whence)
+{
+    HANDLE h = (HANDLE)_get_osfhandle(fd);
+    if (h != INVALID_HANDLE_VALUE && GetFileType(h) != FILE_TYPE_DISK) {
+        errno = ESPIPE;
+        return (off_t)-1;
+    }
+    return _lseeki64(fd, offset, whence);
 }
 
 #endif // __MINGW32__

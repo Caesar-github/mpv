@@ -27,6 +27,7 @@ typedef struct mp_vo_opts {
     struct m_geometry autofit_larger;
 
     int keepaspect;
+    int keepaspect_window;
     int border;
 
     int64_t WinID;
@@ -34,8 +35,6 @@ typedef struct mp_vo_opts {
     float force_monitor_aspect;
     float monitor_pixel_aspect;
     int force_window_position;
-
-    int fs_missioncontrol;
 
     struct sws_opts *sws_opts;
 } mp_vo_opts;
@@ -62,9 +61,14 @@ typedef struct MPOpts {
     char **lua_files;
     char **lua_opts;
     int lua_load_osc;
+    int lua_load_ytdl;
+    char *lua_ytdl_format;
+
     int auto_load_scripts;
 
     struct m_obj_settings *audio_driver_list, *ao_defs;
+    char *audio_device;
+    char *audio_client_name;
     int fixed_vo;
     int force_vo;
     int softvol;
@@ -110,6 +114,7 @@ typedef struct MPOpts {
     int untimed;
     char *stream_capture;
     char *stream_dump;
+    int stop_playback_on_init_failure;
     int loop_times;
     int loop_file;
     int shuffle;
@@ -117,6 +122,7 @@ typedef struct MPOpts {
     char *ordered_chapters_files;
     int chapter_merge_threshold;
     double chapter_seek_threshold;
+    char *chapter_file;
     int load_unsafe_playlists;
     int merge_files;
     int quiet;
@@ -155,6 +161,7 @@ typedef struct MPOpts {
     struct m_rel_time play_end;
     struct m_rel_time play_length;
     int play_frames;
+    double ab_loop[2];
     double step_sec;
     int position_resume;
     int position_save_on_quit;
@@ -165,6 +172,9 @@ typedef struct MPOpts {
     int video_id;
     int sub_id;
     int sub2_id;
+    int audio_id_ff;
+    int video_id_ff;
+    int sub_id_ff;
     char **audio_lang;
     char **sub_lang;
     int audio_display;
@@ -175,8 +185,6 @@ typedef struct MPOpts {
     float sub_speed;
     int forced_subs_only;
     int stretch_dvd_subs;
-    char *quvi_format;
-    int quvi_fetch_subtitles;
 
     int sub_fix_timing;
     char *sub_cp;
@@ -190,6 +198,8 @@ typedef struct MPOpts {
     char *audio_demuxer_name;
     char *sub_demuxer_name;
     int mkv_subtitle_preroll;
+    double mkv_subtitle_preroll_secs;
+    int mkv_probe_duration;
 
     double demuxer_min_secs_cache;
     int cache_pausing;
@@ -205,6 +215,7 @@ typedef struct MPOpts {
     int force_srate;
     int dtshd;
     double playback_speed;
+    int pitch_correction;
     struct m_obj_settings *vf_settings, *vf_defs;
     struct m_obj_settings *af_settings, *af_defs;
     int deinterlace;
@@ -213,6 +224,7 @@ typedef struct MPOpts {
     char **sub_name;
     char **sub_paths;
     int sub_auto;
+    int use_text_osd;
     int osd_bar_visible;
     float osd_bar_align_x;
     float osd_bar_align_y;
@@ -283,6 +295,9 @@ typedef struct MPOpts {
 
     // may be NULL if encoding is not compiled-in
     struct encode_opts *encode_opts;
+
+    char *ipc_path;
+    char *input_file;
 } MPOpts;
 
 extern const m_option_t mp_opts[];

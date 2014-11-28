@@ -21,6 +21,8 @@
 #include <inttypes.h>
 #include <assert.h>
 #include <dirent.h>
+#include <string.h>
+#include <strings.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -59,7 +61,20 @@ static int cmp_entry(const void *pa, const void *pb)
     return 0;
 }
 
-static char **find_files(const char *original_file, const char *suffix)
+static bool test_matroska_ext(const char *filename)
+{
+    static const char *const exts[] = {".mkv", ".mka", ".mks", ".mk3d", NULL};
+    for (int n = 0; exts[n]; n++) {
+        const char *suffix = exts[n];
+        int offset = strlen(filename) - strlen(suffix);
+        // name must end with suffix
+        if (offset > 0 && strcasecmp(filename + offset, suffix) == 0)
+            return true;
+    }
+    return false;
+}
+
+static char **find_files(const char *original_file)
 {
     void *tmpmem = talloc_new(NULL);
     char *basename = mp_basename(original_file);
@@ -75,9 +90,7 @@ static char **find_files(const char *original_file, const char *suffix)
     struct dirent *ep;
     int num_results = 0;
     while ((ep = readdir(dp))) {
-        int suffix_offset = strlen(ep->d_name) - strlen(suffix);
-        // name must end with suffix
-        if (suffix_offset < 0 || strcmp(ep->d_name + suffix_offset, suffix))
+        if (!test_matroska_ext(ep->d_name))
             continue;
         // don't list the original name
         if (!strcmp(ep->d_name, basename))
@@ -269,7 +282,7 @@ static int find_ordered_chapter_sources(struct MPContext *mpctx,
         } else {
             MP_INFO(mpctx, "Will scan other files in the "
                    "same directory to find referenced sources.\n");
-            filenames = find_files(main_filename, ".mkv");
+            filenames = find_files(main_filename);
             num_filenames = MP_TALLOC_ELEMS(filenames);
             talloc_steal(tmp, filenames);
         }
@@ -367,7 +380,7 @@ static void build_timeline_loop(struct MPContext *mpctx,
                                 uint64_t *missing_time,
                                 uint64_t *last_end_time,
                                 struct timeline_part **timeline,
-                                struct chapter *chapters,
+                                struct demux_chapter *chapters,
                                 int *part_count,
                                 uint64_t skip,
                                 uint64_t limit)
@@ -406,7 +419,7 @@ static void build_timeline_loop(struct MPContext *mpctx,
              * needed to add chapters for external non-ordered segment loading
              * as well since that part is not recursive. */
             if (!limit) {
-                chapters[i].start = *starttime / 1e9;
+                chapters[i].pts = *starttime / 1e9;
                 chapters[i].name = talloc_strdup(chapters, c->name);
             }
 
@@ -547,8 +560,8 @@ void build_ordered_chapter_timeline(struct MPContext *mpctx)
     talloc_free(uids);
 
     struct timeline_part *timeline = talloc_array_ptrtype(NULL, timeline, 0);
-    struct chapter *chapters =
-        talloc_zero_array(NULL, struct chapter, m->num_ordered_chapters);
+    struct demux_chapter *chapters =
+        talloc_zero_array(NULL, struct demux_chapter, m->num_ordered_chapters);
     uint64_t starttime = 0;
     uint64_t missing_time = 0;
     uint64_t last_end_time = 0;

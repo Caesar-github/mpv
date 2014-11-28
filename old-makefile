@@ -70,13 +70,12 @@ SOURCES-$(ENCODING)             += video/out/vo_lavc.c audio/out/ao_lavc.c \
                                    common/encode_lavc.c
 
 SOURCES-$(GL_X11)               += video/out/x11_common.c video/out/gl_x11.c
+SOURCES-$(EGL_X11)              += video/out/x11_common.c video/out/gl_x11egl.c
 SOURCES-$(GL_WAYLAND)           += video/out/wayland_common.c \
                                    video/out/gl_wayland.c
 
 SOURCES-$(JACK)                 += audio/out/ao_jack.c
 SOURCES-$(JOYSTICK)             += input/joystick.c
-SOURCES-$(LIBQUVI4)             += stream/resolve/resolve_quvi.c
-SOURCES-$(LIBQUVI9)             += stream/resolve/resolve_quvi9.c
 SOURCES-$(LIRC)                 += input/lirc.c
 SOURCES-$(OPENAL)               += audio/out/ao_openal.c
 SOURCES-$(OSS_AUDIO)            += audio/out/ao_oss.c
@@ -105,7 +104,7 @@ SOURCES-$(LIBAVFILTER)          += video/filter/vf_lavfi.c \
                                    audio/filter/af_lavfi.c
 
 SOURCES-$(LUA)                  += player/lua.c
-SOURCES-$(VAPOURSYNTH)          += video/filter/vf_vapoursynth.c
+SOURCES-$(VAPOURSYNTH_CORE)     += video/filter/vf_vapoursynth.c
 SOURCES-$(DLOPEN)               += video/filter/vf_dlopen.c
 
 SOURCES = audio/audio.c \
@@ -128,6 +127,7 @@ SOURCES = audio/audio.c \
           audio/filter/af_equalizer.c \
           audio/filter/af_export.c \
           audio/filter/af_extrastereo.c \
+          audio/filter/af_forcespeed.c \
           audio/filter/af_format.c \
           audio/filter/af_hrtf.c \
           audio/filter/af_karaoke.c \
@@ -175,11 +175,12 @@ SOURCES = audio/audio.c \
           input/cmd_parse.c \
           input/event.c \
           input/input.c \
+          input/ipc.c \
           input/keycodes.c \
-          input/pipe-unix.c \
           misc/bstr.c \
           misc/charset_conv.c \
           misc/dispatch.c \
+          misc/json.c \
           misc/rendezvous.c \
           misc/ring.c \
           options/m_config.c \
@@ -192,6 +193,7 @@ SOURCES = audio/audio.c \
           osdep/io.c \
           osdep/numcores.c \
           osdep/semaphore_osx.c \
+          osdep/subprocess-posix.c \
           osdep/terminal-unix.c \
           osdep/timer.c \
           osdep/timer-linux.c \
@@ -318,7 +320,6 @@ DIRS =  . \
         osdep/ar \
         player \
         stream \
-        stream/resolve \
         sub \
         ta \
         video \
@@ -386,6 +387,7 @@ player/lua/%.inc: TOOLS/file2string.pl player/lua/%.lua
 player/lua.c: player/lua/defaults.inc \
               player/lua/assdraw.inc \
               player/lua/osc.inc \
+              player/lua/ytdl_hook.inc \
               player/lua/options.inc
 
 etc/_mpv: TOOLS/zsh.pl ./mpv
@@ -490,6 +492,7 @@ clean:
 	-$(RM) player/lua/defaults.inc
 	-$(RM) player/lua/assdraw.inc
 	-$(RM) player/lua/osc.inc
+	-$(RM) player/lua/ytdl_hook.inc
 	-$(RM) player/lua/options.inc
 
 distclean: clean

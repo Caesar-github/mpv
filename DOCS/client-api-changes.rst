@@ -25,11 +25,36 @@ API changes
 
 ::
 
+ --- mpv 0.7.0 is released ---
+ 1.10   - deprecate/disable everything directly related to script_dispatch
+          (most likely affects nobody)
+ 1.9    - add enum mpv_end_file_reason for mpv_event_end_file.reason
+        - add MPV_END_FILE_REASON_ERROR and the mpv_event_end_file.error field
+          for slightly better error reporting on playback failure
+        - add --stop-playback-on-init-failure option, and make it the default
+          behavior for libmpv only
+        - add qthelper.hpp set_option_variant()
+        - mark the following events as deprecated:
+            MPV_EVENT_TRACKS_CHANGED
+            MPV_EVENT_TRACK_SWITCHED
+            MPV_EVENT_PAUSE
+            MPV_EVENT_UNPAUSE
+            MPV_EVENT_METADATA_UPDATE
+            MPV_EVENT_CHAPTER_CHANGE
+          They are handled better with mpv_observe_property() as mentioned in
+          the documentation comments. They are not removed and still work.
+ 1.8    - add qthelper.hpp
+ 1.7    - add mpv_command_node(), mpv_command_node_async()
+ 1.6    - modify "core-idle" property behavior
+        - MPV_EVENT_LOG_MESSAGE now always sends complete lines
+        - introduce numeric log levels (mpv_log_level)
  --- mpv 0.6.0 is released ---
  1.5    - change in X11 and "--wid" behavior again. The previous change didn't
           work as expected, and now the behavior can be explicitly controlled
           with the "input-x11-keyboard" option. This is only a temporary
           measure until XEmbed is implemented and confirmed working.
+          Note: in 1.6, "input-x11-keyboard" was renamed to "input-vo-keyboard",
+          although the old option name still works.
  1.4    - subtle change in X11 and "--wid" behavior
           (this change was added to 0.5.2, and broke some things, see #1090)
  --- mpv 0.5.0 is released ---

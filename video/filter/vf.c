@@ -71,6 +71,7 @@ extern const vf_info_t vf_info_dlopen;
 extern const vf_info_t vf_info_lavfi;
 extern const vf_info_t vf_info_vaapi;
 extern const vf_info_t vf_info_vapoursynth;
+extern const vf_info_t vf_info_vapoursynth_lazy;
 extern const vf_info_t vf_info_vdpaupp;
 extern const vf_info_t vf_info_buffer;
 
@@ -114,8 +115,11 @@ static const vf_info_t *const filter_list[] = {
 #if HAVE_DLOPEN
     &vf_info_dlopen,
 #endif
-#if HAVE_VAPOURSYNTH
+#if HAVE_VAPOURSYNTH_CORE && HAVE_VAPOURSYNTH
     &vf_info_vapoursynth,
+#endif
+#if HAVE_VAPOURSYNTH_CORE && HAVE_VAPOURSYNTH_LAZY
+    &vf_info_vapoursynth_lazy,
 #endif
 #if HAVE_VAAPI_VPP
     &vf_info_vaapi,
@@ -226,25 +230,6 @@ static int vf_default_query_format(struct vf_instance *vf, unsigned int fmt)
     return vf_next_query_format(vf, fmt);
 }
 
-static void fmt_cat(char *b, size_t bs, struct mp_image_params *p)
-{
-    if (p && p->imgfmt) {
-        mp_snprintf_cat(b, bs, "%dx%d", p->w, p->h);
-        if (p->w != p->d_w || p->h != p->d_h)
-            mp_snprintf_cat(b, bs, "->%dx%d", p->d_w, p->d_h);
-        mp_snprintf_cat(b, bs, " %s", mp_imgfmt_to_name(p->imgfmt));
-        mp_snprintf_cat(b, bs, " %s/%s", mp_csp_names[p->colorspace],
-                        mp_csp_levels_names[p->colorlevels]);
-        mp_snprintf_cat(b, bs, " CL=%d", (int)p->chroma_location);
-        if (p->outputlevels)
-            mp_snprintf_cat(b, bs, " out=%s", mp_csp_levels_names[p->outputlevels]);
-        if (p->rotate)
-            mp_snprintf_cat(b, bs, " rot=%d", p->rotate);
-    } else {
-        mp_snprintf_cat(b, bs, "???");
-    }
-}
-
 void vf_print_filter_chain(struct vf_chain *c, int msglevel,
                            struct vf_instance *vf)
 {
@@ -253,13 +238,13 @@ void vf_print_filter_chain(struct vf_chain *c, int msglevel,
 
     char b[128] = {0};
 
-    fmt_cat(b, sizeof(b), &c->input_params);
+    mp_snprintf_cat(b, sizeof(b), "%s", mp_image_params_to_str(&c->input_params));
     mp_msg(c->log, msglevel, " [vd] %s\n", b);
 
     for (vf_instance_t *f = c->first; f; f = f->next) {
         b[0] = '\0';
         mp_snprintf_cat(b, sizeof(b), " [%s] ", f->info->name);
-        fmt_cat(b, sizeof(b), &f->fmt_out);
+        mp_snprintf_cat(b, sizeof(b), "%s", mp_image_params_to_str(&f->fmt_out));
         if (f->autoinserted)
             mp_snprintf_cat(b, sizeof(b), " [a]");
         if (f == vf)
@@ -440,7 +425,7 @@ int vf_filter_frame(struct vf_chain *c, struct mp_image *img)
 //  returns: -1: error, 0: no output, 1: output available
 int vf_output_frame(struct vf_chain *c, bool eof)
 {
-    if (c->output)
+    if (c->last->num_out_queued)
         return 1;
     if (c->initialized < 1)
         return -1;
@@ -459,12 +444,9 @@ int vf_output_frame(struct vf_chain *c, bool eof)
         }
         if (!last)
             return 0;
-        struct mp_image *img = vf_dequeue_output_frame(last);
-        if (!last->next) {
-            c->output = img;
-            return !!c->output;
-        }
-        int r = vf_do_filter(last->next, img);
+        if (!last->next)
+            return 1;
+        int r = vf_do_filter(last->next, vf_dequeue_output_frame(last));
         if (r < 0)
             return r;
     }
@@ -472,11 +454,9 @@ int vf_output_frame(struct vf_chain *c, bool eof)
 
 struct mp_image *vf_read_output_frame(struct vf_chain *c)
 {
-    if (!c->output)
+    if (!c->last->num_out_queued)
         vf_output_frame(c, false);
-    struct mp_image *res = c->output;
-    c->output = NULL;
-    return res;
+    return vf_dequeue_output_frame(c->last);
 }
 
 static void vf_forget_frames(struct vf_instance *vf)
@@ -490,7 +470,6 @@ static void vf_chain_forget_frames(struct vf_chain *c)
 {
     for (struct vf_instance *cur = c->first; cur; cur = cur->next)
         vf_forget_frames(cur);
-    mp_image_unrefp(&c->output);
 }
 
 void vf_seek_reset(struct vf_chain *c)
@@ -701,12 +680,13 @@ struct vf_chain *vf_new(struct mpv_global *global)
         .query_format = input_query_format,
     };
     static const struct vf_info out = { .name = "out" };
-    c->first->next = talloc(c, struct vf_instance);
-    *c->first->next = (struct vf_instance) {
+    c->last = talloc(c, struct vf_instance);
+    *c->last = (struct vf_instance) {
         .info = &out,
         .query_format = output_query_format,
         .priv = (void *)c,
     };
+    c->first->next = c->last;
     return c;
 }
 

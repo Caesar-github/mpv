@@ -76,10 +76,13 @@ struct af_instance {
                  * the number of samples passed though. (Ratio of input
                  * and output, e.g. mul=4 => 1 sample becomes 4 samples) .*/
     bool auto_inserted; // inserted by af.c, such as conversion filters
+    char *label;
 };
 
 // Current audio stream
 struct af_stream {
+    int initialized; // 0: no, 1: yes, -1: attempted to, but failed
+
     // The first and last filter in the list
     struct af_instance *first;
     struct af_instance *last;
@@ -117,6 +120,7 @@ enum af_control {
     AF_CONTROL_SET_PAN_BALANCE,
     AF_CONTROL_GET_PAN_BALANCE,
     AF_CONTROL_SET_PLAYBACK_SPEED,
+    AF_CONTROL_SET_PLAYBACK_SPEED_RESAMPLE,
 };
 
 // Argument for AF_CONTROL_SET_PAN_LEVEL
@@ -130,7 +134,11 @@ void af_destroy(struct af_stream *s);
 int af_init(struct af_stream *s);
 void af_uninit(struct af_stream *s);
 struct af_instance *af_add(struct af_stream *s, char *name, char **args);
-int af_filter(struct af_stream *s, struct mp_audio *data, int flags);
+int af_remove_by_label(struct af_stream *s, char *label);
+struct af_instance *af_find_by_label(struct af_stream *s, char *label);
+struct mp_audio_buffer;
+int af_filter(struct af_stream *s, struct mp_audio *data,
+              struct mp_audio_buffer *output);
 struct af_instance *af_control_any_rev(struct af_stream *s, int cmd, void *arg);
 void af_control_all(struct af_stream *s, int cmd, void *arg);
 

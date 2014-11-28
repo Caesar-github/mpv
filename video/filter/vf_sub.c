@@ -104,6 +104,9 @@ static struct mp_image *filter(struct vf_instance *vf, struct mp_image *mpi)
         mpi = dmpi;
     }
 
+    if (!osd)
+        return mpi;
+
     osd_draw_on_image_p(osd, priv->dim, mpi->pts, OSD_DRAW_SUB_FILTER,
                         vf->out_pool, mpi);
 

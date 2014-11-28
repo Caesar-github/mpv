@@ -29,19 +29,6 @@
 
 // definitions used internally by the core player code
 
-#define INITIALIZED_VO      1
-#define INITIALIZED_AO      2
-#define INITIALIZED_PLAYBACK 16
-#define INITIALIZED_LIBASS  32
-#define INITIALIZED_STREAM  64
-#define INITIALIZED_DEMUXER 512
-#define INITIALIZED_ACODEC  1024
-#define INITIALIZED_VCODEC  2048
-#define INITIALIZED_SUB     4096
-#define INITIALIZED_SUB2    8192
-#define INITIALIZED_ALL     0xFFFF
-
-
 enum stop_play_reason {
     KEEP_PLAYING = 0,   // must be 0, numeric values of others do not matter
     AT_END_OF_FILE,     // file has ended, prepare to play next
@@ -49,18 +36,9 @@ enum stop_play_reason {
     PT_NEXT_ENTRY,      // prepare to play next entry in playlist
     PT_CURRENT_ENTRY,   // prepare to play mpctx->playlist->current
     PT_STOP,            // stop playback, clear playlist
-    PT_RESTART,         // restart previous file
     PT_RELOAD_DEMUXER,  // restart playback, but keep stream open
     PT_QUIT,            // stop playback, quit player
-};
-
-enum exit_reason {
-  EXIT_NONE,
-  EXIT_QUIT,
-  EXIT_PLAYED,
-  EXIT_ERROR,
-  EXIT_NOTPLAYED,
-  EXIT_SOMENOTPLAYED
+    PT_ERROR,           // play next playlist entry (due to an error)
 };
 
 struct timeline_part {
@@ -69,16 +47,12 @@ struct timeline_part {
     struct demuxer *source;
 };
 
-struct chapter {
-    double start;
-    char *name;
-};
-
 enum mp_osd_seek_info {
     OSD_SEEK_INFO_BAR           = 1,
     OSD_SEEK_INFO_TEXT          = 2,
     OSD_SEEK_INFO_CHAPTER_TEXT  = 4,
     OSD_SEEK_INFO_EDITION       = 8,
+    OSD_SEEK_INFO_CURRENT_FILE  = 16,
 };
 
 
@@ -109,8 +83,8 @@ struct track {
     // IDs coming from demuxers or container files.
     int user_tid;
 
-    // Same as stream->demuxer_id. -1 if not set.
-    int demuxer_id;
+    int demuxer_id; // same as stream->demuxer_id. -1 if not set.
+    int ff_index; // same as stream->ff_index, or 0.
 
     char *title;
     bool default_track;
@@ -159,7 +133,6 @@ enum playback_status {
 
 typedef struct MPContext {
     bool initialized;
-    bool is_cplayer;
     bool autodetach;
     struct mpv_global *global;
     struct MPOpts *opts;
@@ -183,6 +156,7 @@ typedef struct MPContext {
     int osd_function;
     double osd_function_visible;
     double osd_msg_visible;
+    double osd_msg_next_duration;
     double osd_last_update;
     bool osd_force_update;
     char *osd_msg_text;
@@ -191,31 +165,36 @@ typedef struct MPContext {
 
     struct playlist *playlist;
     struct playlist_entry *playing; // currently playing file
-    char *filename; // always the same as playing->filename (or NULL)
-    struct mp_resolve_result *resolve_result;
+    char *filename; // immutable copy of playing->filename (or NULL)
+    char *stream_open_filename;
     enum stop_play_reason stop_play;
-    unsigned int initialized_flags;  // which subsystems have been initialized
+    bool playback_initialized; // playloop can be run/is running
+    int error_playing;
 
     // Return code to use with PT_QUIT
-    enum exit_reason quit_player_rc;
     int quit_custom_rc;
     bool has_quit_custom_rc;
-    bool error_playing;
     char **resume_defaults;
 
+    // Global file statistics
+    int files_played;       // played without issues (even if stopped by user)
+    int files_errored;      // played, but errors happened at one point
+    int files_broken;       // couldn't be played at all
+
+    // Current file statistics
     int64_t shown_vframes, shown_aframes;
 
+    struct stream *stream; // stream that was initially opened
     struct demuxer **sources;
     int num_sources;
 
     struct timeline_part *timeline;
     int num_timeline_parts;
     int timeline_part;
-    struct chapter *chapters;
+    struct demux_chapter *chapters;
     int num_chapters;
     double video_offset;
 
-    struct stream *stream;
     struct demuxer *demuxer;
 
     struct track **tracks;
@@ -263,9 +242,8 @@ typedef struct MPContext {
     // How much video timing has been changed to make it match the audio
     // timeline. Used for status line information only.
     double total_avsync_change;
-    // Total number of dropped frames that were "approved" to be dropped.
-    // Actual dropping depends on --framedrop and decoder internals.
-    int drop_frame_cnt;
+    // Total number of dropped frames that were dropped by decoder.
+    int dropped_frames_total;
     // Number of frames dropped in a row.
     int dropped_frames;
     // A-V sync difference when last frame was displayed. Kept to display
@@ -357,6 +335,8 @@ typedef struct MPContext {
     struct command_ctx *command_ctx;
     struct encode_lavc_context *encode_lavc_ctx;
     struct mp_nav_state *nav_state;
+
+    struct mp_ipc_ctx *ipc_ctx;
 } MPContext;
 
 // audio.c
@@ -367,6 +347,9 @@ double playing_audio_pts(struct MPContext *mpctx);
 void fill_audio_out_buffers(struct MPContext *mpctx, double endpts);
 double written_audio_pts(struct MPContext *mpctx);
 void clear_audio_output_buffers(struct MPContext *mpctx);
+void set_playback_speed(struct MPContext *mpctx, double new_speed);
+void uninit_audio_out(struct MPContext *mpctx);
+void uninit_audio_chain(struct MPContext *mpctx);
 
 // configfiles.c
 void mp_parse_cfgfiles(struct MPContext *mpctx);
@@ -406,6 +389,7 @@ struct playlist_entry *mp_next_file(struct MPContext *mpctx, int direction,
 void mp_set_playlist_entry(struct MPContext *mpctx, struct playlist_entry *e);
 void mp_play_files(struct MPContext *mpctx);
 void update_demuxer_properties(struct MPContext *mpctx);
+void reselect_demux_streams(struct MPContext *mpctx);
 
 // main.c
 int mpv_main(int argc, char *argv[]);
@@ -427,6 +411,9 @@ bool mp_get_cache_idle(struct MPContext *mpctx);
 void update_window_title(struct MPContext *mpctx, bool force);
 void error_on_track(struct MPContext *mpctx, struct track *track);
 void stream_dump(struct MPContext *mpctx);
+int mpctx_run_non_blocking(struct MPContext *mpctx, void (*thread_fn)(void *arg),
+                           void *thread_arg);
+struct mpv_global *create_sub_global(struct MPContext *mpctx);
 
 // osd.c
 void set_osd_bar(struct MPContext *mpctx, int type,
@@ -436,6 +423,7 @@ bool set_osd_msg(struct MPContext *mpctx, int level, int time,
 void set_osd_function(struct MPContext *mpctx, int osd_function);
 void set_osd_subtitle(struct MPContext *mpctx, const char *text);
 void get_current_osd_sym(struct MPContext *mpctx, char *buf, size_t buf_size);
+void set_osd_bar_chapters(struct MPContext *mpctx, int type);
 
 // playloop.c
 void mp_wait_events(struct MPContext *mpctx, double sleeptime);
@@ -457,8 +445,10 @@ char *chapter_display_name(struct MPContext *mpctx, int chapter);
 char *chapter_name(struct MPContext *mpctx, int chapter);
 double chapter_start_time(struct MPContext *mpctx, int chapter);
 int get_chapter_count(struct MPContext *mpctx);
+double get_cache_buffering_percentage(struct MPContext *mpctx);
 void execute_queued_seek(struct MPContext *mpctx);
 void run_playloop(struct MPContext *mpctx);
+void mp_idle(struct MPContext *mpctx);
 void idle_loop(struct MPContext *mpctx);
 void handle_force_window(struct MPContext *mpctx, bool reconfig);
 void add_frame_pts(struct MPContext *mpctx, double pts);
@@ -473,10 +463,15 @@ void mp_load_scripts(struct MPContext *mpctx);
 // sub.c
 void reset_subtitle_state(struct MPContext *mpctx);
 void reset_subtitles(struct MPContext *mpctx, int order);
-void uninit_subs(struct demuxer *demuxer);
+void uninit_stream_sub_decoders(struct demuxer *demuxer);
 void reinit_subs(struct MPContext *mpctx, int order);
+void uninit_sub(struct MPContext *mpctx, int order);
+void uninit_sub_all(struct MPContext *mpctx);
 void update_osd_msg(struct MPContext *mpctx);
 void update_subtitles(struct MPContext *mpctx);
+void uninit_sub_renderer(struct MPContext *mpctx);
+void get_osd_sub_state(struct MPContext *mpctx, int order,
+                       struct osd_sub_state *out_state);
 
 // timeline/tl_matroska.c
 void build_ordered_chapter_timeline(struct MPContext *mpctx);
@@ -492,5 +487,7 @@ int reinit_video_filters(struct MPContext *mpctx);
 void write_video(struct MPContext *mpctx, double endpts);
 void mp_force_video_refresh(struct MPContext *mpctx);
 void update_fps(struct MPContext *mpctx);
+void uninit_video_out(struct MPContext *mpctx);
+void uninit_video_chain(struct MPContext *mpctx);
 
 #endif /* MPLAYER_MP_CORE_H */
