@@ -1,4 +1,4 @@
-mpv (0.7.0-1) UNRELEASED; urgency=medium
+mpv (0.7.1-1) UNRELEASED; urgency=medium
 
   * New upstream release
   * Update 03_waf.patch to waf 1.8.1
@@ -9,7 +9,7 @@ mpv (0.7.0-1) UNRELEASED; urgency=medium
   * Drop libquvi support, replaced by built-in Lua script based on youtube-dl
   * Add Recommends on youtube-dl
 
- -- Alessandro Ghedini <ghedo@debian.org>  Fri, 28 Nov 2014 13:25:07 +0100
+ -- Alessandro Ghedini <ghedo@debian.org>  Wed, 03 Dec 2014 10:25:36 +0100
 
 mpv (0.6.2-2) unstable; urgency=medium
 
