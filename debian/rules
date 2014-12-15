@@ -12,6 +12,7 @@ override_dh_auto_configure:
 			--confdir=/etc/mpv			\
 			--zshdir=/usr/share/zsh/vendor-completions \
 			--enable-cdda				\
+			--enable-joystick			\
 			--enable-sdl2				\
 			--enable-zsh-comp			\
 			--enable-libmpv-shared
