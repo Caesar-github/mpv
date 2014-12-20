@@ -445,6 +445,8 @@ static struct cmd_bind *find_any_bind_for_key(struct input_ctx *ictx,
         }
         if (s->flags & MP_INPUT_EXCLUSIVE)
             break;
+        if (best_bind && (s->flags & MP_INPUT_ON_TOP))
+            break;
     }
 
     return best_bind;
@@ -1019,14 +1021,15 @@ void mp_input_define_section(struct input_ctx *ictx, char *name, char *location,
     if (!name || !name[0])
         return; // parse_config() changes semantics with restrict_section==empty
     input_lock(ictx);
+    // Delete:
+    struct cmd_bind_section *bs = get_bind_section(ictx, bstr0(name));
+    remove_binds(bs, builtin);
     if (contents) {
+        // Redefine:
         parse_config(ictx, builtin, bstr0(contents), location, name);
     } else {
         // Disable:
         mp_input_disable_section(ictx, name);
-        // Delete:
-        struct cmd_bind_section *bs = get_bind_section(ictx, bstr0(name));
-        remove_binds(bs, builtin);
     }
     input_unlock(ictx);
 }

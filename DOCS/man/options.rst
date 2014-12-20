@@ -426,12 +426,9 @@ Program Behavior
     Enable the youtube-dl hook-script. It will look at the input URL, and will
     play the video located on the website. This works with many streaming sites,
     not just the one the scripts are named after. This requires a recent version
-    of youtube-dl to be installed on the system.
+    of youtube-dl to be installed on the system. (Enabled by default.)
 
     If the script can't do anything with an URL, it will do nothing.
-
-    Currently disabled by default, because youtube-dl's generic extractor can
-    get stuck on some URL, preventing playback.
 
     (Note: this is the replacement for the now removed libquvi support.)
 
@@ -439,7 +436,10 @@ Program Behavior
     Video format/quality that is directly passed to youtube-dl. The possible
     values are specific to the website and the video, for a given url the
     available formats can be found with the command
-    ``youtube-dl --list-formats URL``.
+    ``youtube-dl --list-formats URL``. See youtube-dl's documentation for
+    available aliases. To use experimental DASH support for youtube, use
+    ``bestvideo+bestaudio``.
+    (Default: ``best``)
 
 Video
 -----
@@ -577,7 +577,7 @@ Video
     Disable scaling of the video. If the window is larger than the video,
     black bars are added. Otherwise, the video is cropped. The video still
     can be influenced by the other ``--video-...`` options. (If the
-    ``--video-zoom`` option is set to a value other than ``1``, scaling is
+    ``--video-zoom`` option is set to a value other than ``0``, scaling is
     enabled, but the video isn't automatically scaled to the window size.)
 
     The video and monitor aspects aspect will be ignored. Aspect correction

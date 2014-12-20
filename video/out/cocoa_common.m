@@ -144,6 +144,22 @@ static void disable_power_management(struct vo *vo)
             &s->power_mgmt_assertion);
 }
 
+static const char macosx_icon[] =
+#include "osdep/macosx_icon.inc"
+;
+
+static void set_application_icon(NSApplication *app)
+{
+    NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
+    NSData *icon_data = [NSData dataWithBytesNoCopy:(void *)macosx_icon
+                                             length:sizeof(macosx_icon)
+                                       freeWhenDone:NO];
+    NSImage *icon = [[NSImage alloc] initWithData:icon_data];
+    [app setApplicationIconImage:icon];
+    [icon release];
+    [pool release];
+}
+
 int vo_cocoa_init(struct vo *vo)
 {
     struct vo_cocoa_state *s = talloc_zero(vo, struct vo_cocoa_state);
@@ -195,7 +211,10 @@ void vo_cocoa_uninit(struct vo *vo)
         [s->gl_ctx release];
         [s->view removeFromSuperview];
         [s->view release];
-        if (s->window) [s->window release];
+        if (s->window) { 
+            [s->window release];
+            [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+        }
     });
 }
 
@@ -453,6 +472,9 @@ int vo_cocoa_config_window(struct vo *vo, uint32_t flags, void *gl_ctx)
         // reconfiguration code.
         s->pending_events |= VO_EVENT_RESIZE;
     });
+
+    [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+    set_application_icon(NSApp);
     return 0;
 }
 
@@ -731,7 +753,9 @@ void *vo_cocoa_cgl_pixel_format(struct vo *vo)
 @synthesize vout = _video_output;
 
 - (void)performAsyncResize:(NSSize)size {
-    vo_cocoa_resize_redraw(self.vout, size.width, size.height);
+    struct vo_cocoa_state *s = self.vout->cocoa;
+    if (!s->waiting_frame)
+        vo_cocoa_resize_redraw(self.vout, size.width, size.height);
 }
 
 - (BOOL)keyboardEnabled {

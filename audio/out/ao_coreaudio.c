@@ -354,22 +354,28 @@ static void ca_log_layout(struct ao *ao, AudioChannelLayout *layout)
 
     AudioChannelDescription *descs = layout->mChannelDescriptions;
 
-    MP_VERBOSE(ao, "layout: tag: <%d>, bitmap: <%d>, "
-                   "descriptions <%d>\n",
-                   layout->mChannelLayoutTag,
-                   layout->mChannelBitmap,
-                   layout->mNumberChannelDescriptions);
+    MP_VERBOSE(ao, "layout: tag: <%u>, bitmap: <%u>, "
+                   "descriptions <%u>\n",
+                   (unsigned) layout->mChannelLayoutTag,
+                   (unsigned) layout->mChannelBitmap,
+                   (unsigned) layout->mNumberChannelDescriptions);
 
     for (int i = 0; i < layout->mNumberChannelDescriptions; i++) {
         AudioChannelDescription d = descs[i];
-        MP_VERBOSE(ao, " - description %d: label <%d, %d>, flags: <%u>, "
-                       "coords: <%f, %f, %f>\n", i,
-                       d.mChannelLabel,
-                       ca_label_to_mp_speaker_id(d.mChannelLabel),
-                       d.mChannelFlags,
+        MP_VERBOSE(ao, " - description %d: label <%u, %u>, "
+                       " flags: <%u>, coords: <%f, %f, %f>\n", i,
+                       (unsigned) d.mChannelLabel,
+                       (unsigned) ca_label_to_mp_speaker_id(d.mChannelLabel),
+                       (unsigned) d.mChannelFlags,
                        d.mCoordinates[0],
                        d.mCoordinates[1],
                        d.mCoordinates[2]);
+
+        if (i >= 32) {
+            MP_VERBOSE(ao, " detected more than 32 channel descriptions, "
+                       "skipping output");
+            break;
+        }
     }
 }
 
@@ -410,14 +416,22 @@ bool ca_layout_to_mp_chmap(struct ao *ao, AudioChannelLayout *layout,
     //   to the waveextensible definition: this is the kind of
     //   descriptions we process here.
 
+    if (layout->mNumberChannelDescriptions > MP_NUM_CHANNELS) {
+        MP_VERBOSE(ao, "layout has too many descriptions (%u, max: %d)\n",
+                   (unsigned) layout->mNumberChannelDescriptions,
+                   MP_NUM_CHANNELS);
+        return false;
+    }
+
     for (int n = 0; n < layout->mNumberChannelDescriptions; n++) {
         AudioChannelLabel label = layout->mChannelDescriptions[n].mChannelLabel;
         uint8_t speaker = ca_label_to_mp_speaker_id(label);
         if (label == kAudioChannelLabel_Unknown)
             continue;
         if (speaker < 0) {
-            MP_VERBOSE(ao, "channel label=%d unusable to build channel "
-                           "bitmap, skipping layout\n", label);
+            MP_VERBOSE(ao, "channel label=%u unusable to build channel "
+                           "bitmap, skipping layout\n", (unsigned) label);
+            goto coreaudio_error;
         } else {
             chmap->speaker[n] = speaker;
             chmap->num = n + 1;
