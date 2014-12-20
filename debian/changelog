@@ -1,10 +1,10 @@
-mpv (0.7.2-1) UNRELEASED; urgency=medium
+mpv (0.7.2-1) unstable; urgency=medium
 
   * New upstream release
     - Enable ytdl_hook script by default (Closes: #772472)
   * Enable joystick support (Closes: #773234)
 
- -- Alessandro Ghedini <ghedo@debian.org>  Sat, 20 Dec 2014 12:16:40 +0100
+ -- Alessandro Ghedini <ghedo@debian.org>  Sat, 20 Dec 2014 12:31:39 +0100
 
 mpv (0.7.1-1) unstable; urgency=medium
 
