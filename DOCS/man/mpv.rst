@@ -235,11 +235,43 @@ is the same as ``--no-fs``.
 If an option is marked as *(XXX only)*, it will only work in combination with
 the *XXX* option or if *XXX* is compiled in.
 
-.. note::
+Escaping spaces and other special characters
+--------------------------------------------
 
-    The suboption parser (used for example for ``--ao=pcm`` suboptions)
-    supports a special kind of string-escaping intended for use with external
-    GUIs.
+Keep in mind that the shell will partially parse and mangle the arguments you
+pass to mpv. For example, you might need to quote or escape options and
+filenames:
+
+    ``mpv "filename with spaces.mkv" --title="window title"``
+
+It gets more complicated if the suboption parser is involved. The suboption
+parser puts several options into a single string, and passes them to a
+component at once, instead of using multiple options on the level of the
+command line.
+
+The suboption parser can quote strings with ``"``, ``'``, and ``[...]``.
+Additionally, there is a special form of quoting with ``%n%`` described below.
+
+For example, the ``opengl`` VO can take multiple options:
+
+    ``mpv test.mkv --vo=opengl:lscale=lanczos2:icc-profile=file.icc,xv``
+
+This passed ``lscale=lanczos2`` and ``icc-profile=file.icc`` to ``opengl``,
+and also specifies ``xv`` as fallback VO. If the icc-profile path contains
+spaces or characters like ``,`` or ``:``, you need to quote them:
+
+    ``mpv '--vo=opengl:icc-profile="file with spaces.icc",xv'``
+
+Shells may actually strip some quotes from the string passed to the commandline,
+so the example quotes the string twice, ensuring that mpv recieves the ``"``
+quotes.
+
+The ``[...]`` from of quotes wraps everything between ``[`` and ``]``. It's
+useful with shells that don't interpret these characters in the middle of
+an argument (like bash).
+
+A special kind of string-escaping intended for use with external scripts and
+programs is started with ``%``.
 
 It has the following format::
 
@@ -252,6 +284,15 @@ It has the following format::
     Or in a script:
 
     ``mpv --ao=pcm:file=%`expr length "$NAME"`%"$NAME" test.avi``
+
+Suboptions passed to the client API are also subject to escaping. Using
+``mpv_set_option_string()`` is exactly like passing ``--name=data`` to the
+command line (but without shell processing of the string). Some options
+support passing values in a more structured way instead of flat strings, and
+can avoid the suboption parsing mess. For example, ``--vf`` supports
+``MPV_FORMAT_NODE``, which let's you pass suboptions as a nested data structure
+of maps and arrays. (``--vo`` supports this in the same way, although this
+fact is undocumented.)
 
 Paths
 -----
@@ -339,6 +380,17 @@ setting them to *no*. Even suboptions can be specified in this way.
         vo=opengl
         # Use quotes for text that can contain spaces:
         status-msg="Time: ${time-pos}"
+
+Escaping spaces and special characters
+--------------------------------------
+
+This is done like with command line options. The shell is not involved here,
+but option values still need to be quoted as a whole if it contains certain
+characters like spaces. A config entry can be quoted with ``"`` and ``'``,
+as well as with the ``%n%`` syntax mentioned before. This is like passing
+the exact contents of the quoted string as command line option. C-style escapes
+are currently _not_ interpreted on this level, although some options to this
+manually. (This is a mess and should probably be changed at some point.)
 
 Putting Command Line Options into the Configuration File
 --------------------------------------------------------
@@ -436,7 +488,7 @@ listed.
 
 - ``AV:`` or ``V:`` (video only) or ``A:`` (audio only)
 - The current time position in ``HH:MM:SS`` format (``playback-time`` property)
-- The total file duration (or ``00:00:00`` if unknown) (``length`` property)
+- The total file duration (absent if unknown) (``length`` property)
 - Playback speed, e.g. `` x2.0``. Only visible if the speed is not normal. This
   is the user-requested speed, and not the actual speed  (usually they should
   be the same, unless playback is too slow). (``speed`` property.)
@@ -487,7 +539,7 @@ PROTOCOLS
 ``bd://[title][/device]`` ``--bluray-device=PATH``
     Play a Blu-Ray disc. Currently, this does not accept ISO files. Instead,
     you must mount the ISO file as filesystem, and point ``--bluray-device``
-    to the mounted directly.
+    to the mounted directory directly.
 
 ``bdnav://[title][/device]``
     Play a Blu-Ray disc, with navigation features enabled. This feature is
@@ -718,6 +770,26 @@ FILES
     and files with no ``.lua`` extension are ignored. The ``--load-scripts=no``
     option disables loading these files.
 
+``~/.config/mpv/watch_later/``
+    Contains temporary config files needed for resuming playback of files with
+    the watch later feature. See for example the ``Q`` key binding, or the
+    ``quit_watch_later`` input command.
+
+    Each file is a small config file which is loaded if the corresponding media
+    file is loaded. It contains the playback position and some (not necessarily
+    all) settings that were changed during playback. The filenames are hashed
+    from the full paths of the media files. It's in general not possible to
+    extract the media filename from this hash. However, you can set the
+    ``--write-filename-in-watch-later-config`` option, and the player will
+    add the media filename to the contents of the resume config file.
+
+``~/.config/mpv/lua-settings/osc.conf``
+    This is loaded by the OSC script. See the `ON SCREEN CONTROLLER`_ docs
+    for details.
+
+    Other files in this directory are specific to the corresponding scripts
+    as well, and the mpv core doesn't touch them.
+
 Note that the environment variables ``$XDG_CONFIG_HOME`` and ``$MPV_HOME`` can
 override the standard directory ``~/.config/mpv/``.
 
@@ -728,18 +800,16 @@ FILES ON WINDOWS
 ================
 
 On win32 (if compiled with MinGW, but not Cygwin), the default config file
-locations are different:
+locations are different. They are generally located under ``%APPDATA%/mpv/``.
+For example, the path to mpv.conf is ``%APPDATA%/mpv/mpv.conf``, which maps to
+a system and user-specific path, for example
 
-``%APPDATA%/mpv/mpv.conf``
-    Preferred mpv config file. This maps to a system and user-specific path,
-    for example ``C:\users\USERNAME\Application Data\mpv\mpv.conf``. You can
-    find the exact path by running ``echo %APPDATA%\mpv\mpv.conf`` in cmd.exe.
+    ``C:\users\USERNAME\Application Data\mpv\mpv.conf``
 
-``%APPDATA%/mpv/input.conf``
-    key bindings (see `INPUT.CONF`_ section)
+You can find the exact path by running ``echo %APPDATA%\mpv\mpv.conf`` in cmd.exe.
 
-``%APPDATA%/mpv/lua/``
-    equivalent of ``~/.config/mpv/lua/`` on Unix.
+Other config files (such as ``input.conf``) are in the same directory. See the
+`FILES`_ section above.
 
 The environment variable ``$MPV_HOME`` completely overrides these, like on
 UNIX.

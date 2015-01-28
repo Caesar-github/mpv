@@ -33,6 +33,10 @@ def _build_pdf(ctx):
 
     _add_rst_manual_dependencies(ctx)
 
+def _all_includes(ctx):
+    return [ctx.bldnode.abspath(), ctx.srcnode.abspath()] + \
+            ctx.dependencies_includes()
+
 def build(ctx):
     ctx.load('waf_customizations')
     ctx.load('generators.sources')
@@ -371,7 +375,6 @@ def build(ctx):
         ## osdep
         ( getch2_c ),
         ( "osdep/io.c" ),
-        ( "osdep/numcores.c"),
         ( "osdep/timer.c" ),
         ( timer_c ),
         ( "osdep/threads.c" ),
@@ -414,13 +417,21 @@ def build(ctx):
                 ctx.path.find_node('osdep/mpv.rc'),
                 ctx.path.find_node(node))
 
+    if ctx.dependency_satisfied('cplayer') or ctx.dependency_satisfied('test'):
+        ctx(
+            target       = "objects",
+            source       = ctx.filtered_sources(sources),
+            use          = ctx.dependencies_use(),
+            includes     = _all_includes(ctx),
+            features     = "c",
+        )
+
     if ctx.dependency_satisfied('cplayer'):
         ctx(
             target       = "mpv",
-            source       = ctx.filtered_sources(sources) + ["player/main_fn.c"],
-            use          = ctx.dependencies_use(),
-            includes     = [ctx.bldnode.abspath(), ctx.srcnode.abspath()] + \
-                           ctx.dependencies_includes(),
+            source       = "player/main_fn.c",
+            use          = ctx.dependencies_use() + ['objects'],
+            includes     = _all_includes(ctx),
             features     = "c cprogram",
             install_path = ctx.env.BINDIR
         )
@@ -442,6 +453,15 @@ def build(ctx):
             wrapctx.env.CFLAGS = wrapflags
             wrapctx.env.LAST_LINKFLAGS = wrapflags
 
+    if ctx.dependency_satisfied('test'):
+        for test in ctx.path.ant_glob("test/*.c"):
+            ctx(
+                target   = os.path.splitext(test.srcpath())[0],
+                source   = test.srcpath(),
+                use      = ctx.dependencies_use() + ['objects'],
+                includes = _all_includes(ctx),
+                features = "c cprogram",
+            )
 
     build_shared = ctx.dependency_satisfied('libmpv-shared')
     build_static = ctx.dependency_satisfied('libmpv-static')
@@ -535,19 +555,21 @@ def build(ctx):
     if ctx.dependency_satisfied('pdf-build'):
         _build_pdf(ctx)
 
-    if ctx.dependency_satisfied('zsh-comp'):
-        ctx.zshcomp(target = "etc/_mpv")
+    if ctx.dependency_satisfied('cplayer'):
+
+        if ctx.dependency_satisfied('zsh-comp'):
+            ctx.zshcomp(target = "etc/_mpv")
+            ctx.install_files(
+                ctx.env.ZSHDIR,
+                ['etc/_mpv'])
+
         ctx.install_files(
-            ctx.env.ZSHDIR,
-            ['etc/_mpv'])
+            ctx.env.DATADIR + '/applications',
+            ['etc/mpv.desktop'] )
 
-    ctx.install_files(
-        ctx.env.DATADIR + '/applications',
-        ['etc/mpv.desktop'] )
+        ctx.install_files(ctx.env.CONFDIR, ['etc/encoding-profiles.conf'] )
 
-    ctx.install_files(ctx.env.CONFDIR, ['etc/encoding-profiles.conf'] )
-
-    for size in '16x16 32x32 64x64'.split():
-        ctx.install_as(
-            ctx.env.DATADIR + '/icons/hicolor/' + size + '/apps/mpv.png',
-            'etc/mpv-icon-8bit-' + size + '.png')
+        for size in '16x16 32x32 64x64'.split():
+            ctx.install_as(
+                ctx.env.DATADIR + '/icons/hicolor/' + size + '/apps/mpv.png',
+                'etc/mpv-icon-8bit-' + size + '.png')

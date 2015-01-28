@@ -23,6 +23,7 @@
 #include <stdbool.h>
 #include <assert.h>
 #include <time.h>
+#include <math.h>
 #include <pthread.h>
 #include <sys/types.h>
 
@@ -62,11 +63,9 @@
 #if HAVE_SYS_MMAN_H
 #include <sys/mman.h>
 #endif
-#ifndef __MINGW32__
-#include <sys/wait.h>
-#endif
 
 #include "osdep/io.h"
+#include "osdep/subprocess.h"
 
 #include "core.h"
 
@@ -568,9 +567,13 @@ static int mp_property_percent_pos(void *ctx, struct m_property *prop,
             .max = 100,
         };
         return M_PROPERTY_OK;
-    case M_PROPERTY_PRINT:
-        *(char **)arg = talloc_asprintf(NULL, "%d", get_percent_pos(mpctx));
+    case M_PROPERTY_PRINT: {
+        int pos = get_percent_pos(mpctx);
+        if (pos < 0)
+            return M_PROPERTY_UNAVAILABLE;
+        *(char **)arg = talloc_asprintf(NULL, "%d", pos);
         return M_PROPERTY_OK;
+    }
     }
     return M_PROPERTY_NOT_IMPLEMENTED;
 }
@@ -690,6 +693,7 @@ static int mp_property_chapter(void *ctx, struct m_property *prop,
 {
     MPContext *mpctx = ctx;
     int chapter = get_current_chapter(mpctx);
+    int num = get_chapter_count(mpctx);
     if (chapter < -1)
         return M_PROPERTY_UNAVAILABLE;
 
@@ -702,7 +706,7 @@ static int mp_property_chapter(void *ctx, struct m_property *prop,
             .type = CONF_TYPE_INT,
             .flags = M_OPT_MIN | M_OPT_MAX,
             .min = -1,
-            .max = get_chapter_count(mpctx) - 1,
+            .max = num - 1,
         };
         return M_PROPERTY_OK;
     case M_PROPERTY_PRINT: {
@@ -716,6 +720,8 @@ static int mp_property_chapter(void *ctx, struct m_property *prop,
         if (action == M_PROPERTY_SWITCH) {
             struct m_property_switch_arg *sarg = arg;
             step_all = ROUND(sarg->inc);
+            if (num < 2) // semi-broken file; ignore for user convenience
+                return M_PROPERTY_UNAVAILABLE;
             // Check threshold for relative backward seeks
             if (mpctx->opts->chapter_seek_threshold >= 0 && step_all < 0) {
                 double current_chapter_start =
@@ -732,7 +738,7 @@ static int mp_property_chapter(void *ctx, struct m_property *prop,
         chapter += step_all;
         if (chapter < -1)
             chapter = -1;
-        if (chapter >= get_chapter_count(mpctx) && step_all > 0) {
+        if (chapter >= num && step_all > 0) {
             mpctx->stop_play = PT_NEXT_ENTRY;
         } else {
             mp_seek_chapter(mpctx, chapter);
@@ -1030,8 +1036,10 @@ static int tag_property(int action, void *arg, struct mp_tags *tags)
             res = talloc_asprintf_append_buffer(res, "%s: %s\n",
                                                 tags->keys[n], tags->values[n]);
         }
+        if (!res)
+            res = talloc_strdup(NULL, "(empty)");
         *(char **)arg = res;
-        return res ? M_PROPERTY_OK : M_PROPERTY_UNAVAILABLE;
+        return M_PROPERTY_OK;
     }
     case M_PROPERTY_KEY_ACTION: {
         struct m_property_action_arg *ka = arg;
@@ -1098,22 +1106,16 @@ static int mp_property_vf_metadata(void *ctx, struct m_property *prop,
         return M_PROPERTY_UNAVAILABLE;
     struct vf_chain *vf = mpctx->d_video->vfilter;
 
-    switch(action) {
-    case M_PROPERTY_GET_TYPE:
-    case M_PROPERTY_GET:
-    case M_PROPERTY_GET_NODE:
-        return M_PROPERTY_NOT_IMPLEMENTED;
-    case M_PROPERTY_KEY_ACTION: {
+    if (action == M_PROPERTY_KEY_ACTION) {
         struct m_property_action_arg *ka = arg;
         bstr key;
         char *rem;
         m_property_split_path(ka->key, &key, &rem);
-        struct mp_tags vf_metadata;
+        struct mp_tags vf_metadata = {0};
         switch (vf_control_by_label(vf, VFCTRL_GET_METADATA, &vf_metadata, key)) {
-        case CONTROL_NA:
-            return M_PROPERTY_UNAVAILABLE;
         case CONTROL_UNKNOWN:
             return M_PROPERTY_UNKNOWN;
+        case CONTROL_NA: // empty
         case CONTROL_OK:
             if (strlen(rem)) {
                 struct m_property_action_arg next_ka = *ka;
@@ -1126,7 +1128,6 @@ static int mp_property_vf_metadata(void *ctx, struct m_property *prop,
         default:
             return M_PROPERTY_ERROR;
         }
-    }
     }
     return M_PROPERTY_NOT_IMPLEMENTED;
 }
@@ -2535,9 +2536,10 @@ static int mp_property_fps(void *ctx, struct m_property *prop,
                            int action, void *arg)
 {
     MPContext *mpctx = ctx;
-    if (!mpctx->d_video)
-        return M_PROPERTY_UNAVAILABLE;
-    return m_property_float_ro(action, arg, mpctx->d_video->fps);
+    float fps = mpctx->d_video ? mpctx->d_video->fps : 0;
+    if (fps < 0.1 || !isfinite(fps))
+        return M_PROPERTY_UNAVAILABLE;;
+    return m_property_float_ro(action, arg, fps);
 }
 
 static int mp_property_vf_fps(void *ctx, struct m_property *prop,
@@ -2868,10 +2870,16 @@ static int mp_property_playlist(void *ctx, struct m_property *prop,
 
         for (struct playlist_entry *e = mpctx->playlist->first; e; e = e->next)
         {
+            char *p = e->filename;
+            if (!mp_is_url(bstr0(p))) {
+                char *s = mp_basename(e->filename);
+                if (s[0])
+                    p = s;
+            }
             if (mpctx->playlist->current == e) {
-                res = talloc_asprintf_append(res, "> %s <\n", e->filename);
+                res = talloc_asprintf_append(res, "> %s <\n", p);
             } else {
-                res = talloc_asprintf_append(res, "%s\n", e->filename);
+                res = talloc_asprintf_append(res, "%s\n", p);
             }
         }
 
@@ -3342,14 +3350,14 @@ static const char *const *const mp_event_property_change[] = {
       "width", "height", "fps", "aspect", "vo-configured"),
     E(MPV_EVENT_AUDIO_RECONFIG, "audio-format", "audio-codec", "audio-bitrate",
       "samplerate", "channels", "audio"),
-    E(MPV_EVENT_SEEK, "seeking"),
-    E(MPV_EVENT_PLAYBACK_RESTART, "seeking"),
+    E(MPV_EVENT_SEEK, "seeking", "core-idle"),
+    E(MPV_EVENT_PLAYBACK_RESTART, "seeking", "core-idle"),
     E(MPV_EVENT_METADATA_UPDATE, "metadata"),
     E(MPV_EVENT_CHAPTER_CHANGE, "chapter", "chapter-metadata"),
     E(MP_EVENT_CACHE_UPDATE, "cache", "cache-free", "cache-used", "cache-idle",
-      "demuxer-cache-duration", "demuxer-cache-idle"),
+      "demuxer-cache-duration", "demuxer-cache-idle", "paused-for-cache"),
     E(MP_EVENT_WIN_RESIZE, "window-scale"),
-    E(MP_EVENT_WIN_STATE, "window-minimized"),
+    E(MP_EVENT_WIN_STATE, "window-minimized", "display-names"),
 };
 #undef E
 
@@ -3831,6 +3839,39 @@ static void overlay_uninit(struct MPContext *mpctx)
     osd_set_external2(mpctx->osd, NULL);
 }
 
+struct subprocess_args {
+    struct mp_log *log;
+    char **args;
+};
+
+static void *run_subprocess(void *ptr)
+{
+    struct subprocess_args *p = ptr;
+    pthread_detach(pthread_self());
+
+    mp_msg_flush_status_line(p->log);
+
+    char *err = NULL;
+    if (mp_subprocess(p->args, NULL, NULL, NULL, NULL, &err) < 0)
+        mp_err(p->log, "Running subprocess failed: %s\n", err);
+
+    talloc_free(p);
+    return NULL;
+}
+
+static void subprocess_detached(struct mp_log *log, char **args)
+{
+    struct subprocess_args *p = talloc_zero(NULL, struct subprocess_args);
+    p->log = mp_log_new(p, log, NULL);
+    int num_args = 0;
+    for (int n = 0; args[n]; n++)
+        MP_TARRAY_APPEND(p, p->args, num_args, talloc_strdup(p, args[n]));
+    MP_TARRAY_APPEND(p, p->args, num_args, NULL);
+    pthread_t thread;
+    if (pthread_create(&thread, NULL, run_subprocess, p))
+        talloc_free(p);
+}
+
 struct cycle_counter {
     char **args;
     int counter;
@@ -4166,7 +4207,7 @@ int run_command(MPContext *mpctx, mp_cmd_t *cmd)
         if (!mpctx->num_sources)
             return -1;
         struct osd_sub_state state;
-        get_osd_sub_state(mpctx, 0, &state);
+        update_osd_sub_state(mpctx, 0, &state);
         double refpts = get_current_time(mpctx);
         if (state.dec_sub && refpts != MP_NOPTS_VALUE) {
             double a[2];
@@ -4255,16 +4296,16 @@ int run_command(MPContext *mpctx, mp_cmd_t *cmd)
         bool append = cmd->args[1].v.i;
         struct playlist *pl = playlist_parse_file(filename, mpctx->global);
         if (pl) {
+            prepare_playlist(mpctx, pl);
+            struct playlist_entry *new = pl->current;
             if (!append)
                 playlist_clear(mpctx->playlist);
             playlist_append_entries(mpctx->playlist, pl);
             talloc_free(pl);
 
-            if (!append && mpctx->playlist->first) {
-                struct playlist_entry *e =
-                    mp_check_playlist_resume(mpctx, mpctx->playlist);
-                mp_set_playlist_entry(mpctx, e ? e : mpctx->playlist->first);
-            }
+            if (!append && mpctx->playlist->first)
+                mp_set_playlist_entry(mpctx, new ? new : mpctx->playlist->first);
+
             mp_notify_property(mpctx, "playlist");
         } else {
             MP_ERR(mpctx, "Unable to load playlist %s.\n", filename);
@@ -4395,28 +4436,10 @@ int run_command(MPContext *mpctx, mp_cmd_t *cmd)
         break;
 
     case MP_CMD_RUN: {
-#ifndef __MINGW32__
-        mp_msg_flush_status_line(mpctx->global);
         char *args[MP_CMD_MAX_ARGS + 1] = {0};
         for (int n = 0; n < cmd->nargs; n++)
             args[n] = cmd->args[n].v.s;
-        pid_t child = fork();
-        if (child == 0) {
-            // Fork twice; the second process will be made child of pid 1 as
-            // soon as the first process exists, and we don't have to care
-            // about having to wait for the second process to terminate.
-            if (fork() == 0) {
-                execvp(args[0], args);
-                // mp_msg() is not safe to be called from a forked process.
-                char s[] = "Executing program failed.\n";
-                write(2, s, sizeof(s) - 1);
-                _exit(1);
-            }
-            _exit(0);
-        }
-        int st;
-        while (child != -1 && waitpid(child, &st, 0) < 0 && errno == EINTR) {}
-#endif
+        subprocess_detached(mpctx->log, args);
         break;
     }
 
@@ -4626,8 +4649,11 @@ static void command_event(struct MPContext *mpctx, int event, void *arg)
         }
         ctx->prev_pts = now;
     }
-    if (event == MPV_EVENT_SEEK) {
+    if (event == MPV_EVENT_SEEK)
         ctx->prev_pts = MP_NOPTS_VALUE;
+    if (event == MPV_EVENT_END_FILE || event == MPV_EVENT_FILE_LOADED) {
+        // Update chapters - does nothing if something else is visible.
+        set_osd_bar_chapters(mpctx, OSD_BAR_SEEK);
     }
 }
 

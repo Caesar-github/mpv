@@ -22,10 +22,12 @@ A script which leaves fullscreen mode when the player is paused:
 
 ::
 
-    function on_pause()
-        mp.set_property("fullscreen", "no")
+    function on_pause_change(name, value)
+        if value == true then
+            mp.set_property("fullscreen", "no")
+        end
     end
-    mp.register_event("pause", on_pause)
+    mp.observe_property("pause", "bool", on_pause_change)
 
 This script provides a pretty weird feature, but Lua scripting was made to
 allow users implement features which are not going to be added to the mpv core.
@@ -623,6 +625,10 @@ strictly part of the guaranteed API.
     trailing text is returned as 3rd return value. (The 3rd return value is
     always there, but with ``trail`` set, no error is raised.)
 
+``utils.to_string(v)``
+    Turn the given value into a string. Formats tables and their contents. This
+    doesn't do anything special; it is only needed because Lua is terrible.
+
 Events
 ------
 
@@ -715,9 +721,6 @@ List of events
 
 ``command-reply``
     Undocumented (not useful for Lua scripts).
-
-``script-input-dispatch``
-    Undocumented (used internally).
 
 ``client-message``
     Undocumented (used internally).

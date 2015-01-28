@@ -15,7 +15,6 @@
  * with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#define _WIN32_WINNT 0x0600
 #include <windows.h>
 #include <string.h>
 
@@ -84,12 +83,14 @@ static void write_arg(bstr *cmdline, char *arg)
 // Convert an array of arguments to a properly escaped command-line string
 static wchar_t *write_cmdline(void *ctx, char **argv)
 {
+    // argv[0] should always be quoted. Otherwise, arguments may be interpreted
+    // as part of the program name. Also, it can't contain escape sequences.
     bstr cmdline = {0};
+    bstr_xappend_asprintf(NULL, &cmdline, "\"%s\"", argv[0]);
 
-    for (int i = 0; argv[i]; i++) {
+    for (int i = 1; argv[i]; i++) {
+        bstr_xappend(NULL, &cmdline, bstr0(" "));
         write_arg(&cmdline, argv[i]);
-        if (argv[i + 1])
-            bstr_xappend(NULL, &cmdline, bstr0(" "));
     }
 
     wchar_t *wcmdline = mp_from_utf8(ctx, cmdline.start);
@@ -220,6 +221,10 @@ static int async_read(HANDLE file, void *buf, unsigned size, OVERLAPPED* ol)
     return 0;
 }
 
+static void write_none(void *ctx, char *data, size_t size)
+{
+}
+
 int mp_subprocess(char **args, struct mp_cancel *cancel, void *ctx,
                   subprocess_read_cb on_stdout, subprocess_read_cb on_stderr,
                   char **error)
@@ -233,8 +238,8 @@ int mp_subprocess(char **args, struct mp_cancel *cancel, void *ctx,
         char buf[4096];
         subprocess_read_cb read_cb;
     } pipes[2] = {
-        { .read_cb = on_stdout },
-        { .read_cb = on_stderr },
+        { .read_cb = on_stdout ? on_stdout : write_none },
+        { .read_cb = on_stderr ? on_stderr : write_none },
     };
 
     // If the function exits before CreateProcess, there was an init error

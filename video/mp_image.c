@@ -365,6 +365,7 @@ void mp_image_copy_attributes(struct mp_image *dst, struct mp_image *src)
     dst->fields = src->fields;
     dst->qscale_type = src->qscale_type;
     dst->pts = src->pts;
+    dst->params.rotate = src->params.rotate;
     dst->params.stereo_in = src->params.stereo_in;
     dst->params.stereo_out = src->params.stereo_out;
     if (dst->w == src->w && dst->h == src->h) {
@@ -376,6 +377,7 @@ void mp_image_copy_attributes(struct mp_image *dst, struct mp_image *src)
         dst->params.colorlevels = src->params.colorlevels;
         dst->params.primaries = src->params.primaries;
         dst->params.chroma_location = src->params.chroma_location;
+        dst->params.outputlevels = src->params.outputlevels;
     }
     if ((dst->fmt.flags & MP_IMGFLAG_PAL) && (src->fmt.flags & MP_IMGFLAG_PAL)) {
         if (dst->planes[1] && src->planes[1])
@@ -494,7 +496,7 @@ bool mp_image_params_valid(const struct mp_image_params *p)
     if (p->w < 0 || p->h < 0 || (p->w + 128LL) * (p->h + 128LL) >= INT_MAX / 8)
         return false;
 
-    if (p->d_w < 0 || p->d_h < 0)
+    if (p->d_w <= 0 || p->d_h <= 0)
         return false;
 
     if (p->rotate < 0 || p->rotate >= 360)

@@ -109,7 +109,7 @@ static bool create_context_x11_gl3(struct MPGLContext *ctx, bool debug)
                                                     glx_ctx->fbc, 0, True,
                                                     context_attribs);
     if (!context) {
-        MP_ERR(vo, "Could not create GL3 context. Retrying with legacy context.\n");
+        MP_INFO(vo, "Could not create GL3 context. Retrying with legacy context.\n");
         return false;
     }
 
@@ -122,7 +122,7 @@ static bool create_context_x11_gl3(struct MPGLContext *ctx, bool debug)
 
     glx_ctx->context = context;
 
-    mpgl_load_functions(ctx->gl, (void *)glXGetProcAddress, glxstr, vo->log);
+    mpgl_load_functions(ctx->gl, (void *)glXGetProcAddressARB, glxstr, vo->log);
 
     if (!glXIsDirect(vo->x11->display, context))
         ctx->gl->mpgl_caps &= ~MPGL_CAP_NO_SW;
@@ -274,13 +274,10 @@ static void releaseGlContext_x11(MPGLContext *ctx)
     XVisualInfo **vinfo = &glx_ctx->vinfo;
     GLXContext *context = &glx_ctx->context;
     Display *display = ctx->vo->x11->display;
-    GL *gl = ctx->gl;
     if (*vinfo)
         XFree(*vinfo);
     *vinfo = NULL;
     if (*context) {
-        if (gl->Finish)
-            gl->Finish();
         glXMakeCurrent(display, None, NULL);
         glXDestroyContext(display, *context);
     }

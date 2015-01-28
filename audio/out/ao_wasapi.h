@@ -20,9 +20,6 @@
 #ifndef MP_AO_WASAPI_H_
 #define MP_AO_WASAPI_H_
 
-#define COBJMACROS 1
-#define _WIN32_WINNT 0x600
-
 #include <audioclient.h>
 #include <audiopolicy.h>
 #include <mmdeviceapi.h>
@@ -106,7 +103,10 @@ typedef struct wasapi_state {
     int opt_list;
     char *opt_device;
 
-    /* We still need to support XP, don't use these functions directly, blob owned by main thread */
+    /* Don't use these functions directly in case
+       they are unimplemented for some reason.
+       (XP shouldn't be an issue since it doesn't support wasapi, maybe wine?)
+       Blob is owned by the main thread */
     struct {
         HMODULE hAvrt;
         HANDLE (WINAPI *pAvSetMmThreadCharacteristicsW)(LPCWSTR, LPDWORD);

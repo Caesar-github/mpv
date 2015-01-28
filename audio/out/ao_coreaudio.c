@@ -173,32 +173,83 @@ coreaudio_error:
     return CONTROL_ERROR;
 }
 
-static bool init_chmap(struct ao *ao)
+static AudioChannelLayout* ca_query_layout(struct ao *ao, void *talloc_ctx)
 {
     struct priv *p = ao->priv;
     OSStatus err;
-    AudioChannelLayout *layouts;
-    size_t n_layouts;
+    uint32_t psize;
+    AudioChannelLayout *r = NULL;
 
-    err = CA_GET_ARY_O(p->device,
-                       kAudioDevicePropertyPreferredChannelLayout,
-                       &layouts, &n_layouts);
-    CHECK_CA_ERROR("could not get audio device prefered layouts");
+    AudioObjectPropertyAddress p_addr = (AudioObjectPropertyAddress) {
+        .mSelector = kAudioDevicePropertyPreferredChannelLayout,
+        .mScope    = kAudioDevicePropertyScopeOutput,
+        .mElement  = kAudioObjectPropertyElementWildcard,
+    };
+
+    err = AudioObjectGetPropertyDataSize(p->device, &p_addr, 0, NULL, &psize);
+    CHECK_CA_ERROR("could not get device preferred layout (size)");
+
+    r = talloc_size(talloc_ctx, psize);
+
+    err = AudioObjectGetPropertyData(p->device, &p_addr, 0, NULL, &psize, r);
+    CHECK_CA_ERROR("could not get device preferred layout (get)");
+
+coreaudio_error:
+    return r;
+}
+
+static AudioChannelLayout* ca_query_stereo_layout(struct ao *ao, void *talloc_ctx)
+{
+    struct priv *p = ao->priv;
+    OSStatus err;
+    const int nch = 2;
+    uint32_t channels[nch];
+    AudioChannelLayout *r = NULL;
+
+    AudioObjectPropertyAddress p_addr = (AudioObjectPropertyAddress) {
+        .mSelector = kAudioDevicePropertyPreferredChannelsForStereo,
+        .mScope    = kAudioDevicePropertyScopeOutput,
+        .mElement  = kAudioObjectPropertyElementWildcard,
+    };
+
+    uint32_t psize = sizeof(channels);
+    err = AudioObjectGetPropertyData(p->device, &p_addr, 0, NULL, &psize, channels);
+    CHECK_CA_ERROR("could not get device preferred stereo layout");
+
+    psize = sizeof(AudioChannelLayout) + nch * sizeof(AudioChannelDescription);
+    r = talloc_zero_size(talloc_ctx, psize);
+    r->mChannelLayoutTag = kAudioChannelLayoutTag_UseChannelDescriptions;
+    r->mNumberChannelDescriptions = nch;
+
+    AudioChannelDescription desc = {0};
+    desc.mChannelFlags = kAudioChannelFlags_AllOff;
+
+    for(int i = 0; i < nch; i++) {
+        desc.mChannelLabel = channels[i];
+        r->mChannelDescriptions[i] = desc;
+    }
+
+coreaudio_error:
+    return r;
+}
+
+static bool init_chmap(struct ao *ao)
+{
+    struct priv *p = ao->priv;
+    void *ta_ctx = talloc_new(NULL);
 
     struct mp_chmap_sel chmap_sel = {.tmp = p};
-    for (int i = 0; i < n_layouts; i++) {
-        struct mp_chmap chmap = {0};
-        if (ca_layout_to_mp_chmap(ao, &layouts[i], &chmap))
-            mp_chmap_sel_add_map(&chmap_sel, &chmap);
-    }
+    struct mp_chmap chmap = {0};
 
-    talloc_free(layouts);
-
-    if (ao->channels.num < 3) {
-        struct mp_chmap chmap;
-        mp_chmap_from_channels(&chmap, ao->channels.num);
+    AudioChannelLayout *ml = ca_query_layout(ao, ta_ctx);
+    if (ml && ca_layout_to_mp_chmap(ao, ml, &chmap))
         mp_chmap_sel_add_map(&chmap_sel, &chmap);
-    }
+
+    AudioChannelLayout *sl = ca_query_stereo_layout(ao, ta_ctx);
+    if (sl && ca_layout_to_mp_chmap(ao, sl, &chmap))
+        mp_chmap_sel_add_map(&chmap_sel, &chmap);
+
+    talloc_free(ta_ctx);
 
     if (!ao_chmap_sel_adjust(ao, &chmap_sel, &ao->channels)) {
         MP_ERR(ao, "could not select a suitable channel map among the "
@@ -336,7 +387,7 @@ static const int speaker_map[][2] = {
     { kAudioChannelLabel_HeadphonesLeft,       MP_SPEAKER_ID_DL   },
     { kAudioChannelLabel_HeadphonesRight,      MP_SPEAKER_ID_DR   },
 
-    { kAudioChannelLabel_Unknown,              -1 },
+    { kAudioChannelLabel_Unknown,              MP_SPEAKER_ID_UNKNOWN0 },
 };
 
 static int ca_label_to_mp_speaker_id(AudioChannelLabel label)
@@ -347,87 +398,94 @@ static int ca_label_to_mp_speaker_id(AudioChannelLabel label)
     return -1;
 }
 
-static void ca_log_layout(struct ao *ao, AudioChannelLayout *layout)
+static void ca_log_layout(struct ao *ao, int l, AudioChannelLayout *layout)
 {
-    if (!mp_msg_test(ao->log, MSGL_V))
+    if (!mp_msg_test(ao->log, l))
         return;
 
     AudioChannelDescription *descs = layout->mChannelDescriptions;
 
-    MP_VERBOSE(ao, "layout: tag: <%u>, bitmap: <%u>, "
-                   "descriptions <%u>\n",
-                   (unsigned) layout->mChannelLayoutTag,
-                   (unsigned) layout->mChannelBitmap,
-                   (unsigned) layout->mNumberChannelDescriptions);
+    mp_msg(ao->log, l, "layout: tag: <%u>, bitmap: <%u>, "
+                       "descriptions <%u>\n",
+                       (unsigned) layout->mChannelLayoutTag,
+                       (unsigned) layout->mChannelBitmap,
+                       (unsigned) layout->mNumberChannelDescriptions);
 
     for (int i = 0; i < layout->mNumberChannelDescriptions; i++) {
         AudioChannelDescription d = descs[i];
-        MP_VERBOSE(ao, " - description %d: label <%u, %u>, "
-                       " flags: <%u>, coords: <%f, %f, %f>\n", i,
-                       (unsigned) d.mChannelLabel,
-                       (unsigned) ca_label_to_mp_speaker_id(d.mChannelLabel),
-                       (unsigned) d.mChannelFlags,
-                       d.mCoordinates[0],
-                       d.mCoordinates[1],
-                       d.mCoordinates[2]);
-
-        if (i >= 32) {
-            MP_VERBOSE(ao, " detected more than 32 channel descriptions, "
-                       "skipping output");
-            break;
-        }
+        mp_msg(ao->log, l, " - description %d: label <%u, %u>, "
+            " flags: <%u>, coords: <%f, %f, %f>\n", i,
+            (unsigned) d.mChannelLabel,
+            (unsigned) ca_label_to_mp_speaker_id(d.mChannelLabel),
+            (unsigned) d.mChannelFlags,
+            d.mCoordinates[0],
+            d.mCoordinates[1],
+            d.mCoordinates[2]);
     }
+}
+
+static AudioChannelLayout *ca_layout_to_custom_layout(
+    struct ao *ao, void *talloc_ctx, AudioChannelLayout *l)
+{
+    AudioChannelLayoutTag tag = l->mChannelLayoutTag;
+    AudioChannelLayout *r;
+    OSStatus err;
+
+    if (tag == kAudioChannelLayoutTag_UseChannelBitmap) {
+        uint32_t psize;
+        err = AudioFormatGetPropertyInfo(
+            kAudioFormatProperty_ChannelLayoutForBitmap,
+            sizeof(uint32_t), &l->mChannelBitmap, &psize);
+        CHECK_CA_ERROR("failed to convert channel bitmap to descriptions (info)");
+        r = talloc_size(NULL, psize);
+        err = AudioFormatGetProperty(
+            kAudioFormatProperty_ChannelLayoutForBitmap,
+            sizeof(uint32_t), &l->mChannelBitmap, &psize, r);
+        CHECK_CA_ERROR("failed to convert channel bitmap to descriptions (get)");
+    } else if (tag != kAudioChannelLayoutTag_UseChannelDescriptions) {
+        uint32_t psize;
+        err = AudioFormatGetPropertyInfo(
+            kAudioFormatProperty_ChannelLayoutForTag,
+            sizeof(AudioChannelLayoutTag), &l->mChannelLayoutTag, &psize);
+        r = talloc_size(NULL, psize);
+        CHECK_CA_ERROR("failed to convert channel tag to descriptions (info)");
+        err = AudioFormatGetProperty(
+            kAudioFormatProperty_ChannelLayoutForTag,
+            sizeof(AudioChannelLayoutTag), &l->mChannelLayoutTag, &psize, r);
+        CHECK_CA_ERROR("failed to convert channel tag to descriptions (get)");
+    } else {
+        r = l;
+    }
+
+    return r;
+coreaudio_error:
+    return NULL;
 }
 
 bool ca_layout_to_mp_chmap(struct ao *ao, AudioChannelLayout *layout,
                            struct mp_chmap *chmap)
 {
-    AudioChannelLayoutTag tag  = layout->mChannelLayoutTag;
-    uint32_t layout_size       = sizeof(layout);
-    OSStatus err;
+    void *talloc_ctx = talloc_new(NULL);
 
-    if (tag == kAudioChannelLayoutTag_UseChannelBitmap) {
-        err = AudioFormatGetProperty(kAudioFormatProperty_ChannelLayoutForBitmap,
-                                     sizeof(uint32_t),
-                                     &layout->mChannelBitmap,
-                                     &layout_size,
-                                     layout);
-        CHECK_CA_ERROR("failed to convert channel bitmap to descriptions");
-    } else if (tag != kAudioChannelLayoutTag_UseChannelDescriptions) {
-        err = AudioFormatGetProperty(kAudioFormatProperty_ChannelLayoutForTag,
-                                     sizeof(AudioChannelLayoutTag),
-                                     &layout->mChannelLayoutTag,
-                                     &layout_size,
-                                     layout);
-        CHECK_CA_ERROR("failed to convert channel tag to descriptions");
-    }
+    MP_DBG(ao, "input channel layout:\n");
+    ca_log_layout(ao, MSGL_DEBUG, layout);
 
-    ca_log_layout(ao, layout);
+    AudioChannelLayout *l = ca_layout_to_custom_layout(ao, talloc_ctx, layout);
+    if (!l)
+        goto coreaudio_error;
 
-    // If the channel layout uses channel descriptions, from my
-    // experiments there are there three possibile cases:
-    // * The description has a label kAudioChannelLabel_Unknown:
-    //   Can't do anything about this (looks like non surround
-    //   layouts are like this).
-    // * The description uses positional information: this in
-    //   theory could be used but one would have to map spatial
-    //   positions to labels which is not really feasible.
-    // * The description has a well known label which can be mapped
-    //   to the waveextensible definition: this is the kind of
-    //   descriptions we process here.
+    MP_VERBOSE(ao, "converted input channel layout:\n");
+    ca_log_layout(ao, MSGL_V, l);
 
-    if (layout->mNumberChannelDescriptions > MP_NUM_CHANNELS) {
+    if (l->mNumberChannelDescriptions > MP_NUM_CHANNELS) {
         MP_VERBOSE(ao, "layout has too many descriptions (%u, max: %d)\n",
-                   (unsigned) layout->mNumberChannelDescriptions,
-                   MP_NUM_CHANNELS);
+                   (unsigned) l->mNumberChannelDescriptions, MP_NUM_CHANNELS);
         return false;
     }
 
-    for (int n = 0; n < layout->mNumberChannelDescriptions; n++) {
-        AudioChannelLabel label = layout->mChannelDescriptions[n].mChannelLabel;
+    for (int n = 0; n < l->mNumberChannelDescriptions; n++) {
+        AudioChannelLabel label = l->mChannelDescriptions[n].mChannelLabel;
         uint8_t speaker = ca_label_to_mp_speaker_id(label);
-        if (label == kAudioChannelLabel_Unknown)
-            continue;
         if (speaker < 0) {
             MP_VERBOSE(ao, "channel label=%u unusable to build channel "
                            "bitmap, skipping layout\n", (unsigned) label);
@@ -438,9 +496,12 @@ bool ca_layout_to_mp_chmap(struct ao *ao, AudioChannelLayout *layout,
         }
     }
 
+    talloc_free(talloc_ctx);
     return chmap->num > 0;
 coreaudio_error:
-    ca_log_layout(ao, layout);
+    MP_VERBOSE(ao, "converted input channel layout (failed):\n");
+    ca_log_layout(ao, MSGL_V, layout);
+    talloc_free(talloc_ctx);
     return false;
 }
 

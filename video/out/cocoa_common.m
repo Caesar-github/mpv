@@ -20,7 +20,6 @@
 #import <Cocoa/Cocoa.h>
 #import <CoreServices/CoreServices.h> // for CGDisplayHideCursor
 #import <IOKit/pwr_mgt/IOPMLib.h>
-#include <dlfcn.h>
 
 #import "cocoa_common.h"
 #import "video/out/cocoa/window.h"
@@ -112,19 +111,6 @@ static void queue_new_video_size(struct vo *vo, int w, int h)
     }
 }
 
-void *vo_cocoa_glgetaddr(const char *s)
-{
-    void *ret = NULL;
-    void *handle = dlopen(
-        "/System/Library/Frameworks/OpenGL.framework/OpenGL",
-        RTLD_LAZY | RTLD_LOCAL);
-    if (!handle)
-        return NULL;
-    ret = dlsym(handle, s);
-    dlclose(handle);
-    return ret;
-}
-
 static void enable_power_management(struct vo *vo)
 {
     struct vo_cocoa_state *s = vo->cocoa;
@@ -203,12 +189,24 @@ void vo_cocoa_register_resize_callback(struct vo *vo,
 
 void vo_cocoa_uninit(struct vo *vo)
 {
-    with_cocoa_lock(vo, ^{
-        struct vo_cocoa_state *s = vo->cocoa;
+    struct vo_cocoa_state *s = vo->cocoa;
+    NSView *ev = s->view;
+
+    // keep the event view around for later in order to call -clear
+    if (!s->embedded) {
+        [ev retain];
+    }
+
+    with_cocoa_lock_on_main_thread(vo, ^{
         enable_power_management(vo);
         cocoa_rm_fs_screen_profile_observer(vo);
 
         [s->gl_ctx release];
+
+        // needed to stop resize events triggered by the event's view -clear
+        // causing many uses after free
+        [s->video removeFromSuperview];
+
         [s->view removeFromSuperview];
         [s->view release];
         if (s->window) { 
@@ -216,6 +214,15 @@ void vo_cocoa_uninit(struct vo *vo)
             [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
         }
     });
+
+    // don't use the mutex, because at that point it could have been destroyed
+    // and no one is accessing the events view anyway
+    if (!s->embedded) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [(MpvEventsView *)ev clear];
+            [ev release];
+        });
+    }
 }
 
 static int get_screen_handle(struct vo *vo, int identifier, NSWindow *window,
@@ -387,8 +394,10 @@ static int cocoa_set_window_title(struct vo *vo, const char *title)
     void *talloc_ctx   = talloc_new(NULL);
     struct bstr btitle = bstr_sanitize_utf8_latin1(talloc_ctx, bstr0(title));
     NSString *nstitle  = [NSString stringWithUTF8String:btitle.start];
-    if (nstitle)
+    if (nstitle) {
         [s->window setTitle: nstitle];
+        [s->window displayIfNeeded];
+    }
     talloc_free(talloc_ctx);
     return VO_TRUE;
 }
@@ -473,8 +482,10 @@ int vo_cocoa_config_window(struct vo *vo, uint32_t flags, void *gl_ctx)
         s->pending_events |= VO_EVENT_RESIZE;
     });
 
-    [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
-    set_application_icon(NSApp);
+    if (!s->embedded) {
+        [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+        set_application_icon(NSApp);
+    }
     return 0;
 }
 

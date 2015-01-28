@@ -69,9 +69,18 @@ static bool supports_format(const char *format)
     }
 }
 
-static void guess_resolution(enum AVCodecID type, int *w, int *h)
+static void get_resolution(struct sd *sd, int wh[2])
 {
-    if (type == AV_CODEC_ID_DVD_SUBTITLE) {
+    struct sd_lavc_priv *priv = sd->priv;
+    enum AVCodecID codec = priv->avctx->codec_id;
+    int *w = &wh[0], *h = &wh[1];
+    *w = priv->avctx->width;
+    *h = priv->avctx->height;
+    if (codec == AV_CODEC_ID_DVD_SUBTITLE) {
+        if (*w <= 0 || *h <= 0) {
+            *w = priv->video_params.w;
+            *h = priv->video_params.h;
+        }
         /* XXX Although the video frame is some size, the SPU frame is
            always maximum size i.e. 720 wide and 576 or 480 high */
         // For HD files in MKV the VobSub resolution can be higher though,
@@ -87,18 +96,6 @@ static void guess_resolution(enum AVCodecID type, int *w, int *h)
         if (!*h)
             *h = 576;
     }
-}
-
-static void get_resolution(struct sd *sd, int wh[2])
-{
-    struct sd_lavc_priv *priv = sd->priv;
-    wh[0] = priv->avctx->width;
-    wh[1] = priv->avctx->height;
-    if (wh[0] <= 0 || wh[1] <= 0) {
-        wh[0] = priv->video_params.w;
-        wh[1] = priv->video_params.h;
-    }
-    guess_resolution(priv->avctx->codec_id, &wh[0], &wh[1]);
 }
 
 static void set_mp4_vobsub_idx(AVCodecContext *avctx, char *src, int w, int h)
@@ -210,8 +207,11 @@ static void decode(struct sd *sd, struct demux_packet *packet)
         return;
 
     if (pts != MP_NOPTS_VALUE) {
-        if (sub.end_display_time > sub.start_display_time)
+        if (sub.end_display_time > sub.start_display_time &&
+            sub.end_display_time != UINT32_MAX)
+        {
             duration = (sub.end_display_time - sub.start_display_time) / 1000.0;
+        }
         pts += sub.start_display_time / 1000.0;
     }
     double endpts = MP_NOPTS_VALUE;
@@ -274,6 +274,9 @@ static void get_bitmaps(struct sd *sd, struct mp_osd_res d, double pts,
             ((sub->pts == MP_NOPTS_VALUE || pts >= sub->pts) &&
              (sub->endpts == MP_NOPTS_VALUE || pts < sub->endpts)))
         {
+            // Ignore "trailing" subtitles with unknown length after 1 minute.
+            if (sub->endpts == MP_NOPTS_VALUE && pts >= sub->pts + 60)
+                break;
             current = sub;
             break;
         }

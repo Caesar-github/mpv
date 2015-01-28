@@ -7,13 +7,37 @@ local ytdl = {
     vercheck = nil,
 }
 
-mp.add_hook("on_load", 10, function ()
+local function exec(args)
+    local ret = utils.subprocess({args = args})
+    return ret.status, ret.stdout
+end
 
-    local function exec(args)
-        local ret = utils.subprocess({args = args})
-        return ret.status, ret.stdout
+-- return if it was explicitly set on the command line
+local function option_was_set(name)
+    return mp.get_property_bool("option-info/" .. name .. "/set-from-commandline",
+                                false)
+end
+
+-- youtube-dl may set special http headers for some sites (user-agent, cookies)
+local function set_http_headers(http_headers)
+    if not http_headers then
+        return
     end
+    local headers = {}
+    local useragent = http_headers["User-Agent"]
+    if useragent and not option_was_set("user-agent") then
+        mp.set_property("file-local-options/user-agent", useragent)
+    end
+    local cookies = http_headers["Cookie"]
+    if cookies then
+        headers[#headers + 1] = "Cookie: " .. cookies
+    end
+    if #headers > 0 and not option_was_set("http-header-fields") then
+        mp.set_property_native("file-local-options/http-header-fields", headers)
+    end
+end
 
+mp.add_hook("on_load", 10, function ()
     local url = mp.get_property("stream-open-filename")
 
     if (url:find("http://") == 1) or (url:find("https://") == 1)
@@ -87,7 +111,7 @@ mp.add_hook("on_load", 10, function ()
             return
         end
 
-        msg.info("youtube-dl succeeded!")
+        msg.verbose("youtube-dl succeeded!")
 
         -- what did we get?
         if not (json["direct"] == nil) and (json["direct"] == true) then
@@ -96,6 +120,12 @@ mp.add_hook("on_load", 10, function ()
             return
         elseif not (json["_type"] == nil) and (json["_type"] == "playlist") then
             -- a playlist
+
+            if (#json.entries == 0) then
+                msg.warn("Got empty playlist, nothing to play.")
+                return
+            end
+
 
             -- some funky guessing to detect multi-arc videos
             if  not (json.entries[1]["webpage_url"] == nil)
@@ -111,6 +141,10 @@ mp.add_hook("on_load", 10, function ()
 
                 msg.debug("EDL: " .. playlist)
 
+                -- can't change the http headers for each entry, so use the 1st
+                if json.entries[1] then
+                    set_http_headers(json.entries[1].http_headers)
+                end
 
                 mp.set_property("stream-open-filename", playlist)
                 if not (json.title == nil) then
@@ -145,7 +179,7 @@ mp.add_hook("on_load", 10, function ()
             if not (json["requested_formats"] == nil) then
                 msg.info("Using DASH, expect inaccurate duration.")
                 if not (json.duration == nil) then
-                    msg.info("actual duration: " .. mp.format_time(json.duration))
+                    msg.info("Actual duration: " .. mp.format_time(json.duration))
                 end
 
                 -- video url
@@ -162,6 +196,7 @@ mp.add_hook("on_load", 10, function ()
             elseif not (json.url == nil) then
                 -- normal video
                 streamurl = json.url
+                set_http_headers(json.http_headers)
             else
                 msg.error("No URL found in JSON data.")
                 return

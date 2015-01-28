@@ -460,6 +460,8 @@ static mp_cmd_t *get_cmd_from_keys(struct input_ctx *ictx, char *force_section,
 
     struct cmd_bind *cmd = find_any_bind_for_key(ictx, force_section, code);
     if (cmd == NULL) {
+        if (code == MP_KEY_CLOSE_WIN)
+            return mp_input_parse_cmd_strv(ictx->log, (const char*[]){"quit", 0});
         int msgl = MSGL_WARN;
         if (code == MP_KEY_MOUSE_MOVE || code == MP_KEY_MOUSE_LEAVE)
             msgl = MSGL_DEBUG;
@@ -591,10 +593,11 @@ static void interpret_key(struct input_ctx *ictx, int code, double scale)
         release_down_cmd(ictx, false);
     } else {
         // Press of key with no separate down/up events
-        if (ictx->last_key_down == code) {
-            // Mixing press events and up/down with the same key is not allowed
-            MP_WARN(ictx, "Mixing key presses and up/down.\n");
-        }
+        // Mixing press events and up/down with the same key is not supported,
+        // and input sources shouldn't do this, but can happen anyway if
+        // multiple input sources interfere with each others.
+        if (ictx->last_key_down == code)
+            release_down_cmd(ictx, false);
         cmd = resolve_key(ictx, code);
     }
 

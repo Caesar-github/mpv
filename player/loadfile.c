@@ -241,6 +241,15 @@ static void enable_demux_thread(struct MPContext *mpctx)
     if (mpctx->demuxer && mpctx->opts->demuxer_thread) {
         demux_set_wakeup_cb(mpctx->demuxer, wakeup_demux, mpctx);
         demux_start_thread(mpctx->demuxer);
+        for (int n = 0; n < mpctx->num_tracks; n++) {
+            struct track *track = mpctx->tracks[n];
+            if (track->is_external && track->stream &&
+                track->stream->type != STREAM_SUB)
+            {
+                demux_set_wakeup_cb(track->demuxer, wakeup_demux, mpctx);
+                demux_start_thread(track->demuxer);
+            }
+        }
     }
 }
 
@@ -721,12 +730,30 @@ struct track *mp_add_subtitles(struct MPContext *mpctx, char *filename)
                               STREAM_SUB);
 }
 
+// Do stuff to a newly loaded playlist. This includes any processing that may
+// be required after loading a playlist.
+void prepare_playlist(struct MPContext *mpctx, struct playlist *pl)
+{
+    struct MPOpts *opts = mpctx->opts;
+
+    if (opts->shuffle)
+        playlist_shuffle(pl);
+
+    if (opts->merge_files)
+        merge_playlist_files(pl);
+
+    pl->current = mp_check_playlist_resume(mpctx, pl);
+    if (!pl->current)
+        pl->current = pl->first;
+}
+
 // Replace the current playlist entry with playlist contents. Moves the entries
 // from the given playlist pl, so the entries don't actually need to be copied.
 static void transfer_playlist(struct MPContext *mpctx, struct playlist *pl)
 {
     if (pl->first) {
-        struct playlist_entry *new = mp_check_playlist_resume(mpctx, pl);
+        prepare_playlist(mpctx, pl);
+        struct playlist_entry *new = pl->current;
         playlist_transfer_entries(mpctx->playlist, pl);
         // current entry is replaced
         if (mpctx->playlist->current)
@@ -903,7 +930,6 @@ static void play_current_file(struct MPContext *mpctx)
     mpctx->paused = false;
     mpctx->paused_for_cache = false;
     mpctx->playing_msg_shown = false;
-    mpctx->step_frames = 0;
     mpctx->backstep_active = false;
     mpctx->audio_delay = 0;
     mpctx->max_frames = -1;
@@ -1094,16 +1120,11 @@ goto_reopen_demuxer: ;
     }
 #endif
 
-    reinit_video_chain(mpctx);
-    reinit_audio_chain(mpctx);
-    reinit_subs(mpctx, 0);
-    reinit_subs(mpctx, 1);
-
-    //==================== START PLAYING =======================
-
-    if (!mpctx->d_video && !mpctx->d_audio) {
-        struct demuxer *d = mpctx->demuxer;
+    if (!mpctx->current_track[0][STREAM_VIDEO] &&
+        !mpctx->current_track[0][STREAM_AUDIO])
+    {
         MP_FATAL(mpctx, "No video or audio streams selected.\n");
+        struct demuxer *d = mpctx->demuxer;
         if (d->stream->uncached_type == STREAMTYPE_DVB) {
             int  dir = mpctx->last_dvb_step;
             if (demux_stream_control(d, STREAM_CTRL_DVB_STEP_CHANNEL, &dir) > 0)
@@ -1112,6 +1133,11 @@ goto_reopen_demuxer: ;
         mpctx->error_playing = MPV_ERROR_NOTHING_TO_PLAY;
         goto terminate_playback;
     }
+
+    reinit_video_chain(mpctx);
+    reinit_audio_chain(mpctx);
+    reinit_subs(mpctx, 0);
+    reinit_subs(mpctx, 1);
 
     MP_VERBOSE(mpctx, "Starting playback...\n");
 

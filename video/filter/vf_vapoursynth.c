@@ -381,6 +381,17 @@ static int filter_out(struct vf_instance *vf)
     return ret;
 }
 
+static bool needs_input(struct vf_instance *vf)
+{
+    struct vf_priv_s *p = vf->priv;
+    bool r = false;
+    pthread_mutex_lock(&p->lock);
+    locked_read_output(vf);
+    r = vf->num_out_queued < p->max_requests && locked_need_input(vf);
+    pthread_mutex_unlock(&p->lock);
+    return r;
+}
+
 static void VS_CC infiltInit(VSMap *in, VSMap *out, void **instanceData,
                              VSNode *node, VSCore *core, const VSAPI *vsapi)
 {
@@ -451,6 +462,8 @@ static const VSFrameRef *VS_CC infiltGetFrame(int frameno, int activationReason,
             if (p->num_buffered) {
                 drain_oldest_buffered_frame(p);
                 pthread_cond_broadcast(&p->wakeup);
+                if (vf->chain->wakeup_callback)
+                    vf->chain->wakeup_callback(vf->chain->wakeup_callback_ctx);
                 continue;
             }
         }
@@ -577,6 +590,7 @@ static int reinit_vs(struct vf_instance *vf)
 
     p->vsapi->propSetInt(vars, "video_in_dw", p->fmt_in.d_w, 0);
     p->vsapi->propSetInt(vars, "video_in_dh", p->fmt_in.d_h, 0);
+    p->vsapi->propSetFloat(vars, "container_fps", vf->chain->container_fps, 0);
 
     if (p->drv->load(vf, vars) < 0)
         goto error;
@@ -682,6 +696,7 @@ static int vf_open(vf_instance_t *vf)
     vf->config = config;
     vf->filter_ext = filter_ext;
     vf->filter_out = filter_out;
+    vf->needs_input = needs_input;
     vf->query_format = query_format;
     vf->control = control;
     vf->uninit = uninit;
@@ -851,6 +866,9 @@ static void vsmap_to_table(lua_State *L, int index, VSMap *map)
         switch (t) {
         case ptInt:
             lua_pushnumber(L, vsapi->propGetInt(map, key, 0, NULL));
+            break;
+        case ptFloat:
+            lua_pushnumber(L, vsapi->propGetFloat(map, key, 0, NULL));
             break;
         case ptNode: {
             VSNodeRef *r = vsapi->propGetNode(map, key, 0, NULL);

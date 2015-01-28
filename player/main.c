@@ -46,6 +46,7 @@
 #include "options/parse_commandline.h"
 #include "common/playlist.h"
 #include "options/options.h"
+#include "options/path.h"
 #include "input/input.h"
 
 #include "audio/decode/dec_audio.h"
@@ -83,6 +84,10 @@
 
 static bool terminal_initialized;
 
+#ifndef FULLCONFIG
+#define FULLCONFIG "(missing)\n"
+#endif
+
 enum exit_reason {
   EXIT_NONE,
   EXIT_NORMAL,
@@ -107,10 +112,15 @@ void mp_print_version(struct mp_log *log, int always)
 {
     int v = always ? MSGL_INFO : MSGL_V;
     mp_msg(log, v,
-           "%s (C) 2000-2014 mpv/MPlayer/mplayer2 projects\n built on %s\n",
+           "%s (C) 2000-2015 mpv/MPlayer/mplayer2 projects\n built on %s\n",
            mpv_version, mpv_builddate);
     print_libav_versions(log, v);
     mp_msg(log, v, "\n");
+    // Only in verbose mode.
+    if (!always) {
+        mp_msg(log, MSGL_V, "Configuration: " CONFIGURATION "\n");
+        mp_msg(log, MSGL_V, "config.h:\n%s\n", FULLCONFIG);
+    }
 }
 
 static void shutdown_clients(struct MPContext *mpctx)
@@ -306,7 +316,10 @@ static void osdep_preinit(int *p_argc, char ***p_argv)
 static int cfg_include(void *ctx, char *filename, int flags)
 {
     struct MPContext *mpctx = ctx;
-    return m_config_parse_config_file(mpctx->mconfig, filename, NULL, flags);
+    char *fname = mp_get_user_path(NULL, mpctx->global, filename);
+    int r = m_config_parse_config_file(mpctx->mconfig, fname, NULL, flags);
+    talloc_free(fname);
+    return r;
 }
 
 struct MPContext *mp_create(void)
@@ -355,7 +368,7 @@ struct MPContext *mp_create(void)
     return mpctx;
 }
 
-static void wakeup_playloop(void *ctx)
+void wakeup_playloop(void *ctx)
 {
     struct MPContext *mpctx = ctx;
     mp_input_wakeup(mpctx->input);
@@ -457,15 +470,7 @@ int mp_initialize(struct MPContext *mpctx)
     mpctx->ipc_ctx = mp_init_ipc(mpctx->clients, mpctx->global);
 #endif
 
-    if (opts->shuffle)
-        playlist_shuffle(mpctx->playlist);
-
-    if (opts->merge_files)
-        merge_playlist_files(mpctx->playlist);
-
-    mpctx->playlist->current = mp_check_playlist_resume(mpctx, mpctx->playlist);
-    if (!mpctx->playlist->current)
-        mpctx->playlist->current = mpctx->playlist->first;
+    prepare_playlist(mpctx, mpctx->playlist);
 
     MP_STATS(mpctx, "end init");
 
@@ -493,6 +498,11 @@ int mpv_main(int argc, char *argv[])
 
     mp_msg_update_msglevels(mpctx->global);
 
+    MP_VERBOSE(mpctx, "Command line:");
+    for (int i = 0; i < argc; i++)
+        MP_VERBOSE(mpctx, " '%s'", argv[i]);
+    MP_VERBOSE(mpctx, "\n");
+
     mp_print_version(mpctx->log, false);
 
     mp_parse_cfgfiles(mpctx);
@@ -511,12 +521,6 @@ int mpv_main(int argc, char *argv[])
 
     if (handle_help_options(mpctx))
         exit_player(mpctx, EXIT_NONE);
-
-    MP_VERBOSE(mpctx, "Configuration: " CONFIGURATION "\n");
-    MP_VERBOSE(mpctx, "Command line:");
-    for (int i = 0; i < argc; i++)
-        MP_VERBOSE(mpctx, " '%s'", argv[i]);
-    MP_VERBOSE(mpctx, "\n");
 
     if (!mpctx->playlist->first && !opts->player_idle_mode) {
         mp_print_version(mpctx->log, true);

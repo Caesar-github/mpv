@@ -1,16 +1,14 @@
 -- Test script for property change notification mechanism.
+-- Note that watching/reading some properties can be very expensive, or
+-- require the player to synchronously wait on network (when playing
+-- remote files), so you should in general only watch properties you
+-- are interested in.
 
-function format_property_val(v)
-    if type(v) == "table" then
-        return mp.format_table(v) -- undocumented function; might be removed
-    else
-        return tostring(v)
-    end
-end
+local utils = require("mp.utils")
 
 for i,name in ipairs(mp.get_property_native("property-list")) do
     mp.observe_property(name, "native", function(name, val)
         print("property '" .. name .. "' changed to '" ..
-              format_property_val(val) .. "'")
+              utils.to_string(val) .. "'")
     end)
 end

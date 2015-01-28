@@ -86,8 +86,12 @@ static void stream_state_cb(pa_stream *s, void *userdata)
     struct ao *ao = userdata;
     struct priv *priv = ao->priv;
     switch (pa_stream_get_state(s)) {
-    case PA_STREAM_READY:
     case PA_STREAM_FAILED:
+        MP_VERBOSE(ao, "Stream failed.\n");
+        ao_request_reload(ao);
+        pa_threaded_mainloop_signal(priv->mainloop, 0);
+        break;
+    case PA_STREAM_READY:
     case PA_STREAM_TERMINATED:
         pa_threaded_mainloop_signal(priv->mainloop, 0);
         break;
@@ -408,6 +412,9 @@ static int init(struct ao *ao)
     if (!(priv->stream = pa_stream_new_extended(priv->context, "audio stream",
                                                 &format, 1, proplist)))
         goto unlock_and_fail;
+
+    pa_format_info_free(format);
+    format = NULL;
 
     pa_proplist_free(proplist);
     proplist = NULL;
@@ -782,7 +789,6 @@ const struct ao_driver audio_out_pulse = {
     .priv_size = sizeof(struct priv),
     .priv_defaults = &(const struct priv) {
         .cfg_buffer = 250,
-        .cfg_latency_hacks = 1,
     },
     .options = (const struct m_option[]) {
         OPT_STRING("host", cfg_host, 0),
