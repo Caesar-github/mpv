@@ -390,6 +390,7 @@ void mp_set_playlist_entry(struct MPContext *mpctx, struct playlist_entry *e);
 void mp_play_files(struct MPContext *mpctx);
 void update_demuxer_properties(struct MPContext *mpctx);
 void reselect_demux_streams(struct MPContext *mpctx);
+void prepare_playlist(struct MPContext *mpctx, struct playlist *pl);
 
 // main.c
 int mpv_main(int argc, char *argv[]);
@@ -397,6 +398,7 @@ int mp_initialize(struct MPContext *mpctx);
 struct MPContext *mp_create(void);
 void mp_destroy(struct MPContext *mpctx);
 void mp_print_version(struct mp_log *log, int always);
+void wakeup_playloop(void *ctx);
 
 // misc.c
 double get_start_time(struct MPContext *mpctx);
@@ -470,8 +472,8 @@ void uninit_sub_all(struct MPContext *mpctx);
 void update_osd_msg(struct MPContext *mpctx);
 void update_subtitles(struct MPContext *mpctx);
 void uninit_sub_renderer(struct MPContext *mpctx);
-void get_osd_sub_state(struct MPContext *mpctx, int order,
-                       struct osd_sub_state *out_state);
+void update_osd_sub_state(struct MPContext *mpctx, int order,
+                          struct osd_sub_state *out_state);
 
 // timeline/tl_matroska.c
 void build_ordered_chapter_timeline(struct MPContext *mpctx);

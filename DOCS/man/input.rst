@@ -1,5 +1,13 @@
-INPUT.CONF
-==========
+COMMAND INTERFACE
+=================
+
+The mpv core can be controlled with commands and properties. A number of ways
+to interact with the player use them: key bindings (``input.conf``), OSD
+(showing information with properties), JSON IPC, the client API (``libmpv``),
+and the classic slave mode.
+
+input.conf
+----------
 
 The input.conf file consists of a list of key bindings, for example::
 
@@ -232,7 +240,6 @@ List of Input Commands
     will have after moving.)
 
 ``run "command" "arg1" "arg2" ...``
-    (Unix only)
     Run the given command. Unlike in MPlayer/mplayer2 and earlier versions of
     mpv (0.2.x and older), this doesn't call the shell. Instead, the command
     is run directly, with each argument passed separately. Each argument is
@@ -814,7 +821,7 @@ Property list
                 "title"             MPV_FORMAT_STRING
                 "default"           MPV_FORMAT_FLAG
 
-``ab-loop-a``, ``ab-loop-b`` (TW)
+``ab-loop-a``, ``ab-loop-b`` (RW)
     Set/get A-B loop points. See corresponding options and ``ab_loop`` command.
     The special value ``no`` on either of these properties disables looping.
 
@@ -1421,12 +1428,15 @@ Property list
 
     .. admonition:: Example
 
-        --osd-status-msg='This is ${osd-ass-cc/0}{\\b1}bold text'
+        - ``--osd-status-msg='This is ${osd-ass-cc/0}{\\b1}bold text'``
+        - ``show_text "This is ${osd-ass-cc/0}{\b1}bold text"``
 
     Any ASS override tags as understood by libass can be used.
 
     Note that you need to escape the ``\`` character, because the string is
     processed for C escape sequences before passing it to the OSD code.
+
+    A list of tags can be found here: http://docs.aegisub.org/latest/ASS_Tags/
 
 ``vo-configured``
     Return whether the VO is configured right now. Usually this corresponds to

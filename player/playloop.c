@@ -154,6 +154,7 @@ void reset_playback_state(struct MPContext *mpctx)
     mpctx->playback_pts = MP_NOPTS_VALUE;
     mpctx->last_seek_pts = MP_NOPTS_VALUE;
     mpctx->cache_wait_time = 0;
+    mpctx->step_frames = 0;
     mpctx->restart_complete = false;
 
 #if HAVE_ENCODING
@@ -167,6 +168,7 @@ static int mp_seek(MPContext *mpctx, struct seek_params seek,
 {
     struct MPOpts *opts = mpctx->opts;
     uint64_t prev_seek_ts = mpctx->vo_pts_history_seek_ts;
+    int prev_step = mpctx->step_frames;
 
     if (!mpctx->demuxer)
         return -1;
@@ -262,6 +264,7 @@ static int mp_seek(MPContext *mpctx, struct seek_params seek,
     if (timeline_fallthrough) {
         // Important if video reinit happens.
         mpctx->vo_pts_history_seek_ts = prev_seek_ts;
+        mpctx->step_frames = prev_step;
     } else {
         mpctx->vo_pts_history_seek_ts++;
         mpctx->backstep_active = false;
@@ -310,10 +313,6 @@ void queue_seek(struct MPContext *mpctx, enum seek_type type, double amount,
             seek->exact = exact;
         if (seek->type == MPSEEK_ABSOLUTE)
             return;
-        if (seek->amount == 0) {
-            *seek = (struct seek_params){ 0 };
-            return;
-        }
         seek->type = MPSEEK_RELATIVE;
         return;
     case MPSEEK_ABSOLUTE:
@@ -410,9 +409,9 @@ double get_current_pos_ratio(struct MPContext *mpctx, bool use_range)
         len = endpos - startpos;
     }
     double pos = get_current_time(mpctx);
-    if (len > 0 && !demuxer->ts_resets_possible) {
+    if (len > 0)
         ans = MPCLAMP((pos - start) / len, 0, 1);
-    } else {
+    if (ans < 0 || demuxer->ts_resets_possible) {
         int64_t size;
         if (demux_stream_control(demuxer, STREAM_CTRL_GET_SIZE, &size) > 0) {
             if (size > 0 && demuxer->filepos >= 0)
@@ -427,10 +426,11 @@ double get_current_pos_ratio(struct MPContext *mpctx, bool use_range)
     return ans;
 }
 
+// 0-100, -1 if unknown
 int get_percent_pos(struct MPContext *mpctx)
 {
-    int pos = get_current_pos_ratio(mpctx, false) * 100;
-    return MPCLAMP(pos, 0, 100);
+    double pos = get_current_pos_ratio(mpctx, false);
+    return pos < 0 ? -1 : pos * 100;
 }
 
 // -2 is no chapters, -1 is before first chapter
@@ -904,8 +904,8 @@ void run_playloop(struct MPContext *mpctx)
             fill_audio_out_buffers(mpctx, endpts); // actually play prepared buffer
         if (!mpctx->restart_complete) {
             mpctx->hrseek_active = false;
-            mp_notify(mpctx, MPV_EVENT_PLAYBACK_RESTART, NULL);
             mpctx->restart_complete = true;
+            mp_notify(mpctx, MPV_EVENT_PLAYBACK_RESTART, NULL);
             if (!mpctx->playing_msg_shown) {
                 if (opts->playing_msg) {
                     char *msg =

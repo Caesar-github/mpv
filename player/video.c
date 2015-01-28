@@ -66,7 +66,7 @@ static const char av_desync_help_text[] =
 "This means either the audio or the video is played too slowly.\n"
 "Possible reasons, problems, workarounds:\n"
 "- Your system is simply too slow for this file.\n"
-"     Transcode it to a lower bitrate file with tools like HandBrake.\n"
+"     Transcode it to a lower bitrate file with e.g. mpv encoding support.\n"
 "- Slow video output.\n"
 "     Try a different --vo driver (--vo=help for a list). Make sure framedrop\n"
 "     is not disabled, or experiment with different values for --framedrop.\n"
@@ -74,7 +74,7 @@ static const char av_desync_help_text[] =
 "     Download the file instead.\n"
 "- Try to find out whether audio/video/subs are causing this by experimenting\n"
 "  with --no-video, --no-audio, or --no-sub.\n"
-"- If you swiched audio or video tracks, try seeking to force synchronization.\n"
+"- If you switched audio or video tracks, try seeking to force synchronization.\n"
 "If none of this helps you, file a bug report.\n\n";
 
 void update_fps(struct MPContext *mpctx)
@@ -178,6 +178,9 @@ static void recreate_video_filters(struct MPContext *mpctx)
     vf_destroy(d_video->vfilter);
     d_video->vfilter = vf_new(mpctx->global);
     d_video->vfilter->hwdec = d_video->hwdec_info;
+    d_video->vfilter->wakeup_callback = wakeup_playloop;
+    d_video->vfilter->wakeup_callback_ctx = mpctx;
+    d_video->vfilter->container_fps = d_video->fps;
 
     vf_append_filter_list(d_video->vfilter, opts->vf_settings);
 
@@ -287,6 +290,13 @@ int reinit_video_chain(struct MPContext *mpctx)
     d_video->fps = sh->video->fps;
     d_video->vo = mpctx->video_out;
 
+    if (opts->force_fps) {
+        d_video->fps = opts->force_fps;
+        MP_INFO(mpctx, "FPS forced to %5.3f.\n", d_video->fps);
+        MP_INFO(mpctx, "Use --no-correct-pts to force FPS based timing.\n");
+    }
+    update_fps(mpctx);
+
     vo_control(mpctx->video_out, VOCTRL_GET_HWDEC_INFO, &d_video->hwdec_info);
 
     recreate_video_filters(mpctx);
@@ -309,16 +319,6 @@ int reinit_video_chain(struct MPContext *mpctx)
 
     reset_video_state(mpctx);
     reset_subtitle_state(mpctx);
-
-    if (opts->force_fps) {
-        d_video->fps = opts->force_fps;
-        MP_INFO(mpctx, "FPS forced to be %5.3f.\n", d_video->fps);
-    }
-    if (!sh->video->fps && !opts->force_fps && !opts->correct_pts) {
-        MP_ERR(mpctx, "FPS not specified in the "
-               "header or invalid, use the -fps option.\n");
-    }
-    update_fps(mpctx);
 
     return 1;
 
@@ -380,6 +380,8 @@ static int decode_image(struct MPContext *mpctx)
         return VD_WAIT;
     if (pkt && pkt->pts != MP_NOPTS_VALUE)
         pkt->pts += mpctx->video_offset;
+    if (pkt && pkt->dts != MP_NOPTS_VALUE)
+        pkt->dts += mpctx->video_offset;
     if ((pkt && pkt->pts >= mpctx->hrseek_pts - .005) ||
         d_video->has_broken_packet_pts ||
         !mpctx->opts->hr_seek_framedrop)
@@ -430,7 +432,8 @@ static int video_filter(struct MPContext *mpctx, bool eof)
         return VD_ERROR;
 
     // There is already a filtered frame available.
-    if (vf_output_frame(vf, eof) > 0)
+    // If vf_needs_input() returns > 0, the filter wants input anyway.
+    if (vf_output_frame(vf, eof) > 0 && vf_needs_input(vf) < 1)
         return VD_PROGRESS;
 
     // Decoder output is different from filter input?
@@ -489,6 +492,20 @@ static int video_decode_and_filter(struct MPContext *mpctx)
     if (r == VD_RECONFIG) // retry feeding decoded image
         r = video_filter(mpctx, eof);
     return r;
+}
+
+static int video_feed_async_filter(struct MPContext *mpctx)
+{
+    struct dec_video *d_video = mpctx->d_video;
+    struct vf_chain *vf = d_video->vfilter;
+
+    if (vf->initialized < 0)
+        return VD_ERROR;
+
+    if (vf_needs_input(vf) < 1)
+        return 0;
+    mpctx->sleeptime = 0; // retry until done
+    return video_decode_and_filter(mpctx);
 }
 
 /* Modify video timing to match the audio timeline. There are two main
@@ -777,8 +794,12 @@ void write_video(struct MPContext *mpctx, double endpts)
     double time_frame = MPMAX(mpctx->time_frame, -1);
     int64_t pts = mp_time_us() + (int64_t)(time_frame * 1e6);
 
-    if (!vo_is_ready_for_frame(vo, pts))
-        return; // wait until VO wakes us up to get more frames
+    // wait until VO wakes us up to get more frames
+    if (!vo_is_ready_for_frame(vo, pts)) {
+        if (video_feed_async_filter(mpctx) < 0)
+            goto error;
+        return;
+    }
 
     int64_t duration = -1;
     double diff = -1;
@@ -788,6 +809,8 @@ void write_video(struct MPContext *mpctx, double endpts)
         diff = vpts1 - vpts0;
     if (diff < 0 && mpctx->d_video->fps > 0)
         diff = 1.0 / mpctx->d_video->fps; // fallback to demuxer-reported fps
+    if (opts->untimed || vo->driver->untimed)
+        diff = -1; // disable frame dropping and aspects of frame timing
     if (diff >= 0) {
         // expected A/V sync correction is ignored
         diff /= opts->playback_speed;

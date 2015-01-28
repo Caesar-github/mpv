@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 import matplotlib.pyplot as plot
 import sys
+import re
 
 filename = sys.argv[1]
+
+event_regex = re.compile(".*")
 
 """
 This script is meant to display stats written by mpv --dump-stats=filename.
@@ -18,17 +21,19 @@ e.g.:
 
 Currently, the following event types are supported:
 
+    'signal' <name>             singular event
     'start' <name>              start of the named event
     'end' <name>                end of the named event
     'value' <float> <name>      a normal value (as opposed to event)
     'event-timed' <ts> <name>   singular event at the given timestamp
-    <name>                      singular event
+    'value-timed' <ts> <float> <name>
+                                a value for an event at the given timestamp
+    <name>                      singular event (same as 'signal')
 
 """
 
 class G:
     events = {}
-    sevents = []  # events, deterministically sorted
     start = None
     # http://matplotlib.org/api/markers_api.html#module-matplotlib.markers
     markers = ["o", "8", "s", "p", "*", "h", "+", "x", "D"]
@@ -46,16 +51,15 @@ class Event:
 def get_event(event, evtype):
     if event not in G.events:
         e = Event()
-        G.events[event] = e
         e.name = event
         e.vals = []
         e.type = evtype
         e.marker = "o"
-        e.numid = len(G.events)
-        G.sevents = list(G.events.values())
-        G.sevents.sort(key=lambda x: x.name)
         if e.type == "event-signal":
             e.marker = find_marker()
+        if not event_regex.match(e.name):
+            return e
+        G.events[event] = e
     return G.events[event]
 
 for line in [line.split("#")[0].strip() for line in open(filename, "r")]:
@@ -85,25 +89,45 @@ for line in [line.split("#")[0].strip() for line in open(filename, "r")]:
         val = int(val) / 1000 - G.start
         e = get_event(name, "event-signal")
         e.vals.append((val, 1))
+    elif event.startswith("value-timed "):
+        _, tsval, val, name = event.split(" ", 3)
+        tsval = int(tsval) / 1000 - G.start
+        val = float(val)
+        e = get_event(name, "value")
+        e.vals.append((tsval, val))
+    elif event.startswith("signal "):
+        name = event.split(" ", 2)[1]
+        e = get_event(name, "event-signal")
+        e.vals.append((ts, 1))
     else:
         e = get_event(event, "event-signal")
         e.vals.append((ts, 1))
 
-for e in G.sevents:
-    e.vals = [(x, y * e.numid / len(G.events)) for (x, y) in e.vals]
-
-plot.hold(True)
-mainpl = plot.subplot(2, 1, 1)
-legend = []
-for e in G.sevents:
+# deterministically sort them; make sure the legend is sorted too
+G.sevents = list(G.events.values())
+G.sevents.sort(key=lambda x: x.name)
+hasval = False
+for e, index in zip(G.sevents, range(len(G.sevents))):
+    m = len(G.sevents)
     if e.type == "value":
-        plot.subplot(2, 1, 2, sharex=mainpl)
+        hasval = True
     else:
-        plot.subplot(2, 1, 1)
-    pl, = plot.plot([x for x,y in e.vals], [y for x,y in e.vals], label=e.name)
+        e.vals = [(x, y * (m - index) / m) for (x, y) in e.vals]
+
+fig = plot.figure()
+fig.hold(True)
+ax = [None, None]
+plots = 2 if hasval else 1
+ax[0] = fig.add_subplot(plots, 1, 1)
+if hasval:
+    ax[1] = fig.add_subplot(plots, 1, 2, sharex=ax[0])
+legends = [[], []]
+for e in G.sevents:
+    cur = ax[1 if e.type == "value" else 0]
+    pl, = cur.plot([x for x,y in e.vals], [y for x,y in e.vals], label=e.name)
     if e.type == "event-signal":
         plot.setp(pl, marker = e.marker, linestyle = "None")
-    legend.append(pl)
-plot.subplot(2, 1, 1)
-plot.legend(legend, [pl.get_label() for pl in legend])
+for cur in ax:
+    if cur is not None:
+        cur.legend()
 plot.show()

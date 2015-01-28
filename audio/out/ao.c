@@ -89,11 +89,11 @@ static const struct ao_driver * const audio_out_drivers[] = {
 #if HAVE_SNDIO
     &audio_out_sndio,
 #endif
+    &audio_out_null,
+    // should not be auto-selected:
 #if HAVE_COREAUDIO
     &audio_out_coreaudio_exclusive,
 #endif
-    &audio_out_null,
-    // should not be auto-selected:
     &audio_out_pcm,
 #if HAVE_ENCODING
     &audio_out_lavc,
@@ -415,6 +415,12 @@ void ao_request_reload(struct ao *ao)
 bool ao_chmap_sel_adjust(struct ao *ao, const struct mp_chmap_sel *s,
                          struct mp_chmap *map)
 {
+    if (mp_msg_test(ao->log, MSGL_DEBUG)) {
+        for (int i = 0; i < s->num_chmaps; i++) {
+            struct mp_chmap c = s->chmaps[i];
+            MP_DBG(ao, "chmap_sel #%d: %s\n", i, mp_chmap_to_str(&c));
+        }
+    }
     return mp_chmap_sel_adjust(s, map);
 }
 

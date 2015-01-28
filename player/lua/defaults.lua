@@ -177,9 +177,9 @@ local function add_binding(attrs, key, name, fn, rp)
             if event == "r" and not repeatable then
                 return
             end
-            if is_mouse and event == "u" then
+            if is_mouse and (event == "u" or event == "p") then
                 fn()
-            elseif (not is_mouse) and (event == "d" or event == "r") then
+            elseif (not is_mouse) and (event == "d" or event == "r" or event == "p") then
                 fn()
             end
         end
@@ -485,7 +485,9 @@ function mp.add_hook(name, pri, cb)
     mp.commandv("hook_add", name, id, pri)
 end
 
-function mp.format_table(t, set)
+local mp_utils = package.loaded["mp.utils"]
+
+function mp_utils.format_table(t, set)
     if not set then
         set = { [t] = true }
     end
@@ -508,30 +510,33 @@ function mp.format_table(t, set)
             vals[#keys] = v
         end
     end
-    local function fmtval(v)
-        if type(v) == "string" then
-            return "\"" .. v .. "\""
-        elseif type(v) == "table" then
-            if set[v] then
-                return "[cycle]"
-            end
-            set[v] = true
-            return mp.format_table(v, set)
-        else
-            return tostring(v)
-        end
-    end
     for i = 1, #keys do
         if #res > 1 then
             res = res .. ", "
         end
         if i > arr then
-            res = res .. fmtval(keys[i]) .. " = "
+            res = res .. mp_utils.to_string(keys[i], set) .. " = "
         end
-        res = res .. fmtval(vals[i])
+        res = res .. mp_utils.to_string(vals[i], set)
     end
     res = res .. "}"
     return res
+end
+
+function mp_utils.to_string(v, set)
+    if type(v) == "string" then
+        return "\"" .. v .. "\""
+    elseif type(v) == "table" then
+        if set then
+            if set[v] then
+                return "[cycle]"
+            end
+            set[v] = true
+        end
+        return mp_utils.format_table(v, set)
+    else
+        return tostring(v)
+    end
 end
 
 return {}

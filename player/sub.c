@@ -146,10 +146,9 @@ void uninit_stream_sub_decoders(struct demuxer *demuxer)
 void uninit_sub(struct MPContext *mpctx, int order)
 {
     if (mpctx->d_sub[order]) {
-        mpctx->d_sub[order] = NULL; // Note: not free'd.
-        int obj = order ? OSDTYPE_SUB2 : OSDTYPE_SUB;
-        osd_set_sub(mpctx->osd, obj, NULL);
         reset_subtitles(mpctx, order);
+        mpctx->d_sub[order] = NULL; // Note: not free'd.
+        update_osd_sub_state(mpctx, order, NULL); // unset
         reselect_demux_streams(mpctx);
     }
 }
@@ -193,24 +192,25 @@ void reset_subtitle_state(struct MPContext *mpctx)
     reset_subtitles(mpctx, 1);
 }
 
-void get_osd_sub_state(struct MPContext *mpctx, int order,
-                       struct osd_sub_state *out_state)
+void update_osd_sub_state(struct MPContext *mpctx, int order,
+                          struct osd_sub_state *out_state)
 {
     struct MPOpts *opts = mpctx->opts;
     struct track *track = mpctx->current_track[order][STREAM_SUB];
     struct dec_sub *dec_sub = mpctx->d_sub[order];
     int obj = order ? OSDTYPE_SUB2 : OSDTYPE_SUB;
+    bool textsub = dec_sub && sub_has_get_text(dec_sub);
 
     struct osd_sub_state state = {
         .dec_sub = dec_sub,
         // Decides whether to use OSD path or normal subtitle rendering path.
-        .render_bitmap_subs = opts->ass_enabled || !sub_has_get_text(dec_sub),
+        .render_bitmap_subs = opts->ass_enabled || !textsub,
         .video_offset = get_track_video_offset(mpctx, track),
     };
 
     // Secondary subs are rendered with the "text" renderer to transform them
     // to toptitles.
-    if (order == 1 && sub_has_get_text(dec_sub))
+    if (order == 1 && textsub)
         state.render_bitmap_subs = false;
 
     if (!mpctx->current_track[0][STREAM_VIDEO])
@@ -239,7 +239,7 @@ static void update_subtitle(struct MPContext *mpctx, int order)
     }
 
     struct osd_sub_state state;
-    get_osd_sub_state(mpctx, order, &state);
+    update_osd_sub_state(mpctx, order, &state);
 
     double refpts_s = mpctx->playback_pts - state.video_offset;
     double curpts_s = refpts_s - opts->sub_delay;
@@ -343,5 +343,5 @@ void reinit_subs(struct MPContext *mpctx, int order)
     struct dec_sub *dec_sub = mpctx->d_sub[order];
     reinit_subdec(mpctx, track, dec_sub);
 
-    get_osd_sub_state(mpctx, order, NULL);
+    update_osd_sub_state(mpctx, order, NULL);
 }

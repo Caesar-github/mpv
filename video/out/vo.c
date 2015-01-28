@@ -279,6 +279,8 @@ struct vo *init_best_video_out(struct mpv_global *global,
 autoprobe:
     // now try the rest...
     for (int i = 0; video_out_drivers[i]; i++) {
+        if (video_out_drivers[i] == &video_out_null)
+            break;
         struct vo *vo = vo_create(global, input_ctx, osd, encode_lavc_ctx,
                                   (char *)video_out_drivers[i]->name, NULL);
         if (vo)
@@ -561,12 +563,12 @@ static bool render_frame(struct vo *vo)
     int64_t next_vsync = prev_sync(vo, mp_time_us()) + in->vsync_interval;
     int64_t end_time = pts + duration;
 
-    if (!(vo->global->opts->frame_dropping & 1) || !in->hasframe_rendered ||
-        vo->driver->untimed || vo->driver->encode)
+    if (!in->hasframe_rendered)
         duration = -1; // disable framedrop
 
     in->dropped_frame = duration >= 0 && end_time < next_vsync;
     in->dropped_frame &= !(vo->driver->caps & VO_CAP_FRAMEDROP);
+    in->dropped_frame &= (vo->global->opts->frame_dropping & 1);
     // Even if we're hopelessly behind, rather degrade to 10 FPS playback,
     // instead of just freezing the display forever.
     in->dropped_frame &= mp_time_us() - in->last_flip < 100 * 1000;

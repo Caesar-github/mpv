@@ -79,6 +79,10 @@ build_options = [
         'desc': 'inline assembly (currently without effect)',
         'default': 'enable',
         'func': check_true,
+    }, {
+        'name': '--test',
+        'desc': 'test suite (using cmocka)',
+        'func': check_pkg_config('cmocka >= 0.4.1'),
     }
 ]
 
@@ -372,14 +376,14 @@ libav_dependencies = [
         'fmsg': "Unable to find development files for some of the required \
 Libav libraries ({0}). Aborting.".format(" ".join(libav_pkg_config_checks))
     }, {
-        'name': '--libavresample',
-        'desc': 'libavresample',
-        'func': check_pkg_config('libavresample',  '>= 1.1.0'),
-    }, {
         'name': '--libswresample',
         'desc': 'libswresample',
         'func': check_pkg_config('libswresample', '>= 0.17.104'),
-        'deps_neg': ['libavresample'],
+    }, {
+        'name': '--libavresample',
+        'desc': 'libavresample',
+        'func': check_pkg_config('libavresample',  '>= 1.1.0'),
+        'deps_neg': ['libswresample'],
     }, {
         'name': 'resampler',
         'desc': 'usable resampler found',
@@ -387,6 +391,18 @@ Libav libraries ({0}). Aborting.".format(" ".join(libav_pkg_config_checks))
         'func': check_true,
         'req':  True,
         'fmsg': 'No resampler found. Install libavresample or libswresample (FFmpeg).'
+    }, {
+        'name': '--libavfilter',
+        'desc': 'libavfilter',
+        'func': check_pkg_config('libavfilter', '>= 3.90.100'),
+    }, {
+        'name': '--libavdevice',
+        'desc': 'libavdevice',
+        'func': check_pkg_config('libavdevice', '>= 54.0.0'),
+    }, {
+        'name': '--libpostproc',
+        'desc': 'libpostproc',
+        'func': check_pkg_config('libpostproc', '>= 52.2.100'),
     }, {
         'name': 'avcodec-chroma-pos-api',
         'desc': 'libavcodec avcodec_enum_to_chroma_pos API',
@@ -411,18 +427,6 @@ Libav libraries ({0}). Aborting.".format(" ".join(libav_pkg_config_checks))
         'func': check_statement('libavcodec/vdpau.h',
                                 'AVVDPAUContext *x = av_vdpau_alloc_context()',
                                 use='libav')
-    }, {
-        'name': '--libavfilter',
-        'desc': 'libavfilter',
-        'func': check_pkg_config('libavfilter', '>= 3.90.100'),
-    }, {
-        'name': '--libavdevice',
-        'desc': 'libavdevice',
-        'func': check_pkg_config('libavdevice', '>= 54.0.0'),
-    }, {
-        'name': '--libpostproc',
-        'desc': 'libpostproc',
-        'func': check_pkg_config('libpostproc', '>= 52.2.100'),
     }, {
         'name': 'avcodec-metadata-update-side-data',
         'desc': 'libavcodec AV_PKT_DATA_METADATA_UPDATE side data type',

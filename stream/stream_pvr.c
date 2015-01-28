@@ -45,6 +45,7 @@
 #include "osdep/io.h"
 
 #include "common/msg.h"
+#include "common/common.h"
 #include "options/options.h"
 
 #include "stream.h"
@@ -117,6 +118,7 @@ typedef struct station_elem_s {
   int freq;
   char station[PVR_STATION_NAME_SIZE];
   int enabled;
+  int priority;
 } station_elem_t;
 
 typedef struct stationlist_s {
@@ -312,7 +314,7 @@ disable_all_stations (struct pvr_t *pvr)
  */
 static int
 set_station (struct pvr_t *pvr, const char *station,
-             const char *channel, int freq)
+             const char *channel, int freq, int priority)
 {
   int i;
 
@@ -351,6 +353,8 @@ set_station (struct pvr_t *pvr, const char *station,
       BUFSTRCPY(pvr->stationlist.list[i].station, channel);
     else
       BUFPRINTF(pvr->stationlist.list[i].station, "F %d", freq);
+
+    pvr->stationlist.list[i].priority = priority;
 
     MP_DBG(pvr, "%s Set user station channel: %8s - freq: %8d - station: %s\n",
             LOG_LEVEL_V4L2, pvr->stationlist.list[i].name,
@@ -394,6 +398,7 @@ set_station (struct pvr_t *pvr, const char *station,
   /* here we go, our actual new entry */
   pvr->stationlist.used++;
   pvr->stationlist.list[i].enabled = 1;
+  pvr->stationlist.list[i].priority = priority;
   pvr->stationlist.enabled++;
 
   if (station)
@@ -411,6 +416,18 @@ set_station (struct pvr_t *pvr, const char *station,
           pvr->stationlist.list[i].station);
 
   return 0;
+}
+
+static int compare_priority(const void *pa, const void *pb)
+{
+    const station_elem_t *a = pa;
+    const station_elem_t *b = pb;
+
+    if (a->priority < b->priority)
+        return -1;
+    if (a->priority > b->priority)
+        return 1;
+    return 0;
 }
 
 /**
@@ -476,6 +493,10 @@ parse_setup_stationlist (struct pvr_t *pvr)
 
     disable_all_stations (pvr);
 
+    int prio = 0;
+    for (i = 0; i < pvr->stationlist.total; i++)
+        pvr->stationlist.list[i].priority = ++prio;
+
     while (*channels)
     {
       char *tmp = *(channels++);
@@ -500,12 +521,15 @@ parse_setup_stationlist (struct pvr_t *pvr)
       if ((freq = atoi (channel)) <= 1000)
         freq = -1;
 
-      if (set_station (pvr, station, (freq <= 0) ? channel : NULL, freq) < 0)
+      if (set_station (pvr, station, (freq <= 0) ? channel : NULL, freq, ++prio) < 0)
       {
         MP_ERR(pvr, "%s Unable to set user station channel: %8s - freq: %8d - station: %s\n", LOG_LEVEL_V4L2,
                 channel, freq, station);
       }
     }
+
+    qsort(pvr->stationlist.list, pvr->stationlist.total,
+          sizeof(station_elem_t), compare_priority);
   }
 
   return print_all_stations (pvr);
@@ -530,14 +554,14 @@ get_v4l2_freq (struct pvr_t *pvr)
   if (ioctl (pvr->dev_fd, VIDIOC_G_TUNER, &vt) < 0)
   {
     MP_ERR(pvr, "%s can't set tuner (%s).\n",
-            LOG_LEVEL_V4L2, strerror (errno));
+            LOG_LEVEL_V4L2, mp_strerror (errno));
     return -1;
   }
 
   if (ioctl (pvr->dev_fd, VIDIOC_G_FREQUENCY, &vf) < 0)
   {
-    MP_ERR(pvr, "%s can't get frequency %d.\n",
-            LOG_LEVEL_V4L2, errno);
+    MP_ERR(pvr, "%s can't get frequency (%s).\n",
+            LOG_LEVEL_V4L2, mp_strerror(errno));
     return -1;
   }
   freq = vf.frequency;
@@ -581,7 +605,7 @@ set_v4l2_freq (struct pvr_t *pvr)
   if (ioctl (pvr->dev_fd, VIDIOC_G_TUNER, &vt) < 0)
   {
     MP_ERR(pvr, "%s can't get tuner (%s).\n",
-            LOG_LEVEL_V4L2, strerror (errno));
+            LOG_LEVEL_V4L2, mp_strerror (errno));
     return -1;
   }
 
@@ -594,7 +618,7 @@ set_v4l2_freq (struct pvr_t *pvr)
   if (ioctl (pvr->dev_fd, VIDIOC_S_FREQUENCY, &vf) < 0)
   {
     MP_ERR(pvr, "%s can't set frequency (%s).\n",
-            LOG_LEVEL_V4L2, strerror (errno));
+            LOG_LEVEL_V4L2, mp_strerror (errno));
     return -1;
   }
 
@@ -602,7 +626,7 @@ set_v4l2_freq (struct pvr_t *pvr)
   if (ioctl (pvr->dev_fd, VIDIOC_G_TUNER, &vt) < 0)
   {
     MP_ERR(pvr, "%s can't set tuner (%s).\n",
-            LOG_LEVEL_V4L2, strerror (errno));
+            LOG_LEVEL_V4L2, mp_strerror (errno));
     return -1;
   }
 
@@ -1070,7 +1094,7 @@ set_encoder_settings (struct pvr_t *pvr)
   if (ioctl (pvr->dev_fd, VIDIOC_S_EXT_CTRLS, &ctrls) < 0)
   {
     MP_ERR(pvr, "%s Error setting MPEG controls (%s).\n",
-            LOG_LEVEL_ENCODER, strerror (errno));
+            LOG_LEVEL_ENCODER, mp_strerror (errno));
     free (ext_ctrl);
     return -1;
   }
@@ -1166,7 +1190,7 @@ set_v4l2_settings (struct pvr_t *pvr)
     ctrl.value = 1;
     if (ioctl (pvr->dev_fd, VIDIOC_S_CTRL, &ctrl) < 0)
     {
-      MP_ERR(pvr, "%s can't mute (%s).\n", LOG_LEVEL_V4L2, strerror (errno));
+      MP_ERR(pvr, "%s can't mute (%s).\n", LOG_LEVEL_V4L2, mp_strerror (errno));
       return -1;
     }
   }
@@ -1176,7 +1200,7 @@ set_v4l2_settings (struct pvr_t *pvr)
   {
     if (ioctl (pvr->dev_fd, VIDIOC_S_INPUT, &pvr->input) < 0)
     {
-      MP_ERR(pvr, "%s can't set input (%s)\n", LOG_LEVEL_V4L2, strerror (errno));
+      MP_ERR(pvr, "%s can't set input (%s)\n", LOG_LEVEL_V4L2, mp_strerror (errno));
       return -1;
     }
   }
@@ -1189,7 +1213,7 @@ set_v4l2_settings (struct pvr_t *pvr)
 
     if (ioctl (pvr->dev_fd, VIDIOC_ENUMSTD, &std) < 0)
     {
-      MP_ERR(pvr, "%s can't set norm (%s)\n", LOG_LEVEL_V4L2, strerror (errno));
+      MP_ERR(pvr, "%s can't set norm (%s)\n", LOG_LEVEL_V4L2, mp_strerror (errno));
       return -1;
     }
 
@@ -1197,7 +1221,7 @@ set_v4l2_settings (struct pvr_t *pvr)
 
     if (ioctl (pvr->dev_fd, VIDIOC_S_STD, &std.id) < 0)
     {
-      MP_ERR(pvr, "%s can't set norm (%s)\n", LOG_LEVEL_V4L2, strerror (errno));
+      MP_ERR(pvr, "%s can't set norm (%s)\n", LOG_LEVEL_V4L2, mp_strerror (errno));
       return -1;
     }
   }
@@ -1217,7 +1241,7 @@ set_v4l2_settings (struct pvr_t *pvr)
     if (ioctl (pvr->dev_fd, VIDIOC_S_CTRL, &ctrl) < 0)
     {
       MP_ERR(pvr, "%s can't set brightness to %d (%s).\n",
-              LOG_LEVEL_V4L2, ctrl.value, strerror (errno));
+              LOG_LEVEL_V4L2, ctrl.value, mp_strerror (errno));
       return -1;
     }
   }
@@ -1237,7 +1261,7 @@ set_v4l2_settings (struct pvr_t *pvr)
     if (ioctl (pvr->dev_fd, VIDIOC_S_CTRL, &ctrl) < 0)
     {
       MP_ERR(pvr, "%s can't set contrast to %d (%s).\n",
-              LOG_LEVEL_V4L2, ctrl.value, strerror (errno));
+              LOG_LEVEL_V4L2, ctrl.value, mp_strerror (errno));
       return -1;
     }
   }
@@ -1257,7 +1281,7 @@ set_v4l2_settings (struct pvr_t *pvr)
     if (ioctl (pvr->dev_fd, VIDIOC_S_CTRL, &ctrl) < 0)
     {
       MP_ERR(pvr, "%s can't set hue to %d (%s).\n",
-              LOG_LEVEL_V4L2, ctrl.value, strerror (errno));
+              LOG_LEVEL_V4L2, ctrl.value, mp_strerror (errno));
       return -1;
     }
   }
@@ -1277,7 +1301,7 @@ set_v4l2_settings (struct pvr_t *pvr)
     if (ioctl (pvr->dev_fd, VIDIOC_S_CTRL, &ctrl) < 0)
     {
       MP_ERR(pvr, "%s can't set saturation to %d (%s).\n",
-              LOG_LEVEL_V4L2, ctrl.value, strerror (errno));
+              LOG_LEVEL_V4L2, ctrl.value, mp_strerror (errno));
       return -1;
     }
   }
@@ -1293,7 +1317,7 @@ set_v4l2_settings (struct pvr_t *pvr)
     if (ioctl (pvr->dev_fd, VIDIOC_S_FMT, &vfmt) < 0)
     {
       MP_ERR(pvr, "%s can't set resolution to %dx%d (%s).\n",
-              LOG_LEVEL_V4L2, pvr->width, pvr->height, strerror (errno));
+              LOG_LEVEL_V4L2, pvr->width, pvr->height, mp_strerror (errno));
       return -1;
     }
   }
@@ -1405,7 +1429,7 @@ v4l2_display_settings (struct pvr_t *pvr)
     vin.index = input;
     if (ioctl (pvr->dev_fd, VIDIOC_ENUMINPUT, &vin) < 0)
     {
-      MP_ERR(pvr, "%s can't get input (%s).\n", LOG_LEVEL_V4L2, strerror (errno));
+      MP_ERR(pvr, "%s can't get input (%s).\n", LOG_LEVEL_V4L2, mp_strerror (errno));
       return -1;
     }
     else
@@ -1413,7 +1437,7 @@ v4l2_display_settings (struct pvr_t *pvr)
   }
   else
   {
-    MP_ERR(pvr, "%s can't get input (%s).\n", LOG_LEVEL_V4L2, strerror (errno));
+    MP_ERR(pvr, "%s can't get input (%s).\n", LOG_LEVEL_V4L2, mp_strerror (errno));
     return -1;
   }
 
@@ -1424,7 +1448,7 @@ v4l2_display_settings (struct pvr_t *pvr)
   }
   else
   {
-    MP_ERR(pvr, "%s can't get input (%s).\n", LOG_LEVEL_V4L2, strerror (errno));
+    MP_ERR(pvr, "%s can't get input (%s).\n", LOG_LEVEL_V4L2, mp_strerror (errno));
     return -1;
   }
 
@@ -1445,7 +1469,7 @@ v4l2_display_settings (struct pvr_t *pvr)
   }
   else
   {
-    MP_ERR(pvr, "%s can't get norm (%s)\n", LOG_LEVEL_V4L2, strerror (errno));
+    MP_ERR(pvr, "%s can't get norm (%s)\n", LOG_LEVEL_V4L2, mp_strerror (errno));
     return -1;
   }
 
@@ -1490,10 +1514,15 @@ pvr_stream_read (stream_t *stream, char *buffer, int size)
 
     rk = size - pos;
 
-    if (poll (pfds, 1, 500) <= 0)
+    int r = poll(pfds, 1, 5000);
+    if (r <= 0)
     {
-      MP_ERR(pvr, "%s failed with errno %d when reading %d bytes\n",
-              LOG_LEVEL_PVR, errno, size-pos);
+      if (r < 0) {
+        MP_ERR(pvr, "%s failed with '%s' when reading %d bytes\n",
+               LOG_LEVEL_PVR, mp_strerror(errno), size-pos);
+      } else {
+        MP_ERR(pvr, "timeout when trying to read from device\n");
+      }
       break;
     }
 
@@ -1549,7 +1578,7 @@ pvr_stream_open (stream_t *stream)
   if (ioctl (pvr->dev_fd, VIDIOC_QUERYCAP, &vcap) < 0)
   {
     MP_ERR(pvr, "%s device is not V4L2 compliant (%s).\n",
-            LOG_LEVEL_PVR, strerror (errno));
+            LOG_LEVEL_PVR, mp_strerror (errno));
     pvr_uninit (pvr);
     return STREAM_ERROR;
   }

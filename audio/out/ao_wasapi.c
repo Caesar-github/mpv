@@ -17,9 +17,6 @@
  * with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#define COBJMACROS 1
-#define _WIN32_WINNT 0x600
-
 #include <stdlib.h>
 #include <inttypes.h>
 #include <process.h>
@@ -36,34 +33,39 @@
 #include "osdep/timer.h"
 #include "osdep/io.h"
 
-static double get_device_delay(struct wasapi_state *state) {
+static HRESULT get_device_delay(struct wasapi_state *state, double *delay) {
     UINT64 sample_count = atomic_load(&state->sample_count);
     UINT64 position, qpc_position;
     HRESULT hr;
 
-    switch (hr = IAudioClock_GetPosition(state->pAudioClock, &position, &qpc_position)) {
-        case S_OK: case S_FALSE:
-            break;
-        default:
-            MP_ERR(state, "IAudioClock::GetPosition returned %s (0x%"PRIx32")\n",
-                   wasapi_explain_err(hr), (uint32_t)hr);
+    hr = IAudioClock_GetPosition(state->pAudioClock, &position, &qpc_position);
+    /* GetPosition succeeded, but the result may be inaccurate due to the length of the call */
+    /* http://msdn.microsoft.com/en-us/library/windows/desktop/dd370889%28v=vs.85%29.aspx */
+    if (hr == S_FALSE) {
+        MP_DBG(state, "Possibly inaccurate device position.\n");
+        hr = S_OK;
     }
+    EXIT_ON_ERROR(hr);
 
     LARGE_INTEGER qpc_count;
     QueryPerformanceCounter(&qpc_count);
     double qpc_diff = (qpc_count.QuadPart * 1e7 / state->qpc_frequency.QuadPart) - qpc_position;
 
-    position += state->clock_frequency * (uint64_t)(qpc_diff / 1e7);
+    position += state->clock_frequency * (uint64_t) (qpc_diff / 1e7);
 
     /* convert position to the same base as sample_count */
     position = position * state->format.Format.nSamplesPerSec / state->clock_frequency;
 
     double diff = sample_count - position;
-    double delay = diff / state->format.Format.nSamplesPerSec;
+    *delay = diff / state->format.Format.nSamplesPerSec;
 
-    MP_TRACE(state, "Device delay: %g samples (%g ms)\n", diff, delay * 1000);
+    MP_TRACE(state, "Device delay: %g samples (%g ms)\n", diff, *delay * 1000);
 
-    return delay;
+    return S_OK;
+exit_label:
+    MP_ERR(state, "Error getting device delay: %s (0x%"PRIx32")\n",
+           wasapi_explain_err(hr), (uint32_t) hr);
+    return hr;
 }
 
 static void thread_feed(struct ao *ao)
@@ -81,6 +83,9 @@ static void thread_feed(struct ao *ao)
         frame_count -= padding;
         MP_TRACE(ao, "Frame to fill: %"PRIu32". Padding: %"PRIu32"\n", frame_count, padding);
     }
+    double delay;
+    hr = get_device_delay(state, &delay);
+    EXIT_ON_ERROR(hr);
 
     BYTE *pData;
     hr = IAudioRenderClient_GetBuffer(state->pRenderClient,
@@ -88,9 +93,10 @@ static void thread_feed(struct ao *ao)
     EXIT_ON_ERROR(hr);
 
     BYTE *data[1] = {pData};
+
     ao_read_data(ao, (void**)data, frame_count, (int64_t) (
-                 mp_time_us() + get_device_delay(state) * 1e6 +
-                 frame_count * 1e6 / state->format.Format.nSamplesPerSec));
+                     mp_time_us() + delay * 1e6 +
+                     frame_count * 1e6 / state->format.Format.nSamplesPerSec));
 
     hr = IAudioRenderClient_ReleaseBuffer(state->pRenderClient,
                                           frame_count, 0);
@@ -101,7 +107,7 @@ static void thread_feed(struct ao *ao)
     return;
 exit_label:
     MP_ERR(state, "Error feeding audio: %s (0x%"PRIx32")\n",
-           wasapi_explain_err(hr), (uint32_t)hr);
+           wasapi_explain_err(hr), (uint32_t) hr);
     MP_VERBOSE(ao, "Requesting ao reload\n");
     ao_request_reload(ao);
     return;
@@ -110,30 +116,24 @@ exit_label:
 static DWORD __stdcall ThreadLoop(void *lpParameter)
 {
     struct ao *ao = lpParameter;
-    if (!ao || !ao->priv)
-        return -1;
     struct wasapi_state *state = (struct wasapi_state *)ao->priv;
-    int thread_ret;
     CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
 
     state->init_ret = wasapi_thread_init(ao);
     SetEvent(state->init_done);
-    if (state->init_ret != S_OK) {
-        thread_ret = -1;
+    if (state->init_ret != S_OK)
         goto exit_label;
-    }
-
 
     DWORD waitstatus;
     HANDLE playcontrol[] =
         {state->hUninit, state->hFeed, state->hForceFeed, NULL};
     MP_DBG(ao, "Entering dispatch loop\n");
-    while (1) { /* watch events */
+    while (true) { /* watch events */
         waitstatus = MsgWaitForMultipleObjects(3, playcontrol, FALSE, INFINITE,
                                                QS_POSTMESSAGE | QS_SENDMESSAGE);
         switch (waitstatus) {
         case WAIT_OBJECT_0: /*shutdown*/
-            thread_ret = 0;
+            MP_DBG(ao, "Thread shutdown\n");
             goto exit_label;
         case (WAIT_OBJECT_0 + 1): /* feed */
             thread_feed(ao);
@@ -143,11 +143,11 @@ static DWORD __stdcall ThreadLoop(void *lpParameter)
             SetEvent(state->hFeedDone);
             break;
         case (WAIT_OBJECT_0 + 3): /* messages to dispatch (COM marshalling) */
+            MP_DBG(ao, "Dispatch\n");
             wasapi_dispatch();
             break;
         default:
             MP_ERR(ao, "Unhandled case in thread loop");
-            thread_ret = -1;
             goto exit_label;
         }
     }
@@ -155,7 +155,8 @@ exit_label:
     wasapi_thread_uninit(ao);
 
     CoUninitialize();
-    return thread_ret;
+    MP_DBG(ao, "Thread return\n");
+    return 0;
 }
 
 static void closehandles(struct ao *ao)
@@ -174,32 +175,40 @@ static void uninit(struct ao *ao)
     MP_DBG(ao, "Uninit wasapi\n");
     struct wasapi_state *state = (struct wasapi_state *)ao->priv;
     wasapi_release_proxies(state);
-    SetEvent(state->hUninit);
+    if (state->hUninit)
+        SetEvent(state->hUninit);
     /* wait up to 10 seconds */
-    if (WaitForSingleObject(state->threadLoop, 10000) == WAIT_TIMEOUT){
-        MP_ERR(ao, "Audio loop thread refuses to abort");
+    if (WaitForSingleObject(state->threadLoop, 10000) == WAIT_TIMEOUT) {
+        MP_ERR(ao, "Audio loop thread refuses to abort\n");
         return;
     }
     if (state->VistaBlob.hAvrt)
         FreeLibrary(state->VistaBlob.hAvrt);
     closehandles(ao);
+    CoUninitialize();
     MP_DBG(ao, "Uninit wasapi done\n");
 }
 
 static int init(struct ao *ao)
 {
     MP_DBG(ao, "Init wasapi\n");
+    CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+
     ao->format = af_fmt_from_planar(ao->format);
     struct mp_chmap_sel sel = {0};
     mp_chmap_sel_add_waveext(&sel);
-    if (!ao_chmap_sel_adjust(ao, &sel, &ao->channels))
+    if (!ao_chmap_sel_adjust(ao, &sel, &ao->channels)) {
+        MP_ERR(ao, "Error adjusting channel map to waveext channel order\n");
         return -1;
+    }
     struct wasapi_state *state = (struct wasapi_state *)ao->priv;
     state->log = ao->log;
-    wasapi_fill_VistaBlob(state);
+    if(!wasapi_fill_VistaBlob(state))
+        MP_WARN(ao, "Error loading thread priority functions\n");
 
     if (state->opt_list) {
-        wasapi_enumerate_devices(state->log, NULL, NULL);
+        if(!wasapi_enumerate_devices(state->log, NULL, NULL))
+            MP_WARN(ao, "Error enumerating devices\n");
     }
 
     if (state->opt_exclusive) {
@@ -216,16 +225,18 @@ static int init(struct ao *ao)
     if (!state->init_done || !state->hFeed || !state->hUninit ||
         !state->hForceFeed || !state->hFeedDone)
     {
-        closehandles(ao);
+        MP_ERR(ao, "Error initing events\n");
+        uninit(ao);
         /* failed to init events */
         return -1;
     }
 
     state->init_ret = E_FAIL;
-    state->threadLoop = (HANDLE)CreateThread(NULL, 0, &ThreadLoop, ao, 0, NULL);
+    state->threadLoop = (HANDLE) CreateThread(NULL, 0, &ThreadLoop, ao, 0, NULL);
     if (!state->threadLoop) {
         /* failed to init thread */
         MP_ERR(ao, "Failed to create thread\n");
+        uninit(ao);
         return -1;
     }
 
@@ -321,7 +332,6 @@ static int control(struct ao *ao, enum aocontrol cmd, void *arg)
     }
 }
 
-
 static void audio_reset(struct ao *ao)
 {
     struct wasapi_state *state = (struct wasapi_state *)ao->priv;
@@ -342,7 +352,10 @@ static void audio_resume(struct ao *ao)
 
 static void list_devs(struct ao *ao, struct ao_device_list *list)
 {
-    wasapi_enumerate_devices(mp_null_log, ao, list);
+    CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+    if(!wasapi_enumerate_devices(mp_null_log, ao, list))
+        MP_WARN(ao, "Error enumerating devices\n");
+    CoUninitialize();
 }
 
 #define OPT_BASE_STRUCT struct wasapi_state

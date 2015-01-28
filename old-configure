@@ -607,13 +607,8 @@ define_yes_no $_vaapi HAVE_VAAPI_HWACCEL
 
 if test "$_vaapi" = yes ; then
     check_pkg_config "VAAPI VPP" auto VAAPI_VPP 'libva >= 0.34.0'
-
-    check_pkg_config "VAAPI GLX" auto VAAPI_GLX 'libva-glx >= 0.32.0'
-    _vaapi_glx=$(defretval)
 else
     check_yes_no no VAAPI_VPP
-    check_yes_no no VAAPI_GLX
-    _vaapi_glx=no
 fi
 
 check_pkg_config "Xinerama" $_xinerama XINERAMA 'xinerama'
@@ -696,6 +691,10 @@ _vdpau_gl_x11=no
 check_yes_no $_vdpau_gl_x11 VDPAU_GL_X11
 echores "$_vdpau_gl_x11"
 
+_vaapi_glx=no
+(test "$_gl_x11" = yes && test "$_vaapi" = yes) && _vaapi_glx=auto
+check_pkg_config "VAAPI with OpenGL/X11" $_vaapi_glx VAAPI_GLX 'libva-glx >= 0.32.0'
+
 check_pkg_config "SDL 2.0" $_sdl2 SDL2 'sdl2'
 
 check_statement_libs "OSS Audio" $_ossaudio OSS_AUDIO $_soundcard_header "int x = SNDCTL_DSP_SETFRAGMENT;"
@@ -752,13 +751,13 @@ check_pkg_config "FFmpeg/Libav" $_ffmpeg FFMPEG \
     "libavutil >= 52.48.101 libavcodec >= 55.34.1 libavformat >= 55.12.0 libswscale >= 2.1.2"
 test $(defretval) = no && die "Unable to find development files for some of the required Libav libraries above. Aborting."
 
-check_pkg_config "Libavresample" $_libavresample LIBAVRESAMPLE 'libavresample >= 1.1.0'
-_libavresample=$(defretval)
-
-_libswresample=auto
-test $_libavresample = yes && _libswresample=no
 check_pkg_config "Libswresample" $_libswresample LIBSWRESAMPLE 'libswresample >= 0.17.104'
 _libswresample=$(defretval)
+
+_libavresample=auto
+test $_libswresample = yes && _libavresample=no
+check_pkg_config "Libavresample" $_libavresample LIBAVRESAMPLE 'libavresample >= 1.1.0'
+_libavresample=$(defretval)
 
 if test "$_libswresample" = no && test "$_libavresample" = no ; then
   die "No resampler found. Install libavresample or libswresample (FFmpeg)."
@@ -951,7 +950,7 @@ cat > $TMPC << EOF
 
 #define CONFIGURATION "$configuration"
 
-#define MPLAYER_CONFDIR "$_confdir"
+#define MPV_CONFDIR "$_confdir"
 
 /* we didn't bother to add actual config checks for this, or they are
    for platforms not supported by this configure script */

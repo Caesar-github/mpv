@@ -20,6 +20,7 @@
 #include <stdlib.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <limits.h>
 #include <errno.h>
 
 #include <strings.h>
@@ -157,7 +158,7 @@ void mp_url_unescape_inplace(char *buf)
 //      ok[0] != '~': additional characters that are not escaped
 //      ok[0] == '~': do not escape anything but these characters
 //                    (can't override the unreserved characters, which are
-//                     never escaped, and '%', which is always escaped)
+//                     never escaped)
 char *mp_url_escape(void *talloc_ctx, const char *s, const char *ok)
 {
     int len = strlen(s);
@@ -167,7 +168,7 @@ char *mp_url_escape(void *talloc_ctx, const char *s, const char *ok)
         unsigned char c = s[i];
         if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
             (c >= '0' && c <= '9') || strchr("-._~", c) ||
-            (ok && ((ok[0] != '~') == !!strchr(ok, c)) && c != '%'))
+            (ok && ((ok[0] != '~') == !!strchr(ok, c))))
         {
             buf[o++] = c;
         } else {
@@ -325,6 +326,9 @@ static int open_internal(const stream_info_t *sinfo, struct stream *underlying,
     if (!s->read_chunk)
         s->read_chunk = 4 * (s->sector_size ? s->sector_size : STREAM_BUFFER_SIZE);
 
+    if (!s->fill_buffer)
+        s->allow_caching = false;
+
     assert(s->seekable == !!s->seek);
 
     s->uncached_type = s->type;
@@ -344,6 +348,9 @@ struct stream *stream_create(const char *url, int flags,
     struct mp_log *log = mp_log_new(NULL, global->log, "!stream");
     struct stream *s = NULL;
     assert(url);
+
+    if (strlen(url) > INT_MAX / 8)
+        goto done;
 
     // Open stream proper
     bool unsafe = false;
@@ -446,7 +453,7 @@ static void stream_capture_write(stream_t *s, void *buf, size_t len)
 {
     if (s->capture_file && len > 0) {
         if (fwrite(buf, len, 1, s->capture_file) < 1) {
-            MP_ERR(s, "Error writing capture file: %s\n", strerror(errno));
+            MP_ERR(s, "Error writing capture file: %s\n", mp_strerror(errno));
             stream_set_capture_file(s, NULL);
         }
     }
@@ -467,7 +474,7 @@ void stream_set_capture_file(stream_t *s, const char *filename)
                 if (s->buf_pos < s->buf_len)
                     stream_capture_write(s, s->buffer, s->buf_len);
             } else {
-                MP_ERR(s, "Error opening capture file: %s\n", strerror(errno));
+                MP_ERR(s, "Error opening capture file: %s\n", mp_strerror(errno));
             }
         }
     }

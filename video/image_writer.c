@@ -128,6 +128,9 @@ static int write_lavc(struct image_writer_ctx *ctx, mp_image_t *image, FILE *fp)
         pic->data[n] = image->planes[n];
         pic->linesize[n] = image->stride[n];
     }
+    pic->format = avctx->pix_fmt;
+    pic->width = avctx->width;
+    pic->height = avctx->height;
     int ret = avcodec_encode_video2(avctx, &pkt, pic, &got_output);
     if (ret < 0)
         goto error_exit;
@@ -293,7 +296,11 @@ int write_image(struct mp_image *image, const struct image_writer_opts *opts,
         }
         mp_image_copy_attributes(dst, image);
 
-        mp_image_swscale(dst, image, mp_sws_hq_flags);
+        if (mp_image_swscale(dst, image, mp_sws_hq_flags) < 0) {
+            mp_err(log, "Error when converting image.\n");
+            talloc_free(dst);
+            return 0;
+        }
 
         allocated_image = dst;
         image = dst;

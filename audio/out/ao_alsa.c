@@ -539,7 +539,9 @@ static int init(struct ao *ao)
     CHECK_ALSA_ERROR("Unable to set access type");
 
     struct mp_chmap dev_chmap = ao->channels;
-    if (query_chmaps(ao, &dev_chmap)) {
+    if (AF_FORMAT_IS_IEC61937(ao->format)) {
+        dev_chmap.num = 0; // disable chmap API
+    } else if (query_chmaps(ao, &dev_chmap)) {
         ao->channels = dev_chmap;
     } else {
         dev_chmap.num = 0;
@@ -598,16 +600,23 @@ static int init(struct ao *ao)
         for (int c = 0; c < dev_chmap.num; c++)
             alsa_chmap->pos[c] = find_alsa_channel(dev_chmap.speaker[c]);
 
+        // mpv and ALSA use different conventions for mono
+        if (dev_chmap.num == 1 && dev_chmap.speaker[0] == MP_SP(FC))
+            alsa_chmap->pos[0] = SND_CHMAP_MONO;
+
         char tmp[128];
         if (snd_pcm_chmap_print(alsa_chmap, sizeof(tmp), tmp) > 0)
             MP_VERBOSE(ao, "trying to set ALSA channel map: %s\n", tmp);
 
         err = snd_pcm_set_chmap(p->alsa, alsa_chmap);
         if (err == -ENXIO) {
-            MP_WARN(ao, "Device does not support requested channel map\n");
+            MP_WARN(ao, "Device does not support requested channel map (%s)\n",
+                    mp_chmap_to_str(&dev_chmap));
         } else {
             CHECK_ALSA_WARN("Channel map setup failed");
         }
+
+        free(alsa_chmap);
     }
 
     snd_pcm_chmap_t *alsa_chmap = snd_pcm_get_chmap(p->alsa);
@@ -622,7 +631,9 @@ static int init(struct ao *ao)
 
         MP_VERBOSE(ao, "which we understand as: %s\n", mp_chmap_to_str(&chmap));
 
-        if (mp_chmap_is_valid(&chmap)) {
+        if (AF_FORMAT_IS_IEC61937(ao->format)) {
+            MP_VERBOSE(ao, "using spdif passthrough; ignoring the channel map.\n");
+        } else if (mp_chmap_is_valid(&chmap)) {
             if (mp_chmap_equals(&chmap, &ao->channels)) {
                 MP_VERBOSE(ao, "which is what we requested.\n");
             } else if (chmap.num == ao->channels.num) {
@@ -635,6 +646,7 @@ static int init(struct ao *ao)
             MP_WARN(ao, "Got unknown channel map from ALSA.\n");
         }
 
+        // mpv and ALSA use different conventions for mono
         if (ao->channels.num == 1)
             ao->channels.speaker[0] = MP_SP(FC);
 
@@ -764,7 +776,7 @@ static void audio_pause(struct ao *ao)
 alsa_error: ;
 }
 
-static void audio_resume(struct ao *ao)
+static void resume_device(struct ao *ao)
 {
     struct priv *p = ao->priv;
     int err;
@@ -775,6 +787,14 @@ static void audio_resume(struct ao *ao)
         while ((err = snd_pcm_resume(p->alsa)) == -EAGAIN)
             sleep(1);
     }
+}
+
+static void audio_resume(struct ao *ao)
+{
+    struct priv *p = ao->priv;
+    int err;
+
+    resume_device(ao);
 
     if (p->can_pause) {
         if (snd_pcm_state(p->alsa) == SND_PCM_STATE_PAUSED) {
@@ -826,10 +846,15 @@ static int play(struct ao *ao, void **data, int samples, int flags)
 
         if (res == -EINTR || res == -EAGAIN) { /* retry */
             res = 0;
-        } else if (res == -ESTRPIPE) {  /* suspend */
-            audio_resume(ao);
+        } else if (res == -ENODEV) {
+            MP_WARN(ao, "Device lost, trying to recover...\n");
+            ao_request_reload(ao);
         } else if (res < 0) {
-            MP_ERR(ao, "Write error: %s\n", snd_strerror(res));
+            if (res == -ESTRPIPE) {  /* suspend */
+                resume_device(ao);
+            } else {
+                MP_ERR(ao, "Write error: %s\n", snd_strerror(res));
+            }
             res = snd_pcm_prepare(p->alsa);
             int err = res;
             CHECK_ALSA_ERROR("pcm prepare error");

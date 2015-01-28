@@ -25,6 +25,7 @@
 #include "events_view.h"
 
 @interface MpvEventsView()
+@property(nonatomic, assign) BOOL clearing;
 @property(nonatomic, assign) BOOL hasMouseDown;
 @property(nonatomic, retain) NSTrackingArea *tracker;
 - (void)signalMousePosition;
@@ -36,6 +37,7 @@
 @end
 
 @implementation MpvEventsView
+@synthesize clearing = _clearing;
 @synthesize adapter = _adapter;
 @synthesize tracker = _tracker;
 @synthesize hasMouseDown = _mouse_down;
@@ -87,6 +89,14 @@
         // Show the "windowed" window again.
         [self.window makeKeyAndOrderFront:self];
         [self.window makeFirstResponder:self];
+    }
+}
+
+- (void)clear
+{
+    if ([self isInFullScreenMode]) {
+        self.clearing = YES;
+        [self exitFullScreenModeWithOptions:nil];
     }
 }
 
@@ -177,6 +187,10 @@
 - (void)setFrameSize:(NSSize)size
 {
     [super setFrameSize:size];
+
+    if (self.clearing)
+        return;
+
     [self signalMousePosition];
 }
 

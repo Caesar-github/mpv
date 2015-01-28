@@ -61,8 +61,6 @@ struct client_arg {
     bool close_client_fd;
 
     bool writable;
-
-    int suspend_counter;
 };
 
 static mpv_node *mpv_node_map_get(mpv_node *src, const char *key)
@@ -245,6 +243,7 @@ static char *json_execute_command(struct client_arg *arg, void *ta_parent,
 
     rc = json_parse(ta_parent, &msg_node, &src, 3);
     if (rc < 0) {
+        MP_ERR(arg, "malformed JSON received\n");
         rc = MPV_ERROR_INVALID_PARAMETER;
         goto error;
     }
@@ -420,21 +419,11 @@ static char *json_execute_command(struct client_arg *arg, void *ta_parent,
         rc = mpv_request_log_messages(arg->client,
                                       cmd_node->u.list->values[1].u.string);
     } else if (!strcmp("suspend", cmd)) {
-        if (arg->suspend_counter < INT_MAX) {
-            mpv_suspend(arg->client);
-            arg->suspend_counter++;
-            rc = MPV_ERROR_SUCCESS;
-        } else {
-            rc = MPV_ERROR_INVALID_PARAMETER;
-        }
+        mpv_suspend(arg->client);
+        rc = MPV_ERROR_SUCCESS;
     } else if (!strcmp("resume", cmd)) {
-        if (arg->suspend_counter > 0) {
-            mpv_resume(arg->client);
-            arg->suspend_counter--;
-            rc = MPV_ERROR_SUCCESS;
-        } else {
-            rc = MPV_ERROR_INVALID_PARAMETER;
-        }
+        mpv_resume(arg->client);
+        rc = MPV_ERROR_SUCCESS;
     } else {
         mpv_node result_node;
 
@@ -558,7 +547,7 @@ static void *client_thread(void *p)
                     if (errno == EAGAIN)
                         break;
 
-                    MP_ERR(arg, "Read error\n");
+                    MP_ERR(arg, "Read error (%s)\n", mp_strerror(errno));
                     goto done;
                 }
 
@@ -594,7 +583,7 @@ static void *client_thread(void *p)
                         rc = ipc_write(arg->client_fd, reply_msg,
                                        strlen(reply_msg));
                         if (rc < 0) {
-                            MP_ERR(arg, "Write error\n");
+                            MP_ERR(arg, "Write error (%s)\n", mp_strerror(errno));
                             talloc_free(tmp);
                             goto done;
                         }
@@ -607,6 +596,8 @@ static void *client_thread(void *p)
     }
 
 done:
+    if (client_msg.len > 0)
+        MP_WARN(arg, "Ignoring unterminated command on disconnect.\n");
     talloc_free(client_msg.start);
     if (arg->close_client_fd)
         close(arg->client_fd);

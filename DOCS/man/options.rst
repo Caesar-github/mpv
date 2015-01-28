@@ -51,8 +51,8 @@ Track Selection
     other software using FFmpeg (consider ``ffprobe``).
 
     Note that with external tracks (added with ``--sub-file`` and similar
-    options) will have duplicate IDs. In that case, the first stream in order
-    is selected.
+    options), there will be streams with duplicate IDs. In this case, the
+    first stream in order is selected.
 
 ``--edition=<ID|auto>``
     (Matroska files only)
@@ -124,8 +124,8 @@ Playback Control
     chapter to end playing at. Also see ``--start``.
 
 ``--playlist=<filename>``
-    Play files according to a playlist file (Supports some common formats.If
-    no format is detected, t will be treated as list of files, separated by
+    Play files according to a playlist file (Supports some common formats. If
+    no format is detected, it will be treated as list of files, separated by
     newline characters. Note that XML playlist formats are not supported.)
 
     You can play playlists directly and without this option, however, this
@@ -360,10 +360,6 @@ Program Behavior
     file. This uses timeline/EDL support internally. Note that this won't work
     for ordered chapter files.
 
-    This option is interpreted at program start, and doesn't affect for
-    example files or playlists loaded with the ``loadfile`` or ``loadlist``
-    commands.
-
 ``--no-resume-playback``
     Do not restore playback position from the ``watch_later`` configuration
     subdirectory (usually ``~/.config/mpv/watch_later/``).
@@ -425,8 +421,8 @@ Program Behavior
 ``--ytdl``, ``--no-ytdl``
     Enable the youtube-dl hook-script. It will look at the input URL, and will
     play the video located on the website. This works with many streaming sites,
-    not just the one the scripts are named after. This requires a recent version
-    of youtube-dl to be installed on the system. (Enabled by default.)
+    not just the one that the script is named after. This requires a recent
+    version of youtube-dl to be installed on the system. (Enabled by default.)
 
     If the script can't do anything with an URL, it will do nothing.
 
@@ -498,7 +494,7 @@ Video
         in mpv 0.5.x and before.) This tells the decoder to skip frames (unless
         they are needed to decode future frames). May help with slow systems,
         but can produce unwatchably choppy output, or even freeze the display
-        complete. Not recommended.
+        completely. Not recommended.
         The ``--vd-lavc-framedrop`` option controls what frames to drop.
     <decoder+vo>
         Enable both modes. Not recommended.
@@ -576,9 +572,8 @@ Video
 ``--video-unscaled``
     Disable scaling of the video. If the window is larger than the video,
     black bars are added. Otherwise, the video is cropped. The video still
-    can be influenced by the other ``--video-...`` options. (If the
-    ``--video-zoom`` option is set to a value other than ``0``, scaling is
-    enabled, but the video isn't automatically scaled to the window size.)
+    can be influenced by the other ``--video-...`` options. (But not all; for
+    example ``--video-zoom`` does nothing if this option is enabled.)
 
     The video and monitor aspects aspect will be ignored. Aspect correction
     would require to scale the video in the X or Y direction, but this option
@@ -1434,15 +1429,16 @@ Window
 ------
 
 ``--title=<string>``
-    Set the window title. Properties are expanded on playback start.
-    (See `Property Expansion`_.)
+    Set the window title. This is used for the video window, and if possible,
+    also sets the audio stream title.
+
+    Properties are expanded. (See `Property Expansion`_.)
 
     .. warning::
 
         There is a danger of this causing significant CPU usage, depending on
-        the properties used and the window manager. Changing the window title
-        is often a slow operation, and if the title changes every frame,
-        playback can be ruined.
+        the properties used. Changing the window title is often a slow
+        operation, and if the title changes every frame, playback can be ruined.
 
 ``--screen=<default|0-32>``
     In multi-monitor configurations (i.e. a single desktop that spans across
@@ -2434,7 +2430,7 @@ OSD
     Alternatively, the color can be specified as a RGB hex triplet in the form
     ``#RRGGBB``, where each 2-digit group expresses a color value in the
     range 0 (``00``) to 255 (``FF``). For example, ``#FF0000`` is red.
-    This is similar to web colors.
+    This is similar to web colors. Alpha is given with ``#AARRGGBB``.
 
     .. admonition:: Examples
 
