@@ -1,9 +1,9 @@
-mpv (0.7.3-1) UNRELEASED; urgency=medium
+mpv (0.7.3-1) unstable; urgency=medium
 
   * New upstream release
   * Bump version of youtube-dl in Recommends
 
- -- Alessandro Ghedini <ghedo@debian.org>  Wed, 28 Jan 2015 17:17:07 +0100
+ -- Alessandro Ghedini <ghedo@debian.org>  Wed, 28 Jan 2015 17:18:43 +0100
 
 mpv (0.7.2-1) unstable; urgency=medium
 
