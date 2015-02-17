@@ -34,7 +34,6 @@
 #include "config.h"
 
 #include <sys/types.h>
-#include <sys/mman.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -163,8 +162,10 @@ static void uninit( struct af_instance* af )
    af audio filter instance
    data audio data
 */
-static int filter( struct af_instance* af, struct mp_audio* data, int flags)
+static int filter(struct af_instance *af, struct mp_audio *data)
 {
+  if (!data)
+    return 0;
   struct mp_audio*      c   = data;          // Current working data
   af_export_t*  s   = af->priv;     // Setup for this instance
   int16_t*      a   = c->planes[0];          // Incomming sound
@@ -200,6 +201,7 @@ static int filter( struct af_instance* af, struct mp_audio* data, int flags)
            &(s->count), sizeof(s->count));
   }
 
+  af_add_output_frame(af, data);
   return 0;
 }
 
@@ -211,7 +213,7 @@ static int af_open( struct af_instance* af )
 {
   af->control = control;
   af->uninit  = uninit;
-  af->filter  = filter;
+  af->filter_frame = filter;
   af_export_t *priv = af->priv;
 
   if (!priv->filename || !priv->filename[0]) {

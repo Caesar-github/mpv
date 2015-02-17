@@ -17,6 +17,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <locale.h>
 #include <assert.h>
 
 #include "common/common.h"
@@ -107,7 +108,6 @@ struct mpv_handle {
 
     uint64_t event_mask;
     bool queued_wakeup;
-    bool choke_warning;
     int suspend_count;
 
     mpv_event *events;      // ringbuffer of max_events entries
@@ -115,6 +115,7 @@ struct mpv_handle {
     int first_event;        // events[first_event] is the first readable event
     int num_events;         // number of readable events
     int reserved_events;    // number of entries reserved for replies
+    bool choked;            // recovering from queue overflow
 
     struct observe_property **properties;
     int num_properties;
@@ -126,6 +127,7 @@ struct mpv_handle {
     struct mp_log_buffer *messages;
 };
 
+static bool gen_log_message_event(struct mpv_handle *ctx);
 static bool gen_property_change_event(struct mpv_handle *ctx);
 static void notify_property_events(struct mpv_handle *ctx, uint64_t event_mask);
 
@@ -201,6 +203,8 @@ struct mpv_handle *mp_new_client(struct mp_client_api *clients, const char *name
 {
     char nname[MAX_CLIENT_NAME];
     for (int n = 1; n < 1000; n++) {
+        if (!name)
+            name = "client";
         snprintf(nname, sizeof(nname) - 3, "%s", name); // - space for number
         for (int i = 0; nname[i]; i++)
             nname[i] = mp_isalnum(nname[i]) ? nname[i] : '_';
@@ -265,7 +269,7 @@ static void wakeup_client(struct mpv_handle *ctx)
     pthread_mutex_lock(&ctx->wakeup_lock);
     if (!ctx->need_wakeup) {
         ctx->need_wakeup = true;
-        pthread_cond_signal(&ctx->wakeup);
+        pthread_cond_broadcast(&ctx->wakeup);
         if (ctx->wakeup_cb)
             ctx->wakeup_cb(ctx->wakeup_cb_ctx);
         if (ctx->wakeup_pipe[0] != -1)
@@ -356,21 +360,25 @@ static void unlock_core(mpv_handle *ctx)
         mp_dispatch_unlock(ctx->mpctx->dispatch);
 }
 
+void mpv_wait_async_requests(mpv_handle *ctx)
+{
+    mp_resume_all(ctx);
+
+    pthread_mutex_lock(&ctx->lock);
+    while (ctx->reserved_events || ctx->properties_updating)
+        wait_wakeup(ctx, INT64_MAX);
+    pthread_mutex_unlock(&ctx->lock);
+}
+
 void mpv_detach_destroy(mpv_handle *ctx)
 {
     if (!ctx)
         return;
 
-    mp_resume_all(ctx);
-
-    pthread_mutex_lock(&ctx->lock);
     // reserved_events equals the number of asynchronous requests that weren't
     // yet replied. In order to avoid that trying to reply to a removed client
     // causes a crash, block until all asynchronous requests were served.
-    ctx->event_mask = 0;
-    while (ctx->reserved_events || ctx->properties_updating)
-        wait_wakeup(ctx, INT64_MAX);
-    pthread_mutex_unlock(&ctx->lock);
+    mpv_wait_async_requests(ctx);
 
     struct mp_client_api *clients = ctx->clients;
 
@@ -436,8 +444,23 @@ void mpv_terminate_destroy(mpv_handle *ctx)
     pthread_join(playthread, NULL);
 }
 
+// We mostly care about LC_NUMERIC, and how "." vs. "," is treated,
+// Other locale stuff might break too, but probably isn't too bad.
+static bool check_locale(void)
+{
+    char *name = setlocale(LC_NUMERIC, NULL);
+    return strcmp(name, "C") == 0;
+}
+
 mpv_handle *mpv_create(void)
 {
+    if (!check_locale()) {
+        // Normally, we never print anything (except if the "terminal" option
+        // is enabled), so this is an exception.
+        fprintf(stderr, "Non-C locale detected. This is not supported.\n"
+                        "Call 'setlocale(LC_NUMERIC, \"C\");' in your code.\n");
+        return NULL;
+    }
     struct MPContext *mpctx = mp_create();
     mpv_handle *ctx = mp_new_client(mpctx->clients, "main");
     if (ctx) {
@@ -447,6 +470,7 @@ mpv_handle *mpv_create(void)
         mpv_set_option_string(ctx, "config", "no");
         mpv_set_option_string(ctx, "idle", "yes");
         mpv_set_option_string(ctx, "terminal", "no");
+        mpv_set_option_string(ctx, "input-terminal", "no");
         mpv_set_option_string(ctx, "osc", "no");
         mpv_set_option_string(ctx, "ytdl", "no");
         mpv_set_option_string(ctx, "input-default-bindings", "no");
@@ -460,6 +484,18 @@ mpv_handle *mpv_create(void)
         mp_destroy(mpctx);
     }
     return ctx;
+}
+
+mpv_handle *mpv_create_client(mpv_handle *ctx, const char *name)
+{
+    if (!ctx)
+        return mpv_create();
+    if (!ctx->mpctx->initialized)
+        return NULL;
+    mpv_handle *new = mp_new_client(ctx->mpctx->clients, name);
+    if (new)
+        mpv_wait_event(new, 0); // set fuzzy_initialized
+    return new;
 }
 
 static void *playback_thread(void *p)
@@ -482,6 +518,8 @@ int mpv_initialize(mpv_handle *ctx)
 {
     if (mp_initialize(ctx->mpctx) < 0)
         return MPV_ERROR_INVALID_PARAMETER;
+
+    mp_print_version(ctx->mpctx->log, false);
 
     pthread_t thread;
     if (pthread_create(&thread, NULL, playback_thread, ctx->mpctx) != 0)
@@ -524,7 +562,8 @@ static int reserve_reply(struct mpv_handle *ctx)
 {
     int res = MPV_ERROR_EVENT_QUEUE_FULL;
     pthread_mutex_lock(&ctx->lock);
-    if (ctx->reserved_events + ctx->num_events < ctx->max_events) {
+    if (ctx->reserved_events + ctx->num_events < ctx->max_events && !ctx->choked)
+    {
         ctx->reserved_events++;
         res = 0;
     }
@@ -550,14 +589,17 @@ static int send_event(struct mpv_handle *ctx, struct mpv_event *event, bool copy
     uint64_t mask = 1ULL << event->event_id;
     if (ctx->property_event_masks & mask)
         notify_property_events(ctx, mask);
+    int r;
     if (!(ctx->event_mask & mask)) {
-        pthread_mutex_unlock(&ctx->lock);
-        return 0;
-    }
-    int r = append_event(ctx, *event, copy);
-    if (r < 0 && !ctx->choke_warning) {
-        mp_err(ctx->log, "Too many events queued.\n");
-        ctx->choke_warning = true;
+        r = 0;
+    } else if (ctx->choked) {
+        r = -1;
+    } else {
+        r = append_event(ctx, *event, copy);
+        if (r < 0) {
+            MP_ERR(ctx, "Too many events queued.\n");
+            ctx->choked = true;
+        }
     }
     pthread_mutex_unlock(&ctx->lock);
     return r;
@@ -712,6 +754,12 @@ mpv_event *mpv_wait_event(mpv_handle *ctx, double timeout)
     while (1) {
         if (ctx->queued_wakeup)
             deadline = 0;
+        // Recover from overflow.
+        if (ctx->choked && !ctx->num_events) {
+            ctx->choked = false;
+            event->event_id = MPV_EVENT_QUEUE_OVERFLOW;
+            break;
+        }
         // This will almost surely lead to a deadlock. (Polling is still ok.)
         if (ctx->suspend_count && timeout > 0) {
             MP_ERR(ctx, "attempting to wait while core is suspended");
@@ -724,26 +772,12 @@ mpv_event *mpv_wait_event(mpv_handle *ctx, double timeout)
             talloc_steal(event, event->data);
             break;
         }
+        // If there's a changed property, generate change event (never queued).
         if (gen_property_change_event(ctx))
             break;
-        if (ctx->messages) {
-            // Poll the log message queue. Currently we can't/don't do better.
-            struct mp_log_buffer_entry *msg =
-                mp_msg_log_buffer_read(ctx->messages);
-            if (msg) {
-                event->event_id = MPV_EVENT_LOG_MESSAGE;
-                struct mpv_event_log_message *cmsg = talloc_ptrtype(event, cmsg);
-                *cmsg = (struct mpv_event_log_message){
-                    .prefix = msg->prefix,
-                    .level = mp_log_levels[msg->level],
-                    .log_level = mp_mpv_log_levels[msg->level],
-                    .text = msg->text,
-                };
-                talloc_steal(event, msg);
-                event->data = cmsg;
-                break;
-            }
-        }
+        // Pop item from message queue, and return as event.
+        if (gen_log_message_event(ctx))
+            break;
         int r = wait_wakeup(ctx, deadline);
         if (r == ETIMEDOUT)
             break;
@@ -1515,6 +1549,31 @@ int mpv_request_log_messages(mpv_handle *ctx, const char *min_level)
     return 0;
 }
 
+// Set ctx->cur_event to a generated log message event, if any available.
+static bool gen_log_message_event(struct mpv_handle *ctx)
+{
+    if (ctx->messages) {
+        struct mp_log_buffer_entry *msg =
+            mp_msg_log_buffer_read(ctx->messages);
+        if (msg) {
+            struct mpv_event_log_message *cmsg =
+                talloc_ptrtype(ctx->cur_event, cmsg);
+            *cmsg = (struct mpv_event_log_message){
+                .prefix = msg->prefix,
+                .level = mp_log_levels[msg->level],
+                .log_level = mp_mpv_log_levels[msg->level],
+                .text = msg->text,
+            };
+            *ctx->cur_event = (struct mpv_event){
+                .event_id = MPV_EVENT_LOG_MESSAGE,
+                .data = cmsg,
+            };
+            return true;
+        }
+    }
+    return false;
+}
+
 int mpv_get_wakeup_pipe(mpv_handle *ctx)
 {
     pthread_mutex_lock(&ctx->wakeup_lock);
@@ -1551,6 +1610,8 @@ static const char *const err_table[] = {
     [-MPV_ERROR_VO_INIT_FAILED] = "audio output initialization failed",
     [-MPV_ERROR_NOTHING_TO_PLAY] = "the file has no audio or video data",
     [-MPV_ERROR_UNKNOWN_FORMAT] = "unrecognized file format",
+    [-MPV_ERROR_UNSUPPORTED] = "not supported",
+    [-MPV_ERROR_NOT_IMPLEMENTED] = "operation not implemented",
 };
 
 const char *mpv_error_string(int error)
@@ -1589,6 +1650,7 @@ static const char *const event_table[] = {
     [MPV_EVENT_PLAYBACK_RESTART] = "playback-restart",
     [MPV_EVENT_PROPERTY_CHANGE] = "property-change",
     [MPV_EVENT_CHAPTER_CHANGE] = "chapter-change",
+    [MPV_EVENT_QUEUE_OVERFLOW] = "event-queue-overflow",
 };
 
 const char *mpv_event_name(mpv_event_id event)
@@ -1606,4 +1668,68 @@ void mpv_free(void *data)
 int64_t mpv_get_time_us(mpv_handle *ctx)
 {
     return mp_time_us();
+}
+
+// Used by vo_opengl_cb to synchronously uninitialize video.
+void kill_video(struct mp_client_api *client_api)
+{
+    struct MPContext *mpctx = client_api->mpctx;
+    mp_dispatch_lock(mpctx->dispatch);
+    mp_switch_track(mpctx, STREAM_VIDEO, NULL);
+    uninit_video_out(mpctx);
+    mp_dispatch_unlock(mpctx->dispatch);
+}
+
+#include "libmpv/opengl_cb.h"
+
+#if HAVE_GL
+static mpv_opengl_cb_context *opengl_cb_get_context(mpv_handle *ctx)
+{
+    mpv_opengl_cb_context *cb = ctx->mpctx->gl_cb_ctx;
+    if (!cb) {
+        cb = mp_opengl_create(ctx->mpctx->global, ctx->mpctx->osd, ctx->clients);
+        ctx->mpctx->gl_cb_ctx = cb;
+    }
+    return cb;
+}
+#else
+static mpv_opengl_cb_context *opengl_cb_get_context(mpv_handle *ctx)
+{
+    return NULL;
+}
+void mpv_opengl_cb_set_update_callback(mpv_opengl_cb_context *ctx,
+                                       mpv_opengl_cb_update_fn callback,
+                                       void *callback_ctx)
+{
+}
+int mpv_opengl_cb_init_gl(mpv_opengl_cb_context *ctx, const char *exts,
+                          mpv_opengl_cb_get_proc_address_fn get_proc_address,
+                          void *get_proc_address_ctx)
+{
+    return MPV_ERROR_NOT_IMPLEMENTED;
+}
+int mpv_opengl_cb_render(mpv_opengl_cb_context *ctx, int fbo, int vp[4])
+{
+    return MPV_ERROR_NOT_IMPLEMENTED;
+}
+int mpv_opengl_cb_uninit_gl(mpv_opengl_cb_context *ctx)
+{
+    return MPV_ERROR_NOT_IMPLEMENTED;
+}
+#endif
+
+void *mpv_get_sub_api(mpv_handle *ctx, mpv_sub_api sub_api)
+{
+    if (!ctx->mpctx->initialized)
+        return NULL;
+    void *res = NULL;
+    lock_core(ctx);
+    switch (sub_api) {
+    case MPV_SUB_API_OPENGL_CB:
+        res = opengl_cb_get_context(ctx);
+        break;
+    default:;
+    }
+    unlock_core(ctx);
+    return res;
 }

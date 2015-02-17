@@ -20,6 +20,12 @@ def check_pthread_flag(ctx, dependency_identifier):
     return False
 
 def check_pthreads(ctx, dependency_identifier):
+    if ctx.dependency_satisfied('win32-internal-pthreads'):
+        h = ctx.path.find_node('osdep/win32/include').abspath()
+        # define IN_WINPTHREAD to workaround mingw stupidity (we never want it
+        # to define features specific to its own pthread stuff)
+        ctx.env.CFLAGS += ['-isystem', h, '-I', h, '-DIN_WINPTHREAD']
+        return True
     if check_pthread_flag(ctx, dependency_identifier):
         return True
     platform_cflags = {
@@ -27,7 +33,6 @@ def check_pthreads(ctx, dependency_identifier):
         'freebsd': '-D_THREAD_SAFE',
         'netbsd':  '-D_THREAD_SAFE',
         'openbsd': '-D_THREAD_SAFE',
-        'win32':   '-DPTW32_STATIC_LIB',
     }.get(ctx.env.DEST_OS, '')
     libs    = ['pthreadGC2', 'pthread']
     checkfn = check_cc(fragment=pthreads_program, cflags=platform_cflags)
@@ -49,11 +54,10 @@ def check_lua(ctx, dependency_identifier):
         ( '51',     'lua >= 5.1.0 lua < 5.2.0'),
         ( '51deb',  'lua5.1 >= 5.1.0'), # debian
         ( '51fbsd', 'lua-5.1 >= 5.1.0'), # FreeBSD
-        ( 'luajit', 'luajit >= 2.0.0' ),
-        # assume all our dependencies link with 5.1
         ( '52',     'lua >= 5.2.0' ),
         ( '52deb',  'lua5.2 >= 5.2.0'), # debian
         ( '52fbsd', 'lua-5.2 >= 5.2.0'), # FreeBSD
+        ( 'luajit', 'luajit >= 2.0.0' ),
     ]
 
     if ctx.options.LUA_VER:

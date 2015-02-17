@@ -10,8 +10,12 @@ typedef struct mp_vo_opts {
 
     int ontop;
     int fullscreen;
+    int border;
+    int all_workspaces;
+
     int screen_id;
     int fsscreen_id;
+    int fs_black_out_screens;
     char *winname;
     int x11_netwm;
     int native_keyrepeat;
@@ -25,10 +29,10 @@ typedef struct mp_vo_opts {
     struct m_geometry geometry;
     struct m_geometry autofit;
     struct m_geometry autofit_larger;
+    struct m_geometry autofit_smaller;
 
     int keepaspect;
     int keepaspect_window;
-    int border;
 
     int64_t WinID;
 
@@ -50,16 +54,17 @@ struct mp_cache_opts {
 
 typedef struct MPOpts {
     int use_terminal;
-    char *msglevels;
     char *dump_stats;
     int verbose;
+    char **msg_levels;
     int msg_color;
     int msg_module;
     int msg_time;
+    char *log_file;
 
     char **reset_options;
-    char **lua_files;
-    char **lua_opts;
+    char **script_files;
+    char **script_opts;
     int lua_load_osc;
     int lua_load_ytdl;
     char *lua_ytdl_format;
@@ -69,7 +74,6 @@ typedef struct MPOpts {
     struct m_obj_settings *audio_driver_list, *ao_defs;
     char *audio_device;
     char *audio_client_name;
-    int fixed_vo;
     int force_vo;
     int softvol;
     float mixer_init_volume;
@@ -166,6 +170,7 @@ typedef struct MPOpts {
     int position_resume;
     int position_save_on_quit;
     int write_filename_in_watch_later_config;
+    int ignore_path_in_watch_later_config;
     int pause;
     int keep_open;
     int audio_id;
@@ -178,6 +183,7 @@ typedef struct MPOpts {
     char **audio_lang;
     char **sub_lang;
     int audio_display;
+    char **display_tags;
     int sub_visibility;
     int sub_pos;
     float sub_delay;
@@ -224,6 +230,7 @@ typedef struct MPOpts {
     char **sub_name;
     char **sub_paths;
     int sub_auto;
+    int audiofile_auto;
     int use_text_osd;
     int osd_bar_visible;
     float osd_bar_align_x;
@@ -232,6 +239,8 @@ typedef struct MPOpts {
     float osd_bar_h;
     float osd_scale;
     int osd_scale_by_window;
+    int sub_scale_by_window;
+    int sub_scale_with_window;
     struct osd_style_opts *osd_style;
     struct osd_style_opts *sub_text_style;
     float sub_scale;
@@ -249,7 +258,6 @@ typedef struct MPOpts {
     int ass_style_override;
     int ass_hinting;
     int ass_shaper;
-    int sub_scale_with_window;
     int sub_clear_on_seek;
 
     int hwdec_api;
@@ -266,6 +274,7 @@ typedef struct MPOpts {
     char **network_http_header_fields;
     int network_tls_verify;
     char *network_tls_ca_file;
+    double network_timeout;
 
     struct tv_params *tv_params;
     struct pvr_params *stream_pvr_opts;

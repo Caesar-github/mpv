@@ -5,7 +5,8 @@ mpv can be controlled by external programs using the JSON-based IPC protocol. It
 can be enabled by specifying the path to a unix socket using the option
 ``--input-unix-socket``. Clients can connect to this socket and send commands to
 the player or receive events from it. You can use the ``socat`` tool to send
-commands (and receive reply) from the shell.
+commands (and receive reply) from the shell. See the ``--idle`` option how to
+make mpv start without exiting immediately or playing a file.
 
 .. warning::
 
@@ -155,6 +156,14 @@ extra commands can also be used as part of the protocol:
     Attempting to retrieve information by parsing these messages will just
     lead to breakages with future mpv releases. Instead, make a feature request,
     and ask for a proper event that returns the information you need.
+
+``enable_event``, ``disable_event``
+    Enables or disables the named event. Mirrors the ``mpv_request_event`` C
+    API function. If the string ``all`` is used instead of an event name, all
+    events are enabled or disabled.
+
+    By default, most events are enabled, and there is not much use for this
+    command.
 
 ``suspend``
     Suspend the mpv main loop. There is a long-winded explanation of this in

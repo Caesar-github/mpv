@@ -48,7 +48,7 @@
 struct mp_log_root {
     struct mpv_global *global;
     // --- protected by mp_msg_lock
-    char *msglevels;
+    char **msg_levels;
     bool use_terminal;  // make accesses to stderr/stdout
     bool module;
     bool show_time;
@@ -60,6 +60,7 @@ struct mp_log_root {
     bool force_stderr;
     struct mp_log_buffer **buffers;
     int num_buffers;
+    FILE *log_file;
     FILE *stats_file;
     // --- semi-atomic access
     bool mute;
@@ -95,33 +96,33 @@ static pthread_mutex_t mp_msg_lock = PTHREAD_MUTEX_INITIALIZER;
 static const struct mp_log null_log = {0};
 struct mp_log *const mp_null_log = (struct mp_log *)&null_log;
 
-static bool match_mod(const char *name, bstr mod)
+static bool match_mod(const char *name, const char *mod)
 {
-    if (bstr_equals0(mod, "all"))
+    if (!strcmp(mod, "all"))
         return true;
     // Path prefix matches
     bstr b = bstr0(name);
-    return bstr_eatstart(&b, mod) && (bstr_eatstart0(&b, "/") || !b.len);
+    return bstr_eatstart0(&b, mod) && (bstr_eatstart0(&b, "/") || !b.len);
 }
 
 static void update_loglevel(struct mp_log *log)
 {
+    struct mp_log_root *root = log->root;
     pthread_mutex_lock(&mp_msg_lock);
     log->level = -1;
     log->terminal_level = -1;
     if (log->root->use_terminal) {
         log->level = MSGL_STATUS + log->root->verbose; // default log level
-        bstr s = bstr0(log->root->msglevels);
-        bstr mod;
-        int level;
-        while (mp_msg_split_msglevel(&s, &mod, &level) > 0) {
-            if (match_mod(log->verbose_prefix, mod))
-                log->level = level;
+        for (int n = 0; root->msg_levels && root->msg_levels[n * 2 + 0]; n++) {
+            if (match_mod(log->verbose_prefix, root->msg_levels[n * 2 + 0]))
+                log->level = mp_msg_find_level(root->msg_levels[n * 2 + 1]);
         }
         log->terminal_level = log->root->use_terminal ? log->level : -1;
     }
     for (int n = 0; n < log->root->num_buffers; n++)
         log->level = MPMAX(log->level, log->root->buffers[n]->level);
+    if (log->root->log_file)
+        log->level = MPMAX(log->level, MSGL_V);
     if (log->root->stats_file)
         log->level = MPMAX(log->level, MSGL_STATS);
     atomic_store(&log->reload_counter, atomic_load(&log->root->reload_counter));
@@ -278,6 +279,19 @@ static void print_terminal_line(struct mp_log *log, int lev, char *text)
     fflush(stream);
 }
 
+static void write_log_file(struct mp_log *log, int lev, char *text)
+{
+    struct mp_log_root *root = log->root;
+
+    if (lev > MSGL_V || !root->log_file)
+        return;
+
+    fprintf(root->log_file, "[%8.3f][%c][%s] %s",
+            (mp_time_us() - MP_START_TIME) / 1e6,
+            mp_log_levels[lev][0],
+            log->verbose_prefix, text);
+}
+
 static void write_msg_to_buffers(struct mp_log *log, int lev, char *text)
 {
     struct mp_log_root *root = log->root;
@@ -356,6 +370,7 @@ void mp_msg_va(struct mp_log *log, int lev, const char *format, va_list va)
             char saved = next[0];
             next[0] = '\0';
             print_terminal_line(log, lev, text);
+            write_log_file(log, lev, text);
             write_msg_to_buffers(log, lev, text);
             next[0] = saved;
             text = next;
@@ -458,8 +473,12 @@ void mp_msg_update_msglevels(struct mpv_global *global)
         root->termosd = isatty(STDERR_FILENO);
     }
 
-    talloc_free(root->msglevels);
-    root->msglevels = talloc_strdup(root, global->opts->msglevels);
+    m_option_type_msglevels.free(&root->msg_levels);
+    m_option_type_msglevels.copy(NULL, &root->msg_levels,
+                                 &global->opts->msg_levels);
+
+    if (!root->log_file && opts->log_file && opts->log_file[0])
+        root->log_file = fopen(opts->log_file, "wb");
 
     atomic_fetch_add(&root->reload_counter, 1);
     pthread_mutex_unlock(&mp_msg_lock);
@@ -484,6 +503,9 @@ void mp_msg_uninit(struct mpv_global *global)
     struct mp_log_root *root = global->log->root;
     if (root->stats_file)
         fclose(root->stats_file);
+    if (root->log_file)
+        fclose(root->log_file);
+    m_option_type_msglevels.free(&root->msg_levels);
     talloc_free(root);
     global->log = NULL;
 }
@@ -617,26 +639,11 @@ const int mp_mpv_log_levels[MSGL_MAX + 1] = {
     [MSGL_STATS]        = 0, // never used
 };
 
-int mp_msg_split_msglevel(struct bstr *s, struct bstr *out_mod, int *out_level)
+int mp_msg_find_level(const char *s)
 {
-    if (s->len == 0)
-        return 0;
-    bstr elem, rest;
-    bstr_split_tok(*s, ":", &elem, &rest);
-    bstr mod, level;
-    if (!bstr_split_tok(elem, "=", &mod, &level) || mod.len == 0)
-        return -1;
-    int ilevel = -1;
     for (int n = 0; n < MP_ARRAY_SIZE(mp_log_levels); n++) {
-        if (mp_log_levels[n] && bstr_equals0(level, mp_log_levels[n])) {
-            ilevel = n;
-            break;
-        }
+        if (mp_log_levels[n] && mp_log_levels[n] && !strcmp(s, mp_log_levels[n]))
+            return n;
     }
-    if (ilevel < 0 && !bstr_equals0(level, "no"))
-        return -1;
-    *s = rest;
-    *out_mod = mod;
-    *out_level = ilevel;
-    return 1;
+    return -1;
 }

@@ -28,10 +28,11 @@ struct filter_kernel {
 
     // The filter params can be changed at runtime. Only used by some filters.
     float params[2];
+    // Whether or not the filter uses polar coordinates
+    bool polar;
     // The following values are set by mp_init_filter() at runtime.
-    // Number of coefficients; equals the rounded up radius multiplied with 2.
-    int size;
-    double inv_scale;
+    int size;           // number of coefficients (may depend on radius)
+    double inv_scale;   // scale factor (<1.0 is upscale, >1.0 downscale)
 };
 
 extern const struct filter_kernel mp_filter_kernels[];

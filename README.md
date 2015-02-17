@@ -1,14 +1,10 @@
 mpv
 ===
 
-[![Build Status](https://api.travis-ci.org/mpv-player/mpv.png)](https://travis-ci.org/mpv-player/mpv)
-
-[![Coverity Scan Build Status](https://scan.coverity.com/projects/1232/badge.svg)](https://scan.coverity.com/projects/1232)
-
 Overview
 --------
 
-**mpv** is a movie player based on MPlayer and mplayer2. It supports a wide
+**mpv** is a media player based on MPlayer and mplayer2. It supports a wide
 variety of video file formats, audio and video codecs, and subtitle types.
 
 If you are wondering what's different from mplayer2 and MPlayer you can read
@@ -50,8 +46,10 @@ Essential dependencies (incomplete list):
 - FFmpeg libraries (libavutil libavcodec libavformat libswscale libavfilter
   and either libswresample or libavresample)
   At least FFmpeg 2.1.4 or Libav 10 is required.
+- zlib
+- iconv (normally provided by the system libc)
 - libass
-- Lua (optional, required for the OSC pseudo-GUI)
+- Lua (optional, required for the OSC pseudo-GUI and youtube-dl integration)
 - libjpeg (optional, used for screenshots only)
 - Enca (optional, for subtitle charset detection)
 - vdpau and vaapi libraries for hardware decoding on Linux (optional)
@@ -83,6 +81,8 @@ If you are running Mac OSX and using homebrew we provide [homebrew-mpv][homebrew
 to date formula that compiles mpv with sensible dependencies and defaults for
 OSX.
 
+If you want to build a Windows binary, you either have to use MSYS2 and MinGW,
+or cross-compile from Linux with MinGW. See [Windows compilation][windows_compilation].
 
 FFmpeg vs. Libav
 ----------------
@@ -147,3 +147,4 @@ only if discretion is required.
 [mpv-devel]: https://groups.google.com/forum/?hl=en#!forum/mpv-devel
 [ffmpeg_vs_libav]: https://github.com/mpv-player/mpv/wiki/FFmpeg-versus-Libav
 [release-policy]: https://github.com/mpv-player/mpv/blob/master/DOCS/release-policy.md
+[windows_compilation]: https://github.com/mpv-player/mpv/blob/master/DOCS/compile-windows.md

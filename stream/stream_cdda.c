@@ -257,15 +257,19 @@ static int control(stream_t *stream, int cmd, void *arg)
         int track = *(double *)arg;
         int start_track = get_track_by_sector(p, p->start_sector);
         int end_track = get_track_by_sector(p, p->end_sector);
-        track += start_track + 1;
+        track += start_track;
         if (track > end_track)
             return STREAM_ERROR;
         int64_t sector = p->cd->disc_toc[track].dwStartSector;
-        int64_t pos = sector * (CDIO_CD_FRAMESIZE_RAW + 1) - 1;
+        int64_t pos = sector * CDIO_CD_FRAMESIZE_RAW;
         // Assume standard audio CD: 44.1khz, 2 channels, s16 samples
         *(double *)arg = pos / (44100.0 * 2 * 2);
         return STREAM_OK;
     }
+    case STREAM_CTRL_GET_SIZE:
+        *(int64_t *)arg =
+            (p->end_sector + 1 - p->start_sector) * CDIO_CD_FRAMESIZE_RAW;
+        return STREAM_OK;
     }
     return STREAM_UNSUPPORTED;
 }
@@ -373,8 +377,6 @@ static int open_cdda(stream_t *st)
     priv->sector = priv->start_sector;
 
     st->priv = priv;
-    st->end_pos =
-        (priv->end_sector + 1 - priv->start_sector) * CDIO_CD_FRAMESIZE_RAW;
     st->sector_size = CDIO_CD_FRAMESIZE_RAW;
 
     st->fill_buffer = fill_buffer;

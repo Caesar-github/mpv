@@ -45,6 +45,7 @@
 #include "demux/stheader.h"
 #include "demux/packet.h"
 #include "video/csputils.h"
+#include "video/sws_utils.h"
 
 #include "lavc.h"
 
@@ -435,12 +436,6 @@ static void uninit_avctx(struct dec_video *vd)
     vd_ffmpeg_ctx *ctx = vd->priv;
     AVCodecContext *avctx = ctx->avctx;
 
-    if (avctx && avctx->codec)
-        avcodec_flush_buffers(avctx);
-
-    if (ctx->hwdec && ctx->hwdec->uninit)
-        ctx->hwdec->uninit(ctx);
-
     if (avctx) {
         if (avctx->codec && avcodec_close(avctx) < 0)
             MP_ERR(vd, "Could not close codec.\n");
@@ -448,6 +443,9 @@ static void uninit_avctx(struct dec_video *vd)
         av_freep(&avctx->extradata);
         av_freep(&avctx->slice_offset);
     }
+
+    if (ctx->hwdec && ctx->hwdec->uninit)
+        ctx->hwdec->uninit(ctx);
 
     av_freep(&ctx->avctx);
 
@@ -648,7 +646,7 @@ static int decode(struct dec_video *vd, struct demux_packet *packet,
     if (ctx->hwdec && ctx->hwdec->process_image)
         mpi = ctx->hwdec->process_image(ctx, mpi);
 
-    *out_image = mpi;
+    *out_image = mp_img_swap_to_native(mpi);
     return 1;
 }
 

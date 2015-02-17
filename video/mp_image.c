@@ -173,7 +173,7 @@ static void mp_image_destructor(void *ptr)
     m_refcount_unref(mpi->refcount);
 }
 
-static int mp_chroma_div_up(int size, int shift)
+int mp_chroma_div_up(int size, int shift)
 {
     return (size + (1 << shift) - 1) >> shift;
 }
@@ -225,12 +225,6 @@ struct mp_image *mp_image_new_copy(struct mp_image *img)
         return NULL;
     mp_image_copy(new, img);
     mp_image_copy_attributes(new, img);
-
-    // Normally these are covered by the reference to the original image data
-    // (like the AVFrame in vd_lavc.c), but we can't manage it on our own.
-    new->qscale = NULL;
-    new->qstride = 0;
-
     return new;
 }
 
@@ -258,6 +252,9 @@ void mp_image_steal_data(struct mp_image *dst, struct mp_image *src)
 // while img is left untouched.
 struct mp_image *mp_image_new_ref(struct mp_image *img)
 {
+    if (!img)
+        return NULL;
+
     if (!img->refcount)
         return mp_image_new_copy(img);
 
@@ -363,7 +360,6 @@ void mp_image_copy_attributes(struct mp_image *dst, struct mp_image *src)
 {
     dst->pict_type = src->pict_type;
     dst->fields = src->fields;
-    dst->qscale_type = src->qscale_type;
     dst->pts = src->pts;
     dst->params.rotate = src->params.rotate;
     dst->params.stereo_in = src->params.stereo_in;
@@ -379,6 +375,7 @@ void mp_image_copy_attributes(struct mp_image *dst, struct mp_image *src)
         dst->params.chroma_location = src->params.chroma_location;
         dst->params.outputlevels = src->params.outputlevels;
     }
+    mp_image_params_guess_csp(&dst->params); // ensure colorspace consistency
     if ((dst->fmt.flags & MP_IMGFLAG_PAL) && (src->fmt.flags & MP_IMGFLAG_PAL)) {
         if (dst->planes[1] && src->planes[1])
             memcpy(dst->planes[1], src->planes[1], MP_PALETTE_SIZE);
@@ -637,9 +634,6 @@ void mp_image_copy_fields_from_av_frame(struct mp_image *dst,
     if (src->repeat_pict == 1)
         dst->fields |= MP_IMGFIELD_REPEAT_FIRST;
 
-#if HAVE_AVUTIL_QP_API
-    dst->qscale = av_frame_get_qp_table(src, &dst->qstride, &dst->qscale_type);
-#endif
 }
 
 // Not strictly related, but was added in a similar timeframe.

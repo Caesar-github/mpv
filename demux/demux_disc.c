@@ -95,15 +95,15 @@ static void add_dvd_streams(demuxer_t *demuxer)
             struct mp_csp_params csp = MP_CSP_PARAMS_DEFAULTS;
             csp.int_bits_in = 8;
             csp.int_bits_out = 8;
-            float cmatrix[3][4];
-            mp_get_yuv2rgb_coeffs(&csp, cmatrix);
+            struct mp_cmat cmatrix;
+            mp_get_yuv2rgb_coeffs(&csp, &cmatrix);
 
             char *s = talloc_strdup(sh, "");
             s = talloc_asprintf_append(s, "palette: ");
             for (int i = 0; i < 16; i++) {
                 int color = info.palette[i];
                 int c[3] = {(color >> 16) & 0xff, (color >> 8) & 0xff, color & 0xff};
-                mp_map_int_color(cmatrix, 8, c);
+                mp_map_int_color(&cmatrix, 8, c);
                 color = (c[2] << 16) | (c[1] << 8) | c[0];
 
                 if (i != 0)
@@ -169,6 +169,7 @@ static void d_seek(demuxer_t *demuxer, double rel_seek_secs, int flags)
     double pts = p->seek_pts;
     if (flags & SEEK_ABSOLUTE)
         pts = 0.0f;
+    double base_pts = pts; // to what pts is relative
 
     if (flags & SEEK_FACTOR) {
         double tmp = 0;
@@ -180,7 +181,8 @@ static void d_seek(demuxer_t *demuxer, double rel_seek_secs, int flags)
 
     MP_VERBOSE(demuxer, "seek to: %f\n", pts);
 
-    stream_control(demuxer->stream, STREAM_CTRL_SEEK_TO_TIME, &pts);
+    double seek_arg[] = {pts, base_pts, flags};
+    stream_control(demuxer->stream, STREAM_CTRL_SEEK_TO_TIME, seek_arg);
     demux_control(p->slave, DEMUXER_CTRL_RESYNC, NULL);
 
     p->seek_pts = pts;
@@ -224,6 +226,11 @@ static int d_fill_buffer(demuxer_t *demuxer)
     struct sh_stream *sh = p->streams[pkt->stream];
     if (!demux_stream_is_selected(sh)) {
         talloc_free(pkt);
+        return 1;
+    }
+
+    if (demuxer->stream->uncached_type == STREAMTYPE_CDDA) {
+        demux_add_packet(sh, pkt);
         return 1;
     }
 
@@ -309,14 +316,18 @@ static int d_open(demuxer_t *demuxer, enum demux_check check)
     // So that we don't miss initial packets of delayed subtitle streams.
     demux_set_stream_autoselect(p->slave, true);
 
-    // Can be seekable even if the stream isn't.
-    demuxer->seekable = true;
-
     // With cache enabled, the stream can be seekable. This causes demux_lavf.c
     // (actually libavformat/mpegts.c) to seek sometimes when reading a packet.
     // It does this to seek back a bit in case the current file position points
     // into the middle of a packet.
-    demuxer->stream->seekable = false;
+    if (demuxer->stream->uncached_type != STREAMTYPE_CDDA) {
+        demuxer->stream->seekable = false;
+
+        // Can be seekable even if the stream isn't.
+        demuxer->seekable = true;
+
+        demuxer->rel_seeks = true;
+    }
 
     add_dvd_streams(demuxer);
     add_streams(demuxer);
@@ -349,6 +360,9 @@ static int d_control(demuxer_t *demuxer, int cmd, void *arg)
     case DEMUXER_CTRL_SWITCHED_TRACKS:
         reselect_streams(demuxer);
         return DEMUXER_CTRL_OK;
+    case DEMUXER_CTRL_GET_NAV_EVENT:
+        return stream_control(demuxer->stream, STREAM_CTRL_GET_NAV_EVENT, arg)
+               == STREAM_OK ? DEMUXER_CTRL_OK : DEMUXER_CTRL_DONTKNOW;
     }
     return demux_control(p->slave, cmd, arg);
 }

@@ -69,7 +69,9 @@ const struct mp_cmd_def mp_cmds[] = {
     },
     .allow_auto_repeat = true,
   },
-  { MP_CMD_REVERT_SEEK, "revert_seek", },
+  { MP_CMD_REVERT_SEEK, "revert_seek", {
+      OARG_CHOICE(0, ({"-", 0}, {"mark", 1})),
+  }},
   { MP_CMD_QUIT, "quit", { OARG_INT(0) } },
   { MP_CMD_QUIT_WATCH_LATER, "quit_watch_later", { OARG_INT(0) } },
   { MP_CMD_STOP, "stop", },
@@ -183,6 +185,19 @@ const struct mp_cmd_def mp_cmds[] = {
 
   { MP_CMD_HOOK_ADD, "hook_add", { ARG_STRING, ARG_INT, ARG_INT } },
   { MP_CMD_HOOK_ACK, "hook_ack", { ARG_STRING } },
+
+  { MP_CMD_MOUSE, "mouse", {
+      ARG_INT, ARG_INT, // coordinate (x, y)
+      OARG_INT(-1),     // button number
+      OARG_CHOICE(0, ({"single", 0},
+                      {"double", 1})),
+  }},
+
+  { MP_CMD_AUDIO_ADD, "audio_add", { ARG_STRING,
+      OARG_CHOICE(0, ({"select", 0}, {"auto", 1}, {"cached", 2})),
+      OARG_STRING(""), OARG_STRING("") } },
+  { MP_CMD_AUDIO_REMOVE, "audio_remove", { OARG_INT(-1) } },
+  { MP_CMD_AUDIO_RELOAD, "audio_reload", { OARG_INT(-1) } },
 
   {0}
 };

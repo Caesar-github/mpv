@@ -10,6 +10,11 @@ from waftools.checks.custom import *
 
 build_options = [
     {
+        'name': '--cplayer',
+        'desc': 'mpv CLI player',
+        'default': 'enable',
+        'func': check_true
+    }, {
         'name': '--libmpv-shared',
         'desc': 'shared library',
         'default': 'disable',
@@ -19,11 +24,6 @@ build_options = [
         'desc': 'static library',
         'default': 'disable',
         'deps_neg': [ 'libmpv-shared' ],
-        'func': check_true
-    }, {
-        'name': '--client-api-examples',
-        'desc': 'build client API examples',
-        'deps_any': [ 'libmpv-shared', 'libmpv-static' ],
         'func': check_true
     }, {
         'name': '--static-build',
@@ -53,6 +53,7 @@ build_options = [
         'name': '--pdf-build',
         'desc': 'pdf manual generation',
         'func': check_ctx_vars('RST2PDF'),
+        'default': 'disable',
     }, {
         'name': 'libdl',
         'desc': 'dynamic loader',
@@ -83,6 +84,11 @@ build_options = [
         'name': '--test',
         'desc': 'test suite (using cmocka)',
         'func': check_pkg_config('cmocka >= 0.4.1'),
+    }, {
+        'name': '--clang-database',
+        'desc': 'generate a clang compilation database',
+        'func': check_true,
+        'default': 'disable',
     }
 ]
 
@@ -109,8 +115,8 @@ main_dependencies = [
         'name': 'posix',
         'desc': 'POSIX environment',
         # This should be good enough.
-        'func': check_statement(['poll.h', 'unistd.h'],
-                    'struct pollfd pfd; poll(&pfd, 1, 0); fork(); int f[2]; pipe(f)'),
+        'func': check_statement(['poll.h', 'unistd.h', 'sys/mman.h'],
+            'struct pollfd pfd; poll(&pfd, 1, 0); fork(); int f[2]; pipe(f); munmap(f,0)'),
     }, {
         'name': 'posix-or-mingw',
         'desc': 'programming environment',
@@ -119,6 +125,13 @@ main_dependencies = [
         'req': True,
         'fmsg': 'Unable to find either POSIX or MinGW-w64 environment, ' \
                 'or compiler does not work.',
+    }, {
+        'name': '--win32-internal-pthreads',
+        'desc': 'internal pthread wrapper for win32 (Vista+)',
+        'deps_neg': [ 'posix' ],
+        'deps': [ 'mingw' ],
+        'func': check_true,
+        'default': 'disable',
     }, {
         'name': 'pthreads',
         'desc': 'POSIX threads',
@@ -172,20 +185,11 @@ iconv support use --disable-iconv.",
         'deps_any': [ 'os-win32', 'os-cygwin' ],
         'func': check_true
     }, {
-        'name': 'priority',
-        'desc': 'w32 priority API',
-        'deps_any': [ 'os-win32', 'os-cygwin'],
-        'func': check_true
-    }, {
         'name': '--waio',
         'desc': 'libwaio for win32',
         'deps': [ 'os-win32', 'mingw' ],
         'func': check_libs(['waio'],
                     check_statement('waio/waio.h', 'waio_alloc(0, 0, 0, 0)')),
-    }, {
-        'name': 'videoio',
-        'desc': 'videoio.h',
-        'func': check_headers('sys/videoio.h')
     }, {
         'name': '--termios',
         'desc': 'termios',
@@ -195,10 +199,6 @@ iconv support use --disable-iconv.",
         'desc': 'shm',
         'func': check_statement(['sys/types.h', 'sys/ipc.h', 'sys/shm.h'],
             'shmget(0, 0, 0); shmat(0, 0, 0); shmctl(0, 0, 0)')
-    }, {
-        'name': 'sys-mman-h',
-        'desc': 'mman.h',
-        'func': check_statement('sys/mman.h', 'mmap(0, 0, 0, 0, 0, 0)')
     }, {
         'name': 'nanosleep',
         'desc': 'nanosleep',
@@ -400,10 +400,6 @@ Libav libraries ({0}). Aborting.".format(" ".join(libav_pkg_config_checks))
         'desc': 'libavdevice',
         'func': check_pkg_config('libavdevice', '>= 54.0.0'),
     }, {
-        'name': '--libpostproc',
-        'desc': 'libpostproc',
-        'func': check_pkg_config('libpostproc', '>= 52.2.100'),
-    }, {
         'name': 'avcodec-chroma-pos-api',
         'desc': 'libavcodec avcodec_enum_to_chroma_pos API',
         'func': check_statement('libavcodec/avcodec.h', """int x, y;
@@ -414,12 +410,6 @@ Libav libraries ({0}). Aborting.".format(" ".join(libav_pkg_config_checks))
         'desc': 'libavcodec avcol_spc_bt2020 available',
         'func': check_statement('libavcodec/avcodec.h',
                                 'int x = AVCOL_SPC_BT2020_NCL',
-                                use='libav')
-    }, {
-        'name': 'avutil-qp-api',
-        'desc': 'libavutil QP API',
-        'func': check_statement('libavutil/frame.h',
-                                'av_frame_get_qp_table(NULL, NULL, NULL)',
                                 use='libav')
     }, {
         'name': 'avcodec-vdpau-alloc-context',
@@ -524,12 +514,6 @@ audio_output_features = [
         'name': '--pulse',
         'desc': 'PulseAudio audio output',
         'func': check_pkg_config('libpulse', '>= 1.0')
-    }, {
-        'name': '--portaudio',
-        'desc': 'PortAudio audio output',
-        'deps': [ 'atomics' ],
-        'func': check_pkg_config('portaudio-2.0', '>= 19'),
-        'default': 'disable',
     }, {
         'name': '--jack',
         'desc': 'JACK audio output',
@@ -690,15 +674,6 @@ video_output_features = [
         'desc': 'CACA',
         'func': check_pkg_config('caca', '>= 0.99.beta18'),
     }, {
-        'name': '--dvb',
-        'desc': 'DVB',
-        'func': check_cc(fragment=load_fragment('dvb.c')),
-    } , {
-        'name': '--dvbin',
-        'desc': 'DVB input module',
-        'deps': [ 'dvb' ],
-        'func': check_true,
-    }, {
         'name': '--jpeg',
         'desc': 'JPEG support',
         'func': check_cc(header_name=['stdio.h', 'jpeglib.h'],
@@ -752,14 +727,25 @@ radio_and_tv_features = [
         'desc': 'TV interface',
         'func': check_true,
     }, {
+        'name': 'sys_videoio_h',
+        'desc': 'videoio.h',
+        'func': check_cc(header_name=['sys/time.h', 'sys/videoio.h'])
+    }, {
+        'name': 'videodev',
+        'desc': 'videodev2.h',
+        'func': check_cc(header_name=['sys/time.h', 'linux/videodev2.h']),
+        'deps_neg': [ 'sys_videoio_h' ],
+    }, {
         'name': '--tv-v4l2',
         'desc': 'Video4Linux2 TV interface',
         'deps': [ 'tv' ],
-        'func': check_cc(header_name=['sys/time.h', 'linux/videodev2.h'])
+        'deps_any': [ 'sys_videoio_h', 'videodev' ],
+        'func': check_true,
     }, {
         'name': '--libv4l2',
         'desc': 'libv4l2 support',
         'func': check_pkg_config('libv4l2'),
+        'deps': [ 'tv-v4l2' ],
     }, {
         'name': '--pvr',
         'desc': 'Video4Linux2 MPEG PVR interface',
@@ -769,15 +755,15 @@ radio_and_tv_features = [
         'desc': 'audio input support',
         'deps_any': [ 'tv-v4l2' ],
         'func': check_true
+    } , {
+        'name': '--dvbin',
+        'desc': 'DVB input module',
+        'func': check_cc(fragment=load_fragment('dvb.c')),
     }
 ]
 
 standalone_features = [
     {
-        'name': '--cplayer',
-        'desc': 'mpv CLI player',
-        'func': check_true
-    }, {
         'name': 'win32-executable',
         'desc': 'w32 executable',
         'deps_any': [ 'os-win32', 'os-cygwin'],
@@ -852,7 +838,7 @@ def is_debug_build(ctx):
 
 def configure(ctx):
     ctx.resetenv(ctx.options.variant)
-    ctx.check_waf_version(mini='1.8.1')
+    ctx.check_waf_version(mini='1.8.4')
     target = os.environ.get('TARGET')
     (cc, pkg_config, ar, windres) = ('cc', 'pkg-config', 'ar', 'windres')
 
@@ -909,6 +895,9 @@ def configure(ctx):
 
     if not ctx.dependency_satisfied('build-date'):
         ctx.env.CFLAGS += ['-DNO_BUILD_TIMESTAMPS']
+
+    if ctx.dependency_satisfied('clang-database'):
+        ctx.load('clang_compilation_database')
 
     ctx.store_dependencies_lists()
 

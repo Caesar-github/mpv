@@ -56,8 +56,12 @@ const struct filter_kernel *mp_find_filter_kernel(const char *name)
 bool mp_init_filter(struct filter_kernel *filter, const int *sizes,
                     double inv_scale)
 {
-    if (filter->radius < 0)
-        filter->radius = 2.0;
+    assert(filter->radius > 0);
+    // polar filters are dependent only on the radius
+    if (filter->polar) {
+        filter->size = 1;
+        return true;
+    }
     // only downscaling requires widening the filter
     filter->inv_scale = inv_scale >= 1.0 ? inv_scale : 1.0;
     double support = filter->radius * filter->inv_scale;
@@ -105,9 +109,19 @@ void mp_compute_weights(struct filter_kernel *filter, double f, float *out_w)
 // interpreted as rectangular array of count * filter->size items.
 void mp_compute_lut(struct filter_kernel *filter, int count, float *out_array)
 {
-    for (int n = 0; n < count; n++) {
-        mp_compute_weights(filter, n / (double)(count - 1),
-                           out_array + filter->size * n);
+    if (filter->polar) {
+        // Compute a 1D array indexed by radius
+        assert(filter->radius > 0);
+        for (int x = 0; x < count; x++) {
+            double r = x * filter->radius / (count - 1);
+            out_array[x] = r <= filter->radius ? filter->weight(filter, r) : 0;
+        }
+    } else {
+        // Compute a 2D array indexed by subpixel position
+        for (int n = 0; n < count; n++) {
+            mp_compute_weights(filter, n / (double)(count - 1),
+                               out_array + filter->size * n);
+        }
     }
 }
 
@@ -261,6 +275,14 @@ static double sinc(kernel *k, double x)
     return sin(pix) / pix;
 }
 
+static double jinc(kernel *k, double x)
+{
+    if (x == 0.0)
+        return 1.0;
+    double pix = M_PI * x;
+    return 2.0 * j1(pix) / pix;
+}
+
 static double lanczos(kernel *k, double x)
 {
     double radius = k->size / 2;
@@ -270,6 +292,48 @@ static double lanczos(kernel *k, double x)
         return 1;
     double pix = M_PI * x;
     return radius * sin(pix) * sin(pix / radius) / (pix * pix);
+}
+
+static double ewa_lanczos(kernel *k, double x)
+{
+    double radius = k->radius;
+    assert(radius >= 1.0);
+
+    // This is already three orders of magnitude slower than anything you could
+    // possibly hope to play back in realtime and results in tons of ringing
+    // artifacts, so I doubt anybody will complain.
+    if (radius > 16)
+        radius = 16;
+
+    if (fabs(x) < 1e-8)
+        return 1.0;
+    if (fabs(x) >= radius)
+        return 0.0;
+
+    // Precomputed zeros of the jinc() function, needed to adjust the
+    // window size. Computing this at runtime is nontrivial.
+    // Copied from: https://github.com/AviSynth/jinc-resize/blob/master/JincResize/JincFilter.cpp#L171
+    static double jinc_zeros[16] = {
+        1.2196698912665045,
+        2.2331305943815286,
+        3.2383154841662362,
+        4.2410628637960699,
+        5.2427643768701817,
+        6.2439216898644877,
+        7.2447598687199570,
+        8.2453949139520427,
+        9.2458926849494673,
+        10.246293348754916,
+        11.246622794877883,
+        12.246898461138105,
+        13.247132522181061,
+        14.247333735806849,
+        15.247508563037300,
+        16.247661874700962
+    };
+
+    double window = jinc_zeros[0] / jinc_zeros[(int)radius - 1];
+    return jinc(k, x) * jinc(k, x*window);
 }
 
 static double blackman(kernel *k, double x)
@@ -299,17 +363,9 @@ const struct filter_kernel mp_filter_kernels[] = {
     {"spline36",       3,   spline36},
     {"spline64",       4,   spline64},
     {"gaussian",       -1,  gaussian, .params = {28.85390081777927, NAN} },
-    {"sinc2",          2,   sinc},
-    {"sinc3",          3,   sinc},
-    {"sinc4",          4,   sinc},
     {"sinc",           -1,  sinc},
-    {"lanczos2",       2,   lanczos},
-    {"lanczos3",       3,   lanczos},
-    {"lanczos4",       4,   lanczos},
+    {"ewa_lanczos",    -1,  ewa_lanczos, .polar = true},
     {"lanczos",        -1,  lanczos},
-    {"blackman2",      2,   blackman},
-    {"blackman3",      3,   blackman},
-    {"blackman4",      4,   blackman},
     {"blackman",       -1,  blackman},
     {0}
 };

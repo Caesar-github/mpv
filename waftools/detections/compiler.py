@@ -28,17 +28,19 @@ def __add_generic_flags__(ctx):
     if ctx.is_debug_build():
         ctx.env.CFLAGS += ['-g']
 
-def __add_gcc_flags__(ctx):
-    ctx.env.CFLAGS += ["-Wall", "-Wundef", "-Wmissing-prototypes", "-Wshadow",
-                       "-Wno-switch", "-Wno-parentheses", "-Wpointer-arith",
-                       "-Wredundant-decls", "-Wno-pointer-sign"]
     __test_and_add_flags__(ctx, ["-Werror=implicit-function-declaration",
                                  "-Wno-error=deprecated-declarations",
                                  "-Wno-error=unused-function",
                                  "-Wempty-body",
                                  "-Wdisabled-optimization",
                                  "-Wstrict-prototypes",
-                                 "-Wno-format-zero-length"])
+                                 "-Wno-format-zero-length",
+                                 "-Werror=format-security"])
+
+def __add_gcc_flags__(ctx):
+    ctx.env.CFLAGS += ["-Wall", "-Wundef", "-Wmissing-prototypes", "-Wshadow",
+                       "-Wno-switch", "-Wno-parentheses", "-Wpointer-arith",
+                       "-Wredundant-decls", "-Wno-pointer-sign"]
 
 def __add_clang_flags__(ctx):
     ctx.env.CFLAGS += ["-Wno-logical-op-parentheses", "-fcolor-diagnostics",
@@ -46,7 +48,8 @@ def __add_clang_flags__(ctx):
                        "-Wno-tautological-constant-out-of-range-compare" ]
 
 def __add_mswin_flags__(ctx):
-    ctx.env.CFLAGS += ['-D_WIN32_WINNT=0x600', '-DUNICODE', '-DCOBJMACROS']
+    ctx.env.CFLAGS += ['-D_WIN32_WINNT=0x600', '-DUNICODE', '-DCOBJMACROS',
+                       '-U__STRICT_ANSI__']
 
 def __add_mingw_flags__(ctx):
     __add_mswin_flags__(ctx)
@@ -56,7 +59,6 @@ def __add_mingw_flags__(ctx):
 def __add_cygwin_flags__(ctx):
     __add_mswin_flags__(ctx)
     ctx.env.CFLAGS += ['-mwin32']
-    ctx.env.CFLAGS += ['-U__STRICT_ANSI__']
 
 __compiler_map__ = {
     '__GNUC__':  __add_gcc_flags__,

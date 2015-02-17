@@ -107,11 +107,16 @@ Playback Control
     If ``--audio-pitch-correction`` is used, playing with a speed higher than
     normal automatically inserts the ``scaletempo`` audio filter.
 
-``--loop=<N|inf|no>``
+``--loop=<N|inf|force|no>``
     Loops playback ``N`` times. A value of ``1`` plays it one time (default),
     ``2`` two times, etc. ``inf`` means forever. ``no`` is the same as ``1`` and
     disables looping. If several files are specified on command line, the
     entire playlist is looped.
+
+    The ``force`` mode is like ``inf``, but does not skip playlist entries
+    which have been marked as failing. This means the player might waste CPU
+    time trying to loop a file that doesn't exist. But it might be useful for
+    playing webradios under very bad network conditions.
 
 ``--pause``
     Start the player in paused state.
@@ -305,6 +310,11 @@ Program Behavior
 ``--list-protocols``
     Print a list of the supported protocols.
 
+``--log-file=<path>``
+    Opens the given path for writing, and print log messages to it. Existing
+    files will be truncated. The log level always corresponds to ``-v``,
+    regardless of terminal verbosity levels.
+
 ``--config-dir=<path>``
     Force a different configuration directory. If this is set, the given
     directory is used to load configuration files, and all other configuration
@@ -333,27 +343,30 @@ Program Behavior
 
     This option is useful for debugging only.
 
-``--idle``
+``--idle=<no|yes|once>``
     Makes mpv wait idly instead of quitting when there is no file to play.
     Mostly useful in slave mode, where mpv can be controlled through input
     commands (see also ``--slave-broken``).
+
+    ``once`` will only idle at start and let the player close once the
+    first playlist has finished playing back.
 
 ``--include=<configuration-file>``
     Specify configuration file to be parsed after the default ones.
 
 ``--load-scripts=<yes|no>``
-    If set to ``no``, don't auto-load scripts from the ``lua`` configuration
-    subdirectory (usually ``~/.config/mpv/lua/``).
+    If set to ``no``, don't auto-load scripts from the ``scripts``
+    configuration subdirectory (usually ``~/.config/mpv/scripts/``).
     (Default: ``yes``)
 
-``--lua=<filename>``
+``--script=<filename>``
     Load a Lua script. You can load multiple scripts by separating them with
     commas (``,``).
 
-``--lua-opts=key1=value1,key2=value2,...``
-    Set options for scripts. A Lua script can query an option by key. If an
+``--script-opts=key1=value1,key2=value2,...``
+    Set options for scripts. A script can query an option by key. If an
     option is used and what semantics the option value has depends entirely on
-    the loaded Lua scripts. Values not claimed by any scripts are ignored.
+    the loaded scripts. Values not claimed by any scripts are ignored.
 
 ``--merge-files``
     Pretend that all files passed to mpv are concatenated into a single, big
@@ -406,6 +419,9 @@ Program Behavior
 
         This option may expose privacy-sensitive information and is thus
         disabled by default.
+
+``--ignore-path-in-watch-later-config``
+    Ignore path (i.e. use filename only) when using watch later feature.
 
 ``--show-profile=<profile>``
     Show the description and content of a profile.
@@ -921,7 +937,7 @@ Audio
     ``--dtshd`` and ``--no-dtshd`` are deprecated aliases.
 
 ``--audio-channels=<number|layout>``
-    Request a channel layout for audio output (default: stereo). This  will ask
+    Request a channel layout for audio output (default: auto). This  will ask
     the AO to open a device with the given channel layout. It's up to the AO
     to accept this layout, or to pick a fallback or to error out if the
     requested layout is not supported.
@@ -934,9 +950,9 @@ Audio
     lists speaker names, which can be used to express arbitrary channel
     layouts (e.g. ``fl-fr-lfe`` is 2.1).
 
-    You can use ``--audio-channels=auto`` to disable this. In this case, the AO
-    use the channel layout as the audio filter chain indicates. (``empty`` is
-    an accepted obsolete for ``auto``.)
+    The default is ``--audio-channels=auto``, which tries to play audio using
+    the input file's channel layout. (Or more precisely, the output of the
+    audio filter chain.) (``empty`` is an accepted obsolete alias for ``auto``.)
 
     This will also request the channel layout from the decoder. If the decoder
     does not support the layout, it will fall back to its native channel layout.
@@ -1028,6 +1044,16 @@ Audio
         maximum amplification, i.e. amplify by 200%. The default volume (no
         change in volume) will be ``50`` in this case.
 
+``--audio-file-auto=<no|exact|fuzzy|all>``, ``--no-audio-file-auto``
+    Load additional audio files matching the video filename. The parameter
+    specifies how external audio files are matched. ``exact`` is enabled by
+    default.
+
+    :no:    Don't automatically load external audio files.
+    :exact: Load the media filename with audio file extension (default).
+    :fuzzy: Load all audio files containing media filename.
+    :all:   Load all audio files in the current directory.
+
 ``--audio-client-name=<name>``
     The application name the player reports to the audio API. Can be useful
     if you want to force a different audio profile (e.g. with PulseAudio),
@@ -1117,11 +1143,22 @@ Subtitles
         This affects ASS subtitles as well, and may lead to incorrect subtitle
         rendering. Use with care, or use ``--sub-text-font-size`` instead.
 
+``--sub-scale-by-window=<yes|no>``
+    Whether to scale subtitles with the window size (default: yes). If this is
+    disabled, changing the window size won't change the subtitle font size.
+
+    Like ``--sub-scale``, this can break ASS subtitles.
+
 ``--sub-scale-with-window=<yes|no>``
     Make the subtitle font size relative to the window, instead of the video.
     This is useful if you always want the same font size, even if the video
     doesn't covert the window fully, e.g. because screen aspect and window
     aspect mismatch (and the player adds black bars).
+
+    This option is misnamed. The difference to the confusingly similar sounding
+    option ``--sub-scale-by-window`` is that ``--sub-scale-with-window`` still
+    scales with the approximate window size, while the other option disables
+    this scaling.
 
     Like ``--sub-scale``, this can break ASS subtitles.
 
@@ -1474,26 +1511,41 @@ Window
 
     See also ``--screen``.
 
-``--keep-open``
+``--fs-black-out-screens``
+
+    OS X only. Black out other displays when going fullscreen.
+
+``--keep-open=<yes|no|always>``
     Do not terminate when playing or seeking beyond the end of the file, and
     there is not next file to be played (and ``--loop`` is not used).
     Instead, pause the player. When trying to seek beyond end of the file, the
-    player will pause at an arbitrary playback position (or, in corner cases,
-    not redraw the window at all).
+    player will attempt to seek to the last frame.
+
+    The following arguments can be given:
+
+    :no:        If the current file ends, go to the next file or terminate.
+                (Default.)
+    :yes:       Don't terminate if the current file is the last playlist entry.
+                Equivalent to ``--keep-open`` without arguments.
+    :always:    Like ``yes``, but also applies to files before the last playlist
+                entry. This means playback will never automatically advance to
+                the next file.
 
     .. note::
 
-        This option is not respected when using ``--frames``, ``--end``,
-        ``--length``, or when passing a chapter range to ``--chapter``.
-        Explicitly skipping to the next file or skipping beyond the last
-        chapter will terminate playback as well, even if ``--keep-open`` is
-        given.
+        This option is not respected when using ``--frames``. Explicitly
+        skipping to the next file if the binding uses ``force`` will terminate
+        playback as well.
+
+        Also, if errors or unusual circumstances happen, the player can quit
+        anyway.
 
     Since mpv 0.6.0, this doesn't pause if there is a next file in the playlist,
     or the playlist is looped. Approximately, this will pause when the player
     would normally exit, but in practice there are corner cases in which this
     is not the case (e.g. ``mpv --keep-open file.mkv /dev/null`` will play
-    file.mkv normally, then fail to open ``/dev/null``, then exit).
+    file.mkv normally, then fail to open ``/dev/null``, then exit). (In
+    mpv 0.8.0, ``always`` was introduced, which restores the old behavior.)
 
 ``--force-window``
     Create a video output window even if there is no video. This can be useful
@@ -1515,6 +1567,10 @@ Window
 ``--border``, ``--no-border``
     Play video with window border and decorations. Since this is on by
     default, use ``--no-border`` to disable the standard window decorations.
+
+``--on-all-workspaces``
+    (X11 only)
+    Show the video window on all virtual desktops.
 
 ``--geometry=<[W[xH]][+-x+-y]>``, ``--geometry=<x:y>``
     Adjust the initial window position or size. ``W`` and ``H`` set the window
@@ -1617,6 +1673,17 @@ Window
             If the video is larger than 90% of the screen width or 80% of the
             screen height, make the window smaller until either its width is 90%
             of the screen, or its height is 80% of the screen.
+
+``--autofit-smaller=<[W[xH]]>``
+    This option behaves exactly like ``--autofit``, except that it sets the
+    minimum size of the window (just as ``--autofit-larger`` sets the maximum).
+
+    .. admonition:: Example
+
+        ``500x500``
+            Make the window at least 500 pixels wide and 500 pixels high
+            (depending on the video aspect ratio, the width or height will be
+            larger than 500 in order to keep the aspect ratio the same).
 
 ``--autosync=<factor>``
     Gradually adjusts the A/V sync based on audio delay measurements.
@@ -2143,6 +2210,9 @@ Demuxer
     a timestamp difference higher than the readahead amount relative to the
     last packet returned to the decoder, the demuxer keeps reading.
 
+    Note that the ``--cache-secs`` option will override this value if a cache
+    is enabled, and the value is larger.
+
     (This value tends to be fuzzy, because many file formats don't store linear
     timestamps.)
 
@@ -2270,7 +2340,7 @@ Input
 
 ``--input-vo-keyboard=<yes|no>``
     Disable all keyboard input on for VOs which can't participate in proper
-    keyboard input dispatching. This currently affects X11. Generally useful for
+    keyboard input dispatching. May not affect all VOs. Generally useful for
     embedding only.
 
     On X11, a sub-window with input enabled grabs all keyboard input as long
@@ -2282,11 +2352,14 @@ Input
     behavior, but naively embedding foreign windows breaks it.
 
     The only way to handle this reasonably is using the XEmbed protocol, which
-    was designed to solve these problems. But Qt has questionable support, and
-    mpv doesn't implement it yet.
+    was designed to solve these problems. GTK provides ``GtkSocket``, which
+    supports XEmbed. Qt doesn't seem to provide anything working in newer
+    versions.
 
-    As a workaround, this option is disabled by default in libmpv. (Note that
-    ``input-default-bindings`` is disabled by default in libmpv as well.)
+    If the embedder supports XEmbed, input should work with default settings
+    and with this option disabled. Note that ``input-default-bindings`` is
+    disabled by default in libmpv as well - it should be enabled if you want
+    the mpv default key bindings.
 
     (This option was renamed from ``--input-x11-keyboard``.)
 
@@ -2677,7 +2750,7 @@ Terminal
 ``--no-msg-color``
     Disable colorful console output on terminals.
 
-``--msg-level=<module1=level1:module2=level2:...>``
+``--msg-level=<module1=level1,module2=level2,...>``
     Control verbosity directly for each module. The ``all`` module changes the
     verbosity of all the modules not explicitly specified on the command line.
 
@@ -3016,7 +3089,7 @@ Cache
 ``--cache-secs=<seconds>``
     How many seconds of audio/video to prefetch if the cache is active. This
     overrides the ``--demuxer-readahead-secs`` option if and only if the cache
-    is enabled. (Default: 2.)
+    is enabled and the value is larger. (Default: 2.)
 
 ``--cache-pause``, ``--no-cache-pause``
     Whether the player should automatically pause when the cache runs low,
@@ -3067,6 +3140,11 @@ Network
 ``--referrer=<string>``
     Specify a referrer path or URL for HTTP requests.
 
+``--network-timeout=<seconds>``
+    Specify the network timeout in seconds. This affects at least HTTP. The
+    special value 0 (default) uses the FFmpeg/Libav defaults. If a protocol
+    is used which does not support timeouts, this option is silently ignored.
+
 ``--rtsp-transport=<lavf|udp|tcp|http>``
     Select RTSP transport method (default: tcp). This selects the underlying
     network transport when playing ``rtsp://...`` URLs. The value ``lavf``
@@ -3077,9 +3155,9 @@ Network
     by default. The option allows the following parameters:
 
     :no:        Don't do anything special. Typically, this will simply pick the
-                first audio/video streams it can find. (Default.)
+                first audio/video streams it can find.
     :min:       Pick the streams with the lowest bitrate.
-    :max:       Same, but highest bitrate.
+    :max:       Same, but highest bitrate. (Default.)
 
     The bitrate as used is sent by the server, and there's no guarantee it's
     actually meaningful.
@@ -3095,11 +3173,28 @@ DVB
     in the mpv configuration directory (usually ``~/.config/mpv``) with the
     filename ``channels.conf.{sat,ter,cbl,atsc}`` (based on your card type) or
     ``channels.conf`` as a last resort.
+    For DVB-S/2 cards, a VDR 1.7.x format channel list is recommended
+    as it allows tuning to DVB-S2 channels, enabling subtitles and
+    decoding the PMT (which largely improves the demuxing).
+    Classic mplayer format channel lists are still supported (without
+    these improvements), and for other card types, only limited VDR
+    format channel list support is implemented (patches welcome).
+    For channels with dynamic PID switching or incomplete
+    ``channels.conf``, ``--dvbin-full-transponder`` or the magic PID
+    ``8192`` are recommended.
 
 ``--dvbin-timeout=<1-30>``
     Maximum number of seconds to wait when trying to tune a frequency before
     giving up (default: 30).
 
+``--dvbin-full-transponder=<yes|no>``
+    Apply no filters on program PIDs, only tune to frequency and pass full
+    transponder to demuxer. This is useful to record multiple programs
+    on a single transponder, or to work around issues in the ``channels.conf``.
+    It is also recommended to use this for channels which switch PIDs
+    on-the-fly, e.g. for regional news.
+
+    Default: ``no``
 
 PVR
 ---
@@ -3163,6 +3258,15 @@ PVR
 Miscellaneous
 -------------
 
+``--display-tags=tag1,tags2,...``
+    Set the list of tags that should be displayed on the terminal. Tags that
+    are in the list, but are not present in the played file, will not be shown.
+    If a value ends with ``*``, all tags are matched by prefix (though there
+    is no general globbing). Just passing ``*`` essentially filtering.
+
+    The default includes a common list of tags, call mpv with ``--list-options``
+    to see it.
+
 ``--mc=<seconds/frame>``
     Maximum A-V sync correction per frame (in seconds)
 
@@ -3182,6 +3286,9 @@ Miscellaneous
     or raw streams, unless capturing includes the file headers and is not
     interrupted. Note that, due to cache latencies, captured data may begin and
     end somewhat delayed compared to what you see displayed.
+
+    The destination file is always appended. (Before mpv 0.8.0, the file was
+    overwritten.)
 
 ``--stream-dump=<filename>``
     Same as ``--stream-capture``, but do not start playback. Instead, the entire

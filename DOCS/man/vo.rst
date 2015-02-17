@@ -278,109 +278,88 @@ Available video output drivers are:
     ``opengl-hq`` to use this driver with defaults set to high quality
     rendering.
 
-    Requires at least OpenGL 2.1 and the ``GL_ARB_texture_rg`` extension. For
-    older drivers, ``opengl-old`` may work.
+    Requires at least OpenGL 2.1.
 
     Some features are available with OpenGL 3 capable graphics drivers only
     (or if the necessary extensions are available).
+
+    OpenGL ES 2.0 and 3.0 are supported as well.
 
     Hardware decoding over OpenGL-interop is supported to some degree. Note
     that in this mode, some corner case might not be gracefully handled, and
     color space conversion and chroma upsampling is generally in the hand of
     the hardware decoder APIs.
 
-    ``lscale=<filter>``
+    ``scale=<filter>``
 
         ``bilinear``
-            Bilinear hardware texture filtering (fastest, mid-quality).
-            This is the default.
-
-        ``lanczos2``
-            Lanczos scaling with radius=2. Provides good quality and speed.
-
-        ``lanczos3``
-            Lanczos with radius=3.
-
-        ``lanczos``
-            Generic Lanczos scaling filter. Set radius with ``lradius``.
+            Bilinear hardware texture filtering (fastest, very low quality).
+            This is the default for compatibility reasons.
 
         ``spline36``
-            This is the default when using ``opengl-hq``.
+            Mid quality and speed. This is the default when using ``opengl-hq``.
 
-        ``bicubic_fast``
-            Bicubic filter. Has a blurring effect on the image, even if no
-            scaling is done.
+        ``lanczos``
+            Lanczos scaling. Provides mid quality and speed. Generally worse
+            than ``spline36``, but it results in a slightly sharper image
+            which is good for some content types. The number of taps can be
+            controlled with ``scale-radius``, but is best left unchanged.
 
-        ``sharpen3``
-            Unsharp masking (sharpening) with radius=3 and a default strength
-            of 0.5 (see ``lparam1``).
+            This filter corresponds to the old ``lanczos3`` alias if the default
+            radius is used, while ``lanczos2`` corresponds to a radius of 2.
 
-        ``sharpen5``
-            Unsharp masking (sharpening) with radius=5 and a default strength
-            of 0.5 (see ``lparam1``).
+        ``ewa_lanczos``
+            Elliptic weighted average Lanczos scaling. Also known as Jinc.
+            Relatively slow, but very good quality. The number of taps can
+            be controlled with ``scale-radius``. Adding extra taps makes the
+            filter sharper but adds more ringing.
+
+            This filter supports antiringing (see ``scale-antiring``).
 
         ``mitchell``
             Mitchell-Netravali. The ``b`` and ``c`` parameters can be set with
-            ``lparam1`` and ``lparam2``. Both are set to 1/3 by default.
+            ``scale-param1`` and ``scale-param2``. Both are set to 1/3 by default.
+            This filter is very good at downscaling (see ``scale-down``).
 
-        ``gaussian``
-            Gaussian filter with a parameter ``p`` for sharpness control.
-            ``p`` can be set to float number between 1(blurry) and 100(sharp)
-            and has a default value of about 28.8 (see ``lparam1``).
+        There are some more filters, but most are not as useful. For a complete
+        list, pass ``help`` as value, e.g.::
 
-            Note that for extremely small value of ``p``, a large filter radius
-            might be required to avoid unintended artifacts (see ``lradius``).
+            mpv --vo=opengl:scale=help
 
-
-        There are some more filters. For a complete list, pass ``help`` as
-        value, e.g.::
-
-            mpv --vo=opengl:lscale=help
-
-    ``lparam1=<value>``
+    ``scale-param1=<value>``
         Set filter parameters. Ignored if the filter is not tunable. These are
         unset by default, and use the filter specific default if applicable.
 
-    ``lparam2=<value>``
-        See ``lparam1``.
+    ``scale-param2=<value>``
+        See ``scale-param1``.
 
-    ``lradius=<r>``
+    ``scale-radius=<r>``
         Set radius for filters listed below, must be a float number between 1.0
-        and 8.0. Defaults to be 2.0 if not specified.
+        and 16.0. Defaults to be 3.0 if not specified.
 
-            ``sinc``, ``lanczos``, ``blackman``, ``gaussian``
+            ``sinc``, ``lanczos``, ``ewa_lanczos``, ``blackman``, ``gaussian``
 
         Note that depending on filter implementation details and video scaling
         ratio, the radius that actually being used might be different
         (most likely being increased a bit).
 
+    ``scale-antiring=<value>``
+        Set the antiringing strength. This tries to eliminate ringing, but can
+        introduce other artifacts in the process. Must be a float number
+        between 0.0 and 1.0. The default value of 0.0 disables antiringing
+        entirely.
+
+        Note that this currently only affects ``ewa_lanczos``.
+
     ``scaler-resizes-only``
         Disable the scaler if the video image is not resized. In that case,
-        ``bilinear`` is used instead whatever is set with ``lscale``. Bilinear
+        ``bilinear`` is used instead whatever is set with ``scale``. Bilinear
         will reproduce the source image perfectly if no scaling is performed.
-        Note that this option never affects ``cscale``, although the different
-        processing chain might do chroma scaling differently if ``lscale`` is
-        disabled.
-
-    ``stereo=<value>``
-        Select a method for stereo display. You may have to use
-        ``--video-aspect`` to fix the aspect value. Experimental, do not expect
-        too much from it.
-
-        no
-            Normal 2D display
-        red-cyan
-            Convert side by side input to full-color red-cyan stereo.
-        green-magenta
-            Convert side by side input to full-color green-magenta stereo.
-        quadbuffer
-            Convert side by side input to quad buffered stereo. Only supported
-            by very few OpenGL cards.
+        Note that this option never affects ``cscale``.
 
     ``srgb``
         Convert and color correct the output to sRGB before displaying it on
-        the screen. This option enables linear light scaling. It also forces
-        the options ``indirect`` and ``gamma``.
+        the screen. This option enables ``linear-scaling``.
 
         This option is equivalent to using ``icc-profile`` with an sRGB ICC
         profile, but it is implemented without a 3DLUT and does not require
@@ -423,7 +402,8 @@ Available video output drivers are:
         Used in ``dither=fruit`` mode only.
 
     ``dither=<fruit|ordered|no>``
-        Select dithering algorithm (default: fruit).
+        Select dithering algorithm (default: fruit). (Normally, the
+        ``dither-depth`` option controls whether dithering is enabled.)
 
     ``temporal-dither``
         Enable temporal dithering. (Only active if dithering is enabled in
@@ -441,33 +421,47 @@ Available video output drivers are:
         Interval in displayed frames between two buffer swaps.
         1 is equivalent to enable VSYNC, 0 to disable VSYNC.
 
-    ``no-scale-sep``
-        When using a separable scale filter for luma, usually two filter
-        passes are done. This is often faster. However, it forces
-        conversion to RGB in an extra pass, so it can actually be slower
-        if used with fast filters on small screen resolutions. Using
-        this options will make rendering a single operation.
-        Note that chroma scalers are always done as 1-pass filters.
-
     ``cscale=<filter>``
-        As ``lscale``, but for chroma (2x slower with little visible effect).
-        Note that with some scaling filters, upscaling is always done in
-        RGB. If chroma is not subsampled, this option is ignored, and the
-        luma scaler is used instead. Setting this option is often useless.
+        As ``scale``, but for interpolating chroma information. If the image
+        is not subsampled, this option is ignored entirely. Note that the
+        implementation is currently always done as a single pass, so using
+        it with separable filters will result in slow performance for very
+        little visible benefit.
 
-    ``lscale-down=<filter>``, ``cscale-down=<filter>``
-        Like ``lscale``, but apply these filters on downscaling
-        instead. If these options are unset, the filter implied by ``lscale``
-        (and ``cscale``, respectively) will be applied.
+    ``scale-down=<filter>``
+        Like ``scale``, but apply these filters on downscaling instead. If this
+        option is unset, the filter implied by ``scale`` will be applied.
 
-    ``cparam1``, ``cparam2``, ``cradius``
+    ``cscale-param1``, ``cscale-param2``, ``cscale-radius``, ``cscale-antiring``
         Set filter parameters and radius for ``cscale``.
 
-        See ``lparam1``, ``lparam2`` and ``lradius``.
+        See ``scale-param1``, ``scale-param2``, ``scale-radius`` and
+        ``scale-antiring``.
+
+    ``linear-scaling``
+        Scale in linear light. This is automatically enabled if ``srgb``,
+        ``icc-profile`` or ``sigmoid-upscaling`` is set. It should only
+        be used with a ``fbo-format`` that has at least 16 bit precision.
 
     ``fancy-downscaling``
         When using convolution based filters, extend the filter size
         when downscaling. Trades quality for reduced downscaling performance.
+
+        This is automatically disabled for anamorphic video, because this
+        feature doesn't work correctly with different scale factors in
+        different directions.
+
+    ``sigmoid-upscaling``
+        When upscaling, use a sigmoidal color transform to avoid emphasizing
+        ringing artifacts. This also enables ``linear-scaling``.
+
+    ``sigmoid-center``
+        The center of the sigmoid curve used for ``sigmoid-upscaling``, must
+        be a float between 0.0 and 1.0. Defaults to 0.75 if not specified.
+
+    ``sigmoid-slope``
+        The slope of the sigmoid curve used for ``sigmoid-upscaling``, must
+        be a float between 1.0 and 20.0. Defaults to 6.5 if not specified.
 
     ``no-npot``
         Force use of power-of-2 texture sizes. For debugging only.
@@ -476,14 +470,15 @@ Available video output drivers are:
     ``glfinish``
         Call ``glFinish()`` before and after swapping buffers (default: disabled).
         Slower, but might help getting better results when doing framedropping.
-        The details depend entirely on the OpenGL driver.
+        Can completely ruin performance. The details depend entirely on the
+        OpenGL driver.
 
     ``waitvsync``
         Call ``glXWaitVideoSyncSGI`` after each buffer swap (default: disabled).
         This may or may not help with video timing accuracy and frame drop. It's
         possible that this makes video output slower, or has no effect at all.
 
-        X11 only.
+        X11/GLX only.
 
     ``sw``
         Continue even if a software renderer is detected.
@@ -499,19 +494,12 @@ Available video output drivers are:
             Cocoa/OS X
         win
             Win32/WGL
-        x11
-            X11/GLX
+        x11, x11es
+            X11/GLX (the ``es`` variant forces GLES)
         wayland
             Wayland/EGL
-
-    ``indirect``
-        Do YUV conversion and scaling as separate passes. This will first render
-        the video into a video-sized RGB texture, and draw the result on screen.
-        The luma scaler is used to scale the RGB image when rendering to screen.
-        The chroma scaler is used only on YUV conversion, and only if the video
-        is chroma-subsampled (usually the case).
-        This mechanism is disabled on RGB input.
-        Specifying this option directly is generally useful for debugging only.
+        x11egl, x11egles
+            X11/EGL (the ``es`` variant forces GLES)
 
     ``fbo-format=<fmt>``
         Selects the internal format of textures used for FBOs. The format can
@@ -519,28 +507,34 @@ Available video output drivers are:
         always used, and typically only when using extended scalers.)
         ``fmt`` can be one of: rgb, rgba, rgb8, rgb10, rgb10_a2, rgb16, rgb16f,
         rgb32f, rgba12, rgba16, rgba16f, rgba32f.
-        Default: rgb.
+        Default: rgba.
 
-    ``gamma=<0.0..10.0>``
-        Set a gamma value. If gamma is adjusted in other ways (like with
-        the ``--gamma`` option or key bindings and the ``gamma`` property), the
-        value is multiplied with the other gamma value.
+    ``gamma=<0.1..2.0>``
+        Set a gamma value (default: 1.0). If gamma is adjusted in other ways
+        (like with the ``--gamma`` option or key bindings and the ``gamma``
+        property), the value is multiplied with the other gamma value.
 
-        Setting this value to 1.0 can be used to always enable gamma control.
-        (Disables delayed enabling.)
+        Recommended values based on the environmental brightness:
+
+        1.0
+            Brightly illuminated (default)
+        0.9
+            Slightly dim
+        0.8
+            Pitch black room
 
     ``icc-profile=<file>``
         Load an ICC profile and use it to transform linear RGB to screen output.
         Needs LittleCMS 2 support compiled in. This option overrides the ``srgb``
-        property, as using both is somewhat redundant. It also enables linear
-        light scaling.
+        property, as using both is somewhat redundant. It also enables
+        ``linear-scaling``.
 
 
     ``icc-profile-auto``
         Automatically select the ICC display profile currently specified by
         the display settings of the operating system.
 
-        NOTE: Only implemented on OS X with Cocoa.
+        NOTE: Only implemented on OS X and X11
 
     ``icc-cache=<file>``
         Store and load the 3D LUT created from the ICC profile in this file.
@@ -562,16 +556,6 @@ Available video output drivers are:
         3
             absolute colorimetric
 
-    ``approx-gamma``
-        Approximate the actual gamma function as a pure power curve of
-        1.95. A number of video editing programs and studios apparently use this
-        for mastering instead of the true curve. Most notably, anything in the
-        Apple ecosystem uses this approximation - including all programs
-        compatible with it. It's a sound idea to try enabling this flag first
-        when watching videos and shows to see if things look better that way.
-
-        This only affects the output when using either ``icc-profile`` or ``srgb``.
-
     ``3dlut-size=<r>x<g>x<b>``
         Size of the 3D LUT generated from the ICC profile in each dimension.
         Default is 128x256x64.
@@ -587,8 +571,8 @@ Available video output drivers are:
             if the video contains alpha information (which is extremely rare). May
             not be supported on all platforms. If alpha framebuffers are
             unavailable, it silently falls back on a normal framebuffer. Note
-            that when using FBO indirections (such as with ``opengl-hq``), an FBO
-            format with alpha must be specified with the ``fbo-format`` option.
+            that if you set the ``fbo-format`` option to a non-default value,
+            a format with alpha must be specified, or this won't work.
         no
             Ignore alpha component.
 
@@ -601,12 +585,39 @@ Available video output drivers are:
         have any advantages over normal textures. Note that hardware decoding
         overrides this flag.
 
+    ``background=<color>``
+        Color used to draw parts of the mpv window not covered by video.
+        See ``--osd-color`` option how colors are defined.
+
+    ``smoothmotion``
+        Use frame interpolation to reduce stuttering caused by mismatches in
+        video fps and display refresh rate.
+
+        Instead of drawing each frame exactly once, smoothmotion redraws the
+        the OpenGL scene at the display refresh rate. If a vsync is detected
+        to be the one when a frame changes to the next, a linear interpolation
+        of the previous frame with next is shown instead.
+
+        This means that displaying a 1fps video on a 60hz monitor will blend
+        at most during 1 vsync for each second of playback.
+
+        GPU drivers or compositing window managers overriding vsync behavior
+        can lead to bad results. If the framerate is close to or over the
+        display refresh rate, results can be bad as well.
+
+        .. note:: On systems other than Linux or OS X, you currently must set
+                  the ``--display-fps`` option, or the results will be bad.
+
+    ``smoothmotion-threshold=<0.0-0.5>``
+        Mix threshold at which interpolation is skipped (default: 0.0 – never
+        skip).
+
 ``opengl-hq``
     Same as ``opengl``, but with default settings for high quality rendering.
 
     This is equivalent to::
 
-        --vo=opengl:lscale=spline36:dither-depth=auto:fbo-format=rgba16
+        --vo=opengl:scale=spline36:scale-down=mitchell:dither-depth=auto:fbo-format=rgba16:fancy-downscaling:sigmoid-upscaling
 
     Note that some cheaper LCDs do dithering that gravely interferes with
     ``opengl``'s dithering. Disabling dithering with ``dither-depth=no`` helps.
@@ -617,188 +628,6 @@ Available video output drivers are:
     Mesa/Intel not accepting ``rgb16``, Mesa sometimes not being compiled with
     float texture support, and some OS X setups being very slow with ``rgb16``
     but fast with ``rgb32f``.
-
-``opengl-old``
-    OpenGL video output driver, old version. Video size must be smaller
-    than the maximum texture size of your OpenGL implementation. Intended to
-    work even with the most basic OpenGL implementations, but also makes use
-    of newer extensions which allow support for more color spaces.
-
-    The code performs very few checks, so if a feature does not work, this
-    might be because it is not supported by your card and/or OpenGL
-    implementation, even if you do not get any error message. Use ``glxinfo``
-    or a similar tool to display the supported OpenGL extensions.
-
-    .. note:: This driver is for compatibility with old systems.
-
-    ``(no-)ati-hack``
-        ATI drivers may give a corrupted image when PBOs are used (when using
-        ``force-pbo``). This option fixes this, at the expense of using a bit
-        more memory.
-    ``(no-)force-pbo``
-        Always uses PBOs to transfer textures even if this involves an extra
-        copy. Currently this gives a little extra speed with NVIDIA drivers
-        and a lot more speed with ATI drivers. May need the ``ati-hack``
-        suboption to work correctly.
-    ``(no-)scaled-osd``
-        Scales the OSD and subtitles instead of rendering them at display size
-        (default: disabled).
-    ``rectangle=<0,1,2>``
-        Select usage of rectangular textures, which saves video RAM, but often
-        is slower (default: 0).
-
-        0
-            Use power-of-two textures (default).
-        1
-            Use the ``GL_ARB_texture_rectangle`` extension.
-        2
-            Use the ``GL_ARB_texture_non_power_of_two`` extension. In some
-            cases only supported in software and thus very slow.
-
-    ``swapinterval=<n>``
-        Minimum interval between two buffer swaps, counted in displayed frames
-        (default: 1). 1 is equivalent to enabling VSYNC, 0 to disabling VSYNC.
-        Values below 0 will leave it at the system default. This limits the
-        framerate to (horizontal refresh rate / n). Requires
-        ``GLX_SGI_swap_control`` support to work. With some (most/all?)
-        implementations this only works in fullscreen mode.
-    ``ycbcr``
-        Use the ``GL_MESA_ycbcr_texture`` extension to convert YUV to RGB. In
-        most cases this is probably slower than doing software conversion to
-        RGB.
-    ``yuv=<n>``
-        Select the type of YUV to RGB conversion. The default is
-        auto-detection deciding between values 0 and 2.
-
-        0
-            Use software conversion. Compatible with all OpenGL versions.
-            Provides brightness, contrast and saturation control.
-        1
-            Same as 2. This used to use NVIDIA-specific extensions, which
-            did not provide any advantages over using fragment programs, except
-            possibly on very ancient graphics cards. It produced a gray-ish
-            output, which is why it has been removed.
-        2
-            Use a fragment program. Needs the ``GL_ARB_fragment_program``
-            extension and at least three texture units. Provides brightness,
-            contrast, saturation and hue control.
-        3
-            Use a fragment program using the ``POW`` instruction. Needs the
-            ``GL_ARB_fragment_program`` extension and at least three texture
-            units. Provides brightness, contrast, saturation, hue and gamma
-            control. Gamma can also be set independently for red, green and
-            blue. Method 4 is usually faster.
-        4
-            Use a fragment program with additional lookup. Needs the
-            ``GL_ARB_fragment_program`` extension and at least four texture
-            units. Provides brightness, contrast, saturation, hue and gamma
-            control. Gamma can also be set independently for red, green and
-            blue.
-        5
-            Use ATI-specific method (for older cards). This uses an
-            ATI-specific extension (``GL_ATI_fragment_shader`` - not
-            ``GL_ARB_fragment_shader``!). At least three texture units are
-            needed. Provides saturation and hue control. This method is fast
-            but inexact.
-        6
-            Use a 3D texture to do conversion via lookup. Needs the
-            ``GL_ARB_fragment_program extension`` and at least four texture
-            units. Extremely slow (software emulation) on some (all?) ATI
-            cards since it uses a texture with border pixels. Provides
-            brightness, contrast, saturation, hue and gamma control. Gamma can
-            also be set independently for red, green and blue. Speed depends
-            more on GPU memory bandwidth than other methods.
-
-    ``lscale=<n>``
-        Select the scaling function to use for luminance scaling. Only valid
-        for yuv modes 2, 3, 4 and 6.
-
-        0
-            Use simple linear filtering (default).
-        1
-            Use bicubic B-spline filtering (better quality). Needs one
-            additional texture unit. Older cards will not be able to handle
-            this for chroma at least in fullscreen mode.
-        2
-            Use cubic filtering in horizontal, linear filtering in vertical
-            direction. Works on a few more cards than method 1.
-        3
-            Same as 1 but does not use a lookup texture. Might be faster on
-            some cards.
-        4
-            Use experimental unsharp masking with 3x3 support and a default
-            strength of 0.5 (see ``filter-strength``).
-        5
-            Use experimental unsharp masking with 5x5 support and a default
-            strength of 0.5 (see ``filter-strength``).
-
-    ``cscale=<n>``
-        Select the scaling function to use for chrominance scaling. For
-        details see ``lscale``.
-    ``filter-strength=<value>``
-        Set the effect strength for the ``lscale``/``cscale`` filters that
-        support it.
-    ``stereo=<value>``
-        Select a method for stereo display. You may have to use
-        ``--video-aspect`` to fix the aspect value. Experimental, do not expect
-        too much from it.
-
-        0
-            Normal 2D display
-        1
-            Convert side by side input to full-color red-cyan stereo.
-        2
-            Convert side by side input to full-color green-magenta stereo.
-        3
-            Convert side by side input to quad buffered stereo. Only supported
-            by very few OpenGL cards.
-
-    The following options are only useful if writing your own fragment programs.
-
-    ``customprog=<filename>``
-        Load a custom fragment program from ``<filename>``.
-    ``customtex=<filename>``
-        Load a custom "gamma ramp" texture from ``<filename>``. This can be used
-        in combination with ``yuv=4`` or with the ``customprog`` option.
-    ``(no-)customtlin``
-        If enabled (default) use ``GL_LINEAR`` interpolation, otherwise use
-        ``GL_NEAREST`` for customtex texture.
-    ``(no-)customtrect``
-        If enabled, use ``texture_rectangle`` for the ``customtex`` texture.
-        Default is disabled.
-    ``(no-)mipmapgen``
-        If enabled, mipmaps for the video are automatically generated. This
-        should be useful together with the ``customprog`` and the ``TXB``
-        instruction to implement blur filters with a large radius. For most
-        OpenGL implementations, this is very slow for any non-RGB formats.
-        Default is disabled.
-
-    Normally there is no reason to use the following options; they mostly
-    exist for testing purposes.
-
-    ``(no-)glfinish``
-        Call ``glFinish()`` before swapping buffers. Slower but in some cases
-        more correct output (default: disabled).
-    ``(no-)manyfmts``
-        Enables support for more (RGB and BGR) color formats (default: enabled).
-        Needs OpenGL version >= 1.2.
-    ``slice-height=<0-...>``
-        Number of lines copied to texture in one piece (default: 0). 0 for
-        whole image.
-    ``sw``
-        Continue even if a software renderer is detected.
-
-    ``backend=<sys>``
-        auto
-            auto-select (default)
-        cocoa
-            Cocoa/OS X
-        win
-            Win32/WGL
-        x11
-            X11/GLX
-        wayland
-            Wayland/EGL
 
 ``sdl``
     SDL 2.0+ Render video output driver, depending on system with or without
@@ -924,3 +753,30 @@ Available video output drivers are:
         Use 3 buffers instead of 2. This can lead to more fluid playback, but
         uses more memory.
 
+``opengl-cb``
+    For use with libmpv direct OpenGL embedding; useless in any other contexts.
+    (See ``<mpv/opengl_cb.h>``.)
+    Usually, ``opengl-cb`` renders frames asynchronously by client and this
+    can cause some frame drops. In order to provide a way to handle this
+    situation, ``opengl-cb`` has its own frame queue and calls update callback
+    more frequently if the queue is not empty regardless of existence of new frame.
+    Once the queue is filled, ``opengl-cb`` drops frames automatically.
+
+    With default options, ``opengl-cb`` renders only the latest frame and drops
+    all frames handed over while waiting render function after update callback.
+
+    ``frame-queue-size=<1..100>``
+        The maximum count of frames which the frame queue can hold (default: 1)
+
+    ``frame-drop-mode=<pop|clear>``
+        Select the behavior when the frame queue is full.
+
+        pop
+            Drop the oldest frame in the frame queue. (default)
+        clear
+            Drop all frames in the frame queue.
+
+    This also supports many of the suboptions the ``opengl`` VO has. Runs
+    ``mpv --vo=opengl-cb:help`` for a list.
+
+    This also supports the ``vo_cmdline`` command.

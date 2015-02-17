@@ -91,11 +91,8 @@ typedef struct mp_image {
     uint8_t *planes[MP_MAX_PLANES];
     int stride[MP_MAX_PLANES];
 
-    char * qscale;
-    int qstride;
     int pict_type; // 0->unknown, 1->I, 2->P, 3->B
     int fields;
-    int qscale_type; // 0->mpeg1/4/h263, 1->mpeg2
 
     /* redundant */
     int chroma_width;
@@ -110,6 +107,8 @@ typedef struct mp_image {
     /* for private use */
     void* priv;
 } mp_image_t;
+
+int mp_chroma_div_up(int size, int shift);
 
 struct mp_image *mp_image_alloc(int fmt, int w, int h);
 void mp_image_copy(struct mp_image *dmpi, struct mp_image *mpi);

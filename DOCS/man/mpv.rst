@@ -164,6 +164,9 @@ Shift+PGUP and Shift+PGDWN
 D
     Activate/deactivate deinterlacer.
 
+A
+    Cycle aspect ratio override.
+
 (The following keys are valid only when using a video output that supports the
 corresponding adjustment, or the software equalizer (``--vf=eq``).)
 
@@ -254,9 +257,9 @@ Additionally, there is a special form of quoting with ``%n%`` described below.
 
 For example, the ``opengl`` VO can take multiple options:
 
-    ``mpv test.mkv --vo=opengl:lscale=lanczos2:icc-profile=file.icc,xv``
+    ``mpv test.mkv --vo=opengl:scale=lanczos:icc-profile=file.icc,xv``
 
-This passed ``lscale=lanczos2`` and ``icc-profile=file.icc`` to ``opengl``,
+This passes ``scale=lanczos`` and ``icc-profile=file.icc`` to ``opengl``,
 and also specifies ``xv`` as fallback VO. If the icc-profile path contains
 spaces or characters like ``,`` or ``:``, you need to quote them:
 
@@ -438,12 +441,11 @@ profile name ``default`` to continue with normal options.
     ::
 
         [vo.vdpau]
-        # Use hardware decoding (might break playback of some h264 files)
+        # Use hardware decoding
         hwdec=vdpau
 
         [protocol.dvd]
         profile-desc="profile for dvd:// streams"
-        vf=pp=hb/vb/dr/al/fd
         alang=en
 
         [extension.flv]
@@ -764,9 +766,9 @@ FILES
 ``~/.config/mpv/input.conf``
     key bindings (see `INPUT.CONF`_ section)
 
-``~/.config/mpv/lua/``
-    All files in this directly are loaded as if they were passed to the
-    ``--lua`` option. They are loaded in alphabetical order, and sub-directories
+``~/.config/mpv/scripts/``
+    All files in this directory are loaded as if they were passed to the
+    ``--script`` option. They are loaded in alphabetical order, and sub-directories
     and files with no ``.lua`` extension are ignored. The ``--load-scripts=no``
     option disables loading these files.
 

@@ -27,6 +27,10 @@
 // inserted at the beginning of all shaders
 #!section prelude
 
+#ifdef GL_ES
+precision mediump float;
+#endif
+
 // GLSL 1.20 compatibility layer
 // texture() should be assumed to always map to texture2D()
 #if __VERSION__ >= 130
@@ -42,10 +46,8 @@
 #endif
 
 #if HAVE_RG
-#define R r
 #define RG rg
 #else
-#define R a
 #define RG ra
 #endif
 
@@ -53,25 +55,25 @@
 #if __VERSION__ >= 130
 vec3 srgb_expand(vec3 v)
 {
-    return mix(v / 12.92, pow((v + vec3(0.055))/1.055, vec3(2.4)),
+    return mix(v / vec3(12.92), pow((v + vec3(0.055))/vec3(1.055), vec3(2.4)),
                lessThanEqual(vec3(0.04045), v));
 }
 
 vec3 srgb_compand(vec3 v)
 {
-    return mix(v * 12.92, 1.055 * pow(v, vec3(1.0/2.4)) - 0.055,
+    return mix(v * vec3(12.92), vec3(1.055) * pow(v, vec3(1.0/2.4)) - vec3(0.055),
                lessThanEqual(vec3(0.0031308), v));
 }
 
 vec3 bt2020_expand(vec3 v)
 {
-    return mix(v / 4.5, pow((v + vec3(0.0993))/1.0993, vec3(1/0.45)),
+    return mix(v / vec3(4.5), pow((v + vec3(0.0993))/vec3(1.0993), vec3(1.0/0.45)),
                lessThanEqual(vec3(0.08145), v));
 }
 
 vec3 bt2020_compand(vec3 v)
 {
-    return mix(v * 4.5, 1.0993 * pow(v, vec3(0.45)) - vec3(0.0993),
+    return mix(v * vec3(4.5), vec3(1.0993) * pow(v, vec3(0.45)) - vec3(0.0993),
                lessThanEqual(vec3(0.0181), v));
 }
 #endif
@@ -86,7 +88,9 @@ vec3 bt2020_compand(vec3 v)
 
 uniform mat3 transform;
 uniform vec3 translation;
+#if HAVE_3DTEX
 uniform sampler3D lut_3d;
+#endif
 uniform mat3 cms_matrix; // transformation from file's gamut to bt.2020
 
 in vec2 vertex_position;
@@ -106,11 +110,8 @@ void main() {
     // Although we are not scaling in linear light, both 3DLUT and SRGB still
     // operate on linear light inputs so we have to convert to it before
     // either step can be applied.
-#ifdef USE_OSD_LINEAR_CONV_APPROX
-    color.rgb = pow(color.rgb, vec3(1.95));
-#endif
-#ifdef USE_OSD_LINEAR_CONV_BT2020
-    color.rgb = bt2020_expand(color.rgb);
+#ifdef USE_OSD_LINEAR_CONV_BT1886
+    color.rgb = pow(color.rgb, vec3(1.961));
 #endif
 #ifdef USE_OSD_LINEAR_CONV_SRGB
     color.rgb = srgb_expand(color.rgb);
@@ -120,10 +121,10 @@ void main() {
     // and to BT.2020 for 3DLUT). Normal clamping here as perceptually
     // accurate colorimetry is probably not worth the performance trade-off
     // here.
-    color.rgb = clamp(cms_matrix * color.rgb, 0, 1);
+    color.rgb = clamp(cms_matrix * color.rgb, 0.0, 1.0);
 #endif
 #ifdef USE_OSD_3DLUT
-    color.rgb = pow(color.rgb, vec3(1/2.4)); // linear -> 2.4 3DLUT space
+    color.rgb = pow(color.rgb, vec3(1.0/2.4)); // linear -> 2.4 3DLUT space
     color = vec4(texture3D(lut_3d, color.rgb).rgb, color.a);
 #endif
 #ifdef USE_OSD_SRGB
@@ -141,7 +142,7 @@ in vec4 color;
 DECLARE_FRAGPARMS
 
 void main() {
-    out_color = vec4(color.rgb, color.a * texture(texture0, texcoord).R);
+    out_color = vec4(color.rgb, color.a * texture(texture0, texcoord).r);
 }
 
 #!section frag_osd_rgba
@@ -151,7 +152,7 @@ in vec2 texcoord;
 DECLARE_FRAGPARMS
 
 void main() {
-    out_color = texture(texture0, texcoord);
+    out_color = texture(texture0, texcoord).bgra;
 }
 
 #!section frag_video
@@ -162,21 +163,35 @@ uniform VIDEO_SAMPLER texture3;
 uniform vec2 textures_size[4];
 uniform vec2 chroma_center_offset;
 uniform vec2 chroma_div;
-uniform sampler2D lut_c;
-uniform sampler2D lut_l;
+uniform vec2 chroma_fix;
+uniform sampler2D lut_2d_c;
+uniform sampler2D lut_2d_l;
+#if HAVE_1DTEX
+uniform sampler1D lut_1d_c;
+uniform sampler1D lut_1d_l;
+#endif
+#if HAVE_3DTEX
 uniform sampler3D lut_3d;
+#endif
 uniform sampler2D dither;
-uniform mat4x3 colormatrix;
+uniform mat3 colormatrix;
+uniform vec3 colormatrix_c;
 uniform mat3 cms_matrix;
 uniform mat2 dither_trafo;
-uniform vec3 inv_gamma;
+uniform float inv_gamma;
 uniform float input_gamma;
 uniform float conv_gamma;
+uniform float sig_center;
+uniform float sig_slope;
+uniform float sig_scale;
+uniform float sig_offset;
 uniform float dither_quantization;
 uniform float dither_center;
 uniform float filter_param1_l;
 uniform float filter_param1_c;
+uniform float antiring_factor;
 uniform vec2 dither_size;
+uniform float inter_coeff;
 
 in vec2 texcoord;
 DECLARE_FRAGPARMS
@@ -188,7 +203,7 @@ vec4 sample_bilinear(VIDEO_SAMPLER tex, vec2 texsize, vec2 texcoord, float param
     return texture(tex, texcoord);
 }
 
-#define SAMPLE_BILINEAR(p0, p1, p2) sample_bilinear(p0, p1, p2, 0)
+#define SAMPLE_TRIVIAL(tex, texsize, texcoord) texture(tex, texcoord)
 
 // Explanation how bicubic scaling with only 4 texel fetches is done:
 //   http://www.mate.tue.nl/mate/pdfs/10318.pdf
@@ -208,7 +223,7 @@ vec4 calcweights(float s) {
 }
 
 vec4 sample_bicubic_fast(VIDEO_SAMPLER tex, vec2 texsize, vec2 texcoord, float param1) {
-    vec2 pt = 1 / texsize;
+    vec2 pt = 1.0 / texsize;
     vec2 fcoord = fract(texcoord * texsize + vec2(0.5, 0.5));
     vec4 parmx = calcweights(fcoord.x);
     vec4 parmy = calcweights(fcoord.y);
@@ -227,22 +242,19 @@ vec4 sample_bicubic_fast(VIDEO_SAMPLER tex, vec2 texsize, vec2 texcoord, float p
     return mix(aa, ab, parmx.b);
 }
 
+#if HAVE_ARRAYS
 float[2] weights2(sampler2D lookup, float f) {
     vec2 c = texture(lookup, vec2(0.5, f)).RG;
     return float[2](c.r, c.g);
 }
-
-float[4] weights4(sampler2D lookup, float f) {
-    vec4 c = texture(lookup, vec2(0.5, f));
-    return float[4](c.r, c.g, c.b, c.a);
-}
-
 float[6] weights6(sampler2D lookup, float f) {
     vec4 c1 = texture(lookup, vec2(0.25, f));
     vec4 c2 = texture(lookup, vec2(0.75, f));
     return float[6](c1.r, c1.g, c1.b, c2.r, c2.g, c2.b);
 }
+#endif
 
+// For N=n*4 with n>1.
 #define WEIGHTS_N(NAME, N)                          \
     float[N] NAME(sampler2D lookup, float f) {      \
         float r[N];                                 \
@@ -257,66 +269,75 @@ float[6] weights6(sampler2D lookup, float f) {
         return r;                                   \
     }
 
-WEIGHTS_N(weights8, 8)
-WEIGHTS_N(weights12, 12)
-WEIGHTS_N(weights16, 16)
-WEIGHTS_N(weights32, 32)
-WEIGHTS_N(weights64, 64)
-
-// The dir parameter is (0, 1) or (1, 0), and we expect the shader compiler to
+// The DIR parameter is (0, 1) or (1, 0), and we expect the shader compiler to
 // remove all the redundant multiplications and additions.
-#define SAMPLE_CONVOLUTION_SEP_N(NAME, N, WEIGHTS_FUNC)                     \
-    vec4 NAME(vec2 dir, sampler2D lookup, VIDEO_SAMPLER tex, vec2 texsize,  \
-              vec2 texcoord) {                                              \
-        vec2 pt = (1 / texsize) * dir;                                      \
-        float fcoord = dot(fract(texcoord * texsize - 0.5), dir);           \
-        vec2 base = texcoord - fcoord * pt - pt * (N / 2 - 1);              \
-        float weights[N] = WEIGHTS_FUNC(lookup, fcoord);                    \
+#define SAMPLE_CONVOLUTION_SEP_N(NAME, DIR, N, LUT, WEIGHTS_FUNC)           \
+    vec4 NAME(VIDEO_SAMPLER tex, vec2 texsize, vec2 texcoord) {             \
+        vec2 pt = (vec2(1.0) / texsize) * DIR;                              \
+        float fcoord = dot(fract(texcoord * texsize - vec2(0.5)), DIR);     \
+        vec2 base = texcoord - fcoord * pt - pt * vec2(N / 2 - 1);          \
+        float weights[N] = WEIGHTS_FUNC(LUT, fcoord);                       \
         vec4 res = vec4(0);                                                 \
         for (int n = 0; n < N; n++) {                                       \
-            res += weights[n] * texture(tex, base + pt * n);                \
+            res += vec4(weights[n]) * texture(tex, base + pt * vec2(n));    \
         }                                                                   \
         return res;                                                         \
     }
 
-SAMPLE_CONVOLUTION_SEP_N(sample_convolution_sep2, 2, weights2)
-SAMPLE_CONVOLUTION_SEP_N(sample_convolution_sep4, 4, weights4)
-SAMPLE_CONVOLUTION_SEP_N(sample_convolution_sep6, 6, weights6)
-SAMPLE_CONVOLUTION_SEP_N(sample_convolution_sep8, 8, weights8)
-SAMPLE_CONVOLUTION_SEP_N(sample_convolution_sep12, 12, weights12)
-SAMPLE_CONVOLUTION_SEP_N(sample_convolution_sep16, 16, weights16)
-SAMPLE_CONVOLUTION_SEP_N(sample_convolution_sep32, 32, weights32)
-SAMPLE_CONVOLUTION_SEP_N(sample_convolution_sep64, 64, weights64)
-
-#define SAMPLE_CONVOLUTION_N(NAME, N, WEIGHTS_FUNC)                         \
-    vec4 NAME(sampler2D lookup, VIDEO_SAMPLER tex, vec2 texsize, vec2 texcoord) {\
-        vec2 pt = 1 / texsize;                                              \
-        vec2 fcoord = fract(texcoord * texsize - 0.5);                      \
-        vec2 base = texcoord - fcoord * pt - pt * (N / 2 - 1);              \
+#define SAMPLE_CONVOLUTION_N(NAME, N, LUT, WEIGHTS_FUNC)                    \
+    vec4 NAME(VIDEO_SAMPLER tex, vec2 texsize, vec2 texcoord) {             \
+        vec2 pt = vec2(1.0) / texsize;                                      \
+        vec2 fcoord = fract(texcoord * texsize - vec2(0.5));                \
+        vec2 base = texcoord - fcoord * pt - pt * vec2(N / 2 - 1);          \
         vec4 res = vec4(0);                                                 \
-        float w_x[N] = WEIGHTS_FUNC(lookup, fcoord.x);                      \
-        float w_y[N] = WEIGHTS_FUNC(lookup, fcoord.y);                      \
+        float w_x[N] = WEIGHTS_FUNC(LUT, fcoord.x);                         \
+        float w_y[N] = WEIGHTS_FUNC(LUT, fcoord.y);                         \
         for (int y = 0; y < N; y++) {                                       \
             vec4 line = vec4(0);                                            \
             for (int x = 0; x < N; x++)                                     \
-                line += w_x[x] * texture(tex, base + pt * vec2(x, y));      \
-            res += w_y[y] * line;                                           \
+                line += vec4(w_x[x]) * texture(tex, base + pt * vec2(x, y));\
+            res += vec4(w_y[y]) * line;                                     \
         }                                                                   \
         return res;                                                         \
     }
 
-SAMPLE_CONVOLUTION_N(sample_convolution2, 2, weights2)
-SAMPLE_CONVOLUTION_N(sample_convolution4, 4, weights4)
-SAMPLE_CONVOLUTION_N(sample_convolution6, 6, weights6)
-SAMPLE_CONVOLUTION_N(sample_convolution8, 8, weights8)
-SAMPLE_CONVOLUTION_N(sample_convolution12, 12, weights12)
-SAMPLE_CONVOLUTION_N(sample_convolution16, 16, weights16)
-SAMPLE_CONVOLUTION_N(sample_convolution32, 32, weights32)
-SAMPLE_CONVOLUTION_N(sample_convolution64, 64, weights64)
+#define SAMPLE_POLAR_HELPER(LUT, R, X, Y)                                   \
+        w = texture1D(LUT, length(vec2(X, Y) - fcoord)/R).r;                \
+        c = texture(tex, base + pt * vec2(X, Y));                           \
+        wsum += w;                                                          \
+        res  += vec4(w) * c;                                                \
+
+#define SAMPLE_POLAR_PRIMARY(LUT, R, X, Y)                                  \
+        SAMPLE_POLAR_HELPER(LUT, R, X, Y)                                   \
+        lo = min(lo, c);                                                    \
+        hi = max(hi, c);                                                    \
+
+#define SAMPLE_CONVOLUTION_POLAR_R(NAME, R, LUT, WEIGHTS_FN, ANTIRING)      \
+    vec4 NAME(VIDEO_SAMPLER tex, vec2 texsize, vec2 texcoord) {             \
+        vec2 pt = vec2(1.0) / texsize;                                      \
+        vec2 fcoord = fract(texcoord * texsize - vec2(0.5));                \
+        vec2 base = texcoord - fcoord * pt;                                 \
+        vec4 res = vec4(0.0);                                               \
+        vec4 lo = vec4(1.0);                                                \
+        vec4 hi = vec4(0.0);                                                \
+        float wsum = 0.0;                                                   \
+        float w;                                                            \
+        vec4 c;                                                             \
+        WEIGHTS_FN(LUT);                                                    \
+        res = res / vec4(wsum);                                             \
+        return mix(res, clamp(res, lo, hi), ANTIRING);                      \
+    }
+
+#ifdef DEF_SCALER0
+DEF_SCALER0
+#endif
+#ifdef DEF_SCALER1
+DEF_SCALER1
+#endif
 
 // Unsharp masking
 vec4 sample_sharpen3(VIDEO_SAMPLER tex, vec2 texsize, vec2 texcoord, float param1) {
-    vec2 pt = 1 / texsize;
+    vec2 pt = 1.0 / texsize;
     vec2 st = pt * 0.5;
     vec4 p = texture(tex, texcoord);
     vec4 sum = texture(tex, texcoord + st * vec2(+1, +1))
@@ -327,7 +348,7 @@ vec4 sample_sharpen3(VIDEO_SAMPLER tex, vec2 texsize, vec2 texcoord, float param
 }
 
 vec4 sample_sharpen5(VIDEO_SAMPLER tex, vec2 texsize, vec2 texcoord, float param1) {
-    vec2 pt = 1 / texsize;
+    vec2 pt = 1.0 / texsize;
     vec2 st1 = pt * 1.2;
     vec4 p = texture(tex, texcoord);
     vec4 sum1 = texture(tex, texcoord + st1 * vec2(+1, +1))
@@ -345,6 +366,9 @@ vec4 sample_sharpen5(VIDEO_SAMPLER tex, vec2 texsize, vec2 texcoord, float param
 
 void main() {
     vec2 chr_texcoord = texcoord;
+#ifdef USE_CHROMA_FIX
+    chr_texcoord = chr_texcoord * chroma_fix;
+#endif
 #ifdef USE_RECTANGLE
     chr_texcoord = chr_texcoord * chroma_div;
 #else
@@ -355,38 +379,44 @@ void main() {
 #ifndef USE_CONV
 #define USE_CONV 0
 #endif
-#if USE_CONV == CONV_PLANAR
-    vec4 acolor = vec4(SAMPLE_L(texture0, textures_size[0], texcoord).R,
-                       SAMPLE_C(texture1, textures_size[1], chr_texcoord).R,
-                       SAMPLE_C(texture2, textures_size[2], chr_texcoord).R,
+#ifndef USE_LINEAR_INTERPOLATION
+#define USE_LINEAR_INTERPOLATION 0
+#endif
+#if USE_LINEAR_INTERPOLATION == 1
+    vec4 acolor = mix(
+        texture(texture0, texcoord),
+        texture(texture1, texcoord),
+        inter_coeff);
+    // debug code to visually check the interpolation amount
+    // vec4 acolor = texture(texture0, texcoord) -
+    //               inter_coeff * texture(texture1, texcoord);
+#elif USE_CONV == CONV_PLANAR
+    vec4 acolor = vec4(SAMPLE(texture0, textures_size[0], texcoord).r,
+                       SAMPLE_C(texture1, textures_size[1], chr_texcoord).r,
+                       SAMPLE_C(texture2, textures_size[2], chr_texcoord).r,
                        1.0);
 #elif USE_CONV == CONV_NV12
-    vec4 acolor = vec4(SAMPLE_L(texture0, textures_size[0], texcoord).R,
+    vec4 acolor = vec4(SAMPLE(texture0, textures_size[0], texcoord).r,
                        SAMPLE_C(texture1, textures_size[1], chr_texcoord).RG,
                        1.0);
 #else
-    vec4 acolor = SAMPLE_L(texture0, textures_size[0], texcoord);
+    vec4 acolor = SAMPLE(texture0, textures_size[0], texcoord);
 #endif
 #ifdef USE_COLOR_SWIZZLE
     acolor = acolor. USE_COLOR_SWIZZLE ;
 #endif
 #ifdef USE_ALPHA_PLANE
-    acolor.a = SAMPLE_L(texture3, textures_size[3], texcoord).R;
+    acolor.a = SAMPLE(texture3, textures_size[3], texcoord).r;
 #endif
     vec3 color = acolor.rgb;
     float alpha = acolor.a;
-#ifdef USE_YGRAY
-    // NOTE: actually slightly wrong for 16 bit input video, and completely
-    //       wrong for 9/10 bit input
-    color.gb = vec2(128.0/255.0);
-#endif
 #ifdef USE_INPUT_GAMMA
     // Pre-colormatrix input gamma correction (eg. for MP_IMGFLAG_XYZ)
     color = pow(color, vec3(input_gamma));
 #endif
 #ifdef USE_COLORMATRIX
     // Conversion from Y'CbCr or other spaces to RGB
-    color = mat3(colormatrix) * color + colormatrix[3];
+    color = mat3(colormatrix) * color + colormatrix_c;
 #endif
 #ifdef USE_CONV_GAMMA
     // Post-colormatrix converted gamma correction (eg. for MP_IMGFLAG_XYZ)
@@ -405,27 +435,37 @@ void main() {
     // contributions from the three different channels.
     color.br = color.br * mix(vec2(1.5816, 0.9936), vec2(1.9404, 1.7184),
                               lessThanEqual(color.br, vec2(0))) + color.gg;
+
+    // Expand channels to camera-linear light. This shader currently just
+    // assumes everything uses the BT.2020 12-bit gamma function, since the
+    // difference between 10 and 12-bit is negligible for anything other than
+    // 12-bit content.
+    color = bt2020_expand(color);
+    // Calculate the green channel from the expanded RYcB
+    // The BT.2020 specification says Yc = 0.2627*R + 0.6780*G + 0.0593*B
+    color.g = (color.g - 0.2627*color.r - 0.0593*color.b)/0.6780;
+    // Re-compand to receive the R'G'B' result, same as other systems
+    color = bt2020_compand(color);
 #endif
 #ifdef USE_COLORMATRIX
     // CONST_LUMA involves numbers outside the [0,1] range so we make sure
     // to clip here, after the (possible) USE_CONST_LUMA calculations are done,
     // instead of immediately after the colormatrix conversion.
-    color = clamp(color, 0, 1);
+    color = clamp(color, 0.0, 1.0);
 #endif
     // If we are scaling in linear light (SRGB or 3DLUT option enabled), we
-    // expand our source colors before scaling. This shader currently just
-    // assumes everything uses the BT.2020 12-bit gamma function, since the
-    // difference between this and BT.601, BT.709 and BT.2020 10-bit is well
-    // below the rounding error threshold for both 8-bit and even 10-bit
-    // content. It only makes a difference for 12-bit sources, so it should be
-    // fine to use here.
-#ifdef USE_LINEAR_LIGHT_APPROX
-    // We differentiate between approximate BT.2020 (gamma 1.95) ...
-    color = pow(color, vec3(1.95));
-#endif
-#ifdef USE_LINEAR_LIGHT_BT2020
-    // ... and actual BT.2020 (two-part function)
-    color = bt2020_expand(color);
+    // expand our source colors before scaling. We distinguish between
+    // BT.1886 (typical video files) and sRGB (typical image files).
+#ifdef USE_LINEAR_LIGHT_BT1886
+    // This calculation is derived from the BT.1886 recommendation which
+    // is itself derived from the curves of typical CRT monitors. It claims
+    // that a correct video playback environment should have a pure power
+    // curve transfer function (in contrast to the complex BT.709 function)
+    // with a gamma value of 2.40, but this includes the typical gamma boost
+    // of ~1.2 for dark viewing environments. The figure used here instead
+    // (1.961) is therefore a pure power curve but without the boost, which
+    // is a very close approximation of the true BT.709 function.
+    color = pow(color, vec3(1.961));
 #endif
 #ifdef USE_LINEAR_LIGHT_SRGB
     // This is not needed for most sRGB content since we can use GL_SRGB to
@@ -434,55 +474,49 @@ void main() {
     // to convert to linear light manually.
     color = srgb_expand(color);
 #endif
-#ifdef USE_CONST_LUMA
-    // Calculate the green channel from the expanded RYcB
-    // The BT.2020 specification says Yc = 0.2627*R + 0.6780*G + 0.0593*B
-    color.g = (color.g - 0.2627*color.r - 0.0593*color.b)/0.6780;
+#ifdef USE_SIGMOID
+    color = sig_center - log(1.0/(color * sig_scale + sig_offset) - 1.0)/sig_slope;
 #endif
     // Image upscaling happens roughly here
-#ifdef USE_GAMMA_POW
-    // User-defined gamma correction factor (via the gamma sub-option)
-    color = pow(color, inv_gamma);
+#ifdef USE_SIGMOID_INV
+    // Inverse of USE_SIGMOID
+    color = (1.0/(1.0 + exp(sig_slope * (sig_center - color))) - sig_offset) / sig_scale;
 #endif
 #ifdef USE_CMS_MATRIX
     // Convert to the right target gamut first (to BT.709 for sRGB,
     // and to BT.2020 for 3DLUT).
     color = cms_matrix * color;
-
+#endif
     // Clamp to the target gamut. This clamp is needed because the gamma
     // functions are not well-defined outside this range, which is related to
     // the fact that they're not representable on the target device.
     // TODO: Desaturate colorimetrically; this happens automatically for
     // 3dlut targets but not for sRGB mode. Not sure if this is a requirement.
-    color = clamp(color, 0, 1);
+    color = clamp(color, 0.0, 1.0);
+#ifdef USE_INV_GAMMA
+    // User-defined gamma correction factor (via the gamma sub-option)
+    color = pow(color, vec3(inv_gamma));
 #endif
 #ifdef USE_3DLUT
     // For the 3DLUT we are arbitrarily using 2.4 as input gamma to reduce
     // the amount of rounding errors, so we pull up to that space first and
     // then pass it through the 3D texture.
-    color = pow(color, vec3(1/2.4));
+    color = pow(color, vec3(1.0/2.4));
     color = texture3D(lut_3d, color).rgb;
 #endif
 #ifdef USE_SRGB
     // Adapt and compand from the linear BT2020 source to the sRGB output
     color = srgb_compand(color);
 #endif
-    // If none of these options took care of companding again, we have to do
-    // it manually here for the previously-expanded channels. This again
-    // comes in two flavours, one for the approximate gamma system and one
-    // for the actual gamma system.
-#ifdef USE_CONST_LUMA_INV_APPROX
-    color = pow(color, vec3(1/1.95));
-#endif
-#ifdef USE_CONST_LUMA_INV_BT2020
-    color = bt2020_compand(color);
+#ifdef USE_INV_BT1886
+    color = pow(color, vec3(1.0/1.961));
 #endif
 #ifdef USE_DITHER
     vec2 dither_pos = gl_FragCoord.xy / dither_size;
 #ifdef USE_TEMPORAL_DITHER
     dither_pos = dither_trafo * dither_pos;
 #endif
-    float dither_value = texture(dither, dither_pos).R;
+    float dither_value = texture(dither, dither_pos).r;
     color = floor(color * dither_quantization + dither_value + dither_center) /
                 dither_quantization;
 #endif

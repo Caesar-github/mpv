@@ -127,7 +127,7 @@ Key Bindings
 
 These key bindings are active by default if nothing else is already bound to
 these keys. In case of collision, the function needs to be bound to a
-different key. See `Script Commands`_ section.
+different key. See the `Script Commands`_ section.
 
 =============   ================================================
 del             Hide the OSC permanently until mpv is restarted.
@@ -138,7 +138,7 @@ Configuration
 
 The OSC offers limited configuration through a config file
 ``lua-settings/osc.conf`` placed in mpv's user dir and through the
-``--lua-opts`` command-line option. Options provided through the command-line
+``--script-opts`` command-line option. Options provided through the command-line
 will override those from the config file.
 
 Config Syntax
@@ -161,7 +161,7 @@ To avoid collisions with other scripts, all options need to be prefixed with
 
 Example::
 
-    --lua-opts=osc-optionA=value1,osc-optionB=value2
+    --script-opts=osc-optionA=value1,osc-optionB=value2
 
 
 Configurable Options
@@ -225,9 +225,10 @@ Configurable Options
     | Minimum amount of pixels the mouse has to move between ticks to make
       the OSC show up
 
-``seektooltip``
-    | Default: yes
-    | Display a tooltip over the seekbar indicating time at mouse position.
+``layout``
+    | Default: box
+    | The layout for the OSC. Currently available are: box, slimbox,
+      bottombar and topbar.
 
 ``seekbarstyle``
     | Default: slider
@@ -244,6 +245,10 @@ in ``input.conf``, or sent by other scripts.
 
 ``disable-osc``
     Hide the OSC permanently. This is also what the ``del`` key does.
+
+``osc-message``
+    Show a message on screen using the OSC. First argument is the message,
+    second the duration in seconds.
 
 
 Example

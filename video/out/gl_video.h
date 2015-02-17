@@ -19,6 +19,7 @@
 
 #include <stdbool.h>
 
+#include "options/m_option.h"
 #include "sub/osd.h"
 #include "gl_common.h"
 
@@ -29,15 +30,17 @@ struct lut3d {
 
 struct gl_video_opts {
     char *scalers[2];
-    char *dscalers[2];
+    char *dscaler;
     float scaler_params[2][2];
     float scaler_radius[2];
-    int indirect;
+    float scaler_antiring[2];
     float gamma;
     int srgb;
-    int approx_gamma;
-    int scale_sep;
+    int linear_scaling;
     int fancy_downscaling;
+    int sigmoid_upscaling;
+    float sigmoid_center;
+    float sigmoid_slope;
     int scaler_resizes_only;
     int npot;
     int pbo;
@@ -46,14 +49,17 @@ struct gl_video_opts {
     int dither_size;
     int temporal_dither;
     int fbo_format;
-    int stereo_mode;
     int alpha_mode;
     int chroma_location;
     int use_rectangle;
+    struct m_color background;
+    int smoothmotion;
+    float smoothmotion_threshold;
 };
 
 extern const struct m_sub_options gl_video_conf;
 extern const struct gl_video_opts gl_video_opts_hq_def;
+extern const struct gl_video_opts gl_video_opts_def;
 
 struct gl_video;
 
@@ -65,17 +71,22 @@ void gl_video_config(struct gl_video *p, struct mp_image_params *params);
 void gl_video_set_output_depth(struct gl_video *p, int r, int g, int b);
 void gl_video_set_lut3d(struct gl_video *p, struct lut3d *lut3d);
 void gl_video_upload_image(struct gl_video *p, struct mp_image *img);
-void gl_video_render_frame(struct gl_video *p);
-struct mp_image *gl_video_download_image(struct gl_video *p);
+void gl_video_render_frame(struct gl_video *p, int fbo, struct frame_timing *t);
 void gl_video_resize(struct gl_video *p, struct mp_rect *window,
                      struct mp_rect *src, struct mp_rect *dst,
-                     struct mp_osd_res *osd);
+                     struct mp_osd_res *osd, bool vflip);
 void gl_video_get_colorspace(struct gl_video *p, struct mp_image_params *params);
-bool gl_video_set_equalizer(struct gl_video *p, const char *name, int val);
-bool gl_video_get_equalizer(struct gl_video *p, const char *name, int *val);
+struct mp_csp_equalizer;
+struct mp_csp_equalizer *gl_video_eq_ptr(struct gl_video *p);
+void gl_video_eq_update(struct gl_video *p);
 
 void gl_video_set_debug(struct gl_video *p, bool enable);
 void gl_video_resize_redraw(struct gl_video *p, int w, int h);
+
+void gl_video_set_gl_state(struct gl_video *p);
+void gl_video_unset_gl_state(struct gl_video *p);
+void gl_video_reset(struct gl_video *p);
+bool gl_video_showing_interpolated_frame(struct gl_video *p);
 
 struct gl_hwdec;
 void gl_video_set_hwdec(struct gl_video *p, struct gl_hwdec *hwdec);

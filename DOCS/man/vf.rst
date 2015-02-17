@@ -231,156 +231,6 @@ Available filters are:
     ``<fmt>``
         Format name, e.g. rgb15, bgr24, 420p, etc. (default: 420p).
 
-``pp=[filter string]``
-    Enables the specified chain of post-processing subfilters. Subfilters must
-    be separated by '/' and can be disabled by prepending a '-'. Each
-    subfilter and some options have a short and a long name that can be used
-    interchangeably, i.e. ``dr``/``dering`` are the same.
-
-    .. note::
-
-        Unlike in MPlayer or in earlier versions, you must quote the pp string
-        if it contains ``:`` characters, e.g. ``'--vf=pp=[...]'``.
-
-    .. admonition:: Warning
-
-        This filter is most likely useless on modern HD video. It might be
-        helpful with old low-resolution files.
-
-    All subfilters share common options to determine their scope:
-
-    ``a/autoq``
-        Automatically switch the subfilter off if the CPU is too slow.
-    ``c/chrom``
-        Do chrominance filtering, too (default).
-    ``y/nochrom``
-        Do luminance filtering only (no chrominance).
-    ``n/noluma``
-        Do chrominance filtering only (no luminance).
-
-    .. note::
-
-        ``--vf=pp:help`` shows a list of available subfilters.
-
-    Available subfilters are:
-
-    ``hb/hdeblock[:difference[:flatness]]``
-        horizontal deblocking filter
-
-        :<difference>: Difference factor where higher values mean more
-                       deblocking (default: 32).
-        :<flatness>:   Flatness threshold where lower values mean more
-                       deblocking (default: 39).
-
-    ``vb/vdeblock[:difference[:flatness]]``
-        vertical deblocking filter
-
-        :<difference>: Difference factor where higher values mean more
-                       deblocking (default: 32).
-        :<flatness>:   Flatness threshold where lower values mean more
-                       deblocking (default: 39).
-
-    ``ha/hadeblock[:difference[:flatness]]``
-        accurate horizontal deblocking filter
-
-        :<difference>: Difference factor where higher values mean more
-                       deblocking (default: 32).
-        :<flatness>:   Flatness threshold where lower values mean more
-                       deblocking (default: 39).
-
-    ``va/vadeblock[:difference[:flatness]]``
-        accurate vertical deblocking filter
-
-        :<difference>: Difference factor where higher values mean more
-                       deblocking (default: 32).
-        :<flatness>:   Flatness threshold where lower values mean more
-                       deblocking (default: 39).
-
-    The horizontal and vertical deblocking filters share the difference and
-    flatness values so you cannot set different horizontal and vertical
-    thresholds.
-
-    ``h1/x1hdeblock``
-        experimental horizontal deblocking filter
-
-    ``v1/x1vdeblock``
-        experimental vertical deblocking filter
-
-    ``dr/dering``
-        deringing filter
-
-    ``tn/tmpnoise[:threshold1[:threshold2[:threshold3]]]``
-        temporal noise reducer
-
-        :<threshold1>: larger -> stronger filtering
-        :<threshold2>: larger -> stronger filtering
-        :<threshold3>: larger -> stronger filtering
-
-    ``al/autolevels[:f/fullyrange]``
-        automatic brightness / contrast correction
-
-        :f/fullyrange: Stretch luminance to (0-255).
-
-    ``lb/linblenddeint``
-        Linear blend deinterlacing filter that deinterlaces the given block by
-        filtering all lines with a (1 2 1) filter.
-
-    ``li/linipoldeint``
-        Linear interpolating deinterlacing filter that deinterlaces the given
-        block by linearly interpolating every second line.
-
-    ``ci/cubicipoldeint``
-        Cubic interpolating deinterlacing filter deinterlaces the given block
-        by cubically interpolating every second line.
-
-    ``md/mediandeint``
-        Median deinterlacing filter that deinterlaces the given block by
-        applying a median filter to every second line.
-
-    ``fd/ffmpegdeint``
-        FFmpeg deinterlacing filter that deinterlaces the given block by
-        filtering every second line with a (-1 4 2 4 -1) filter.
-
-    ``l5/lowpass5``
-        Vertically applied FIR low-pass deinterlacing filter that deinterlaces
-        the given block by filtering all lines with a (-1 2 6 2 -1) filter.
-
-    ``fq/forceQuant[:quantizer]``
-        Overrides the quantizer table from the input with the constant
-        quantizer you specify.
-
-        :<quantizer>: quantizer to use
-
-    ``de/default``
-        default pp filter combination (hb:a,vb:a,dr:a)
-
-    ``fa/fast``
-        fast pp filter combination (h1:a,v1:a,dr:a)
-
-    ``ac``
-        high quality pp filter combination (ha:a:128:7,va:a,dr:a)
-
-    .. note::
-
-        This filter is only available if FFmpeg/Libav has been compiled
-        with libpostproc enabled.
-
-    .. admonition:: Examples
-
-        ``--vf=pp=hb/vb/dr/al``
-            horizontal and vertical deblocking, deringing and automatic
-            brightness/contrast
-
-        ``--vf=pp=de/-al``
-            default filters without brightness/contrast correction
-
-        ``--vf=pp=[default/tmpnoise:1:2:3]``
-            Enable default filters & temporal denoiser.
-
-        ``--vf=pp=[hb:y/vb:a]``
-            Horizontal deblocking on luminance only, and switch vertical
-            deblocking on or off automatically depending on available CPU time.
-
 ``lavfi=graph[:sws-flags[:o=opts]]``
     Filter video using FFmpeg's libavfilter.
 
@@ -451,10 +301,6 @@ Available filters are:
     ``uniform``
         uniform noise (Gaussian otherwise)
 
-    ``hq``
-        high quality (slightly better looking, slightly slower) - not available
-        when using libavfilter
-
 ``hqdn3d[=luma_spatial:chroma_spatial:luma_tmp:chroma_tmp]``
     This filter aims to reduce image noise producing smooth images and making
     still images really still (This should enhance compressibility.).
@@ -495,19 +341,6 @@ Available filters are:
         and just plain white. A value of 0.0 turns the gamma correction all
         the way down while 1.0 leaves it at its full strength (default: 1.0).
 
-``ilpack[=mode]``
-    When interlaced video is stored in YUV 4:2:0 formats, chroma interlacing
-    does not line up properly due to vertical downsampling of the chroma
-    channels. This filter packs the planar 4:2:0 data into YUY2 (4:2:2) format
-    with the chroma lines in their proper locations, so that in any given
-    scanline, the luma and chroma data both come from the same field.
-
-    ``<mode>``
-        Select the sampling mode.
-
-        :0: nearest-neighbor sampling, fast but incorrect
-        :1: linear interpolation (default)
-
 ``unsharp[=lx:ly:la:cx:cy:ca]``
     unsharp mask / Gaussian blur
 
@@ -524,9 +357,6 @@ Available filters are:
 
         :<0: blur
         :>0: sharpen
-
-``swapuv``
-    Swap U & V plane.
 
 ``pullup[=jl:jr:jt:jb:sb:mp]``
     Pulldown reversal (inverse telecine) filter, capable of handling mixed
@@ -558,120 +388,6 @@ Available filters are:
         especially if there is chroma noise (rainbow effect) or any grayscale
         video. The main purpose of setting ``mp`` to a chroma plane is to reduce
         CPU load and make pullup usable in realtime on slow machines.
-
-``divtc[=options]``
-    Inverse telecine for deinterlaced video. If 3:2-pulldown telecined video
-    has lost one of the fields or is deinterlaced using a method that keeps
-    one field and interpolates the other, the result is a juddering video that
-    has every fourth frame duplicated. This filter is intended to find and
-    drop those duplicates and restore the original film framerate. Two
-    different modes are available: One-pass mode is the default and is
-    straightforward to use, but has the disadvantage that any changes in the
-    telecine phase (lost frames or bad edits) cause momentary judder until the
-    filter can resync again. Two-pass mode avoids this by analyzing the entire
-    video beforehand so it will have forward knowledge about the phase changes
-    and can resync at the exact spot. These passes do *not* correspond to pass
-    one and two of the encoding process. You must run an extra pass using
-    ``divtc`` pass one before the actual encoding throwing the resulting video
-    away. Then use ``divtc`` pass two for the actual encoding. If you use
-    multiple encoder passes, use ``divtc`` pass two for all of them.
-
-    The options are:
-
-    ``pass=1|2``
-        Use two pass mode.
-
-    ``file=<filename>``
-        Set the two pass log filename (default: ``framediff.log``).
-
-    ``threshold=<value>``
-        Set the minimum strength the telecine pattern must have for the filter
-        to believe in it (default: 0.5). This is used to avoid recognizing
-        false pattern from the parts of the video that are very dark or very
-        still.
-
-    ``window=<numframes>``
-        Set the number of past frames to look at when searching for pattern
-        (default: 30). Longer window improves the reliability of the pattern
-        search, but shorter window improves the reaction time to the changes
-        in the telecine phase. This only affects the one-pass mode. The
-        two-pass mode currently uses fixed window that extends to both future
-        and past.
-
-    ``phase=0|1|2|3|4``
-        Sets the initial telecine phase for one pass mode (default: 0). The
-        two-pass mode can see the future, so it is able to use the correct
-        phase from the beginning, but one-pass mode can only guess. It catches
-        the correct phase when it finds it, but this option can be used to fix
-        the possible juddering at the beginning. The first pass of the two
-        pass mode also uses this, so if you save the output from the first
-        pass, you get constant phase result.
-
-    ``deghost=<value>``
-        Set the deghosting threshold (0-255 for one-pass mode, -255-255 for
-        two-pass mode, default 0). If nonzero, deghosting mode is used. This
-        is for video that has been deinterlaced by blending the fields
-        together instead of dropping one of the fields. Deghosting amplifies
-        any compression artifacts in the blended frames, so the parameter
-        value is used as a threshold to exclude those pixels from deghosting
-        that differ from the previous frame less than specified value. If two
-        pass mode is used, then negative value can be used to make the filter
-        analyze the whole video in the beginning of pass-2 to determine
-        whether it needs deghosting or not and then select either zero or the
-        absolute value of the parameter. Specify this option for pass 2, it
-        makes no difference on pass 1.
-
-``phase[=t|b|p|a|u|T|B|A|U][:v]``
-    Delay interlaced video by one field time so that the field order changes.
-    The intended use is to fix PAL videos that have been captured with the
-    opposite field order to the film-to-video transfer. The options are:
-
-    ``t``
-        Capture field order top-first, transfer bottom-first. Filter will
-        delay the bottom field.
-
-    ``b``
-        Capture bottom-first, transfer top-first. Filter will delay the top
-        field.
-
-    ``p``
-        Capture and transfer with the same field order. This mode only exists
-        for the documentation of the other options to refer to, but if you
-        actually select it, the filter will faithfully do nothing ;-)
-
-    ``a``
-        Capture field order determined automatically by field flags, transfer
-        opposite. Filter selects among ``t`` and ``b`` modes on a frame by frame
-        basis using field flags. If no field information is available, then this
-        works just like ``u``.
-
-    ``u``
-        Capture unknown or varying, transfer opposite. Filter selects among
-        ``t`` and ``b`` on a frame by frame basis by analyzing the images and
-        selecting the alternative that produces best match between the fields.
-
-    ``T``
-        Capture top-first, transfer unknown or varying. Filter selects among
-        ``t`` and ``p`` using image analysis.
-
-    ``B``
-        Capture bottom-first, transfer unknown or varying. Filter selects
-        among ``b`` and ``p`` using image analysis.
-
-    ``A``
-        Capture determined by field flags, transfer unknown or varying. Filter
-        selects among ``t``, ``b`` and ``p`` using field flags and image
-        analysis. If no field information is available, then this works just
-        like ``U``. This is the default mode.
-
-    ``U``
-        Both capture and transfer unknown or varying. Filter selects among
-        ``t``, ``b`` and ``p`` using image analysis only.
-
-    ``v``
-        Verbose operation. Prints the selected mode for each frame and the
-        average squared difference between fields for ``t``, ``b``, and ``p``
-        alternatives. (Ignored when libavfilter is used.)
 
 ``yadif=[mode[:enabled=yes|no]]``
     Yet another deinterlacing filter
@@ -903,12 +619,15 @@ Available filters are:
         filters work anyway.)
 
     ``concurrent-frames``
-        Number of frames that should be requested in parallel (default: 2). The
+        Number of frames that should be requested in parallel. The
         level of concurrency depends on the filter and how quickly mpv can
         decode video to feed the filter. This value should probably be
         proportional to the number of cores on your machine. Most time,
         making it higher than the number of cores can actually make it
         slower.
+
+        By default, this uses the special value ``auto``, which sets the option
+        to the number of detected logical CPU cores.
 
     The following variables are defined by mpv:
 
@@ -929,6 +648,9 @@ Available filters are:
         the ``--fps`` command line option overrides this value.
 
         Useful for some filters which insist on having a FPS.
+
+    ``display_fps``
+        Refresh rate of the current display. Note that this value can be 0.
 
 ``vapoursynth-lazy``
     The same as ``vapoursynth``, but doesn't load Python scripts. Instead, a
@@ -970,6 +692,10 @@ Available filters are:
             Show only first field (going by ``--field-dominance``).
         bob
             bob deinterlacing (default).
+        weave, motion-adaptive, motion-compensated
+            Advanced deinterlacing algorithms. Whether these actually work
+            depends on the GPU hardware, the GPU drivers, driver bugs, and
+            mpv bugs.
 
 ``vdpaupp``
     VDPAU video post processing. Works with ``--vo=vdpau`` and ``--vo=opengl``

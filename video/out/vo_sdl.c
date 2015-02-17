@@ -41,7 +41,6 @@
 #include "sub/osd.h"
 
 #include "video/mp_image.h"
-#include "video/vfcap.h"
 
 #include "win_state.h"
 #include "config.h"
@@ -173,7 +172,6 @@ struct priv {
     SDL_Texture *tex;
     int tex_swapped;
     struct mp_image_params params;
-    mp_image_t *ssmpi;
     struct mp_rect src_rect;
     struct mp_rect dst_rect;
     struct mp_osd_res osd_res;
@@ -639,7 +637,6 @@ static void uninit(struct vo *vo)
 {
     struct priv *vc = vo->priv;
     destroy_renderer(vo);
-    talloc_free(vc->ssmpi);
     SDL_QuitSubSystem(SDL_INIT_VIDEO);
     talloc_free(vc);
 }
@@ -847,16 +844,15 @@ static int preinit(struct vo *vo)
     return 0;
 }
 
-static int query_format(struct vo *vo, uint32_t format)
+static int query_format(struct vo *vo, int format)
 {
     struct priv *vc = vo->priv;
     int i, j;
-    int cap = VFCAP_CSP_SUPPORTED;
     for (i = 0; i < vc->renderer_info.num_texture_formats; ++i)
         for (j = 0; j < sizeof(formats) / sizeof(formats[0]); ++j)
             if (vc->renderer_info.texture_formats[i] == formats[j].sdl)
                 if (format == formats[j].mpv)
-                    return cap;
+                    return 1;
     return 0;
 }
 
@@ -915,9 +911,6 @@ static void draw_image(struct vo *vo, mp_image_t *mpi)
         mp_image_copy(&texmpi, mpi);
 
         SDL_UnlockTexture(vc->tex);
-
-        talloc_free(vc->ssmpi);
-        vc->ssmpi = mpi;
     }
 
     SDL_Rect src, dst;
@@ -941,12 +934,6 @@ static void draw_image(struct vo *vo, mp_image_t *mpi)
     }
 
     draw_osd(vo);
-}
-
-static struct mp_image *get_screenshot(struct vo *vo)
-{
-    struct priv *vc = vo->priv;
-    return vc->ssmpi ? mp_image_new_ref(vc->ssmpi) : NULL;
 }
 
 static struct mp_image *get_window_screenshot(struct vo *vo)
@@ -1001,6 +988,7 @@ static int control(struct vo *vo, uint32_t request, void *data)
 
     switch (request) {
     case VOCTRL_FULLSCREEN:
+        vo->opts->fullscreen = !vo->opts->fullscreen;
         set_fullscreen(vo);
         return 1;
     case VOCTRL_REDRAW_FRAME:
@@ -1019,14 +1007,9 @@ static int control(struct vo *vo, uint32_t request, void *data)
         struct voctrl_get_equalizer_args *args = data;
         return get_eq(vo, args->name, args->valueptr);
     }
-    case VOCTRL_SCREENSHOT: {
-        struct voctrl_screenshot_args *args = data;
-        if (args->full_window)
-            args->out_image = get_window_screenshot(vo);
-        else
-            args->out_image = get_screenshot(vo);
+    case VOCTRL_SCREENSHOT_WIN:
+        *(struct mp_image **)data = get_window_screenshot(vo);
         return true;
-    }
     case VOCTRL_SET_CURSOR_VISIBILITY:
         SDL_ShowCursor(*(bool *)data);
         return true;

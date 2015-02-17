@@ -541,6 +541,18 @@ static int control(stream_t *stream,int cmd,void* arg)
             *((unsigned int *)arg) = d->vmg_file->tt_srpt->nr_of_srpts;
             return 1;
         }
+        case STREAM_CTRL_GET_TITLE_LENGTH:
+        {
+            int t = *(double *)arg;
+            if (t < 0 || t >= d->vmg_file->tt_srpt->nr_of_srpts)
+                break;
+            if (d->tt_srpt->title[t].title_set_nr !=
+                d->tt_srpt->title[d->dvd_title].title_set_nr)
+                break;
+            *(double *)arg =
+                mp_get_titleset_length(d->vts_file, d->tt_srpt, t) / 1000.0;
+            return 1;
+        }
         case STREAM_CTRL_GET_NUM_CHAPTERS:
         {
             int r;
@@ -637,6 +649,10 @@ static int control(stream_t *stream,int cmd,void* arg)
             *(char**)arg = talloc_strdup(NULL, buffer);
             return STREAM_OK;
         }
+        case STREAM_CTRL_GET_SIZE:
+            *(int64_t *)arg =
+                (d->cur_pgc->cell_playback[d->last_cell-1].last_sector)*2048LL;
+            return STREAM_OK;
     }
     return STREAM_UNSUPPORTED;
 }
@@ -905,7 +921,6 @@ static int open_s(stream_t *stream)
     stream->fill_buffer = fill_buffer;
     stream->control = control;
     stream->close = stream_dvd_close;
-    stream->end_pos = (int64_t)(d->cur_pgc->cell_playback[d->last_cell-1].last_sector)*2048;
     MP_VERBOSE(stream, "DVD start=%d end=%d  \n",d->cur_pack,d->cur_pgc->cell_playback[d->last_cell-1].last_sector);
     stream->priv = (void*)d;
     return STREAM_OK;

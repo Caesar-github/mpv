@@ -63,7 +63,7 @@
 #include "command.h"
 #include "screenshot.h"
 
-#if defined(__MINGW32__) || defined(__CYGWIN__)
+#ifdef _WIN32
 #include <windows.h>
 
 #ifndef BASE_SEARCH_PATH_ENABLE_SAFE_SEARCHMODE
@@ -71,18 +71,9 @@
 #endif
 #endif
 
-#if HAVE_COCOA_APPLICATION
-#include "osdep/macosx_application.h"
-#endif
 #if HAVE_COCOA
 #include "osdep/macosx_events.h"
 #endif
-
-#ifdef PTW32_STATIC_LIB
-#include <pthread.h>
-#endif
-
-static bool terminal_initialized;
 
 #ifndef FULLCONFIG
 #define FULLCONFIG "(missing)\n"
@@ -107,6 +98,19 @@ const char mp_help_text[] =
 "\n"
 " --list-options    list all mpv options\n"
 "\n";
+
+static pthread_mutex_t terminal_owner_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct MPContext *terminal_owner;
+
+static bool cas_terminal_owner(struct MPContext *old, struct MPContext *new)
+{
+    pthread_mutex_lock(&terminal_owner_lock);
+    bool r = terminal_owner == old;
+    if (r)
+        terminal_owner = new;
+    pthread_mutex_unlock(&terminal_owner_lock);
+    return r;
+}
 
 void mp_print_version(struct mp_log *log, int always)
 {
@@ -155,11 +159,18 @@ void mp_destroy(struct MPContext *mpctx)
 
     mp_clients_destroy(mpctx);
 
+    talloc_free(mpctx->gl_cb_ctx);
+    mpctx->gl_cb_ctx = NULL;
+
     osd_free(mpctx->osd);
 
-    if (mpctx->opts->use_terminal && terminal_initialized) {
+#if HAVE_COCOA
+    cocoa_set_input_context(NULL);
+#endif
+
+    if (cas_terminal_owner(mpctx, mpctx)) {
         terminal_uninit();
-        terminal_initialized = false;
+        cas_terminal_owner(mpctx, NULL);
     }
 
     mp_dispatch_set_wakeup_fn(mpctx->dispatch, NULL, NULL);
@@ -174,13 +185,8 @@ void mp_destroy(struct MPContext *mpctx)
     talloc_free(mpctx);
 }
 
-static MP_NORETURN void exit_player(struct MPContext *mpctx,
-                                    enum exit_reason how)
+static int prepare_exit_cplayer(struct MPContext *mpctx, enum exit_reason how)
 {
-#if HAVE_COCOA_APPLICATION
-    cocoa_set_input_context(NULL);
-#endif
-
     int rc = 0;
     const char *reason = NULL;
 
@@ -218,15 +224,7 @@ static MP_NORETURN void exit_player(struct MPContext *mpctx,
         rc = mpctx->quit_custom_rc;
 
     mp_destroy(mpctx);
-
-#if HAVE_COCOA_APPLICATION
-    terminate_cocoa_application();
-    // never reach here:
-    // terminate calls exit itself, just silence compiler warning
-    exit(0);
-#else
-    exit(rc);
-#endif
+    return rc;
 }
 
 static bool handle_help_options(struct MPContext *mpctx)
@@ -264,14 +262,6 @@ static bool handle_help_options(struct MPContext *mpctx)
     return opt_exit;
 }
 
-#ifdef PTW32_STATIC_LIB
-static void detach_ptw32(void)
-{
-    pthread_win32_thread_detach_np();
-    pthread_win32_process_detach_np();
-}
-#endif
-
 static void osdep_preinit(int *p_argc, char ***p_argv)
 {
     char *enable_talloc = getenv("MPV_LEAK_REPORT");
@@ -285,13 +275,7 @@ static void osdep_preinit(int *p_argc, char ***p_argv)
     mp_get_converted_argv(p_argc, p_argv);
 #endif
 
-#ifdef PTW32_STATIC_LIB
-    pthread_win32_process_attach_np();
-    pthread_win32_thread_attach_np();
-    atexit(detach_ptw32);
-#endif
-
-#if defined(__MINGW32__) || defined(__CYGWIN__)
+#ifdef _WIN32
     // stop Windows from showing all kinds of annoying error dialogs
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX);
 
@@ -391,11 +375,10 @@ int mp_initialize(struct MPContext *mpctx)
     }
     MP_STATS(mpctx, "start init");
 
-    if (mpctx->opts->use_terminal && !terminal_initialized) {
-        terminal_initialized = true;
+    if (mpctx->opts->use_terminal && cas_terminal_owner(NULL, mpctx))
         terminal_init();
-        mp_msg_update_msglevels(mpctx->global);
-    }
+
+    mp_msg_update_msglevels(mpctx->global);
 
     if (opts->slave_mode) {
         MP_WARN(mpctx, "--slave-broken is deprecated (see manpage).\n");
@@ -418,7 +401,6 @@ int mp_initialize(struct MPContext *mpctx)
         }
         m_config_set_option0(mpctx->mconfig, "vo", "lavc");
         m_config_set_option0(mpctx->mconfig, "ao", "lavc");
-        m_config_set_option0(mpctx->mconfig, "fixed-vo", "yes");
         m_config_set_option0(mpctx->mconfig, "keep-open", "no");
         m_config_set_option0(mpctx->mconfig, "force-window", "no");
         m_config_set_option0(mpctx->mconfig, "gapless-audio", "yes");
@@ -426,12 +408,10 @@ int mp_initialize(struct MPContext *mpctx)
         m_config_set_option0(mpctx->mconfig, "load-scripts", "no");
         m_config_set_option0(mpctx->mconfig, "osc", "no");
         m_config_set_option0(mpctx->mconfig, "framedrop", "no");
+        m_config_set_option0(mpctx->mconfig, "audio-channels", "stereo");
         mp_input_enable_section(mpctx->input, "encode", MP_INPUT_EXCLUSIVE);
     }
 #endif
-
-    if (opts->use_terminal && opts->consolecontrols && terminal_initialized)
-        terminal_setup_getch(mpctx->input);
 
 #if !HAVE_LIBASS
     MP_WARN(mpctx, "Compiled without libass.\n");
@@ -445,15 +425,20 @@ int mp_initialize(struct MPContext *mpctx)
 
     mp_get_resume_defaults(mpctx);
 
+    if (opts->consolecontrols && cas_terminal_owner(mpctx, mpctx))
+        terminal_setup_getch(mpctx->input);
+
 #if HAVE_COCOA
     cocoa_set_input_context(mpctx->input);
 #endif
 
     if (opts->force_vo) {
-        opts->fixed_vo = 1;
-        mpctx->video_out = init_best_video_out(mpctx->global, mpctx->input,
-                                               mpctx->osd,
-                                               mpctx->encode_lavc_ctx);
+        struct vo_extra ex = {
+            .input_ctx = mpctx->input,
+            .osd = mpctx->osd,
+            .encode_lavc_ctx = mpctx->encode_lavc_ctx,
+        };
+        mpctx->video_out = init_best_video_out(mpctx->global, &ex);
         if (!mpctx->video_out) {
             MP_FATAL(mpctx, "Error opening/initializing "
                     "the selected video_out (-vo) device.\n");
@@ -491,10 +476,8 @@ int mpv_main(int argc, char *argv[])
     // Preparse the command line
     m_config_preparse_command_line(mpctx->mconfig, mpctx->global, argc, argv);
 
-    if (mpctx->opts->use_terminal && !terminal_initialized) {
-        terminal_initialized = true;
+    if (mpctx->opts->use_terminal && cas_terminal_owner(NULL, mpctx))
         terminal_init();
-    }
 
     mp_msg_update_msglevels(mpctx->global);
 
@@ -511,32 +494,31 @@ int mpv_main(int argc, char *argv[])
                                            mpctx->global, argc, argv);
     if (r < 0) {
         if (r <= M_OPT_EXIT) {
-            exit_player(mpctx, EXIT_NONE);
+            return prepare_exit_cplayer(mpctx, EXIT_NONE);
         } else {
-            exit_player(mpctx, EXIT_ERROR);
+            return prepare_exit_cplayer(mpctx, EXIT_ERROR);
         }
     }
 
     mp_msg_update_msglevels(mpctx->global);
 
     if (handle_help_options(mpctx))
-        exit_player(mpctx, EXIT_NONE);
+        return prepare_exit_cplayer(mpctx, EXIT_NONE);
 
     if (!mpctx->playlist->first && !opts->player_idle_mode) {
         mp_print_version(mpctx->log, true);
         MP_INFO(mpctx, "%s", mp_help_text);
-        exit_player(mpctx, EXIT_NONE);
+        return prepare_exit_cplayer(mpctx, EXIT_NONE);
     }
 
-#if HAVE_PRIORITY
+#ifdef _WIN32
     if (opts->w32_priority > 0)
         SetPriorityClass(GetCurrentProcess(), opts->w32_priority);
 #endif
 
     if (mp_initialize(mpctx) < 0)
-        exit_player(mpctx, EXIT_ERROR);
+        return prepare_exit_cplayer(mpctx, EXIT_ERROR);
 
     mp_play_files(mpctx);
-    exit_player(mpctx, EXIT_NORMAL);
-    return 1;
+    return prepare_exit_cplayer(mpctx, EXIT_NORMAL);
 }

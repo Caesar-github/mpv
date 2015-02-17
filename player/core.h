@@ -196,6 +196,7 @@ typedef struct MPContext {
     double video_offset;
 
     struct demuxer *demuxer;
+    struct mp_tags *filtered_tags;
 
     struct track **tracks;
     int num_tracks;
@@ -224,14 +225,16 @@ typedef struct MPContext {
     struct vo *video_out;
     // next_frame[0] is the next frame, next_frame[1] the one after that.
     struct mp_image *next_frame[2];
+    struct mp_image *saved_frame;   // for hrseek_lastframe
 
     enum playback_status video_status, audio_status;
     bool restart_complete;
     /* Set if audio should be timed to start with video frame after seeking,
      * not set when e.g. playing cover art */
     bool sync_audio_to_video;
-    bool hrseek_active;
-    bool hrseek_framedrop;
+    bool hrseek_active;     // skip all data until hrseek_pts
+    bool hrseek_framedrop;  // allow decoder to drop frames before hrseek_pts
+    bool hrseek_lastframe;  // drop everything until last frame reached
     double hrseek_pts;
     // AV sync: the next frame should be shown when the audio out has this
     // much (in seconds) buffered data left. Increased when more data is
@@ -272,8 +275,6 @@ typedef struct MPContext {
     uint64_t vo_pts_history_seek_ts;
     uint64_t backstep_start_seek_ts;
     bool backstep_active;
-
-    double audio_delay;
 
     double next_heartbeat;
     double last_idle_tick;
@@ -337,6 +338,8 @@ typedef struct MPContext {
     struct mp_nav_state *nav_state;
 
     struct mp_ipc_ctx *ipc_ctx;
+
+    struct mpv_opengl_cb_context *gl_cb_ctx;
 } MPContext;
 
 // audio.c
@@ -370,7 +373,8 @@ int mp_nav_in_menu(struct MPContext *mpctx);
 
 // loadfile.c
 void uninit_player(struct MPContext *mpctx, unsigned int mask);
-struct track *mp_add_subtitles(struct MPContext *mpctx, char *filename);
+struct track *mp_add_external_file(struct MPContext *mpctx, char *filename,
+                                   enum stream_type filter);
 void mp_switch_track(struct MPContext *mpctx, enum stream_type type,
                      struct track *track);
 void mp_switch_track_n(struct MPContext *mpctx, int order,
@@ -380,7 +384,6 @@ void mp_mark_user_track_selection(struct MPContext *mpctx, int order,
                                   enum stream_type type);
 struct track *mp_track_by_tid(struct MPContext *mpctx, enum stream_type type,
                               int tid);
-bool timeline_set_part(struct MPContext *mpctx, int i, bool force);
 double timeline_set_from_time(struct MPContext *mpctx, double pts, bool *need_reset);
 void add_demuxer_tracks(struct MPContext *mpctx, struct demuxer *demuxer);
 bool mp_remove_track(struct MPContext *mpctx, struct track *track);
@@ -454,6 +457,7 @@ void mp_idle(struct MPContext *mpctx);
 void idle_loop(struct MPContext *mpctx);
 void handle_force_window(struct MPContext *mpctx, bool reconfig);
 void add_frame_pts(struct MPContext *mpctx, double pts);
+void seek_to_last_frame(struct MPContext *mpctx);
 
 // scripting.c
 struct mp_scripting {
@@ -464,7 +468,6 @@ void mp_load_scripts(struct MPContext *mpctx);
 
 // sub.c
 void reset_subtitle_state(struct MPContext *mpctx);
-void reset_subtitles(struct MPContext *mpctx, int order);
 void uninit_stream_sub_decoders(struct demuxer *demuxer);
 void reinit_subs(struct MPContext *mpctx, int order);
 void uninit_sub(struct MPContext *mpctx, int order);

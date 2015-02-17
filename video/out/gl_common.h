@@ -38,11 +38,9 @@
 #include "video/mp_image.h"
 
 #if HAVE_GL_COCOA
-#ifdef GL_VERSION_3_0
-#include <OpenGL/gl3.h>
-#else
+#define GL_DO_NOT_WARN_IF_MULTI_GL_VERSION_HEADERS_INCLUDED 1
 #include <OpenGL/gl.h>
-#endif
+#include <OpenGL/gl3.h>
 #include <OpenGL/glext.h>
 #else
 #include <GL/gl.h>
@@ -55,46 +53,26 @@
 struct GL;
 typedef struct GL GL;
 
-void glAdjustAlignment(GL *gl, int stride);
-int glFmt2bpp(GLenum format, GLenum type);
-void glUploadTex(GL *gl, GLenum target, GLenum format, GLenum type,
-                 const void *dataptr, int stride,
-                 int x, int y, int w, int h, int slice);
-void glClearTex(GL *gl, GLenum target, GLenum format, GLenum type,
-                int x, int y, int w, int h, uint8_t val, void **scratch);
-void glDownloadTex(GL *gl, GLenum target, GLenum format, GLenum type,
-                   void *dataptr, int stride);
-void glCheckError(GL *gl, struct mp_log *log, const char *info);
-mp_image_t *glGetWindowScreenshot(GL *gl);
-
-#define GL_3D_RED_CYAN        1
-#define GL_3D_GREEN_MAGENTA   2
-#define GL_3D_QUADBUFFER      3
-
-void glEnable3DLeft(GL *gl, int type);
-void glEnable3DRight(GL *gl, int type);
-void glDisable3D(GL *gl, int type);
-
 enum {
-    MPGL_CAP_GL                 = (1 << 0),     // GL was successfully loaded
-    MPGL_CAP_GL_LEGACY          = (1 << 1),     // GL 1.1 (but not 3.x)
-    MPGL_CAP_GL2                = (1 << 2),     // GL 2.0 (3.x core subset)
-    MPGL_CAP_GL21               = (1 << 3),     // GL 2.1 (3.x core subset)
-    MPGL_CAP_GL3                = (1 << 4),     // GL 3.x core
+    MPGL_CAP_ROW_LENGTH         = (1 << 4),     // GL_[UN]PACK_ROW_LENGTH
     MPGL_CAP_FB                 = (1 << 5),
     MPGL_CAP_VAO                = (1 << 6),
-    MPGL_CAP_SRGB_TEX           = (1 << 7),
-    MPGL_CAP_SRGB_FB            = (1 << 8),
     MPGL_CAP_FLOAT_TEX          = (1 << 9),
     MPGL_CAP_TEX_RG             = (1 << 10),    // GL_ARB_texture_rg / GL 3.x
     MPGL_CAP_VDPAU              = (1 << 11),    // GL_NV_vdpau_interop
     MPGL_CAP_APPLE_RGB_422      = (1 << 12),    // GL_APPLE_rgb_422
-    MPGL_CAP_NO_SW              = (1 << 30),    // used to block sw. renderers
+    MPGL_CAP_1ST_CLASS_ARRAYS   = (1 << 13),
+    MPGL_CAP_1D_TEX             = (1 << 14),
+    MPGL_CAP_3D_TEX             = (1 << 15),
+    MPGL_CAP_DEBUG              = (1 << 16),
+    MPGL_CAP_SW                 = (1 << 30),    // indirect or sw renderer
 };
 
-#define MPGL_VER(major, minor) (((major) << 16) | (minor))
-#define MPGL_VER_GET_MAJOR(ver) ((ver) >> 16)
-#define MPGL_VER_GET_MINOR(ver) ((ver) & ((1 << 16) - 1))
+// E.g. 310 means 3.1
+// Code doesn't have to use the macros; they are for convenience only.
+#define MPGL_VER(major, minor) (((major) * 100) + (minor) * 10)
+#define MPGL_VER_GET_MAJOR(ver) ((unsigned)(ver) / 100)
+#define MPGL_VER_GET_MINOR(ver) ((unsigned)(ver) % 100 / 10)
 
 #define MPGL_VER_P(ver) MPGL_VER_GET_MAJOR(ver), MPGL_VER_GET_MINOR(ver)
 
@@ -136,21 +114,12 @@ typedef struct MPGLContext {
     void *priv;
 } MPGLContext;
 
-MPGLContext *mpgl_init(struct vo *vo, const char *backend_name);
-void mpgl_uninit(MPGLContext *ctx);
-
 void mpgl_lock(MPGLContext *ctx);
 void mpgl_unlock(MPGLContext *ctx);
-void mpgl_set_context(MPGLContext *ctx);
-void mpgl_unset_context(MPGLContext *ctx);
-bool mpgl_is_thread_safe(MPGLContext *ctx);
 
-// Create a VO window and create a GL context on it.
-// (Calls config_window_gl3 or config_window+setGlWindow.)
-// gl_caps: bitfield of MPGL_CAP_* (required GL version and feature set)
-// flags: passed to the backend's create window function
-// Returns success.
-bool mpgl_config_window(struct MPGLContext *ctx, int gl_caps, int flags);
+MPGLContext *mpgl_init(struct vo *vo, const char *backend_name, int vo_flags);
+void mpgl_uninit(MPGLContext *ctx);
+bool mpgl_reconfig_window(struct MPGLContext *ctx, int vo_flags);
 
 int mpgl_find_backend(const char *name);
 
@@ -161,88 +130,32 @@ int mpgl_validate_backend_opt(struct mp_log *log, const struct m_option *opt,
 void mpgl_set_backend_cocoa(MPGLContext *ctx);
 void mpgl_set_backend_w32(MPGLContext *ctx);
 void mpgl_set_backend_x11(MPGLContext *ctx);
+void mpgl_set_backend_x11es(MPGLContext *ctx);
 void mpgl_set_backend_x11egl(MPGLContext *ctx);
+void mpgl_set_backend_x11egles(MPGLContext *ctx);
 void mpgl_set_backend_wayland(MPGLContext *ctx);
-
-struct mp_hwdec_info;
-
-struct gl_hwdec {
-    const struct gl_hwdec_driver *driver;
-    struct mp_log *log;
-    struct MPGLContext *mpgl;
-    struct mp_hwdec_info *info;
-    // For free use by hwdec driver
-    void *priv;
-    // hwdec backends must set this to an IMGFMT_ that has an equivalent
-    // internal representation in gl_video.c as the hardware texture.
-    // It's used to build the rendering chain, and also as screenshot format.
-    int converted_imgfmt;
-    // Normally this is GL_TEXTURE_2D, but the hwdec driver can set it to
-    // GL_TEXTURE_RECTANGLE.
-    GLenum gl_texture_target;
-};
-
-struct gl_hwdec_driver {
-    // Same name as used by mp_hwdec_info->load_api()
-    const char *api_name;
-    // The hardware surface IMGFMT_ that must be passed to map_image later.
-    int imgfmt;
-    // Create the hwdec device. It must fill in hw->info, if applicable.
-    // This also must set hw->converted_imgfmt.
-    int (*create)(struct gl_hwdec *hw);
-    // Prepare for rendering video. (E.g. create textures.)
-    // Called on initialization, and every time the video size changes.
-    int (*reinit)(struct gl_hwdec *hw, const struct mp_image_params *params);
-    // Return textures that contain the given hw_image.
-    // Note that the caller keeps a reference to hw_image until unmap_image
-    // is called, so the hwdec driver doesn't need to do that.
-    int (*map_image)(struct gl_hwdec *hw, struct mp_image *hw_image,
-                     GLuint *out_textures);
-    // Undo map_image(). The user of map_image() calls this when the textures
-    // are not needed anymore.
-    void (*unmap_image)(struct gl_hwdec *hw);
-    // Return a mp_image downloaded from the GPU (optional)
-    struct mp_image *(*download_image)(struct gl_hwdec *hw,
-                                       struct mp_image *hw_image);
-    void (*destroy)(struct gl_hwdec *hw);
-};
-
-extern const struct gl_hwdec_driver *const mpgl_hwdec_drivers[];
 
 void mpgl_load_functions(GL *gl, void *(*getProcAddress)(const GLubyte *),
                          const char *ext2, struct mp_log *log);
+void mpgl_load_functions2(GL *gl, void *(*get_fn)(void *ctx, const char *n),
+                          void *fn_ctx, const char *ext2, struct mp_log *log);
 
-// print a multi line string with line numbers (e.g. for shader sources)
-// log, lev: module and log level, as in mp_msg()
-void mp_log_source(struct mp_log *log, int lev, const char *src);
+typedef void (GLAPIENTRY *MP_GLDEBUGPROC)(GLenum, GLenum, GLuint, GLenum,
+                                          GLsizei, const GLchar *,const void *);
 
 //function pointers loaded from the OpenGL library
 struct GL {
-    int version;                // MPGL_VER() mangled
+    int version;                // MPGL_VER() mangled (e.g. 210 for 2.1)
+    int es;                     // es version (e.g. 300), 0 for desktop GL
     int glsl_version;           // e.g. 130 for GLSL 1.30
     char *extensions;           // Equivalent to GL_EXTENSIONS
     int mpgl_caps;              // Bitfield of MPGL_CAP_* constants
+    bool debug_context;         // use of e.g. GLX_CONTEXT_DEBUG_BIT_ARB
 
-    void (GLAPIENTRY *Begin)(GLenum);
-    void (GLAPIENTRY *End)(void);
     void (GLAPIENTRY *Viewport)(GLint, GLint, GLsizei, GLsizei);
-    void (GLAPIENTRY *MatrixMode)(GLenum);
-    void (GLAPIENTRY *LoadIdentity)(void);
-    void (GLAPIENTRY *Translated)(double, double, double);
-    void (GLAPIENTRY *Scaled)(double, double, double);
-    void (GLAPIENTRY *Ortho)(double, double, double, double, double,double);
-    void (GLAPIENTRY *PushMatrix)(void);
-    void (GLAPIENTRY *PopMatrix)(void);
     void (GLAPIENTRY *Clear)(GLbitfield);
-    GLuint (GLAPIENTRY *GenLists)(GLsizei);
-    void (GLAPIENTRY *DeleteLists)(GLuint, GLsizei);
-    void (GLAPIENTRY *NewList)(GLuint, GLenum);
-    void (GLAPIENTRY *EndList)(void);
-    void (GLAPIENTRY *CallList)(GLuint);
-    void (GLAPIENTRY *CallLists)(GLsizei, GLenum, const GLvoid *);
     void (GLAPIENTRY *GenTextures)(GLsizei, GLuint *);
     void (GLAPIENTRY *DeleteTextures)(GLsizei, const GLuint *);
-    void (GLAPIENTRY *TexEnvi)(GLenum, GLenum, GLint);
     void (GLAPIENTRY *Color4ub)(GLubyte, GLubyte, GLubyte, GLubyte);
     void (GLAPIENTRY *Color4f)(GLfloat, GLfloat, GLfloat, GLfloat);
     void (GLAPIENTRY *ClearColor)(GLclampf, GLclampf, GLclampf, GLclampf);
@@ -250,8 +163,6 @@ struct GL {
     void (GLAPIENTRY *Disable)(GLenum);
     const GLubyte *(GLAPIENTRY * GetString)(GLenum);
     void (GLAPIENTRY *DrawBuffer)(GLenum);
-    void (GLAPIENTRY *DepthMask)(GLboolean);
-    void (GLAPIENTRY *BlendFunc)(GLenum, GLenum);
     void (GLAPIENTRY *BlendFuncSeparate)(GLenum, GLenum, GLenum, GLenum);
     void (GLAPIENTRY *Flush)(void);
     void (GLAPIENTRY *Finish)(void);
@@ -263,28 +174,15 @@ struct GL {
     void (GLAPIENTRY *TexSubImage2D)(GLenum, GLint, GLint, GLint,
                                      GLsizei, GLsizei, GLenum, GLenum,
                                      const GLvoid *);
-    void (GLAPIENTRY *GetTexImage)(GLenum, GLint, GLenum, GLenum, GLvoid *);
     void (GLAPIENTRY *TexParameteri)(GLenum, GLenum, GLint);
-    void (GLAPIENTRY *TexParameterf)(GLenum, GLenum, GLfloat);
-    void (GLAPIENTRY *TexParameterfv)(GLenum, GLenum, const GLfloat *);
-    void (GLAPIENTRY *TexCoord2f)(GLfloat, GLfloat);
-    void (GLAPIENTRY *TexCoord2fv)(const GLfloat *);
-    void (GLAPIENTRY *Vertex2f)(GLfloat, GLfloat);
     void (GLAPIENTRY *GetIntegerv)(GLenum, GLint *);
     void (GLAPIENTRY *GetBooleanv)(GLenum, GLboolean *);
-    void (GLAPIENTRY *ColorMask)(GLboolean, GLboolean, GLboolean, GLboolean);
     void (GLAPIENTRY *ReadPixels)(GLint, GLint, GLsizei, GLsizei, GLenum,
                                   GLenum, GLvoid *);
     void (GLAPIENTRY *ReadBuffer)(GLenum);
-    void (GLAPIENTRY *VertexPointer)(GLint, GLenum, GLsizei, const GLvoid *);
-    void (GLAPIENTRY *ColorPointer)(GLint, GLenum, GLsizei, const GLvoid *);
-    void (GLAPIENTRY *TexCoordPointer)(GLint, GLenum, GLsizei, const GLvoid *);
     void (GLAPIENTRY *DrawArrays)(GLenum, GLint, GLsizei);
-    void (GLAPIENTRY *EnableClientState)(GLenum);
-    void (GLAPIENTRY *DisableClientState)(GLenum);
     GLenum (GLAPIENTRY *GetError)(void);
     void (GLAPIENTRY *GetTexLevelParameteriv)(GLenum, GLint, GLenum, GLint *);
-
 
     void (GLAPIENTRY *GenBuffers)(GLsizei, GLuint *);
     void (GLAPIENTRY *DeleteBuffers)(GLsizei, const GLuint *);
@@ -294,28 +192,10 @@ struct GL {
     void (GLAPIENTRY *BufferData)(GLenum, intptr_t, const GLvoid *, GLenum);
     void (GLAPIENTRY *ActiveTexture)(GLenum);
     void (GLAPIENTRY *BindTexture)(GLenum, GLuint);
-    void (GLAPIENTRY *MultiTexCoord2f)(GLenum, GLfloat, GLfloat);
-    void (GLAPIENTRY *GenPrograms)(GLsizei, GLuint *);
-    void (GLAPIENTRY *DeletePrograms)(GLsizei, const GLuint *);
-    void (GLAPIENTRY *BindProgram)(GLenum, GLuint);
-    void (GLAPIENTRY *ProgramString)(GLenum, GLenum, GLsizei, const GLvoid *);
-    void (GLAPIENTRY *GetProgramivARB)(GLenum, GLenum, GLint *);
-    void (GLAPIENTRY *ProgramEnvParameter4f)(GLenum, GLuint, GLfloat, GLfloat,
-                                             GLfloat, GLfloat);
     int (GLAPIENTRY *SwapInterval)(int);
     void (GLAPIENTRY *TexImage3D)(GLenum, GLint, GLenum, GLsizei, GLsizei,
                                   GLsizei, GLint, GLenum, GLenum,
                                   const GLvoid *);
-
-    void (GLAPIENTRY *BeginFragmentShader)(void);
-    void (GLAPIENTRY *EndFragmentShader)(void);
-    void (GLAPIENTRY *SampleMap)(GLuint, GLuint, GLenum);
-    void (GLAPIENTRY *ColorFragmentOp2)(GLenum, GLuint, GLuint, GLuint, GLuint,
-                                        GLuint, GLuint, GLuint, GLuint, GLuint);
-    void (GLAPIENTRY *ColorFragmentOp3)(GLenum, GLuint, GLuint, GLuint, GLuint,
-                                        GLuint, GLuint, GLuint, GLuint, GLuint,
-                                        GLuint, GLuint, GLuint);
-    void (GLAPIENTRY *SetFragmentShaderConstant)(GLuint, const GLfloat *);
 
     void (GLAPIENTRY *GenVertexArrays)(GLsizei, GLuint *);
     void (GLAPIENTRY *BindVertexArray)(GLuint);
@@ -358,8 +238,6 @@ struct GL {
                                         const GLfloat *);
     void (GLAPIENTRY *UniformMatrix3fv)(GLint, GLsizei, GLboolean,
                                         const GLfloat *);
-    void (GLAPIENTRY *UniformMatrix4x3fv)(GLint, GLsizei, GLboolean,
-                                          const GLfloat *);
 
     void (GLAPIENTRY *VDPAUInitNV)(const GLvoid *, const GLvoid *);
     void (GLAPIENTRY *VDPAUFiniNV)(void);
@@ -372,6 +250,9 @@ struct GL {
 
     GLint (GLAPIENTRY *GetVideoSync)(GLuint *);
     GLint (GLAPIENTRY *WaitVideoSync)(GLint, GLint, unsigned int *);
+
+    void (GLAPIENTRY *DebugMessageCallback)(MP_GLDEBUGPROC callback,
+                                            const void *userParam);
 };
 
 #endif /* MPLAYER_GL_COMMON_H */

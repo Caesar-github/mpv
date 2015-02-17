@@ -39,8 +39,6 @@
 
 static const union m_option_value default_value;
 
-static const char *const replaced_opts;
-
 // Profiles allow to predefine some sets of options that can then
 // be applied later on with the internal -profile option.
 #define MAX_PROFILE_DEPTH 20
@@ -432,22 +430,67 @@ static void m_config_add_option(struct m_config *config,
         MP_TARRAY_APPEND(config, config->opts, config->num_opts, co);
 
     add_negation_option(config, &co, parent_name);
+
+    if (co.opt->type == &m_option_type_alias) {
+        co.is_generated = true; // hide it
+        const char *alias = (const char *)co.opt->priv;
+        char no_alias[40];
+        snprintf(no_alias, sizeof(no_alias), "no-%s", alias);
+        if (m_config_get_co(config, bstr0(no_alias))) {
+            struct m_option *new = talloc_zero(config, struct m_option);
+            new->name = talloc_asprintf(config, "no-%s", co.name);
+            new->priv = talloc_strdup(config, no_alias);
+            new->type = &m_option_type_alias;
+            new->offset = -1;
+            m_config_add_option(config, "", NULL, NULL, new);
+        }
+    }
+
+    if (co.opt->type == &m_option_type_removed)
+        co.is_generated = true; // hide it
 }
 
 struct m_config_option *m_config_get_co(const struct m_config *config,
                                         struct bstr name)
 {
-
+    const char *prefix = config->is_toplevel ? "--" : "";
     for (int n = 0; n < config->num_opts; n++) {
         struct m_config_option *co = &config->opts[n];
         struct bstr coname = bstr0(co->name);
+        bool matches = false;
         if ((co->opt->type->flags & M_OPT_TYPE_ALLOW_WILDCARD)
                 && bstr_endswith0(coname, "*")) {
             coname.len--;
             if (bstrcmp(bstr_splice(name, 0, coname.len), coname) == 0)
-                return co;
+                matches = true;
         } else if (bstrcmp(coname, name) == 0)
+            matches = true;
+        if (matches) {
+            if (co->opt->type == &m_option_type_alias) {
+                const char *alias = (const char *)co->opt->priv;
+                if (!co->warning_was_printed) {
+                    MP_WARN(config, "Warning: option %s%s was replaced with "
+                            "%s%s and might be removed in the future.\n",
+                            prefix, co->name, prefix, alias);
+                    co->warning_was_printed = true;
+                }
+                return m_config_get_co(config, bstr0(alias));
+            } else if (co->opt->type == &m_option_type_removed) {
+                if (!co->warning_was_printed) {
+                    char *msg = co->opt->priv;
+                    if (msg) {
+                        MP_FATAL(config, "Option %s%s was removed: %s\n",
+                                 prefix, co->name, msg);
+                    } else {
+                        MP_FATAL(config, "Option %s%s was removed.\n",
+                                 prefix, co->name);
+                    }
+                    co->warning_was_printed = true;
+                }
+                return NULL;
+            }
             return co;
+        }
     }
     return NULL;
 }
@@ -550,18 +593,8 @@ static int m_config_parse_option(struct m_config *config, struct bstr name,
     assert(name.len != 0);
 
     struct m_config_option *co = m_config_get_co(config, name);
-    if (!co) {
-        char s[80];
-        snprintf(s, sizeof(s), "|%.*s#", BSTR_P(name));
-        char *msg = strstr(replaced_opts, s);
-        if (msg) {
-            msg += strlen(s);
-            char *end = strchr(msg, '|');
-            MP_FATAL(config, "The --%.*s option was renamed or replaced: %.*s\n",
-                     BSTR_P(name), (int)(end - msg), msg);
-        }
+    if (!co)
         return M_OPT_UNKNOWN;
-    }
 
     // This is the only mandatory function
     assert(co->opt->type->parse);
@@ -733,6 +766,9 @@ void m_config_print_option_list(const struct m_config *config)
         if (opt->type->flags & M_OPT_TYPE_HAS_CHILD)
             continue;
         if (co->is_generated)
+            continue;
+        if (opt->type == &m_option_type_alias ||
+            opt->type == &m_option_type_removed)
             continue;
         MP_INFO(config, " %s%-30s", prefix, co->name);
         if (opt->type == &m_option_type_choice) {
@@ -919,80 +955,3 @@ struct m_config *m_config_dup(void *talloc_ctx, struct m_config *config)
     }
     return new;
 }
-
-// This is used for printing error messages on unknown options.
-static const char *const replaced_opts =
-    "|a52drc#--ad-lavc-ac3drc=level"
-    "|afm#--ad"
-    "|aspect#--video-aspect"
-    "|ass-bottom-margin#--vf=sub=bottom:top"
-    "|ass#--sub-ass"
-    "|audiofile#--audio-file"
-    "|benchmark#--untimed (no stats)"
-    "|capture#--stream-capture=<filename>"
-    "|channels#--audio-channels (changed semantics)"
-    "|cursor-autohide-delay#--cursor-autohide"
-    "|delay#--audio-delay"
-    "|dumpstream#--stream-dump=<filename>"
-    "|dvdangle#--dvd-angle"
-    "|endpos#--length"
-    "|font#--osd-font"
-    "|forcedsubsonly#--sub-forced-only"
-    "|format#--audio-format"
-    "|hardframedrop#--framedrop=hard"
-    "|identify#removed; use TOOLS/mpv_identify.sh"
-    "|lavdopts#--vd-lavc-..."
-    "|lavfdopts#--demuxer-lavf-..."
-    "|lircconf#--input-lirc-conf"
-    "|mixer-channel#AO suboptions (alsa, oss)"
-    "|mixer#AO suboptions (alsa, oss)"
-    "|mouse-movements#--input-cursor"
-    "|msgcolor#--msg-color"
-    "|msglevel#--msg-level (changed semantics)"
-    "|msgmodule#--msg-module"
-    "|name#--x11-name"
-    "|noar#--no-input-appleremote"
-    "|noautosub#--no-sub-auto"
-    "|noconsolecontrols#--no-input-terminal"
-    "|nojoystick#--no-input-joystick"
-    "|nosound#--no-audio"
-    "|osdlevel#--osd-level"
-    "|panscanrange#--video-zoom, --video-pan-x/y"
-    "|playing-msg#--term-playing-msg"
-    "|pp#'--vf=pp=[...]'"
-    "|pphelp#--vf=pp:help"
-    "|rawaudio#--demuxer-rawaudio-..."
-    "|rawvideo#--demuxer-rawvideo-..."
-    "|spugauss#--sub-gauss"
-    "|srate#--audio-samplerate"
-    "|ss#--start"
-    "|stop-xscreensaver#--stop-screensaver"
-    "|sub-fuzziness#--sub-auto"
-    "|sub#--sub-file"
-    "|subcp#--sub-codepage"
-    "|subdelay#--sub-delay"
-    "|subfile#--sub"
-    "|subfont-text-scale#--sub-scale"
-    "|subfont#--sub-text-font"
-    "|subfps#--sub-fps"
-    "|subpos#--sub-pos"
-    "|tvscan#--tv-scan"
-    "|use-filename-title#--title='${filename}'"
-    "|vc#--vd=..., --hwdec=..."
-    "|vobsub#--sub (pass the .idx file)"
-    "|xineramascreen#--screen (different values)"
-    "|xy#--autofit"
-    "|zoom#Inverse available as ``--video-unscaled"
-    "|media-keys#--input-media-keys"
-    "|lirc#--input-lirc"
-    "|right-alt-gr#--input-right-alt-gr"
-    "|autosub#--sub-auto"
-    "|autosub-match#--sub-auto"
-    "|status-msg#--term-status-msg"
-    "|idx#--index"
-    "|forceidx#--index"
-    "|cache-pause-below#for 'no', use --no-cache-pause"
-    "|no-cache-pause-below#--no-cache-pause"
-    "|volstep#edit input.conf directly instead"
-    "|"
-;
