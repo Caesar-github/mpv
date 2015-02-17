@@ -192,16 +192,19 @@ static int create_vdp_mixer(struct mp_vdpau_mixer *mixer)
     if (!opts->chroma_deint)
         SET_VIDEO_ATTR(SKIP_CHROMA_DEINTERLACE, uint8_t, 1);
 
-    // VdpCSCMatrix happens to be compatible with mpv's CSC matrix type
-    // both are float[3][4]
+    struct mp_cmat yuv2rgb;
     VdpCSCMatrix matrix;
 
     struct mp_csp_params cparams = MP_CSP_PARAMS_DEFAULTS;
-    cparams.colorspace.format = mixer->image_params.colorspace;
-    cparams.colorspace.levels_in = mixer->image_params.colorlevels;
-    cparams.colorspace.levels_out = mixer->image_params.outputlevels;
+    mp_csp_set_image_params(&cparams, &mixer->image_params);
     mp_csp_copy_equalizer_values(&cparams, &mixer->video_eq);
-    mp_get_yuv2rgb_coeffs(&cparams, matrix);
+    mp_get_yuv2rgb_coeffs(&cparams, &yuv2rgb);
+
+    for (int r = 0; r < 3; r++) {
+        for (int c = 0; c < 3; c++)
+            matrix[r][c] = yuv2rgb.m[r][c];
+        matrix[r][3] = yuv2rgb.c[r];
+    }
 
     set_video_attribute(mixer, VDP_VIDEO_MIXER_ATTRIBUTE_CSC_MATRIX,
                         &matrix, "CSC matrix");
@@ -218,7 +221,21 @@ int mp_vdpau_mixer_render(struct mp_vdpau_mixer *mixer,
     struct vdp_functions *vdp = &mixer->ctx->vdp;
     VdpStatus vdp_st;
 
-    assert(video->imgfmt == IMGFMT_VDPAU);
+    if (video->imgfmt == IMGFMT_VDPAU_OUTPUT) {
+        VdpOutputSurface surface = (uintptr_t)video->planes[3];
+        int flags = VDP_OUTPUT_SURFACE_RENDER_ROTATE_0;
+        vdp_st = vdp->output_surface_render_output_surface(output,
+                                                           output_rect,
+                                                           surface,
+                                                           video_rect,
+                                                           NULL, NULL, flags);
+        CHECK_VDP_WARNING(mixer, "Error when calling "
+                          "vdp_output_surface_render_output_surface");
+        return 0;
+    }
+
+    if (video->imgfmt != IMGFMT_VDPAU)
+        return -1;
 
     struct mp_vdpau_mixer_frame *frame = mp_vdpau_mixed_frame_get(video);
     struct mp_vdpau_mixer_frame fallback = {{0}};

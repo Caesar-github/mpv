@@ -151,6 +151,7 @@ void reset_playback_state(struct MPContext *mpctx)
 
     mpctx->hrseek_active = false;
     mpctx->hrseek_framedrop = false;
+    mpctx->hrseek_lastframe = false;
     mpctx->playback_pts = MP_NOPTS_VALUE;
     mpctx->last_seek_pts = MP_NOPTS_VALUE;
     mpctx->cache_wait_time = 0;
@@ -204,7 +205,7 @@ static int mp_seek(MPContext *mpctx, struct seek_params seek,
         }
     }
     int direction = 0;
-    if (seek.type == MPSEEK_RELATIVE) {
+    if (seek.type == MPSEEK_RELATIVE && (!mpctx->demuxer->rel_seeks || hr_seek)) {
         seek.type = MPSEEK_ABSOLUTE;
         direction = seek.amount > 0 ? 1 : -1;
         seek.amount += get_current_time(mpctx);
@@ -233,10 +234,13 @@ static int mp_seek(MPContext *mpctx, struct seek_params seek,
         demuxer_style |= SEEK_ABSOLUTE;
         break;
     }
-    if (hr_seek || direction < 0)
+    if (hr_seek || direction < 0) {
         demuxer_style |= SEEK_BACKWARD;
-    else if (direction > 0)
+    } else if (direction > 0) {
         demuxer_style |= SEEK_FORWARD;
+    }
+    if (hr_seek)
+        demuxer_style |= SEEK_HR;
     if (hr_seek || opts->mkv_subtitle_preroll)
         demuxer_style |= SEEK_SUBPREROLL;
 
@@ -365,9 +369,6 @@ double get_time_length(struct MPContext *mpctx)
     return -1; // unknown
 }
 
-/* If there are timestamps from stream level then use those (for example
- * DVDs can have consistent times there while the MPEG-level timestamps
- * reset). */
 double get_current_time(struct MPContext *mpctx)
 {
     struct demuxer *demuxer = mpctx->demuxer;
@@ -783,15 +784,43 @@ static void handle_loop_file(struct MPContext *mpctx)
     }
 }
 
+void seek_to_last_frame(struct MPContext *mpctx)
+{
+    if (!mpctx->d_video)
+        return;
+    if (mpctx->hrseek_lastframe) // exit if we already tried this
+        return;
+    MP_VERBOSE(mpctx, "seeking to last frame...\n");
+    // Approximately seek close to the end of the file.
+    // Usually, it will seek some seconds before end.
+    double end = get_play_end_pts(mpctx);
+    if (end == MP_NOPTS_VALUE)
+        end = get_time_length(mpctx);
+    mp_seek(mpctx, (struct seek_params){
+                   .type = MPSEEK_ABSOLUTE,
+                   .amount = end,
+                   .exact = 2, // "very exact", no framedrop
+                   }, false);
+    // Make it exact: stop seek only if last frame was reached.
+    if (mpctx->hrseek_active) {
+        mpctx->hrseek_pts = 1e99; // "infinite"
+        mpctx->hrseek_lastframe = true;
+    }
+}
+
 static void handle_keep_open(struct MPContext *mpctx)
 {
     struct MPOpts *opts = mpctx->opts;
     if (opts->keep_open && mpctx->stop_play == AT_END_OF_FILE &&
-        !playlist_get_next(mpctx->playlist, 1) && opts->loop_times < 0)
+        (opts->keep_open == 2 || !playlist_get_next(mpctx->playlist, 1)) &&
+        opts->loop_times == 1)
     {
         mpctx->stop_play = KEEP_PLAYING;
-        if (mpctx->d_video)
+        if (mpctx->d_video) {
+            if (!vo_has_frame(mpctx->video_out)) // EOF not reached normally
+                seek_to_last_frame(mpctx);
             mpctx->playback_pts = mpctx->last_vo_pts;
+        }
         if (!mpctx->opts->pause)
             pause_player(mpctx);
     }
@@ -824,8 +853,10 @@ void handle_force_window(struct MPContext *mpctx, bool reconfig)
         MP_INFO(mpctx, "Creating non-video VO window.\n");
         // Pick whatever works
         int config_format = 0;
+        uint8_t fmts[IMGFMT_END - IMGFMT_START] = {0};
+        vo_query_formats(vo, fmts);
         for (int fmt = IMGFMT_START; fmt < IMGFMT_END; fmt++) {
-            if (vo_query_format(vo, fmt)) {
+            if (fmts[fmt - IMGFMT_START]) {
                 config_format = fmt;
                 break;
             }
@@ -860,9 +891,78 @@ static void handle_dummy_ticks(struct MPContext *mpctx)
     }
 }
 
-void run_playloop(struct MPContext *mpctx)
+// We always make sure audio and video buffers are filled before actually
+// starting playback. This code handles starting them at the same time.
+static void handle_playback_restart(struct MPContext *mpctx, double endpts)
 {
     struct MPOpts *opts = mpctx->opts;
+
+    if (mpctx->audio_status < STATUS_READY ||
+        mpctx->video_status < STATUS_READY)
+        return;
+
+    if (mpctx->video_status == STATUS_READY) {
+        mpctx->video_status = STATUS_PLAYING;
+        get_relative_time(mpctx);
+        mpctx->sleeptime = 0;
+    }
+
+    if (mpctx->audio_status == STATUS_READY)
+        fill_audio_out_buffers(mpctx, endpts); // actually play prepared buffer
+
+    if (!mpctx->restart_complete) {
+        mpctx->hrseek_active = false;
+        mpctx->restart_complete = true;
+        mp_notify(mpctx, MPV_EVENT_PLAYBACK_RESTART, NULL);
+        if (!mpctx->playing_msg_shown) {
+            if (opts->playing_msg) {
+                char *msg =
+                    mp_property_expand_escaped_string(mpctx, opts->playing_msg);
+                MP_INFO(mpctx, "%s\n", msg);
+                talloc_free(msg);
+            }
+            if (opts->osd_playing_msg) {
+                char *msg =
+                    mp_property_expand_escaped_string(mpctx, opts->osd_playing_msg);
+                set_osd_msg(mpctx, 1, opts->osd_duration, "%s", msg);
+                talloc_free(msg);
+            }
+        }
+        mpctx->playing_msg_shown = true;
+    }
+}
+
+// Determines whether the end of the current segment is reached, and switch to
+// the next one if required. Also handles regular playback end.
+static void handle_segment_switch(struct MPContext *mpctx, bool end_is_new_segment)
+{
+    /* Don't quit while paused and we're displaying the last video frame. On the
+     * other hand, if we don't have a video frame, then the user probably seeked
+     * outside of the video, and we do want to quit. */
+    bool prevent_eof =
+        mpctx->paused && mpctx->video_out && vo_has_frame(mpctx->video_out);
+    /* It's possible for the user to simultaneously switch both audio
+     * and video streams to "disabled" at runtime. Handle this by waiting
+     * rather than immediately stopping playback due to EOF.
+     */
+    if ((mpctx->d_audio || mpctx->d_video) && !prevent_eof &&
+        mpctx->audio_status == STATUS_EOF &&
+        mpctx->video_status == STATUS_EOF)
+    {
+        int new_part = mpctx->timeline_part + 1;
+        if (end_is_new_segment && new_part < mpctx->num_timeline_parts) {
+            mp_seek(mpctx, (struct seek_params){
+                           .type = MPSEEK_ABSOLUTE,
+                           .amount = mpctx->timeline[new_part].start
+                           }, true);
+        } else {
+            mpctx->stop_play = AT_END_OF_FILE;
+        }
+    }
+}
+
+void run_playloop(struct MPContext *mpctx)
+{
     double endpts = get_play_end_pts(mpctx);
     bool end_is_new_segment = false;
 
@@ -890,40 +990,9 @@ void run_playloop(struct MPContext *mpctx)
     fill_audio_out_buffers(mpctx, endpts);
     write_video(mpctx, endpts);
 
-    // We always make sure audio and video buffers are filled before actually
-    // starting playback. This code handles starting them at the same time.
-    if (mpctx->audio_status >= STATUS_READY &&
-        mpctx->video_status >= STATUS_READY)
-    {
-        if (mpctx->video_status == STATUS_READY) {
-            mpctx->video_status = STATUS_PLAYING;
-            get_relative_time(mpctx);
-            mpctx->sleeptime = 0;
-        }
-        if (mpctx->audio_status == STATUS_READY)
-            fill_audio_out_buffers(mpctx, endpts); // actually play prepared buffer
-        if (!mpctx->restart_complete) {
-            mpctx->hrseek_active = false;
-            mpctx->restart_complete = true;
-            mp_notify(mpctx, MPV_EVENT_PLAYBACK_RESTART, NULL);
-            if (!mpctx->playing_msg_shown) {
-                if (opts->playing_msg) {
-                    char *msg =
-                        mp_property_expand_escaped_string(mpctx, opts->playing_msg);
-                    MP_INFO(mpctx, "%s\n", msg);
-                    talloc_free(msg);
-                }
-                if (opts->osd_playing_msg) {
-                    char *msg =
-                        mp_property_expand_escaped_string(mpctx, opts->osd_playing_msg);
-                    set_osd_msg(mpctx, 1, opts->osd_duration, "%s", msg);
-                    talloc_free(msg);
-                }
-            }
-            mpctx->playing_msg_shown = true;
-        }
-    }
+    handle_playback_restart(mpctx, endpts);
 
+    // Use the audio timestamp if no video, or video is enabled, but has ended.
     if (mpctx->video_status == STATUS_EOF &&
         mpctx->audio_status >= STATUS_PLAYING &&
         mpctx->audio_status < STATUS_EOF)
@@ -936,30 +1005,7 @@ void run_playloop(struct MPContext *mpctx)
     update_osd_msg(mpctx);
     update_subtitles(mpctx);
 
-    /* Don't quit while paused and we're displaying the last video frame. On the
-     * other hand, if we don't have a video frame, then the user probably seeked
-     * outside of the video, and we do want to quit. */
-    bool prevent_eof =
-        mpctx->paused && mpctx->video_out && vo_has_frame(mpctx->video_out);
-    /* Handles terminating on end of playback (or switching to next segment).
-     *
-     * It's possible for the user to simultaneously switch both audio
-     * and video streams to "disabled" at runtime. Handle this by waiting
-     * rather than immediately stopping playback due to EOF.
-     */
-    if ((mpctx->d_audio || mpctx->d_video) && !prevent_eof &&
-        mpctx->audio_status == STATUS_EOF &&
-        mpctx->video_status == STATUS_EOF)
-    {
-        int new_part = mpctx->timeline_part + 1;
-        if (end_is_new_segment && new_part < mpctx->num_timeline_parts) {
-            mp_seek(mpctx, (struct seek_params){
-                           .type = MPSEEK_ABSOLUTE,
-                           .amount = mpctx->timeline[new_part].start
-                           }, true);
-        } else
-            mpctx->stop_play = AT_END_OF_FILE;
-    }
+    handle_segment_switch(mpctx, end_is_new_segment);
 
     mp_handle_nav(mpctx);
 

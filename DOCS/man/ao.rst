@@ -39,8 +39,6 @@ Available audio output drivers are:
     ``device=<device>``
         Sets the device name. For ac3 output via S/PDIF, use an "iec958" or
         "spdif" device, unless you really know how to set it correctly.
-    ``no-block``
-        Sets noblock-mode.
     ``resample=yes``
         Enable ALSA resampling plugin. (This is disabled by default, because
         some drivers report incorrect audio delay in some cases.)
@@ -69,6 +67,40 @@ Available audio output drivers are:
         Note that the ``[`` and ``]`` simply quote the device name. With some
         shells (like zsh), you have to quote the option string to prevent the
         shell from interpreting the brackets instead of passing them to mpv.
+
+        Actually, you should use the ``--audio-device`` option, instead of
+        setting the device directly.
+
+    .. warning::
+
+        Handling of multichannel/surround audio changed in mpv 0.8.0 from the
+        behavior in MPlayer/mplayer2 and older versions of mpv.
+
+        The old behavior is that the player always downmixed to stereo by
+        default. The ``--audio-channels`` (or ``--channels`` before that) option
+        had to be set to get multichannel audio. Then playing stereo would
+        use the ``default`` device (which typically allows multiple programs
+        to play audio at the same time via dmix), while playing anything with
+        more channels would open one of the hardware devices, e.g. via the
+        ``surround51`` alias (typically with exclusive access). Whether the
+        player would use exclusive access or not would depend on the file
+        being played.
+
+        The new behavior since mpv 0.8.0 always enables multichannel audio,
+        i.e. ``--audio-channels=auto`` is the default. However, since ALSA
+        provides no good way to play multichannel audio in a non-exclusive
+        way (without blocking other applications from using audio), the player
+        is restricted to the capabilities of the ``default`` device by default,
+        which means it supports only stereo and mono (at least with current
+        typical ALSA configurations). But if a hardware device is selected,
+        then multichannel audio will typically work.
+
+        The short story is: if you want multichannel audio with ALSA, use
+        ``--audio-device`` to select the device (use ``--audio-device=help``
+        to get a list of all devices and their mpv name).
+
+        You can also try
+        `Using the upmix plugin <https://github.com/mpv-player/mpv/wiki/ALSA:-Surround-Sound-and-Upmixing>`_.
 
 ``oss``
     OSS audio output driver
@@ -157,19 +189,6 @@ Available audio output drivers are:
         If you have stuttering video when using pulse, try to enable this
         option. (Or alternatively, try to update PulseAudio.)
 
-``portaudio``
-    PortAudio audio output driver. This works on all platforms, and has
-    extensive MS Windows support.
-
-    .. note:: This driver is not very useful. It was added in the hope of
-              providing portable audio API across all platforms, but turned
-              out semi-broken and underfeatured.
-
-    ``device``
-        Specify the subdevice to use. Giving ``help`` as device name lists all
-        devices found by PortAudio. Devices can be given as numeric values,
-        starting from ``1``.
-
 ``dsound`` (Windows only)
     DirectX DirectSound audio output driver
 
@@ -228,6 +247,9 @@ Available audio output drivers are:
         Simulate broken audio drivers, which always add the fixed device
         latency to the reported audio playback position.
 
+    ``broken-delay``
+        Simulate broken audio drivers, which don't report latency correctly.
+
 ``pcm``
     Raw PCM/WAVE file writer audio output
 
@@ -238,6 +260,10 @@ Available audio output drivers are:
         Write the sound to ``<filename>`` instead of the default
         ``audiodump.wav``. If ``no-waveheader`` is specified, the default is
         ``audiodump.pcm``.
+    ``(no-)append``
+        Append to the file, instead of overwriting it. Always use this with the
+        ``no-waveheader`` option - with ``waveheader`` it's broken, because
+        it will write a WAVE header every time the file is opened.
 
 ``rsound``
     Audio output to an RSound daemon

@@ -58,7 +58,6 @@ struct priv {
     int buffersize; // in frames
     int outburst; // in frames
 
-    int cfg_block;
     char *cfg_device;
     char *cfg_mixer_device;
     char *cfg_mixer_name;
@@ -321,47 +320,6 @@ static bool query_chmaps(struct ao *ao, struct mp_chmap *chmap)
 
 #endif /* else HAVE_CHMAP_API */
 
-// Lists device names and their implied channel map.
-// The second item must be resolvable with mp_chmap_from_str().
-// Source: http://www.alsa-project.org/main/index.php/DeviceNames
-// (Speaker names are slightly different from mpv's.)
-static const char *const device_channel_layouts[][2] = {
-    {"default",         "fc"},
-    {"default",         "fl-fr"},
-    {"rear",            "bl-br"},
-    {"center_lfe",      "fc-lfe"},
-    {"side",            "sl-sr"},
-    {"surround40",      "fl-fr-bl-br"},
-    {"surround50",      "fl-fr-bl-br-fc"},
-    {"surround41",      "fl-fr-bl-br-lfe"},
-    {"surround51",      "fl-fr-bl-br-fc-lfe"},
-    {"surround71",      "fl-fr-bl-br-fc-lfe-sl-sr"},
-};
-
-#define NUM_ALSA_CHMAPS MP_ARRAY_SIZE(device_channel_layouts)
-
-static const char *select_chmap(struct ao *ao, struct mp_chmap *chmap)
-{
-    struct mp_chmap_sel sel = {0};
-    struct mp_chmap maps[NUM_ALSA_CHMAPS];
-    for (int n = 0; n < NUM_ALSA_CHMAPS; n++) {
-        mp_chmap_from_str(&maps[n], bstr0(device_channel_layouts[n][1]));
-        mp_chmap_sel_add_map(&sel, &maps[n]);
-    };
-
-    if (!ao_chmap_sel_adjust(ao, &sel, chmap))
-        return "default";
-
-    for (int n = 0; n < NUM_ALSA_CHMAPS; n++) {
-        if (mp_chmap_equals(chmap, &maps[n]))
-            return device_channel_layouts[n][0];
-    }
-
-    MP_ERR(ao, "channel layout %s (%d ch) not supported.\n",
-           mp_chmap_to_str(chmap), chmap->num);
-    return "default";
-}
-
 static int map_iec958_srate(int srate)
 {
     switch (srate) {
@@ -405,7 +363,7 @@ static char *append_params(void *ta_parent, const char *device, const char *p)
     abort();
 }
 
-static int try_open_device(struct ao *ao, const char *device, int open_mode)
+static int try_open_device(struct ao *ao, const char *device)
 {
     struct priv *p = ao->priv;
 
@@ -418,13 +376,13 @@ static int try_open_device(struct ao *ao, const char *device, int open_mode)
                         map_iec958_srate(ao->samplerate));
         const char *ac3_device = append_params(tmp, device, params);
         int err = snd_pcm_open
-                    (&p->alsa, ac3_device, SND_PCM_STREAM_PLAYBACK, open_mode);
+                    (&p->alsa, ac3_device, SND_PCM_STREAM_PLAYBACK, 0);
         talloc_free(tmp);
         if (!err)
             return 0;
     }
 
-    return snd_pcm_open(&p->alsa, device, SND_PCM_STREAM_PLAYBACK, open_mode);
+    return snd_pcm_open(&p->alsa, device, SND_PCM_STREAM_PLAYBACK, 0);
 }
 
 static void uninit(struct ao *ao)
@@ -441,7 +399,10 @@ static void uninit(struct ao *ao)
 alsa_error: ;
 }
 
-static int init(struct ao *ao)
+#define INIT_OK 0
+#define INIT_ERROR -1
+#define INIT_BRAINDEATH -2
+static int init_device(struct ao *ao)
 {
     struct priv *p = ao->priv;
     int err;
@@ -449,47 +410,25 @@ static int init(struct ao *ao)
     if (!p->cfg_ni)
         ao->format = af_fmt_from_planar(ao->format);
 
-    struct mp_chmap implied_chmap = ao->channels;
-    const char *device;
+    const char *device = "default";
     if (AF_FORMAT_IS_IEC61937(ao->format)) {
         device = "iec958";
         MP_VERBOSE(ao, "playing AC3/iec61937/iec958, %i channels\n",
                    ao->channels.num);
-    } else {
-        device = select_chmap(ao, &implied_chmap);
-        // Not-default likely means a hw device - enable software conversions.
-        if (strcmp(device, "default") != 0)
-            device = talloc_asprintf(ao, "plug:%s", device);
     }
-    const char *old_dev = device;
     if (ao->device)
         device = ao->device;
     if (p->cfg_device && p->cfg_device[0])
         device = p->cfg_device;
-    bool user_set_device = device != old_dev; // not strcmp()
 
     MP_VERBOSE(ao, "using device: %s\n", device);
     MP_VERBOSE(ao, "using ALSA version: %s\n", snd_asoundlib_version());
 
-    err = try_open_device(ao, device, p->cfg_block ? 0 : SND_PCM_NONBLOCK);
-    if (err < 0) {
-        if (err == -EBUSY && !user_set_device && strcmp(device, "default") != 0) {
-            MP_WARN(ao, "Device '%s' busy, retrying default.\n", device);
-            err = try_open_device(ao, "default", 0);
-        } else if (err != -EBUSY && !p->cfg_block) {
-            MP_WARN(ao, "Open in nonblock-mode "
-                    "failed, trying to open in block-mode.\n");
-            err = try_open_device(ao, device, 0);
-        }
-        CHECK_ALSA_ERROR("Playback open error");
-    }
+    err = try_open_device(ao, device);
+    CHECK_ALSA_ERROR("Playback open error");
 
     err = snd_pcm_nonblock(p->alsa, 0);
-    if (err < 0) {
-        MP_ERR(ao, "Error setting block-mode: %s.\n", snd_strerror(err));
-    } else {
-        MP_VERBOSE(ao, "pcm opened in blocking mode\n");
-    }
+    CHECK_ALSA_WARN("Unable to set blocking mode");
 
     snd_pcm_hw_params_t *alsa_hwparams;
     snd_pcm_sw_params_t *alsa_swparams;
@@ -544,8 +483,9 @@ static int init(struct ao *ao)
     } else if (query_chmaps(ao, &dev_chmap)) {
         ao->channels = dev_chmap;
     } else {
+        // Assume only stereo and mono are supported.
+        mp_chmap_from_channels(&ao->channels, MPMIN(2, dev_chmap.num));
         dev_chmap.num = 0;
-        ao->channels = implied_chmap;
     }
 
     int num_channels = ao->channels.num;
@@ -643,6 +583,34 @@ static int init(struct ao *ao)
                 MP_WARN(ao, "ALSA channel map conflicts with channel count!\n");
             }
         } else {
+            // Is it one that contains NA channels?
+            struct mp_chmap chmap2 = {0};
+            for (int c = 0; c < alsa_chmap->channels; c++) {
+                int alsa_ch = alsa_chmap->pos[c];
+                if (alsa_ch != SND_CHMAP_NA)
+                    chmap2.speaker[chmap2.num++] = find_mp_channel(alsa_ch);
+            }
+
+            if (mp_chmap_is_valid(&chmap2)) {
+                // Sometimes, ALSA will advertise certain chmaps, but it's not
+                // possible to set them. This can happen with dmix: as of
+                // alsa 1.0.28, dmix can do stereo only, but advertises the
+                // surround chmaps of the underlying device. In this case,
+                // requesting e.g. 5.1 will fail, but it will still allow
+                // setting 6 channels. Then it will return something like
+                // "FL FR NA NA NA NA" as channel map. This means we would
+                // have to pad stereo output to 6 channels with silence, which
+                // is way too complicated in the general case. You can't change
+                // the number of channels to 2 either, because the hw params
+                // are already set! So just fuck it and reopen the device with
+                // the chmap "cleaned out" of NA entries.
+                err = snd_pcm_close(p->alsa);
+                p->alsa = NULL;
+                CHECK_ALSA_ERROR("pcm close error");
+                ao->channels = chmap2;
+                return INIT_BRAINDEATH;
+            }
+
             MP_WARN(ao, "Got unknown channel map from ALSA.\n");
         }
 
@@ -698,11 +666,19 @@ static int init(struct ao *ao)
 
     p->can_pause = snd_pcm_hw_params_can_pause(alsa_hwparams);
 
-    return 0;
+    return INIT_OK;
 
 alsa_error:
     uninit(ao);
-    return -1;
+    return INIT_ERROR;
+}
+
+static int init(struct ao *ao)
+{
+    int r = init_device(ao);
+    if (r == INIT_BRAINDEATH)
+        r = init_device(ao); // retry with normalized channel layout
+    return r == INIT_OK ? 0 : -1;
 }
 
 static void drain(struct ao *ao)
@@ -946,7 +922,6 @@ const struct ao_driver audio_out_alsa = {
     .list_devs = list_devs,
     .priv_size = sizeof(struct priv),
     .priv_defaults = &(const struct priv) {
-        .cfg_block = 1,
         .cfg_mixer_device = "default",
         .cfg_mixer_name = "Master",
         .cfg_mixer_index = 0,
@@ -955,7 +930,6 @@ const struct ao_driver audio_out_alsa = {
     .options = (const struct m_option[]) {
         OPT_STRING("device", cfg_device, 0),
         OPT_FLAG("resample", cfg_resample, 0),
-        OPT_FLAG("block", cfg_block, 0),
         OPT_STRING("mixer-device", cfg_mixer_device, 0),
         OPT_STRING("mixer-name", cfg_mixer_name, 0),
         OPT_INTRANGE("mixer-index", cfg_mixer_index, 0, 0, 99),

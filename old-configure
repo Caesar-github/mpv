@@ -179,7 +179,6 @@ options_state_machine() {
     opt_yes_no _dvdnav      "libdvdnav"
     opt_yes_no _enca        "ENCA charset oracle library"
     opt_yes_no _libass      "subtitle rendering with libass"
-    opt_yes_no _libpostproc "postprocess filter (vf_pp)"
     opt_yes_no _libavdevice "libavdevice demuxers"
     opt_yes_no _libavfilter "libavfilter"
     opt_yes_no _jpeg        "support for writing JPEG screenshots"
@@ -205,7 +204,6 @@ options_state_machine() {
     opt_yes_no _rsound      "RSound audio output"
     opt_yes_no _sndio       "sndio audio output"
     opt_yes_no _pulse       "Pulseaudio audio output"
-    opt_yes_no _portaudio   "PortAudio audio output"
     opt_yes_no _jack        "JACK audio output"
     opt_yes_no _openal      "OpenAL audio output"
     opt_yes_no _shm         "X11/Xv shared memory"
@@ -705,8 +703,6 @@ check_statement_libs "sndio" $_sndio SNDIO sndio.h 'struct sio_par par; sio_init
 
 check_pkg_config "PulseAudio" $_pulse PULSE 'libpulse >= 1.0'
 
-check_pkg_config "PortAudio" $_portaudio PORTAUDIO 'portaudio-2.0 >= 19'
-
 check_pkg_config "JACK" $_jack JACK 'jack'
 
 check_pkg_config "OpenAL" $_openal OPENAL 'openal >= 1.13'
@@ -821,12 +817,6 @@ api_statement_check \
     'enum AVFrameSideDataType type = AV_FRAME_DATA_SKIP_SAMPLES'
 
 api_statement_check \
-    "libavutil QP API" \
-    HAVE_AVUTIL_QP_API \
-    libavutil/frame.h \
-    'av_frame_get_qp_table(NULL, NULL, NULL)'
-
-api_statement_check \
     "libavcodec av_vdpau_alloc_context()" \
     HAVE_AVCODEC_VDPAU_ALLOC_CONTEXT \
     libavcodec/vdpau.h \
@@ -835,8 +825,6 @@ api_statement_check \
 check_pkg_config "libavfilter" $_libavfilter LIBAVFILTER 'libavfilter >= 3.90.100'
 
 check_pkg_config "libavdevice" $_libavdevice LIBAVDEVICE 'libavdevice >= 54.0.0'
-
-check_pkg_config "libpostproc" $_libpostproc LIBPOSTPROC 'libpostproc >= 52.0.0'
 
 check_trivial "TV interface" $_tv TV
 
@@ -972,7 +960,6 @@ cat > $TMPC << EOF
 #define HAVE_DOS_PATHS 0
 #define HAVE_PRIORITY 0
 #define HAVE_GLOB 1
-#define HAVE_SYS_MMAN_H 1
 #define HAVE_NANOSLEEP 1
 #define HAVE_SDL1 0
 #define HAVE_WAIO 0

@@ -21,6 +21,7 @@
 
 #include "bitmap_packer.h"
 
+#include "gl_utils.h"
 #include "gl_osd.h"
 
 struct osd_fmt_entry {
@@ -39,21 +40,35 @@ static const int blend_factors[SUBBITMAP_COUNT][4] = {
 
 static const struct osd_fmt_entry osd_to_gl3_formats[SUBBITMAP_COUNT] = {
     [SUBBITMAP_LIBASS] = {GL_RED,   GL_RED,   GL_UNSIGNED_BYTE},
-    [SUBBITMAP_RGBA] =   {GL_RGBA,  GL_BGRA,  GL_UNSIGNED_BYTE},
+    [SUBBITMAP_RGBA] =   {GL_RGBA,  GL_RGBA,  GL_UNSIGNED_BYTE},
+};
+
+static const struct osd_fmt_entry osd_to_gles3_formats[SUBBITMAP_COUNT] = {
+    [SUBBITMAP_LIBASS] = {GL_R8,    GL_RED,   GL_UNSIGNED_BYTE},
+    [SUBBITMAP_RGBA] =   {GL_RGBA8, GL_RGBA,  GL_UNSIGNED_BYTE},
 };
 
 static const struct osd_fmt_entry osd_to_gl2_formats[SUBBITMAP_COUNT] = {
     [SUBBITMAP_LIBASS] = {GL_LUMINANCE, GL_LUMINANCE,   GL_UNSIGNED_BYTE},
-    [SUBBITMAP_RGBA] =   {GL_RGBA,      GL_BGRA,        GL_UNSIGNED_BYTE},
+    [SUBBITMAP_RGBA] =   {GL_RGBA,      GL_RGBA,        GL_UNSIGNED_BYTE},
 };
 
-static const struct osd_fmt_entry osd_to_gl_legacy_formats[SUBBITMAP_COUNT] = {
-    [SUBBITMAP_LIBASS] = {GL_ALPHA, GL_ALPHA,   GL_UNSIGNED_BYTE},
-    [SUBBITMAP_RGBA] =   {GL_RGBA,  GL_BGRA,    GL_UNSIGNED_BYTE},
+struct vertex {
+    float position[2];
+    uint8_t color[4];
+    float texcoord[2];
 };
 
+static const struct gl_vao_entry vertex_vao[] = {
+    {"vertex_position", 2, GL_FLOAT,         false, offsetof(struct vertex, position)},
+    {"vertex_color",    4, GL_UNSIGNED_BYTE, true,  offsetof(struct vertex, color)},
+    {"vertex_texcoord", 2, GL_FLOAT,         false, offsetof(struct vertex, texcoord)},
+    {0}
+};
+
+// programs: SUBBITMAP_COUNT elements
 struct mpgl_osd *mpgl_osd_init(GL *gl, struct mp_log *log, struct osd_state *osd,
-                               bool legacy)
+                               GLuint *programs)
 {
     GLint max_texture_size;
     gl->GetIntegerv(GL_MAX_TEXTURE_SIZE, &max_texture_size);
@@ -64,11 +79,12 @@ struct mpgl_osd *mpgl_osd_init(GL *gl, struct mp_log *log, struct osd_state *osd
         .osd = osd,
         .gl = gl,
         .fmt_table = osd_to_gl3_formats,
+        .programs = programs,
         .scratch = talloc_zero_size(ctx, 1),
     };
 
-    if (legacy) {
-        ctx->fmt_table = osd_to_gl_legacy_formats;
+    if (gl->es >= 300) {
+        ctx->fmt_table = osd_to_gles3_formats;
     } else if (!(gl->mpgl_caps & MPGL_CAP_TEX_RG)) {
         ctx->fmt_table = osd_to_gl2_formats;
     }
@@ -87,6 +103,8 @@ struct mpgl_osd *mpgl_osd_init(GL *gl, struct mp_log *log, struct osd_state *osd
     for (int n = 0; n < SUBBITMAP_COUNT; n++)
         ctx->formats[n] = ctx->fmt_table[n].type != 0;
 
+    gl_vao_init(&ctx->vao, gl, sizeof(struct vertex), vertex_vao);
+
     return ctx;
 }
 
@@ -96,6 +114,8 @@ void mpgl_osd_destroy(struct mpgl_osd *ctx)
         return;
 
     GL *gl = ctx->gl;
+
+    gl_vao_uninit(&ctx->vao);
 
     for (int n = 0; n < MAX_OSD_PARTS; n++) {
         struct mpgl_osd_part *p = ctx->parts[n];
@@ -220,8 +240,8 @@ static bool upload_osd(struct mpgl_osd *ctx, struct mpgl_osd_part *osd,
     return true;
 }
 
-struct mpgl_osd_part *mpgl_osd_generate(struct mpgl_osd *ctx,
-                                        struct sub_bitmaps *imgs)
+static struct mpgl_osd_part *mpgl_osd_generate(struct mpgl_osd *ctx,
+                                               struct sub_bitmaps *imgs)
 {
     if (imgs->num_parts == 0 || !ctx->formats[imgs->format])
         return NULL;
@@ -242,110 +262,111 @@ struct mpgl_osd_part *mpgl_osd_generate(struct mpgl_osd *ctx,
     return osd->packer->count ? osd : NULL;
 }
 
-void mpgl_osd_set_gl_state(struct mpgl_osd *ctx, struct mpgl_osd_part *p)
+static void write_quad(struct vertex *va,
+                       float x0, float y0, float x1, float y1,
+                       float tx0, float ty0, float tx1, float ty1,
+                       float tex_w, float tex_h, const uint8_t color[4])
 {
-    GL *gl = ctx->gl;
-
-    gl->BindTexture(GL_TEXTURE_2D, p->texture);
-    gl->Enable(GL_BLEND);
-
-    const int *factors = &blend_factors[p->format][0];
-    if (gl->BlendFuncSeparate) {
-        gl->BlendFuncSeparate(factors[0], factors[1], factors[2], factors[3]);
-    } else {
-        gl->BlendFunc(factors[0], factors[1]);
-    }
+#define COLOR_INIT {color[0], color[1], color[2], color[3]}
+    va[0] = (struct vertex){ {x0, y0}, COLOR_INIT, {tx0 / tex_w, ty0 / tex_h} };
+    va[1] = (struct vertex){ {x0, y1}, COLOR_INIT, {tx0 / tex_w, ty1 / tex_h} };
+    va[2] = (struct vertex){ {x1, y0}, COLOR_INIT, {tx1 / tex_w, ty0 / tex_h} };
+    va[3] = (struct vertex){ {x1, y1}, COLOR_INIT, {tx1 / tex_w, ty1 / tex_h} };
+    va[4] = va[2];
+    va[5] = va[1];
+#undef COLOR_INIT
 }
 
-void mpgl_osd_unset_gl_state(struct mpgl_osd *ctx, struct mpgl_osd_part *p)
-{
-    GL *gl = ctx->gl;
-
-    gl->Disable(GL_BLEND);
-    gl->BindTexture(GL_TEXTURE_2D, 0);
-}
-
-struct vertex {
-    float position[2];
-    uint8_t color[4];
-    float texcoord[2];
-};
-
-static void draw_legacy_cb(void *pctx, struct sub_bitmaps *imgs)
+static void draw_osd_cb(void *pctx, struct sub_bitmaps *imgs)
 {
     struct mpgl_osd *ctx = pctx;
-    struct mpgl_osd_part *osd = mpgl_osd_generate(ctx, imgs);
-    if (!osd)
+    GL *gl = ctx->gl;
+
+    struct mpgl_osd_part *part = mpgl_osd_generate(ctx, imgs);
+    if (!part)
         return;
 
-    if (!osd->num_vertices) {
-        // 2 triangles primitives per quad = 6 vertices per quad
-        // not using GL_QUADS, as it is deprecated in OpenGL 3.x and later
-        osd->vertices = talloc_realloc(osd, osd->vertices, struct vertex,
-                                       osd->packer->count * 6);
+    assert(part->format != SUBBITMAP_EMPTY);
 
-        struct vertex *va = osd->vertices;
-        float tex_w = osd->w;
-        float tex_h = osd->h;
+    if (!part->num_vertices) {
+        part->vertices = talloc_realloc(part, part->vertices, struct vertex,
+                                        part->packer->count * 6);
 
-        for (int n = 0; n < osd->packer->count; n++) {
+        struct vertex *va = part->vertices;
+
+        for (int n = 0; n < part->packer->count; n++) {
             struct sub_bitmap *b = &imgs->parts[n];
-            struct pos p = osd->packer->result[n];
+            struct pos pos = part->packer->result[n];
 
-            uint32_t c = imgs->format == SUBBITMAP_LIBASS
-                         ? b->libass.color : 0xFFFFFF00;
+            // NOTE: the blend color is used with SUBBITMAP_LIBASS only, so it
+            //       doesn't matter that we upload garbage for the other formats
+            uint32_t c = b->libass.color;
             uint8_t color[4] = { c >> 24, (c >> 16) & 0xff,
-                                 (c >> 8) & 0xff, 255 - (c & 0xff) };
+                                (c >> 8) & 0xff, 255 - (c & 0xff) };
 
-            float x0 = b->x;
-            float y0 = b->y;
-            float x1 = b->x + b->dw;
-            float y1 = b->y + b->dh;
-            float tx0 = p.x / tex_w;
-            float ty0 = p.y / tex_h;
-            float tx1 = (p.x + b->w) / tex_w;
-            float ty1 = (p.y + b->h) / tex_h;
-
-#define COLOR_INIT {color[0], color[1], color[2], color[3]}
-            struct vertex *v = &va[osd->num_vertices];
-            v[0] = (struct vertex) { {x0, y0}, COLOR_INIT, {tx0, ty0} };
-            v[1] = (struct vertex) { {x0, y1}, COLOR_INIT, {tx0, ty1} };
-            v[2] = (struct vertex) { {x1, y0}, COLOR_INIT, {tx1, ty0} };
-            v[3] = (struct vertex) { {x1, y1}, COLOR_INIT, {tx1, ty1} };
-            v[4] = v[2];
-            v[5] = v[1];
-#undef COLOR_INIT
-            osd->num_vertices += 6;
+            write_quad(&va[part->num_vertices],
+                    b->x, b->y, b->x + b->dw, b->y + b->dh,
+                    pos.x, pos.y, pos.x + b->w, pos.y + b->h,
+                    part->w, part->h, color);
+            part->num_vertices += 6;
         }
     }
 
-    GL *gl = ctx->gl;
+    gl->BindTexture(GL_TEXTURE_2D, part->texture);
 
-    struct vertex *va = osd->vertices;
-    size_t stride = sizeof(va[0]);
+    const int *factors = &blend_factors[part->format][0];
+    gl->BlendFuncSeparate(factors[0], factors[1], factors[2], factors[3]);
+    int program = ctx->programs[part->format];
 
-    gl->VertexPointer(2, GL_FLOAT, stride, &va[0].position[0]);
-    gl->ColorPointer(4, GL_UNSIGNED_BYTE, stride, &va[0].color[0]);
-    gl->TexCoordPointer(2, GL_FLOAT, stride, &va[0].texcoord[0]);
+    gl->UseProgram(program);
 
-    gl->EnableClientState(GL_VERTEX_ARRAY);
-    gl->EnableClientState(GL_TEXTURE_COORD_ARRAY);
-    gl->EnableClientState(GL_COLOR_ARRAY);
+    bool set_offset = ctx->offset[0] != 0.0f || ctx->offset[1] != 0.0f;
+    if (set_offset) {
+        gl->Uniform3f(gl->GetUniformLocation(program, "translation"),
+                      ctx->offset[0], ctx->offset[1], 0);
+    }
 
-    mpgl_osd_set_gl_state(ctx, osd);
-    gl->DrawArrays(GL_TRIANGLES, 0, osd->num_vertices);
-    mpgl_osd_unset_gl_state(ctx, osd);
+    gl_vao_draw_data(&ctx->vao, GL_TRIANGLES, part->vertices, part->num_vertices);
 
-    gl->DisableClientState(GL_VERTEX_ARRAY);
-    gl->DisableClientState(GL_TEXTURE_COORD_ARRAY);
-    gl->DisableClientState(GL_COLOR_ARRAY);
+    if (set_offset)
+        gl->Uniform3f(gl->GetUniformLocation(program, "translation"), 0, 0, 0);
+
+    gl->UseProgram(0);
+    gl->BindTexture(GL_TEXTURE_2D, 0);
 }
 
-void mpgl_osd_draw_legacy(struct mpgl_osd *ctx, double pts,
-                          struct mp_osd_res res)
+// number of screen divisions per axis (x=0, y=1) for the current 3D mode
+static void get_3d_side_by_side(int stereo_mode, int div[2])
 {
-    ctx->fmt_table = osd_to_gl_legacy_formats;
-    for (int n = 0; n < SUBBITMAP_COUNT; n++)
-        ctx->formats[n] = ctx->fmt_table[n].type != 0;
-    osd_draw(ctx->osd, res, pts, 0, ctx->formats, draw_legacy_cb, ctx);
+    div[0] = div[1] = 1;
+    switch (stereo_mode) {
+    case MP_STEREO3D_SBS2L:
+    case MP_STEREO3D_SBS2R: div[0] = 2; break;
+    case MP_STEREO3D_AB2R:
+    case MP_STEREO3D_AB2L:  div[1] = 2; break;
+    }
+}
+
+void mpgl_osd_draw(struct mpgl_osd *ctx, struct mp_osd_res res, double pts,
+                   int stereo_mode)
+{
+    GL *gl = ctx->gl;
+
+    gl->Enable(GL_BLEND);
+
+    int div[2];
+    get_3d_side_by_side(stereo_mode, div);
+
+    for (int x = 0; x < div[0]; x++) {
+        for (int y = 0; y < div[1]; y++) {
+            struct mp_osd_res s_res = res;
+            s_res.w /= div[0];
+            s_res.h /= div[1];
+            ctx->offset[0] = s_res.w * x;
+            ctx->offset[1] = s_res.h * y;
+            osd_draw(ctx->osd, s_res, pts, 0, ctx->formats, draw_osd_cb, ctx);
+        }
+    }
+
+    gl->Disable(GL_BLEND);
 }

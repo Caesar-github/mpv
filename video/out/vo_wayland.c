@@ -25,7 +25,6 @@
 #include "config.h"
 
 #include "vo.h"
-#include "video/vfcap.h"
 #include "video/mp_image.h"
 #include "video/sws_utils.h"
 #include "video/memcpy_pic.h"
@@ -267,14 +266,6 @@ static bool redraw_frame(struct priv *p)
 {
     draw_image(p->vo, NULL);
     return true;
-}
-
-static mp_image_t *get_screenshot(struct priv *p)
-{
-    if (!p->original_image)
-        return NULL;
-
-    return mp_image_new_ref(p->original_image);
 }
 
 static bool resize(struct priv *p)
@@ -553,17 +544,17 @@ static void flip_page(struct vo *vo)
     }
 }
 
-static int query_format(struct vo *vo, uint32_t format)
+static int query_format(struct vo *vo, int format)
 {
     struct priv *p = vo->priv;
     struct supported_format *sf;
     wl_list_for_each_reverse(sf, &p->format_list, link) {
         if (sf->format.mp_format == format)
-            return VFCAP_CSP_SUPPORTED_BY_HW | VFCAP_CSP_SUPPORTED;
+            return 1;
     }
 
     if (mp_sws_supported_format(format))
-        return VFCAP_CSP_SUPPORTED;
+        return 1;
 
     return 0;
 }
@@ -690,12 +681,6 @@ static int control(struct vo *vo, uint32_t request, void *data)
     }
     case VOCTRL_REDRAW_FRAME:
         return redraw_frame(p);
-    case VOCTRL_SCREENSHOT:
-    {
-        struct voctrl_screenshot_args *args = data;
-        args->out_image = get_screenshot(p);
-        return VO_TRUE;
-    }
     case VOCTRL_GET_RECENT_FLIP_TIME:
     {
         *(int64_t*) data = p->recent_flip_time;

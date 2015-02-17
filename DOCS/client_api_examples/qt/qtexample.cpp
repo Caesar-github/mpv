@@ -28,7 +28,7 @@ static void wakeup(void *ctx)
     // the Qt GUI thread to wake up (so that it can process events with
     // mpv_wait_event()), and return as quickly as possible.
     MainWindow *mainwindow = (MainWindow *)ctx;
-    QCoreApplication::postEvent(mainwindow, new QEvent(QEvent::User));
+    emit mainwindow->mpv_events();
 }
 
 MainWindow::MainWindow(QWidget *parent) :
@@ -41,8 +41,12 @@ MainWindow::MainWindow(QWidget *parent) :
     QAction *on_open = new QAction(tr("&Open"), this);
     on_open->setShortcuts(QKeySequence::Open);
     on_open->setStatusTip(tr("Open a file"));
-    connect(on_open, SIGNAL(triggered()), this, SLOT(on_file_open()));
+    connect(on_open, &QAction::triggered, this, &MainWindow::on_file_open);
     menu->addAction(on_open);
+
+    QAction *on_new = new QAction(tr("&New window"), this);
+    connect(on_new, &QAction::triggered, this, &MainWindow::on_new_window);
+    menu->addAction(on_new);
 
     statusBar();
 
@@ -88,8 +92,10 @@ MainWindow::MainWindow(QWidget *parent) :
     mpv_request_log_messages(mpv, "info");
 
     // From this point on, the wakeup function will be called. The callback
-    // can come from any thread, so we use the Qt QEvent mechanism to relay
-    // the wakeup in a thread-safe way.
+    // can come from any thread, so we use the QueuedConnection mechanism to
+    // relay the wakeup in a thread-safe way.
+    connect(this, &MainWindow::mpv_events, this, &MainWindow::on_mpv_events,
+            Qt::QueuedConnection);
     mpv_set_wakeup_callback(mpv, wakeup, this);
 
     if (mpv_initialize(mpv) < 0)
@@ -163,20 +169,16 @@ void MainWindow::handle_mpv_event(mpv_event *event)
     }
 }
 
-bool MainWindow::event(QEvent *event)
+// This slot is invoked by wakeup() (through the mpv_events signal).
+void MainWindow::on_mpv_events()
 {
-    // QEvent::User is sent by wakeup().
-    if (event->type() == QEvent::User) {
-        // Process all events, until the event queue is empty.
-        while (mpv) {
-            mpv_event *event = mpv_wait_event(mpv, 0);
-            if (event->event_id == MPV_EVENT_NONE)
-                break;
-            handle_mpv_event(event);
-        }
-        return true;
+    // Process all events, until the event queue is empty.
+    while (mpv) {
+        mpv_event *event = mpv_wait_event(mpv, 0);
+        if (event->event_id == MPV_EVENT_NONE)
+            break;
+        handle_mpv_event(event);
     }
-    return QMainWindow::event(event);
 }
 
 void MainWindow::on_file_open()
@@ -187,6 +189,11 @@ void MainWindow::on_file_open()
         const char *args[] = {"loadfile", c_filename.data(), NULL};
         mpv_command_async(mpv, 0, args);
     }
+}
+
+void MainWindow::on_new_window()
+{
+    (new MainWindow())->show();
 }
 
 void MainWindow::append_log(const QString &text)

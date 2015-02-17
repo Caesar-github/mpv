@@ -37,4 +37,13 @@ void mp_resume_all(struct mpv_handle *ctx);
 // m_option.c
 void *node_get_alloc(struct mpv_node *node);
 
+// vo_opengl_cb.c
+struct mpv_opengl_cb_context;
+struct mpv_global;
+struct osd_state;
+struct mpv_opengl_cb_context *mp_opengl_create(struct mpv_global *g,
+                                               struct osd_state *osd,
+                                               struct mp_client_api *client_api);
+void kill_video(struct mp_client_api *client_api);
+
 #endif

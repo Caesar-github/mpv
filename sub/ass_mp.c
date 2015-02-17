@@ -146,6 +146,11 @@ void mp_ass_configure(ASS_Renderer *priv, struct MPOpts *opts,
             int vidh = dim->h - (dim->mt + dim->mb);
             set_font_scale *= dim->h / (float)MPMAX(vidh, 1);
         }
+        if (!opts->sub_scale_by_window) {
+            double factor = dim->h / 720.0;
+            if (factor != 0.0)
+                set_font_scale /= factor;
+        }
     }
 
     ass_set_use_margins(priv, set_use_margins);
@@ -202,7 +207,7 @@ void mp_ass_render_frame(ASS_Renderer *renderer, ASS_Track *track, double time,
 
     res->parts = *parts;
     res->num_parts = 0;
-    int num_parts_alloc = MP_TALLOC_ELEMS(res->parts);
+    int num_parts_alloc = MP_TALLOC_AVAIL(res->parts);
     for (struct ass_image *img = imgs; img; img = img->next) {
         if (img->w == 0 || img->h == 0)
             continue;

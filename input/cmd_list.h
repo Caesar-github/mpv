@@ -73,6 +73,9 @@ enum mp_command_type {
     MP_CMD_MULTIPLY,
     MP_CMD_CYCLE_VALUES,
     MP_CMD_STOP,
+    MP_CMD_AUDIO_ADD,
+    MP_CMD_AUDIO_REMOVE,
+    MP_CMD_AUDIO_RELOAD,
 
     MP_CMD_ENABLE_INPUT_SECTION,
     MP_CMD_DISABLE_INPUT_SECTION,
@@ -82,6 +85,8 @@ enum mp_command_type {
     MP_CMD_AB_LOOP,
 
     MP_CMD_DROP_BUFFERS,
+
+    MP_CMD_MOUSE,
 
     /// Audio Filter commands
     MP_CMD_AF,

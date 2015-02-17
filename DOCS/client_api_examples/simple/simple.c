@@ -1,9 +1,18 @@
+// Build with: gcc -o simple simple.c `pkg-config --libs --cflags mpv`
+
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 
-#include "libmpv/client.h"
-#include "shared.h"
+#include <mpv/client.h>
+
+static inline void check_error(int status)
+{
+    if (status < 0) {
+        printf("mpv API error: %s\n", mpv_error_string(status));
+        exit(1);
+    }
+}
 
 int main(int argc, char *argv[])
 {

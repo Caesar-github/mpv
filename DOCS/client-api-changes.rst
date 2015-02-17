@@ -25,6 +25,18 @@ API changes
 
 ::
 
+ git    - the --msg-level option changes its native type from a flat string to
+          a key-value list (setting/reading the option as string still works)
+ 1.14   - add mpv_wait_async_requests()
+ 1.13   - add MPV_EVENT_QUEUE_OVERFLOW
+ 1.12   - add class Handle to qthelper.hpp
+        - improve opengl_cb.h API uninitialization behavior, and fix the qml
+          example
+        - add mpv_create_client() function
+ 1.11   - add OpenGL rendering interop API - allows an application to combine
+          its own and mpv's OpenGL rendering
+          Warning: this API is not stable yet - anything in opengl_cb.h might
+                   be changed in completely incompatible ways in minor API bumps
  --- mpv 0.7.0 is released ---
  1.10   - deprecate/disable everything directly related to script_dispatch
           (most likely affects nobody)

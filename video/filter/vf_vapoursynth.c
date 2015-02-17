@@ -26,6 +26,7 @@
 #include <VSHelper.h>
 
 #include <libavutil/rational.h>
+#include <libavutil/cpu.h>
 
 #include "config.h"
 
@@ -265,7 +266,7 @@ static void VS_CC vs_frame_done(void *userData, const VSFrameRef *f, int n,
 static bool locked_need_input(struct vf_instance *vf)
 {
     struct vf_priv_s *p = vf->priv;
-    return p->num_buffered < MP_TALLOC_ELEMS(p->buffered);
+    return p->num_buffered < MP_TALLOC_AVAIL(p->buffered);
 }
 
 // Return true if progress was made.
@@ -456,7 +457,7 @@ static const VSFrameRef *VS_CC infiltGetFrame(int frameno, int activationReason,
             p->vsapi->setFilterError(msg, frameCtx);
             break;
         }
-        if (frameno >= p->in_frameno + MP_TALLOC_ELEMS(p->buffered)) {
+        if (frameno >= p->in_frameno + MP_TALLOC_AVAIL(p->buffered)) {
             // Too far in the future. Remove frames, so that the main thread can
             // queue new frames.
             if (p->num_buffered) {
@@ -591,6 +592,7 @@ static int reinit_vs(struct vf_instance *vf)
     p->vsapi->propSetInt(vars, "video_in_dw", p->fmt_in.d_w, 0);
     p->vsapi->propSetInt(vars, "video_in_dh", p->fmt_in.d_h, 0);
     p->vsapi->propSetFloat(vars, "container_fps", vf->chain->container_fps, 0);
+    p->vsapi->propSetFloat(vars, "display_fps", vf->chain->display_fps, 0);
 
     if (p->drv->load(vf, vars) < 0)
         goto error;
@@ -653,7 +655,7 @@ static int config(struct vf_instance *vf, int width, int height,
 
 static int query_format(struct vf_instance *vf, unsigned int fmt)
 {
-    return mp_to_vs(fmt) != pfNone ? VFCAP_CSP_SUPPORTED : 0;
+    return mp_to_vs(fmt) != pfNone;
 }
 
 static int control(vf_instance_t *vf, int request, void *data)
@@ -700,9 +702,12 @@ static int vf_open(vf_instance_t *vf)
     vf->query_format = query_format;
     vf->control = control;
     vf->uninit = uninit;
-    int maxbuffer = p->cfg_maxbuffer * p->cfg_maxrequests;
-    p->buffered = talloc_array(vf, struct mp_image *, maxbuffer);
     p->max_requests = p->cfg_maxrequests;
+    if (p->max_requests < 0)
+        p->max_requests = av_cpu_count();
+    MP_VERBOSE(vf, "using %d concurrent requests.\n", p->max_requests);
+    int maxbuffer = p->cfg_maxbuffer * p->max_requests;
+    p->buffered = talloc_array(vf, struct mp_image *, maxbuffer);
     p->requested = talloc_zero_array(vf, struct mp_image *, p->max_requests);
     return 1;
 }
@@ -711,7 +716,8 @@ static int vf_open(vf_instance_t *vf)
 static const m_option_t vf_opts_fields[] = {
     OPT_STRING("file", cfg_file, 0),
     OPT_INTRANGE("buffered-frames", cfg_maxbuffer, 0, 1, 9999, OPTDEF_INT(4)),
-    OPT_INTRANGE("concurrent-frames", cfg_maxrequests, 0, 1, 99, OPTDEF_INT(2)),
+    OPT_CHOICE_OR_INT("concurrent-frames", cfg_maxrequests, 0, 1, 99,
+                      ({"auto", -1}), OPTDEF_INT(-1)),
     {0}
 };
 
@@ -824,6 +830,7 @@ static int drv_lazy_init(struct vf_instance *vf)
     p->ls = luaL_newstate();
     if (!p->ls)
         return -1;
+    luaL_openlibs(p->ls);
     p->vsapi = getVapourSynthAPI(VAPOURSYNTH_API_VERSION);
     p->vscore = p->vsapi ? p->vsapi->createCore(0) : NULL;
     if (!p->vscore) {

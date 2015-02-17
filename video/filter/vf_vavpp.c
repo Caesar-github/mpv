@@ -71,6 +71,16 @@ static const struct vf_priv_s vf_priv_default = {
     .deint_type = 2,
 };
 
+// The array items must match with the "deint" suboption values.
+static const int deint_algorithm[] = {
+    [0] = VAProcDeinterlacingNone,
+    [1] = VAProcDeinterlacingNone, // first-field, special-cased
+    [2] = VAProcDeinterlacingBob,
+    [3] = VAProcDeinterlacingWeave,
+    [4] = VAProcDeinterlacingMotionAdaptive,
+    [5] = VAProcDeinterlacingMotionCompensated,
+};
+
 static inline void realloc_refs(struct surface_refs *refs, int num)
 {
     if (refs->num_allocated < num) {
@@ -192,7 +202,8 @@ static int process(struct vf_instance *vf, struct mp_image *in,
     if (!*out1) // cannot render
         return 0;
     mp_image_copy_attributes(*out1, in);
-    if (field == VA_FRAME_PICTURE || p->deint_type < 2) // first-field only
+    // first-field only
+    if (field == VA_FRAME_PICTURE || (p->do_deint && p->deint_type < 2))
         return 1;
     const double add = (in->pts - p->prev_pts)*0.5;
     if (p->prev_pts == MP_NOPTS_VALUE || add <= 0.0 || add > 0.5) // no pts, skip it
@@ -284,7 +295,7 @@ static void uninit(struct vf_instance *vf)
 static int query_format(struct vf_instance *vf, unsigned int imgfmt)
 {
     struct vf_priv_s *p = vf->priv;
-    if (imgfmt == IMGFMT_VAAPI || va_image_format_from_imgfmt(p->va->image_formats, imgfmt))
+    if (imgfmt == IMGFMT_VAAPI || va_image_format_from_imgfmt(p->va, imgfmt))
         return vf_next_query_format(vf, IMGFMT_VAAPI);
     return 0;
 }
@@ -353,15 +364,15 @@ static bool initialize(struct vf_instance *vf)
         buffers[i] = VA_INVALID_ID;
     for (int i=0; i<num_filters; ++i) {
         if (filters[i] == VAProcFilterDeinterlacing) {
-            if (!p->deint_type)
+            if (p->deint_type < 2)
                 continue;
             VAProcFilterCapDeinterlacing caps[VAProcDeinterlacingCount];
             int num = va_query_filter_caps(vf, VAProcFilterDeinterlacing, caps,
                                            VAProcDeinterlacingCount);
             if (!num)
                 continue;
-            VAProcDeinterlacingType algorithm = VAProcDeinterlacingBob;
-            for (int n=0; n < num; n++) { // find Bob
+            VAProcDeinterlacingType algorithm = deint_algorithm[p->deint_type];
+            for (int n=0; n < num; n++) { // find the algorithm
                 if (caps[n].type != algorithm)
                     continue;
                 VAProcFilterParameterBufferDeinterlacing param;
@@ -370,13 +381,13 @@ static bool initialize(struct vf_instance *vf)
                 buffers[VAProcFilterDeinterlacing] =
                     va_create_filter_buffer(vf, sizeof(param), 1, &param);
             }
+            if (buffers[VAProcFilterDeinterlacing] == VA_INVALID_ID)
+                MP_WARN(vf, "Selected deinterlacing algorithm not supported.\n");
         } // check other filters
     }
     p->num_buffers = 0;
     if (buffers[VAProcFilterDeinterlacing] != VA_INVALID_ID)
         p->buffers[p->num_buffers++] = buffers[VAProcFilterDeinterlacing];
-    else
-        p->deint_type = 0;
     p->do_deint = !!p->deint_type;
     // next filters: p->buffers[p->num_buffers++] = buffers[next_filter];
     return true;
@@ -391,8 +402,10 @@ static int vf_open(vf_instance_t *vf)
     vf->control = control;
 
     struct vf_priv_s *p = vf->priv;
+    if (!vf->hwdec)
+        return false;
     hwdec_request_api(vf->hwdec, "vaapi");
-    p->va = vf->hwdec ? vf->hwdec->vaapi_ctx : NULL;
+    p->va = vf->hwdec->hwctx ? vf->hwdec->hwctx->vaapi_ctx : NULL;
     if (!p->va || !p->va->display)
         return false;
     p->display = p->va->display;
@@ -405,9 +418,13 @@ static int vf_open(vf_instance_t *vf)
 #define OPT_BASE_STRUCT struct vf_priv_s
 static const m_option_t vf_opts_fields[] = {
     OPT_CHOICE("deint", deint_type, 0,
+               // The values must match with deint_algorithm[].
                ({"no", 0},
                 {"first-field", 1},
-                {"bob", 2})),
+                {"bob", 2},
+                {"weave", 3},
+                {"motion-adaptive", 4},
+                {"motion-compensated", 5})),
     {0}
 };
 

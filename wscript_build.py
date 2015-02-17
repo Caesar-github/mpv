@@ -107,7 +107,7 @@ def build(ctx):
         ( "audio/filter/af_drc.c" ),
         ( "audio/filter/af_dummy.c" ),
         ( "audio/filter/af_equalizer.c" ),
-        ( "audio/filter/af_export.c",            "sys-mman-h" ),
+        ( "audio/filter/af_export.c" ),
         ( "audio/filter/af_extrastereo.c" ),
         ( "audio/filter/af_forcespeed.c" ),
         ( "audio/filter/af_format.c" ),
@@ -140,7 +140,6 @@ def build(ctx):
         ( "audio/out/ao_openal.c",               "openal" ),
         ( "audio/out/ao_oss.c",                  "oss-audio" ),
         ( "audio/out/ao_pcm.c" ),
-        ( "audio/out/ao_portaudio.c",            "portaudio" ),
         ( "audio/out/ao_pulse.c",                "pulse" ),
         ( "audio/out/ao_rsound.c",               "rsound" ),
         ( "audio/out/ao_sdl.c",                  "sdl1" ),
@@ -178,7 +177,6 @@ def build(ctx):
         ( "demux/demux_subreader.c" ),
         ( "demux/demux_tv.c",                    "tv" ),
         ( "demux/ebml.c" ),
-        ( "demux/mf.c" ),
         ( "demux/packet.c" ),
 
         ## Input
@@ -296,40 +294,33 @@ def build(ctx):
         ( "video/decode/vd_lavc.c" ),
         ( "video/decode/vda.c",                  "vda-hwaccel" ),
         ( "video/decode/vdpau.c",                "vdpau-hwaccel" ),
-        ( "video/filter/pullup.c" ),
         ( "video/filter/vf.c" ),
         ( "video/filter/vf_buffer.c" ),
         ( "video/filter/vf_crop.c" ),
-        ( "video/filter/vf_delogo.c" ),
-        ( "video/filter/vf_divtc.c" ),
+        ( "video/filter/vf_delogo.c",            "libavfilter"),
         ( "video/filter/vf_dlopen.c",            "dlopen" ),
         ( "video/filter/vf_dsize.c" ),
         ( "video/filter/vf_eq.c" ),
         ( "video/filter/vf_expand.c" ),
         ( "video/filter/vf_flip.c" ),
         ( "video/filter/vf_format.c" ),
-        ( "video/filter/vf_gradfun.c" ),
-        ( "video/filter/vf_hqdn3d.c" ),
-        ( "video/filter/vf_ilpack.c" ),
+        ( "video/filter/vf_gradfun.c",           "libavfilter"),
+        ( "video/filter/vf_hqdn3d.c",            "libavfilter"),
         ( "video/filter/vf_lavfi.c",             "libavfilter"),
         ( "video/filter/vf_mirror.c" ),
         ( "video/filter/vf_noformat.c" ),
-        ( "video/filter/vf_noise.c" ),
-        ( "video/filter/vf_phase.c" ),
-        ( "video/filter/vf_pp.c",                "libpostproc" ),
-        ( "video/filter/vf_pullup.c" ),
-        ( "video/filter/vf_rotate.c" ),
+        ( "video/filter/vf_noise.c",             "libavfilter"),
+        ( "video/filter/vf_pullup.c",            "libavfilter"),
+        ( "video/filter/vf_rotate.c",            "libavfilter"),
         ( "video/filter/vf_scale.c" ),
         ( "video/filter/vf_screenshot.c" ),
-        ( "video/filter/vf_softpulldown.c" ),
         ( "video/filter/vf_stereo3d.c" ),
         ( "video/filter/vf_sub.c" ),
-        ( "video/filter/vf_swapuv.c" ),
-        ( "video/filter/vf_unsharp.c" ),
+        ( "video/filter/vf_unsharp.c",           "libavfilter"),
         ( "video/filter/vf_vapoursynth.c",       "vapoursynth-core" ),
         ( "video/filter/vf_vavpp.c",             "vaapi-vpp"),
         ( "video/filter/vf_vdpaupp.c",           "vdpau" ),
-        ( "video/filter/vf_yadif.c" ),
+        ( "video/filter/vf_yadif.c",             "libavfilter"),
         ( "video/out/aspect.c" ),
         ( "video/out/bitmap_packer.c" ),
         ( "video/out/cocoa/video_view.m",        "cocoa" ),
@@ -340,17 +331,18 @@ def build(ctx):
         ( "video/out/filter_kernels.c" ),
         ( "video/out/gl_cocoa.c",                "gl-cocoa" ),
         ( "video/out/gl_common.c",               "gl" ),
+        ( "video/out/gl_hwdec.c",                "gl" ),
         ( "video/out/gl_hwdec_vaglx.c",          "vaapi-glx" ),
         ( "video/out/gl_hwdec_vda.c",            "vda-gl" ),
         ( "video/out/gl_hwdec_vdpau.c",          "vdpau-gl-x11" ),
         ( "video/out/gl_lcms.c",                 "gl" ),
         ( "video/out/gl_osd.c",                  "gl" ),
+        ( "video/out/gl_utils.c",               "gl" ),
         ( "video/out/gl_video.c",                "gl" ),
         ( "video/out/gl_w32.c",                  "gl-win32" ),
         ( "video/out/gl_wayland.c",              "gl-wayland" ),
         ( "video/out/gl_x11.c",                  "gl-x11" ),
         ( "video/out/gl_x11egl.c",               "egl-x11" ),
-        ( "video/out/pnm_loader.c",              "gl" ),
         ( "video/out/vo.c" ),
         ( "video/out/vo_caca.c",                 "caca" ),
         ( "video/out/vo_direct3d.c",             "direct3d" ),
@@ -358,7 +350,7 @@ def build(ctx):
         ( "video/out/vo_lavc.c",                 "encoding" ),
         ( "video/out/vo_null.c" ),
         ( "video/out/vo_opengl.c",               "gl" ),
-        ( "video/out/vo_opengl_old.c",           "gl" ),
+        ( "video/out/vo_opengl_cb.c",            "gl" ),
         ( "video/out/vo_sdl.c",                  "sdl2" ),
         ( "video/out/vo_vaapi.c",                "vaapi" ),
         ( "video/out/vo_vdpau.c",                "vdpau" ),
@@ -392,6 +384,7 @@ def build(ctx):
         ( "osdep/w32_keyboard.c",                "os-win32" ),
         ( "osdep/w32_keyboard.c",                "os-cygwin" ),
         ( "osdep/mpv.rc",                        "win32-executable" ),
+        ( "osdep/win32/pthread.c",               "win32-internal-pthreads"),
 
         ## tree_allocator
         "ta/ta.c", "ta/ta_talloc.c", "ta/ta_utils.c"
@@ -514,32 +507,14 @@ def build(ctx):
             PRIV_LIBS    = get_deps(),
         )
 
-        headers = ["client.h", "qthelper.hpp"]
+        headers = ["client.h", "qthelper.hpp", "opengl_cb.h"]
         for f in headers:
             ctx.install_as(ctx.env.INCDIR + '/mpv/' + f, 'libmpv/' + f)
 
         ctx.install_as(ctx.env.LIBDIR + '/pkgconfig/mpv.pc', 'libmpv/mpv.pc')
 
-    if ctx.dependency_satisfied('client-api-examples'):
-        # This assumes all examples are single-file (as examples should be)
-        examples_sources = [
-            ( "simple.c" ),
-            ( "cocoabasic.m", "cocoa" ),
-        ]
-
-        for source in ctx.filtered_sources(examples_sources):
-            ctx(
-                target       = os.path.splitext(source)[0],
-                source       = "DOCS/client_api_examples/" + source,
-                includes     = [ctx.bldnode.abspath(), ctx.srcnode.abspath()],
-                use          = "mpv",
-                features     = "c cprogram",
-                install_path = None
-            )
-
     if ctx.dependency_satisfied("vf-dlopen-filters"):
-        dlfilters = "showqscale telecine tile rectangle framestep \
-                     ildetect".split()
+        dlfilters = "telecine tile rectangle framestep ildetect".split()
         for dlfilter in dlfilters:
             ctx(
                 target       = dlfilter,

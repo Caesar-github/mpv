@@ -38,7 +38,6 @@
 #include "stream/stream.h"
 #include "demux.h"
 #include "stheader.h"
-#include "mf.h"
 
 #include "audio/format.h"
 
@@ -125,6 +124,7 @@ struct demux_internal {
     // Cached state.
     bool force_cache_update;
     double time_length;
+    struct mp_nav_event *nav_event;
     struct mp_tags *stream_metadata;
     int64_t stream_size;
     int64_t stream_cache_size;
@@ -145,6 +145,9 @@ struct demux_stream {
     size_t bytes;           // total bytes of packets in buffer
     double base_ts;         // timestamp of the last packet returned to decoder
     double last_ts;         // timestamp of the last packet added to queue
+    double last_br_ts;      // timestamp of last packet bitrate was calculated
+    size_t last_br_bytes;   // summed packet sizes since last bitrate calculation
+    double bitrate;
     struct demux_packet *head;
     struct demux_packet *tail;
 };
@@ -171,7 +174,9 @@ static void ds_flush(struct demux_stream *ds)
     ds->head = ds->tail = NULL;
     ds->packs = 0;
     ds->bytes = 0;
-    ds->last_ts = ds->base_ts = MP_NOPTS_VALUE;
+    ds->last_ts = ds->base_ts = ds->last_br_ts = MP_NOPTS_VALUE;
+    ds->last_br_bytes = 0;
+    ds->bitrate = -1;
     ds->eof = false;
     ds->active = false;
 }
@@ -229,6 +234,7 @@ void free_demuxer(demuxer_t *demuxer)
         ds_flush(demuxer->streams[n]->ds);
     pthread_mutex_destroy(&in->lock);
     pthread_cond_destroy(&in->wakeup);
+    talloc_free(in->nav_event);
     talloc_free(demuxer);
 }
 
@@ -512,6 +518,22 @@ static struct demux_packet *dequeue_packet(struct demux_stream *ds)
     if (ts != MP_NOPTS_VALUE)
         ds->base_ts = ts;
 
+    if (pkt->keyframe) {
+        // Update bitrate - only at keyframe points, because we use the
+        // (possibly) reordered packet timestamps instead of realtime.
+        double d = ts - ds->last_br_ts;
+        if (ts == MP_NOPTS_VALUE || ds->last_br_ts == MP_NOPTS_VALUE || d < 0) {
+            ds->bitrate = -1;
+            ds->last_br_ts = ts;
+            ds->last_br_bytes = 0;
+        } else if (d > 0 && d >= 0.5) { // a window of least 500ms for UI purposes
+            ds->bitrate = ds->last_br_bytes / d;
+            ds->last_br_ts = ts;
+            ds->last_br_bytes = 0;
+        }
+    }
+    ds->last_br_bytes += pkt->len;
+
     // This implies this function is actually called from "the" user thread.
     if (pkt->pos >= ds->in->d_user->filepos)
         ds->in->d_user->filepos = pkt->pos;
@@ -661,10 +683,8 @@ static int decode_gain(demuxer_t *demuxer, const char *tag, float *out)
     float dec_val;
 
     tag_val = mp_tags_get_str(demuxer->metadata, tag);
-    if (!tag_val) {
-        mp_msg(demuxer->log, MSGL_V, "Replaygain tags not found\n");
+    if (!tag_val)
         return -1;
-    }
 
     if (decode_float(tag_val, &dec_val)) {
         mp_msg(demuxer->log, MSGL_ERR, "Invalid replaygain value\n");
@@ -738,8 +758,10 @@ static void demux_copy(struct demuxer *dst, struct demuxer *src)
         dst->file_contents = src->file_contents;
         dst->playlist = src->playlist;
         dst->seekable = src->seekable;
+        dst->partially_seekable = src->partially_seekable;
         dst->filetype = src->filetype;
         dst->ts_resets_possible = src->ts_resets_possible;
+        dst->rel_seeks = src->rel_seeks;
         dst->start_time = src->start_time;
     }
     if (src->events & DEMUX_EVENT_STREAMS) {
@@ -777,6 +799,8 @@ void demux_changed(demuxer_t *demuxer, int events)
 
     demux_copy(in->d_buffer, demuxer);
 
+    if (in->wakeup_cb)
+        in->wakeup_cb(in->wakeup_cb_ctx);
     pthread_mutex_unlock(&in->lock);
 }
 
@@ -839,13 +863,15 @@ static struct demuxer *open_given_type(struct mpv_global *global,
         .d_thread = talloc(demuxer, struct demuxer),
         .d_buffer = talloc(demuxer, struct demuxer),
         .d_user = demuxer,
-        .min_secs = stream->uncached_stream ? demuxer->opts->demuxer_min_secs_cache
-                                            : demuxer->opts->demuxer_min_secs,
+        .min_secs = demuxer->opts->demuxer_min_secs,
         .min_packs = demuxer->opts->demuxer_min_packs,
         .min_bytes = demuxer->opts->demuxer_min_bytes,
     };
     pthread_mutex_init(&in->lock, NULL);
     pthread_cond_init(&in->wakeup, NULL);
+
+    if (stream->uncached_stream)
+        in->min_secs = MPMAX(in->min_secs, demuxer->opts->demuxer_min_secs_cache);
 
     *in->d_thread = *demuxer;
     *in->d_buffer = *demuxer;
@@ -875,11 +901,12 @@ static struct demuxer *open_given_type(struct mpv_global *global,
         else
             mp_verbose(log, "Detected file format: %s\n", desc->desc);
         if (!in->d_thread->seekable)
-            mp_warn(log, "Stream is not seekable.\n");
+            mp_verbose(log, "Stream is not seekable.\n");
         // Pretend we can seek if we can't seek, but there's a cache.
         if (!in->d_thread->seekable && stream->uncached_stream) {
-            mp_warn(log, "Enabling seeking because stream cache is active.\n");
+            mp_verbose(log, "Enabling seeking because stream cache is active.\n");
             in->d_thread->seekable = true;
+            in->d_thread->partially_seekable = true;
         }
         demux_init_cache(demuxer);
         demux_changed(in->d_thread, DEMUX_EVENT_ALL);
@@ -1135,10 +1162,17 @@ static void update_cache(struct demux_internal *in)
     int64_t stream_cache_size = -1;
     int64_t stream_cache_fill = -1;
     int stream_cache_idle = -1;
+    struct mp_nav_event *nav_event = NULL;
+
+    pthread_mutex_lock(&in->lock);
+    bool need_nav_event = !in->nav_event;;
+    pthread_mutex_unlock(&in->lock);
 
     if (demuxer->desc->control) {
         demuxer->desc->control(demuxer, DEMUXER_CTRL_GET_TIME_LENGTH,
                                &time_length);
+        if (need_nav_event)
+            demuxer->desc->control(demuxer, DEMUXER_CTRL_GET_NAV_EVENT, &nav_event);
     }
 
     stream_control(stream, STREAM_CTRL_GET_METADATA, &stream_metadata);
@@ -1158,6 +1192,7 @@ static void update_cache(struct demux_internal *in)
         in->stream_metadata = talloc_steal(in, stream_metadata);
         in->d_buffer->events |= DEMUX_EVENT_METADATA;
     }
+    in->nav_event = nav_event ? nav_event : in->nav_event;
     pthread_mutex_unlock(&in->lock);
 }
 
@@ -1221,6 +1256,16 @@ static int cached_demux_control(struct demux_internal *in, int cmd, void *arg)
         in->tracks_switched = true;
         pthread_cond_signal(&in->wakeup);
         return DEMUXER_CTRL_OK;
+    case DEMUXER_CTRL_GET_BITRATE_STATS: {
+        double *rates = arg;
+        for (int n = 0; n < STREAM_TYPE_COUNT; n++)
+            rates[n] = 0;
+        for (int n = 0; n < in->d_user->num_streams; n++) {
+            struct demux_stream *ds = in->d_user->streams[n]->ds;
+            rates[ds->type] += MPMAX(0, ds->bitrate);
+        }
+        return DEMUXER_CTRL_OK;
+    }
     case DEMUXER_CTRL_GET_READER_STATE: {
         struct demux_ctrl_reader_state *r = arg;
         *r = (struct demux_ctrl_reader_state){
@@ -1248,6 +1293,13 @@ static int cached_demux_control(struct demux_internal *in, int cmd, void *arg)
             r->ts_duration = 0;
         return DEMUXER_CTRL_OK;
     }
+    case DEMUXER_CTRL_GET_NAV_EVENT:
+        if (!in->nav_event)
+            return DEMUXER_CTRL_NOTIMPL;
+        *(struct mp_nav_event **)arg = in->nav_event;
+        in->nav_event = NULL;
+        return DEMUXER_CTRL_OK;
+
     }
     return DEMUXER_CTRL_DONTKNOW;
 }

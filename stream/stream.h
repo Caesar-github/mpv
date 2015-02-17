@@ -65,33 +65,28 @@ enum streamtype {
 #define STREAM_OK    1
 
 enum stream_ctrl {
-    STREAM_CTRL_GET_TIME_LENGTH = 1,
-    STREAM_CTRL_GET_NUM_CHAPTERS,
-    STREAM_CTRL_GET_CURRENT_TIME,
-    STREAM_CTRL_SEEK_TO_TIME,
-    STREAM_CTRL_GET_SIZE,
-    STREAM_CTRL_GET_ASPECT_RATIO,
-    STREAM_CTRL_GET_NUM_ANGLES,
-    STREAM_CTRL_GET_ANGLE,
-    STREAM_CTRL_SET_ANGLE,
-    STREAM_CTRL_GET_NUM_TITLES,
-    STREAM_CTRL_GET_LANG,
-    STREAM_CTRL_GET_CURRENT_TITLE,
-    STREAM_CTRL_SET_CURRENT_TITLE,
+    STREAM_CTRL_GET_SIZE = 1,
+
+    // Cache
     STREAM_CTRL_GET_CACHE_SIZE,
     STREAM_CTRL_SET_CACHE_SIZE,
     STREAM_CTRL_GET_CACHE_FILL,
     STREAM_CTRL_GET_CACHE_IDLE,
     STREAM_CTRL_RESUME_CACHE,
-    STREAM_CTRL_RECONNECT,
-    STREAM_CTRL_GET_CHAPTER_TIME,
-    STREAM_CTRL_GET_DVD_INFO,
+
+    // stream_memory.c
     STREAM_CTRL_SET_CONTENTS,
-    STREAM_CTRL_GET_METADATA,
+
+    // stream_rar.c
     STREAM_CTRL_GET_BASE_FILENAME,
-    STREAM_CTRL_GET_NAV_EVENT,          // struct mp_nav_event**
-    STREAM_CTRL_NAV_CMD,                // struct mp_nav_cmd*
-    STREAM_CTRL_GET_DISC_NAME,
+
+    // Certain network protocols
+    STREAM_CTRL_RECONNECT,
+    STREAM_CTRL_AVSEEK,
+    STREAM_CTRL_HAS_AVSEEK,
+    STREAM_CTRL_GET_METADATA,
+
+    // TV
     STREAM_CTRL_TV_SET_SCAN,
     STREAM_CTRL_SET_TV_FREQ,
     STREAM_CTRL_GET_TV_FREQ,
@@ -100,12 +95,31 @@ enum stream_ctrl {
     STREAM_CTRL_TV_SET_NORM,
     STREAM_CTRL_TV_STEP_NORM,
     STREAM_CTRL_TV_SET_CHAN,
+    STREAM_CTRL_TV_GET_CHAN,
     STREAM_CTRL_TV_STEP_CHAN,
     STREAM_CTRL_TV_LAST_CHAN,
     STREAM_CTRL_DVB_SET_CHANNEL,
     STREAM_CTRL_DVB_STEP_CHANNEL,
-    STREAM_CTRL_AVSEEK,
-    STREAM_CTRL_HAS_AVSEEK,
+
+    // Optical discs
+    STREAM_CTRL_GET_TIME_LENGTH,
+    STREAM_CTRL_GET_DVD_INFO,
+    STREAM_CTRL_GET_NAV_EVENT,          // struct mp_nav_event**
+    STREAM_CTRL_NAV_CMD,                // struct mp_nav_cmd*
+    STREAM_CTRL_GET_DISC_NAME,
+    STREAM_CTRL_GET_NUM_CHAPTERS,
+    STREAM_CTRL_GET_CURRENT_TIME,
+    STREAM_CTRL_GET_CHAPTER_TIME,
+    STREAM_CTRL_SEEK_TO_TIME,
+    STREAM_CTRL_GET_ASPECT_RATIO,
+    STREAM_CTRL_GET_NUM_ANGLES,
+    STREAM_CTRL_GET_ANGLE,
+    STREAM_CTRL_SET_ANGLE,
+    STREAM_CTRL_GET_NUM_TITLES,
+    STREAM_CTRL_GET_TITLE_LENGTH,       // double* (in: title number, out: len)
+    STREAM_CTRL_GET_LANG,
+    STREAM_CTRL_GET_CURRENT_TITLE,
+    STREAM_CTRL_SET_CURRENT_TITLE,
 };
 
 struct stream_lang_req {
@@ -171,16 +185,15 @@ typedef struct stream {
     int read_chunk; // maximum amount of data to read at once to limit latency
     unsigned int buf_pos, buf_len;
     int64_t pos;
-    uint64_t end_pos; // static size; use STREAM_CTRL_GET_SIZE instead
     int eof;
     int mode; //STREAM_READ or STREAM_WRITE
-    bool streaming;     // known to be a network stream if true
     void *priv; // used for DVD, TV, RTSP etc
     char *url;  // filename/url (possibly including protocol prefix)
     char *path; // filename (url without protocol prefix)
     char *mime_type; // when HTTP streaming is used
     char *demuxer; // request demuxer to be used
     char *lavf_type; // name of expected demuxer type for lavf
+    bool streaming : 1; // known to be a network stream if true
     bool seekable : 1; // presence of general byte seeking support
     bool fast_skip : 1; // consider stream fast enough to fw-seek by skipping
     bool safe_origin : 1; // used for playlists that can be opened safely
@@ -238,8 +251,8 @@ inline static int64_t stream_tell(stream_t *s)
     return s->pos + s->buf_pos - s->buf_len;
 }
 
-int stream_skip(stream_t *s, int64_t len);
-int stream_seek(stream_t *s, int64_t pos);
+bool stream_skip(stream_t *s, int64_t len);
+bool stream_seek(stream_t *s, int64_t pos);
 int stream_read(stream_t *s, char *mem, int total);
 int stream_read_partial(stream_t *s, char *buf, int buf_size);
 struct bstr stream_peek(stream_t *s, int len);
@@ -263,6 +276,7 @@ char *mp_url_escape(void *talloc_ctx, const char *s, const char *ok);
 struct mp_cancel *mp_cancel_new(void *talloc_ctx);
 void mp_cancel_trigger(struct mp_cancel *c);
 bool mp_cancel_test(struct mp_cancel *c);
+bool mp_cancel_wait(struct mp_cancel *c, double timeout);
 void mp_cancel_reset(struct mp_cancel *c);
 void *mp_cancel_get_event(struct mp_cancel *c); // win32 HANDLE
 int mp_cancel_get_fd(struct mp_cancel *c);

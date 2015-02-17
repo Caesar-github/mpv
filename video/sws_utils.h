@@ -6,7 +6,6 @@
 #include "mp_image.h"
 
 struct mp_image;
-struct mp_csp_details;
 struct sws_opts;
 
 // libswscale currently requires 16 bytes alignment for row pointers and
@@ -59,6 +58,8 @@ int mp_sws_scale(struct mp_sws_context *ctx, struct mp_image *dst,
 struct vf_seteq;
 int mp_sws_set_vf_equalizer(struct mp_sws_context *sws, struct vf_seteq *eq);
 int mp_sws_get_vf_equalizer(struct mp_sws_context *sws, struct vf_seteq *eq);
+
+struct mp_image *mp_img_swap_to_native(struct mp_image *img);
 
 #endif /* MP_SWS_UTILS_H */
 

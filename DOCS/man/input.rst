@@ -109,11 +109,20 @@ List of Input Commands
     keyframes
         Always restart playback at keyframe boundaries (fast).
 
-``revert_seek``
+``revert_seek [mode]``
     Undoes the ``seek`` command, and some other commands that seek (but not
     necessarily all of them). Calling this command once will jump to the
     playback position before the seek. Calling it a second time undoes the
-    ``revert_seek`` command itself.
+    ``revert_seek`` command itself. This only works within a single file.
+
+    The first argument is optional, and can change the behavior:
+
+    mark
+        Mark the current time position. The next normal ``revert_seek`` command
+        will seek back to this point, no matter how many seeks happened since
+        last time.
+
+    Using it without any arguments gives you the default behavior.
 
 ``frame_step``
     Play one frame, then pause. Does nothing with audio-only playback.
@@ -365,6 +374,32 @@ List of Input Commands
     essentially like ``quit``. Useful for the client API: playback can be
     stopped without terminating the player.
 
+``mouse <x> <y> [<button> [single|double]]``
+    Send a mouse event with given coordinate (``<x>``, ``<y>``).
+
+    Second argument:
+
+    <button>
+        The button number of clicked mouse button. This should be one of 0-19.
+        If ``<button>`` is omitted, only the position will be updated.
+
+    Third argument:
+
+    <single> (default)
+        The mouse event represents regular single click.
+
+    <double>
+        The mouse event represents double-click.
+
+``audio_add "<file>" [<flags> [<title> [<lang>]]]``
+    Load the given audio file. See ``sub_add`` command.
+
+``audio_remove [<id>]``
+    Remove the given audio track. See ``sub_remove`` command.
+
+``audio_reload [<id>]``
+    Reload the given audio tracks. See ``sub_reload`` command.
+
 
 Input Commands that are Possibly Subject to Change
 --------------------------------------------------
@@ -491,18 +526,15 @@ Input Commands that are Possibly Subject to Change
 
     It is also possible to pass a raw memory address for use as bitmap memory
     by passing a memory address as integer prefixed with a ``&`` character.
-    Passing the wrong thing here will crash the player. The ``offset`` parameter
-    is not used and must be 0. This mode might be useful for use with libmpv.
+    Passing the wrong thing here will crash the player. This mode might be
+    useful for use with libmpv. The ``offset`` parameter is simply added to the
+    memory address (since mpv 0.8.0, ignored before).
 
-    On Windows, currently only raw memory addresses work. File mapping is not
-    implemented because a ``mmap`` compatibility layer is missing, and because
-    this kind of shared memory method would perhaps not be overly useful on
-    Windows.
-
-    ``offset`` is the offset of the first pixel in the source file. It is
-    passed directly to ``mmap`` and is subject to certain restrictions
-    (see ``man mmap`` for details). In particular, this value has to be a
-    multiple of the system's page size.
+    ``offset`` is the byte offset of the first pixel in the source file.
+    (The current implementation always mmap's the whole file from position 0 to
+    the end of the image, so large offsets should be avoided. Before mpv 0.8.0,
+    the offset was actually passed directly to ``mmap``, but it was changed to
+    make using it easier.)
 
     ``fmt`` is a string identifying the image format. Currently, only ``bgra``
     is defined. This format has 4 bytes per pixels, with 8 bits per component.
@@ -586,8 +618,68 @@ Input Commands that are Possibly Subject to Change
     unseekable streams that are going out of sync.
     This command might be changed or removed in the future.
 
-Undocumented commands: ``tv_last_channel`` (TV/DVB only), ``get_property`` (?),
-``ao_reload`` (experimental/internal).
+Undocumented commands: ``tv_last_channel`` (TV/DVB only),
+``get_property`` (deprecated), ``ao_reload`` (experimental/internal).
+
+Hooks
+~~~~~
+
+Hooks are synchronous events between player core and a script or similar. This
+applies to the Lua scripting interface and the client API and only. Normally,
+events are supposed to be asynchronous, and the hook API provides an awkward
+and obscure way to handle events that require stricter coordination. There are
+no API stability guarantees made. Not following the protocol exactly can make
+the player freeze randomly. Basically, nobody should use this API.
+
+There are two special commands involved. Also, the client must listen for
+client messages (``MPV_EVENT_CLIENT_MESSAGE`` in the C API).
+
+``hook_add <hook-name> <id> <priority>``
+    Subscribe to the hook identified by the first argument (basically, the
+    name of event). The ``id`` argument is an arbitrary integer chosen by the
+    user. ``priority`` is used to sort all hook handlers globally across all
+    clients. Each client can register multiple hook handlers (even for the
+    same hook-name). Once the hook is registered, it cannot be unregistered.
+
+    When a specific event happens, all registered handlers are run serially.
+    This uses a protocol every client has to follow explicitly. When a hook
+    handler is run, a client message (``MPV_EVENT_CLIENT_MESSAGE``) is sent to
+    the client which registered the hook. This message has the following
+    arguments:
+
+    1. the string ``hook_run``
+    2. the ``id`` argument the hook was registered with as string (this can be
+       used to correctly handle multiple hooks registered by the same client,
+       as long as the ``id`` argument is unique in the client)
+    3. something undefined, used by the hook mechanism to track hook execution
+       (currently, it's the hook-name, but this might change without warning)
+
+    Upon receiving this message, the client can handle the event. While doing
+    this, the player core will still react to requests, but playback will
+    typically be stopped.
+
+    When the client is done, it must continue the core's hook execution by
+    running the ``hook_ack`` command.
+
+``hook_ack <string>``
+    Run the next hook in the global chain of hooks. The argument is the 3rd
+    argument of the client message that starts hook execution for the
+    current client.
+
+The following hooks are currently defined:
+
+``on_load``
+    Called when a file is to be opened, before anything is actually done.
+    For example, you could read and write the ``stream-open-filename``
+    property to redirect an URL to something else (consider support for
+    streaming sites which rarely give the user a direct media URL), or
+    you could set per-file options with by setting the property
+    ``file-local-options/<option name>``. The player will wait until all
+    hooks are run.
+
+``on_unload``
+    Run before closing a file, and before actually uninitializing
+    everything. It's not possible to resume playback in this state.
 
 Input Command Prefixes
 ----------------------
@@ -703,6 +795,11 @@ Property list
 
     Otherwise, return the ``filename`` property.
 
+``file-format``
+    Symbolic name of the file format. In some cases, this is a comma-separated
+    list of format names, e.g. mp4 is ``mov,mp4,m4a,3gp,3g2,mj2`` (the list
+    may grow in the future for any format).
+
 ``demuxer``
     Name of the current demuxer. (This is useless.)
 
@@ -771,6 +868,33 @@ Property list
 
 ``disc-titles``
     Number of BD/DVD titles.
+
+    This has a number of sub-properties. Replace ``N`` with the 0-based edition
+    index.
+
+    ``disc-titles/count``
+        Number of titles.
+
+    ``disc-titles/id``
+        Title ID as integer. Currently, this is the same as the title index.
+
+    ``disc-titles/length``
+        Length in seconds. Can be unavailable in a number of cases (currently
+        it works for libdvdnav only).
+
+    When querying the property with the client API using ``MPV_FORMAT_NODE``,
+    or with Lua ``mp.get_property_native``, this will return a mpv_node with
+    the following contents:
+
+    ::
+
+        MPV_FORMAT_NODE_ARRAY
+            MPV_FORMAT_NODE_MAP (for each edition)
+                "id"                MPV_FORMAT_INT64
+                "length"            MPV_FORMAT_DOUBLE
+
+``disc-title-list``
+    List of BD/DVD titles.
 
 ``disc-title`` (RW)
     Current BD/DVD title number. Writing works only for ``dvdnav://`` and
@@ -869,6 +993,10 @@ Property list
         MPV_FORMAT_NODE_MAP
             (key and string value for each metadata entry)
 
+``filtered-metadata``
+    Like ``metadata``, but includes only fields listed in the ``--display-tags``
+    option. This is the same set of tags that is printed to the terminal.
+
 ``chapter-metadata``
     Metadata of current chapter. Works similar to ``metadata`` property. It
     also allows the same access methods (using sub-properties).
@@ -892,6 +1020,10 @@ Property list
 
 ``pause`` (RW)
     Pause status. This is usually ``yes`` or ``no``. See ``--pause``.
+
+``idle``
+    Return ``yes`` if no file is loaded, but the player is staying around
+    because of the ``--idle`` option.
 
 ``core-idle``
     Return ``yes`` if the playback core is paused, otherwise ``no``. This can
@@ -1025,6 +1157,9 @@ Property list
 ``border`` (RW)
     See ``--border``.
 
+``on-all-workspaces`` (RW)
+    See ``--on-all-workspaces``. Unsetting may not work on all WMs.
+
 ``framedrop`` (RW)
     See ``--framedrop``.
 
@@ -1053,6 +1188,17 @@ Property list
     Note that you don't know the success of the operation immediately after
     writing this property. It happens with a delay as video is reinitialized.
 
+``detected-hwdec``
+    Return the current hardware decoder that was detected and opened. Returns
+    the same values as ``hwdec``.
+
+    This is known only once the VO has opened (and possibly later). With some
+    VOs (like ``opengl``), this is never known in advance, but only when the
+    decoder attempted to create the hw decoder successfully. Also, hw decoders
+    with ``-copy`` suffix are returned only while hw decoding is active (and
+    unset afterwards). All this reflects how detecting hw decoders are
+    detected and used internally in mpv.
+
 ``panscan`` (RW)
     See ``--panscan``.
 
@@ -1077,6 +1223,16 @@ Property list
     ``video-params/pixelformat``
         The pixel format as string. This uses the same names as used in other
         places of mpv.
+
+    ``video-params/average-bpp``
+        Average bits-per-pixel as integer. Subsampled planar formats use a
+        different resolution, which is the reason this value can sometimes be
+        odd or confusing. Can be unavailable with some formats.
+
+    ``video-params/plane-depth``
+        Bit depth for each color component as integer. This is only exposed
+        for planar or single-component formats, and is unavailable for other
+        formats.
 
     ``video-params/w``, ``video-params/h``
         Video size as integers, with no aspect correction applied.
@@ -1404,6 +1560,14 @@ Property list
 ``seekable``
     Return whether it's generally possible to seek in the current file.
 
+``partially-seekable``
+    Return ``yes`` if the current file is considered seekable, but only because
+    the cache is active. This means small relative seeks may be fine, but larger
+    seeks may fail anyway. Whether a seek will succeed or not is generally not
+    known in advance.
+
+    If this property returns true, ``seekable`` will also return true.
+
 ``playback-abort``
     Return whether playback is stopped or is to be stopped. (Useful in obscure
     situations like during ``on_load`` hook processing, when the user can
@@ -1443,6 +1607,17 @@ Property list
     whether the video window is visible. If the ``--force-window`` option is
     used, this is usually always returns ``yes``.
 
+``packet-video-bitrate``, ``packet-audio-bitrate``, ``packet-sub-bitrate``
+    Bitrate values calculated on the packet level. This works by dividing the
+    bit size of all packets between two keyframes by their presentation
+    timestamp distance. (This uses the timestamps are stored in the file, so
+    e.g. playback speed does not influence the returned values.) In particular,
+    the video bitrate will update only per keyframe, and show the "past"
+    bitrate. To make the property more UI friendly, updates to these properties
+    are throttled in a certain way.
+
+    How exactly these values are calculated might change in the future.
+
 ``audio-device-list``
     Return the list of discovered audio devices. This is mostly for use with
     the client API, and reflects what ``--audio-device=help`` with the command
@@ -1476,6 +1651,16 @@ Property list
     This property also doesn't tell you which audio device is actually in use.
 
     How these details are handled may change in the future.
+
+``current-vo``
+    Current video output driver (name as used with ``--vo``).
+
+``current-ao``
+    Current audio output driver (name as used with ``--ao``).
+
+``audio-out-detected-device``
+    Return the audio device selected by the AO driver (only implemented for
+    some drivers: currently only ``coreaudio``).
 
 ``mpv-version``
     Return the mpv version/copyright string. Depending on how the binary was

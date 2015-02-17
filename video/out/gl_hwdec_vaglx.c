@@ -24,9 +24,8 @@
 #include <va/va_glx.h>
 
 #include "x11_common.h"
-#include "gl_common.h"
+#include "gl_hwdec.h"
 #include "video/vaapi.h"
-#include "video/hwdec.h"
 
 struct priv {
     struct mp_log *log;
@@ -39,6 +38,7 @@ struct priv {
 static void destroy_texture(struct gl_hwdec *hw)
 {
     struct priv *p = hw->priv;
+    GL *gl = hw->gl;
     VAStatus status;
 
     if (p->vaglx_surface) {
@@ -49,7 +49,7 @@ static void destroy_texture(struct gl_hwdec *hw)
         p->vaglx_surface = NULL;
     }
 
-    glDeleteTextures(1, &p->gl_texture);
+    gl->DeleteTextures(1, &p->gl_texture);
     p->gl_texture = 0;
 }
 
@@ -62,14 +62,15 @@ static void destroy(struct gl_hwdec *hw)
 
 static int create(struct gl_hwdec *hw)
 {
-    if (hw->info->vaapi_ctx)
+    if (hw->hwctx)
         return -1;
-    if (!hw->mpgl->vo->x11 || !glXGetCurrentContext())
+    Display *x11disp = glXGetCurrentDisplay();
+    if (!x11disp)
         return -1;
     struct priv *p = talloc_zero(hw, struct priv);
     hw->priv = p;
     p->log = hw->log;
-    p->display = vaGetDisplayGLX(hw->mpgl->vo->x11->display);
+    p->display = vaGetDisplayGLX(x11disp);
     if (!p->display)
         return -1;
     p->ctx = va_initialize(p->display, p->log);
@@ -77,18 +78,24 @@ static int create(struct gl_hwdec *hw)
         vaTerminate(p->display);
         return -1;
     }
-    hw->info->vaapi_ctx = p->ctx;
+    if (hw->reject_emulated && va_guess_if_emulated(p->ctx)) {
+        destroy(hw);
+        return -1;
+    }
+    hw->hwctx = &p->ctx->hwctx;
     hw->converted_imgfmt = IMGFMT_RGB0;
     return 0;
 }
 
-static int reinit(struct gl_hwdec *hw, const struct mp_image_params *params)
+static int reinit(struct gl_hwdec *hw, struct mp_image_params *params)
 {
     struct priv *p = hw->priv;
-    GL *gl = hw->mpgl->gl;
+    GL *gl = hw->gl;
     VAStatus status;
 
     destroy_texture(hw);
+
+    params->imgfmt = hw->driver->imgfmt;
 
     gl->GenTextures(1, &p->gl_texture);
     gl->BindTexture(GL_TEXTURE_2D, p->gl_texture);

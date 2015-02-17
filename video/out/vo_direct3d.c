@@ -32,7 +32,6 @@
 #include "options/m_option.h"
 #include "talloc.h"
 #include "vo.h"
-#include "video/vfcap.h"
 #include "video/csputils.h"
 #include "video/mp_image.h"
 #include "video/img_format.h"
@@ -180,6 +179,8 @@ typedef struct d3d_priv {
     int max_texture_width;          /**< from the device capabilities */
     int max_texture_height;         /**< from the device capabilities */
 
+    D3DFORMAT osd_fmt_table[SUBBITMAP_COUNT];
+
     D3DMATRIX d3d_colormatrix;
     struct mp_csp_equalizer video_eq;
 
@@ -218,22 +219,12 @@ static const struct fmt_entry fmt_table[] = {
     {0},
 };
 
-static const D3DFORMAT osd_fmt_table[SUBBITMAP_COUNT] = {
-    [SUBBITMAP_LIBASS] = D3DFMT_A8,
-    [SUBBITMAP_RGBA]   = D3DFMT_A8R8G8B8,
-};
-static const bool osd_fmt_supported[SUBBITMAP_COUNT] = {
-    [SUBBITMAP_LIBASS] = true,
-    [SUBBITMAP_RGBA]   = true,
-};
-
 
 static void update_colorspace(d3d_priv *priv);
 static void d3d_clear_video_textures(d3d_priv *priv);
 static bool resize_d3d(d3d_priv *priv);
 static void uninit(struct vo *vo);
 static void flip_page(struct vo *vo);
-static mp_image_t *get_screenshot(d3d_priv *priv);
 static mp_image_t *get_window_screenshot(d3d_priv *priv);
 static void draw_osd(struct vo *vo);
 static bool change_d3d_backbuffer(d3d_priv *priv);
@@ -643,6 +634,27 @@ static bool init_d3d(d3d_priv *priv)
     if (priv->opt_force_power_of_2)
         priv->device_caps_power2_only = 1;
 
+    priv->osd_fmt_table[SUBBITMAP_LIBASS] = D3DFMT_A8;
+    priv->osd_fmt_table[SUBBITMAP_RGBA]   = D3DFMT_A8R8G8B8;
+
+    for (int n = 0; n < MP_ARRAY_SIZE(priv->osd_fmt_table); n++) {
+        int fmt = priv->osd_fmt_table[n];
+        if (fmt && FAILED(IDirect3D9_CheckDeviceFormat(priv->d3d_handle,
+                            D3DADAPTER_DEFAULT,
+                            DEVTYPE,
+                            priv->desktop_fmt,
+                            D3DUSAGE_DYNAMIC | D3DUSAGE_QUERY_FILTER,
+                            D3DRTYPE_TEXTURE,
+                            fmt)))
+        {
+            MP_VERBOSE(priv, "OSD format %#x not supported.\n", fmt);
+            priv->osd_fmt_table[n] = 0;
+        }
+    }
+
+    if (!priv->osd_fmt_table[SUBBITMAP_RGBA])
+        MP_WARN(priv, "GPU too old - no OSD support.\n");
+
     if (!change_d3d_backbuffer(priv))
         return false;
 
@@ -739,6 +751,25 @@ static bool change_d3d_backbuffer(d3d_priv *priv)
     return 1;
 }
 
+static void destroy_d3d(d3d_priv *priv)
+{
+    destroy_d3d_surfaces(priv);
+
+    if (priv->pixel_shader)
+        IDirect3DPixelShader9_Release(priv->pixel_shader);
+    priv->pixel_shader = NULL;
+
+    if (priv->d3d_device)
+        IDirect3DDevice9_Release(priv->d3d_device);
+    priv->d3d_device = NULL;
+
+    if (priv->d3d_handle) {
+        MP_VERBOSE(priv, "Stopping Direct3D.\n");
+        IDirect3D9_Release(priv->d3d_handle);
+    }
+    priv->d3d_handle = NULL;
+}
+
 /** @brief Reconfigure the whole Direct3D. Called only
  *  when the video adapter becomes uncooperative. ("Lost" devices)
  *  @return 1 on success, 0 on failure
@@ -747,19 +778,11 @@ static int reconfigure_d3d(d3d_priv *priv)
 {
     MP_VERBOSE(priv, "reconfigure_d3d called.\n");
 
-    destroy_d3d_surfaces(priv);
-
-    if (priv->d3d_device)
-        IDirect3DDevice9_Release(priv->d3d_device);
-    priv->d3d_device = NULL;
-
     // Force complete destruction of the D3D state.
     // Note: this step could be omitted. The resize_d3d call below would detect
     // that d3d_device is NULL, and would properly recreate it. I'm not sure why
     // the following code to release and recreate the d3d_handle exists.
-    if (priv->d3d_handle)
-        IDirect3D9_Release(priv->d3d_handle);
-    priv->d3d_handle = NULL;
+    destroy_d3d(priv);
     if (!init_d3d(priv))
         return 0;
 
@@ -825,21 +848,7 @@ static void uninit_d3d(d3d_priv *priv)
 {
     MP_VERBOSE(priv, "uninit_d3d called.\n");
 
-    destroy_d3d_surfaces(priv);
-
-    if (priv->pixel_shader)
-        IDirect3DPixelShader9_Release(priv->pixel_shader);
-    priv->pixel_shader = NULL;
-
-    if (priv->d3d_device)
-        IDirect3DDevice9_Release(priv->d3d_device);
-    priv->d3d_device = NULL;
-
-    if (priv->d3d_handle) {
-        MP_VERBOSE(priv, "Stopping Direct3D.\n");
-        IDirect3D9_Release(priv->d3d_handle);
-    }
-    priv->d3d_handle = NULL;
+    destroy_d3d(priv);
 }
 
 static uint32_t d3d_draw_frame(d3d_priv *priv)
@@ -1116,13 +1125,13 @@ static bool init_rendering_mode(d3d_priv *priv, uint32_t fmt, bool initialize)
  *  @return 0 on failure, device capabilities (not probed
  *          currently) on success.
  */
-static int query_format(struct vo *vo, uint32_t movie_fmt)
+static int query_format(struct vo *vo, int movie_fmt)
 {
     d3d_priv *priv = vo->priv;
     if (!init_rendering_mode(priv, movie_fmt, false))
         return 0;
 
-    return VFCAP_CSP_SUPPORTED | VFCAP_CSP_SUPPORTED_BY_HW;
+    return 1;
 }
 
 /****************************************************************************
@@ -1137,22 +1146,20 @@ static int query_format(struct vo *vo, uint32_t movie_fmt)
 
 static void update_colorspace(d3d_priv *priv)
 {
-    float coeff[3][4];
     struct mp_csp_params csp = MP_CSP_PARAMS_DEFAULTS;
-    csp.colorspace.format = priv->params.colorspace;
-    csp.colorspace.levels_in = priv->params.colorlevels;
-    csp.colorspace.levels_out = priv->params.outputlevels;
+    mp_csp_set_image_params(&csp, &priv->params);
     mp_csp_copy_equalizer_values(&csp, &priv->video_eq);
 
     if (priv->use_shaders) {
         csp.input_bits = priv->planes[0].bits_per_pixel;
         csp.texture_bits = (csp.input_bits + 7) & ~7;
 
-        mp_get_yuv2rgb_coeffs(&csp, coeff);
+        struct mp_cmat coeff;
+        mp_get_yuv2rgb_coeffs(&csp, &coeff);
         for (int row = 0; row < 3; row++) {
-            for (int col = 0; col < 4; col++) {
-                priv->d3d_colormatrix.m[row][col] = coeff[row][col];
-            }
+            for (int col = 0; col < 3; col++)
+                priv->d3d_colormatrix.m[row][col] = coeff.m[row][col];
+            priv->d3d_colormatrix.m[row][3] = coeff.c[row];
         }
     }
 }
@@ -1252,14 +1259,9 @@ static int control(struct vo *vo, uint32_t request, void *data)
         return VO_TRUE;
     case VOCTRL_GET_PANSCAN:
         return VO_TRUE;
-    case VOCTRL_SCREENSHOT: {
-        struct voctrl_screenshot_args *args = data;
-        if (args->full_window)
-            args->out_image = get_window_screenshot(priv);
-        else
-            args->out_image = get_screenshot(priv);
-        return !!args->out_image;
-    }
+    case VOCTRL_SCREENSHOT_WIN:
+        *(struct mp_image **)data = get_window_screenshot(priv);
+        return VO_TRUE;
     }
 
     int events = 0;
@@ -1439,29 +1441,6 @@ done:
     talloc_free(mpi);
 }
 
-static mp_image_t *get_screenshot(d3d_priv *priv)
-{
-    if (!priv->d3d_device)
-        return NULL;
-
-    if (!priv->have_image)
-        return NULL;
-
-    if (!priv->vo->params)
-        return NULL;
-
-    struct mp_image buffer;
-    if (!get_video_buffer(priv, &buffer))
-        return NULL;
-
-    struct mp_image *image = mp_image_new_copy(&buffer);
-    if (image)
-        mp_image_set_attributes(image, priv->vo->params);
-
-    d3d_unlock_video_objects(priv);
-    return image;
-}
-
 static mp_image_t *get_window_screenshot(d3d_priv *priv)
 {
     D3DDISPLAYMODE mode;
@@ -1537,7 +1516,7 @@ error_exit:
 static bool upload_osd(d3d_priv *priv, struct osdpart *osd,
                        struct sub_bitmaps *imgs)
 {
-    D3DFORMAT fmt = osd_fmt_table[imgs->format];
+    D3DFORMAT fmt = priv->osd_fmt_table[imgs->format];
 
     osd->packer->w_max = priv->max_texture_width;
     osd->packer->h_max = priv->max_texture_height;
@@ -1597,7 +1576,7 @@ static bool upload_osd(d3d_priv *priv, struct osdpart *osd,
 
 static struct osdpart *generate_osd(d3d_priv *priv, struct sub_bitmaps *imgs)
 {
-    if (imgs->num_parts == 0 || !osd_fmt_table[imgs->format])
+    if (imgs->num_parts == 0 || !priv->osd_fmt_table[imgs->format])
         return NULL;
 
     struct osdpart *osd = priv->osd[imgs->render_index];
@@ -1717,6 +1696,10 @@ static void draw_osd(struct vo *vo)
     d3d_priv *priv = vo->priv;
     if (!priv->d3d_device)
         return;
+
+    bool osd_fmt_supported[SUBBITMAP_COUNT];
+    for (int n = 0; n < SUBBITMAP_COUNT; n++)
+        osd_fmt_supported[n] = !!priv->osd_fmt_table[n];
 
     osd_draw(vo->osd, priv->osd_res, priv->osd_pts, 0, osd_fmt_supported,
              draw_osd_cb, priv);

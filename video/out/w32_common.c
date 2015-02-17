@@ -24,6 +24,7 @@
 #include <windowsx.h>
 #include <initguid.h>
 #include <ole2.h>
+#include <shobjidl.h>
 
 #include "options/options.h"
 #include "input/keycodes.h"
@@ -41,8 +42,6 @@
 #include "misc/rendezvous.h"
 #include "talloc.h"
 
-#define WIN_ID_TO_HWND(x) ((HWND)(intptr_t)(x))
-
 static const wchar_t classname[] = L"mpv";
 
 static __thread struct vo_w32_state *w32_thread_context;
@@ -58,6 +57,7 @@ struct vo_w32_state {
     struct mp_dispatch_queue *dispatch; // used to run stuff on the GUI thread
 
     HWND window;
+    HWND parent; // 0 normally, set in embedding mode
 
     // Size and virtual position of the current screen.
     struct mp_rect screenrc;
@@ -100,6 +100,8 @@ struct vo_w32_state {
 
     // UTF-16 decoding state for WM_CHAR and VK_PACKET
     int high_surrogate;
+
+    ITaskbarList2 *taskbar_list;
 };
 
 typedef struct tagDropTarget {
@@ -595,16 +597,17 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam,
     }
     case WM_SIZE: {
         RECT r;
-        GetClientRect(w32->window, &r);
-        w32->dw = r.right;
-        w32->dh = r.bottom;
-        signal_events(w32, VO_EVENT_RESIZE);
-        MP_VERBOSE(w32, "resize window: %d:%d\n", w32->dw, w32->dh);
+        if (GetClientRect(w32->window, &r) && r.right > 0 && r.bottom > 0) {
+            w32->dw = r.right;
+            w32->dh = r.bottom;
+            signal_events(w32, VO_EVENT_RESIZE);
+            MP_VERBOSE(w32, "resize window: %d:%d\n", w32->dw, w32->dh);
+        }
         break;
     }
     case WM_SIZING:
         if (w32->opts->keepaspect && w32->opts->keepaspect_window &&
-            !w32->opts->fullscreen && w32->opts->WinID < 0)
+            !w32->opts->fullscreen && !w32->parent)
         {
             RECT *rc = (RECT*)lParam;
             // get client area of the windows if it had the rect rc
@@ -787,16 +790,15 @@ static void run_message_loop(struct vo_w32_state *w32)
             TranslateMessage(&msg);
         DispatchMessageW(&msg);
 
-        if (w32->opts->WinID >= 0) {
-            HWND parent = WIN_ID_TO_HWND(w32->opts->WinID);
+        if (w32->parent) {
             RECT r, rp;
             BOOL res = GetClientRect(w32->window, &r);
-            res = res && GetClientRect(parent, &rp);
+            res = res && GetClientRect(w32->parent, &rp);
             if (res && (r.right != rp.right || r.bottom != rp.bottom))
                 MoveWindow(w32->window, 0, 0, rp.right, rp.bottom, FALSE);
 
             // Window has probably been closed, e.g. due to parent program crash
-            if (!IsWindow(parent))
+            if (!IsWindow(w32->parent))
                 mp_input_put_key(w32->input_ctx, MP_KEY_CLOSE_WIN);
         }
     }
@@ -887,11 +889,16 @@ static int reinit_window_state(struct vo_w32_state *w32)
     HWND layer = HWND_NOTOPMOST;
     RECT r;
 
-    if (w32->opts->WinID >= 0)
+    if (w32->parent)
         return 1;
 
     bool toggle_fs = w32->current_fs != w32->opts->fullscreen;
     w32->current_fs = w32->opts->fullscreen;
+
+    if (w32->taskbar_list) {
+        ITaskbarList2_MarkFullscreenWindow(w32->taskbar_list,
+                                           w32->window, w32->opts->fullscreen);
+    }
 
     DWORD style = update_style(w32, GetWindowLong(w32->window, GWL_STYLE));
 
@@ -1014,7 +1021,7 @@ static void gui_thread_reconfig(void *ptr)
     w32->o_dheight = vo->dheight;
 
     // the desired size is ignored in wid mode, it always matches the window size.
-    if (w32->opts->WinID < 0) {
+    if (!w32->parent) {
         if (w32->window_bounds_initialized) {
             // restore vo_dwidth/vo_dheight, which are reset against our will
             // in vo_config()
@@ -1080,15 +1087,17 @@ static void *gui_thread(void *ptr)
 
     w32_thread_context = w32;
 
-    if (w32->opts->WinID >= 0) {
+    if (w32->opts->WinID >= 0)
+        w32->parent = (HWND)(intptr_t)(w32->opts->WinID);
+
+    if (w32->parent) {
         RECT r;
-        GetClientRect(WIN_ID_TO_HWND(w32->opts->WinID), &r);
+        GetClientRect(w32->parent, &r);
         w32->window = CreateWindowExW(WS_EX_NOPARENTNOTIFY, classname,
                                       classname,
                                       WS_CHILD | WS_VISIBLE,
                                       0, 0, r.right, r.bottom,
-                                      WIN_ID_TO_HWND(w32->opts->WinID),
-                                      0, hInstance, NULL);
+                                      w32->parent, 0, hInstance, NULL);
     } else {
         w32->window = CreateWindowExW(0, classname,
                                       classname,
@@ -1102,12 +1111,27 @@ static void *gui_thread(void *ptr)
         goto done;
     }
 
-    if (OleInitialize(NULL) == S_OK) {
+    if (SUCCEEDED(OleInitialize(NULL))) {
+        ole_ok = true;
+
         fmtetc_url.cfFormat = (CLIPFORMAT)RegisterClipboardFormat(TEXT("UniformResourceLocator"));
         DropTarget* dropTarget = talloc(NULL, DropTarget);
         DropTarget_Init(dropTarget, w32);
         RegisterDragDrop(w32->window, &dropTarget->iface);
-        ole_ok = true;
+
+        // ITaskbarList2 has the MarkFullscreenWindow method, which is used to
+        // make sure the taskbar is hidden when mpv goes fullscreen
+        if (SUCCEEDED(CoCreateInstance(&CLSID_TaskbarList, NULL,
+                                       CLSCTX_INPROC_SERVER, &IID_ITaskbarList2,
+                                       (void**)&w32->taskbar_list)))
+        {
+            if (FAILED(ITaskbarList2_HrInit(w32->taskbar_list))) {
+                ITaskbarList2_Release(w32->taskbar_list);
+                w32->taskbar_list = NULL;
+            }
+        }
+    } else {
+        MP_ERR(w32, "Failed to initialize OLE/COM\n");
     }
 
     w32->tracking   = FALSE;
@@ -1117,7 +1141,7 @@ static void *gui_thread(void *ptr)
         .hwndTrack = w32->window,
     };
 
-    if (w32->opts->WinID >= 0)
+    if (w32->parent)
         EnableWindow(w32->window, 0);
 
     w32->cursor_visible = true;
@@ -1141,6 +1165,8 @@ done:
         RevokeDragDrop(w32->window);
         DestroyWindow(w32->window);
     }
+    if (w32->taskbar_list)
+        ITaskbarList2_Release(w32->taskbar_list);
     if (ole_ok)
         OleUninitialize();
     SetThreadExecutionState(ES_CONTINUOUS);
@@ -1186,11 +1212,11 @@ static bool vo_w32_is_cursor_in_client(struct vo_w32_state *w32)
     return SendMessage(w32->window, WM_NCHITTEST, 0, pos) == HTCLIENT;
 }
 
-static int gui_thread_control(struct vo_w32_state *w32, int *events,
-                              int request, void *arg)
+static int gui_thread_control(struct vo_w32_state *w32, int request, void *arg)
 {
     switch (request) {
     case VOCTRL_FULLSCREEN:
+        w32->opts->fullscreen = !w32->opts->fullscreen;
         if (w32->opts->fullscreen != w32->current_fs)
             reinit_window_state(w32);
         return VO_TRUE;
@@ -1264,7 +1290,7 @@ static void do_control(void *ptr)
     int request = *(int *)p[2];
     void *arg = p[3];
     int *ret = p[4];
-    *ret = gui_thread_control(w32, events, request, arg);
+    *ret = gui_thread_control(w32, request, arg);
     *events |= w32->event_flags;
     w32->event_flags = 0;
     // Safe access, since caller (owner of vo) is blocked.

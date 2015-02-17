@@ -18,16 +18,18 @@
 #include <stddef.h>
 #include <assert.h>
 
-#include "gl_common.h"
+#include <GL/glx.h>
+
+#include "gl_hwdec.h"
+#include "gl_utils.h"
 #include "video/vdpau.h"
-#include "video/hwdec.h"
 #include "video/vdpau_mixer.h"
 
 // This is a GL_NV_vdpau_interop specification bug, and headers (unfortunately)
 // follow it. I'm not sure about the original nvidia headers.
 #define BRAINDEATH(x) ((void *)(uintptr_t)(x))
 
-static int reinit(struct gl_hwdec *hw, const struct mp_image_params *params);
+static int reinit(struct gl_hwdec *hw, struct mp_image_params *params);
 
 struct priv {
     struct mp_log *log;
@@ -51,7 +53,7 @@ static void mark_vdpau_objects_uninitialized(struct gl_hwdec *hw)
 static void destroy_objects(struct gl_hwdec *hw)
 {
     struct priv *p = hw->priv;
-    GL *gl = hw->mpgl->gl;
+    GL *gl = hw->gl;
     struct vdp_functions *vdp = &p->ctx->vdp;
     VdpStatus vdp_st;
 
@@ -90,37 +92,43 @@ static void destroy(struct gl_hwdec *hw)
 
 static int create(struct gl_hwdec *hw)
 {
-    GL *gl = hw->mpgl->gl;
-    if (hw->info->vdpau_ctx)
+    GL *gl = hw->gl;
+    if (hw->hwctx)
         return -1;
-    if (!hw->mpgl->vo->x11)
+    Display *x11disp = glXGetCurrentDisplay();
+    if (!x11disp)
         return -1;
     if (!(gl->mpgl_caps & MPGL_CAP_VDPAU))
         return -1;
     struct priv *p = talloc_zero(hw, struct priv);
     hw->priv = p;
     p->log = hw->log;
-    p->ctx = mp_vdpau_create_device_x11(hw->log, hw->mpgl->vo->x11);
+    p->ctx = mp_vdpau_create_device_x11(hw->log, x11disp);
     if (!p->ctx)
         return -1;
     if (mp_vdpau_handle_preemption(p->ctx, &p->preemption_counter) < 1)
         return -1;
     p->vdp_surface = VDP_INVALID_HANDLE;
     p->mixer = mp_vdpau_mixer_create(p->ctx, hw->log);
-    hw->info->vdpau_ctx = p->ctx;
+    if (hw->reject_emulated && mp_vdpau_guess_if_emulated(p->ctx)) {
+        destroy(hw);
+        return -1;
+    }
+    hw->hwctx = &p->ctx->hwctx;
     hw->converted_imgfmt = IMGFMT_RGB0;
     return 0;
 }
 
-static int reinit(struct gl_hwdec *hw, const struct mp_image_params *params)
+static int reinit(struct gl_hwdec *hw, struct mp_image_params *params)
 {
     struct priv *p = hw->priv;
-    GL *gl = hw->mpgl->gl;
+    GL *gl = hw->gl;
     struct vdp_functions *vdp = &p->ctx->vdp;
     VdpStatus vdp_st;
 
     destroy_objects(hw);
 
+    params->imgfmt = hw->driver->imgfmt;
     p->image_params = *params;
 
     if (mp_vdpau_handle_preemption(p->ctx, &p->preemption_counter) < 1)
@@ -158,7 +166,7 @@ static int map_image(struct gl_hwdec *hw, struct mp_image *hw_image,
                      GLuint *out_textures)
 {
     struct priv *p = hw->priv;
-    GL *gl = hw->mpgl->gl;
+    GL *gl = hw->gl;
 
     assert(hw_image && hw_image->imgfmt == IMGFMT_VDPAU);
 
@@ -184,7 +192,7 @@ static int map_image(struct gl_hwdec *hw, struct mp_image *hw_image,
 static void unmap_image(struct gl_hwdec *hw)
 {
     struct priv *p = hw->priv;
-    GL *gl = hw->mpgl->gl;
+    GL *gl = hw->gl;
 
     gl->VDPAUUnmapSurfacesNV(1, &p->vdpgl_surface);
 }

@@ -38,6 +38,7 @@
 #include <libavfilter/buffersink.h>
 #include <libavfilter/buffersrc.h>
 
+#include "config.h"
 #include "common/av_common.h"
 #include "common/msg.h"
 #include "options/m_option.h"
@@ -268,7 +269,7 @@ static int query_format(struct vf_instance *vf, unsigned int fmt)
     // allow us to do anything more sophisticated.
     // This breaks with filters which accept input pixel formats not
     // supported by libswscale.
-    return mp_sws_supported_format(fmt) ? VFCAP_CSP_SUPPORTED : 0;
+    return !!mp_sws_supported_format(fmt);
 }
 
 static AVFrame *mp_to_av(struct vf_instance *vf, struct mp_image *img)

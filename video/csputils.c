@@ -35,6 +35,7 @@
 #include <libavutil/common.h>
 #include <libavcodec/avcodec.h>
 
+#include "mp_image.h"
 #include "csputils.h"
 
 const char *const mp_csp_names[MP_CSP_COUNT] = {
@@ -102,78 +103,78 @@ const char *const mp_stereo3d_names[MP_STEREO3D_COUNT] = {
 enum mp_csp avcol_spc_to_mp_csp(int avcolorspace)
 {
     switch (avcolorspace) {
-        case AVCOL_SPC_BT709:      return MP_CSP_BT_709;
-        case AVCOL_SPC_BT470BG:    return MP_CSP_BT_601;
+    case AVCOL_SPC_BT709:       return MP_CSP_BT_709;
+    case AVCOL_SPC_BT470BG:     return MP_CSP_BT_601;
 #if HAVE_AVCOL_SPC_BT2020
-        case AVCOL_SPC_BT2020_NCL: return MP_CSP_BT_2020_NC;
-        case AVCOL_SPC_BT2020_CL:  return MP_CSP_BT_2020_C;
+    case AVCOL_SPC_BT2020_NCL:  return MP_CSP_BT_2020_NC;
+    case AVCOL_SPC_BT2020_CL:   return MP_CSP_BT_2020_C;
 #endif
-        case AVCOL_SPC_SMPTE170M:  return MP_CSP_BT_601;
-        case AVCOL_SPC_SMPTE240M:  return MP_CSP_SMPTE_240M;
-        case AVCOL_SPC_RGB:        return MP_CSP_RGB;
-        case AVCOL_SPC_YCOCG:      return MP_CSP_YCGCO;
-        default:                   return MP_CSP_AUTO;
+    case AVCOL_SPC_SMPTE170M:   return MP_CSP_BT_601;
+    case AVCOL_SPC_SMPTE240M:   return MP_CSP_SMPTE_240M;
+    case AVCOL_SPC_RGB:         return MP_CSP_RGB;
+    case AVCOL_SPC_YCOCG:       return MP_CSP_YCGCO;
+    default:                    return MP_CSP_AUTO;
     }
 }
 
 enum mp_csp_levels avcol_range_to_mp_csp_levels(int avrange)
 {
     switch (avrange) {
-        case AVCOL_RANGE_MPEG: return MP_CSP_LEVELS_TV;
-        case AVCOL_RANGE_JPEG: return MP_CSP_LEVELS_PC;
-        default:               return MP_CSP_LEVELS_AUTO;
+    case AVCOL_RANGE_MPEG:      return MP_CSP_LEVELS_TV;
+    case AVCOL_RANGE_JPEG:      return MP_CSP_LEVELS_PC;
+    default:                    return MP_CSP_LEVELS_AUTO;
     }
 }
 
 enum mp_csp_prim avcol_pri_to_mp_csp_prim(int avpri)
 {
     switch (avpri) {
-        case AVCOL_PRI_SMPTE240M: // Same as below
-        case AVCOL_PRI_SMPTE170M: return MP_CSP_PRIM_BT_601_525;
-        case AVCOL_PRI_BT470BG:   return MP_CSP_PRIM_BT_601_625;
-        case AVCOL_PRI_BT709:     return MP_CSP_PRIM_BT_709;
+    case AVCOL_PRI_SMPTE240M:   // Same as below
+    case AVCOL_PRI_SMPTE170M:   return MP_CSP_PRIM_BT_601_525;
+    case AVCOL_PRI_BT470BG:     return MP_CSP_PRIM_BT_601_625;
+    case AVCOL_PRI_BT709:       return MP_CSP_PRIM_BT_709;
 #if HAVE_AVCOL_SPC_BT2020
-        case AVCOL_PRI_BT2020:    return MP_CSP_PRIM_BT_2020;
+    case AVCOL_PRI_BT2020:      return MP_CSP_PRIM_BT_2020;
 #endif
-        default:                  return MP_CSP_PRIM_AUTO;
+    default:                    return MP_CSP_PRIM_AUTO;
     }
 }
 
 int mp_csp_to_avcol_spc(enum mp_csp colorspace)
 {
     switch (colorspace) {
-        case MP_CSP_BT_709:     return AVCOL_SPC_BT709;
-        case MP_CSP_BT_601:     return AVCOL_SPC_BT470BG;
+    case MP_CSP_BT_709:         return AVCOL_SPC_BT709;
+    case MP_CSP_BT_601:         return AVCOL_SPC_BT470BG;
 #if HAVE_AVCOL_SPC_BT2020
-        case MP_CSP_BT_2020_NC: return AVCOL_SPC_BT2020_NCL;
-        case MP_CSP_BT_2020_C:  return AVCOL_SPC_BT2020_CL;
+    case MP_CSP_BT_2020_NC:     return AVCOL_SPC_BT2020_NCL;
+    case MP_CSP_BT_2020_C:      return AVCOL_SPC_BT2020_CL;
 #endif
-        case MP_CSP_SMPTE_240M: return AVCOL_SPC_SMPTE240M;
-        case MP_CSP_RGB:        return AVCOL_SPC_RGB;
-        case MP_CSP_YCGCO:      return AVCOL_SPC_YCOCG;
-        default:                return AVCOL_SPC_UNSPECIFIED;
+    case MP_CSP_SMPTE_240M:     return AVCOL_SPC_SMPTE240M;
+    case MP_CSP_RGB:            return AVCOL_SPC_RGB;
+    case MP_CSP_YCGCO:          return AVCOL_SPC_YCOCG;
+    default:                    return AVCOL_SPC_UNSPECIFIED;
     }
 }
 
 int mp_csp_levels_to_avcol_range(enum mp_csp_levels range)
 {
     switch (range) {
-        case MP_CSP_LEVELS_TV: return AVCOL_RANGE_MPEG;
-        case MP_CSP_LEVELS_PC: return AVCOL_RANGE_JPEG;
-        default:               return AVCOL_RANGE_UNSPECIFIED;
+    case MP_CSP_LEVELS_TV:      return AVCOL_RANGE_MPEG;
+    case MP_CSP_LEVELS_PC:      return AVCOL_RANGE_JPEG;
+    default:                    return AVCOL_RANGE_UNSPECIFIED;
     }
 }
 
 int mp_csp_prim_to_avcol_pri(enum mp_csp_prim prim)
 {
     switch (prim) {
-        case MP_CSP_PRIM_BT_601_525: return AVCOL_PRI_SMPTE170M;
-        case MP_CSP_PRIM_BT_601_625: return AVCOL_PRI_BT470BG;
-        case MP_CSP_PRIM_BT_709:     return AVCOL_PRI_BT709;
+    case MP_CSP_PRIM_BT_601_525: return AVCOL_PRI_SMPTE170M;
+    case MP_CSP_PRIM_BT_601_625: return AVCOL_PRI_BT470BG;
+    case MP_CSP_PRIM_BT_709:     return AVCOL_PRI_BT709;
 #if HAVE_AVCOL_SPC_BT2020
-        case MP_CSP_PRIM_BT_2020:    return AVCOL_PRI_BT2020;
+    case MP_CSP_PRIM_BT_2020:    return AVCOL_PRI_BT2020;
 #endif
-        default:                     return AVCOL_PRI_UNSPECIFIED;
+    default:                     return AVCOL_PRI_UNSPECIFIED;
     }
 }
 
@@ -229,31 +230,6 @@ void mp_get_chroma_location(enum mp_chroma_location loc, int *x, int *y)
         *x = -1;
 }
 
-/**
- * \brief little helper function to create a lookup table for gamma
- * \param map buffer to create map into
- * \param size size of buffer
- * \param gamma gamma value
- */
-void mp_gen_gamma_map(uint8_t *map, int size, float gamma)
-{
-    if (gamma == 1.0) {
-        for (int i = 0; i < size; i++)
-            map[i] = 255 * i / (size - 1);
-        return;
-    }
-    gamma = 1.0 / gamma;
-    for (int i = 0; i < size; i++) {
-        float tmp = (float)i / (size - 1.0);
-        tmp = pow(tmp, gamma);
-        if (tmp > 1.0)
-            tmp = 1.0;
-        if (tmp < 0.0)
-            tmp = 0.0;
-        map[i] = 255 * tmp;
-    }
-}
-
 void mp_invert_matrix3x3(float m[3][3])
 {
     float m00 = m[0][0], m01 = m[0][1], m02 = m[0][2],
@@ -283,7 +259,7 @@ void mp_invert_matrix3x3(float m[3][3])
 }
 
 // A := A * B
-void mp_mul_matrix3x3(float a[3][3], float b[3][3])
+static void mp_mul_matrix3x3(float a[3][3], float b[3][3])
 {
     float a00 = a[0][0], a01 = a[0][1], a02 = a[0][2],
           a10 = a[1][0], a11 = a[1][1], a12 = a[1][2],
@@ -296,10 +272,7 @@ void mp_mul_matrix3x3(float a[3][3], float b[3][3])
     }
 }
 
-/**
- * \brief return the primaries associated with a certain mp_csp_primaries val
- * \param csp the colorspace for which to return the primaries
- */
+// return the primaries associated with a certain mp_csp_primaries val
 struct mp_csp_primaries mp_get_csp_primaries(enum mp_csp_prim spc)
 {
     /*
@@ -313,45 +286,45 @@ struct mp_csp_primaries mp_get_csp_primaries(enum mp_csp_prim spc)
     static const struct mp_csp_col_xy d65 = {0.3127, 0.3290};
 
     switch (spc) {
-        case MP_CSP_PRIM_BT_601_525:
-            return (struct mp_csp_primaries) {
-                .red   = {0.630, 0.340},
-                .green = {0.310, 0.595},
-                .blue  = {0.155, 0.070},
-                .white = d65
-            };
-        case MP_CSP_PRIM_BT_601_625:
-            return (struct mp_csp_primaries) {
-                .red   = {0.640, 0.330},
-                .green = {0.290, 0.600},
-                .blue  = {0.150, 0.060},
-                .white = d65
-            };
-        // This is the default assumption if no colorspace information could
-        // be determined, eg. for files which have no video channel.
-        case MP_CSP_PRIM_AUTO:
-        case MP_CSP_PRIM_BT_709:
-            return (struct mp_csp_primaries) {
-                .red   = {0.640, 0.330},
-                .green = {0.300, 0.600},
-                .blue  = {0.150, 0.060},
-                .white = d65
-            };
-        case MP_CSP_PRIM_BT_2020:
-            return (struct mp_csp_primaries) {
-                .red   = {0.708, 0.292},
-                .green = {0.170, 0.797},
-                .blue  = {0.131, 0.046},
-                .white = d65
-            };
-        default:
-            return (struct mp_csp_primaries) {{0}};
+    case MP_CSP_PRIM_BT_601_525:
+        return (struct mp_csp_primaries) {
+            .red   = {0.630, 0.340},
+            .green = {0.310, 0.595},
+            .blue  = {0.155, 0.070},
+            .white = d65
+        };
+    case MP_CSP_PRIM_BT_601_625:
+        return (struct mp_csp_primaries) {
+            .red   = {0.640, 0.330},
+            .green = {0.290, 0.600},
+            .blue  = {0.150, 0.060},
+            .white = d65
+        };
+    // This is the default assumption if no colorspace information could
+    // be determined, eg. for files which have no video channel.
+    case MP_CSP_PRIM_AUTO:
+    case MP_CSP_PRIM_BT_709:
+        return (struct mp_csp_primaries) {
+            .red   = {0.640, 0.330},
+            .green = {0.300, 0.600},
+            .blue  = {0.150, 0.060},
+            .white = d65
+        };
+    case MP_CSP_PRIM_BT_2020:
+        return (struct mp_csp_primaries) {
+            .red   = {0.708, 0.292},
+            .green = {0.170, 0.797},
+            .blue  = {0.131, 0.046},
+            .white = d65
+        };
+    default:
+        return (struct mp_csp_primaries) {{0}};
     }
 }
 
 // Compute the RGB/XYZ matrix as described here:
 // http://www.brucelindbloom.com/index.html?Eqn_RGB_XYZ_Matrix.html
-void mp_get_rgb2xyz_matrix(struct mp_csp_primaries space, float m[3][3])
+static void mp_get_rgb2xyz_matrix(struct mp_csp_primaries space, float m[3][3])
 {
     float S[3], X[4], Z[4];
 
@@ -387,7 +360,8 @@ void mp_get_rgb2xyz_matrix(struct mp_csp_primaries space, float m[3][3])
 }
 
 // M := M * XYZd<-XYZs
-void mp_apply_chromatic_adaptation(struct mp_csp_col_xy src, struct mp_csp_col_xy dest, float m[3][3])
+static void mp_apply_chromatic_adaptation(struct mp_csp_col_xy src,
+                                          struct mp_csp_col_xy dest, float m[3][3])
 {
     // If the white points are nearly identical, this is a wasteful identity
     // operation.
@@ -430,14 +404,9 @@ void mp_apply_chromatic_adaptation(struct mp_csp_col_xy src, struct mp_csp_col_x
     mp_mul_matrix3x3(m, tmp);
 }
 
-/**
- * \brief get the coefficients of the source -> bt2020 cms matrix
- * \param src primaries of the source gamut
- * \param dest primaries of the destination gamut
- * \param intent rendering intent for the transformation
- * \param m array to store coefficients into
- */
-void mp_get_cms_matrix(struct mp_csp_primaries src, struct mp_csp_primaries dest, enum mp_render_intent intent, float m[3][3])
+// get the coefficients of the source -> bt2020 cms matrix
+void mp_get_cms_matrix(struct mp_csp_primaries src, struct mp_csp_primaries dest,
+                       enum mp_render_intent intent, float m[3][3])
 {
     float tmp[3][3];
 
@@ -467,6 +436,33 @@ void mp_get_cms_matrix(struct mp_csp_primaries src, struct mp_csp_primaries dest
     mp_mul_matrix3x3(m, tmp);
 }
 
+// get the coefficients of an SMPTE 428-1 xyz -> rgb conversion matrix
+// intent = the rendering intent used to convert to the target primaries
+void mp_get_xyz2rgb_coeffs(struct mp_csp_params *params,
+                           struct mp_csp_primaries prim,
+                           enum mp_render_intent intent, struct mp_cmat *m)
+{
+    float brightness = params->brightness;
+    mp_get_rgb2xyz_matrix(prim, m->m);
+    mp_invert_matrix3x3(m->m);
+
+    // All non-absolute mappings want to map source white to target white
+    if (intent != MP_INTENT_ABSOLUTE_COLORIMETRIC) {
+        // SMPTE 428-1 defines the calibration white point as CIE xy (0.314, 0.351)
+        static const struct mp_csp_col_xy smpte428 = {0.314, 0.351};
+        mp_apply_chromatic_adaptation(smpte428, prim.white, m->m);
+    }
+
+    // Since this outputs linear RGB rather than companded RGB, we
+    // want to linearize any brightness additions. 2 is a reasonable
+    // approximation for any sort of gamma function that could be in use.
+    // As this is an aesthetic setting only, any exact values do not matter.
+    brightness *= fabs(brightness);
+
+    for (int i = 0; i < 3; i++)
+        m->c[i] = brightness;
+}
+
 /* Fill in the Y, U, V vectors of a yuv2rgb conversion matrix
  * based on the given luma weights of the R, G and B components (lr, lg, lb).
  * lr+lg+lb is assumed to equal 1.
@@ -487,73 +483,28 @@ void mp_get_cms_matrix(struct mp_csp_primaries src, struct mp_csp_primaries dest
  * Under these conditions the given parameters lr, lg, lb uniquely
  * determine the mapping of Y, U, V to R, G, B.
  */
-static void luma_coeffs(float m[3][4], float lr, float lg, float lb)
+static void luma_coeffs(struct mp_cmat *mat, float lr, float lg, float lb)
 {
     assert(fabs(lr+lg+lb - 1) < 1e-6);
-    m[0][0] = m[1][0] = m[2][0] = 1;
-    m[0][1] = 0;
-    m[1][1] = -2 * (1-lb) * lb/lg;
-    m[2][1] = 2 * (1-lb);
-    m[0][2] = 2 * (1-lr);
-    m[1][2] = -2 * (1-lr) * lr/lg;
-    m[2][2] = 0;
-    // Constant coefficients (m[x][3]) not set here
+    *mat = (struct mp_cmat) {
+        { {1, 0,                    2 * (1-lr)          },
+          {1, -2 * (1-lb) * lb/lg, -2 * (1-lr) * lr/lg  },
+          {1,  2 * (1-lb),          0                   } },
+        // Constant coefficients (mat->c) not set here
+    };
 }
 
-/**
- * \brief get the coefficients of an SMPTE 428-1 xyz -> rgb conversion matrix
- * \param params parameters for the conversion, only brightness is used
- * \param prim primaries of the RGB space to transform to
- * \param intent the rendering intent used to convert to the target primaries
- * \param m array to store the coefficients into
- */
-void mp_get_xyz2rgb_coeffs(struct mp_csp_params *params, struct mp_csp_primaries prim, enum mp_render_intent intent, float m[3][4])
+// get the coefficients of the yuv -> rgb conversion matrix
+void mp_get_yuv2rgb_coeffs(struct mp_csp_params *params, struct mp_cmat *m)
 {
-    float tmp[3][3], brightness = params->brightness;
-    mp_get_rgb2xyz_matrix(prim, tmp);
-    mp_invert_matrix3x3(tmp);
-
-    // All non-absolute mappings want to map source white to target white
-    if (intent != MP_INTENT_ABSOLUTE_COLORIMETRIC) {
-        // SMPTE 428-1 defines the calibration white point as CIE xy (0.314, 0.351)
-        static const struct mp_csp_col_xy smpte428 = {0.314, 0.351};
-        mp_apply_chromatic_adaptation(smpte428, prim.white, tmp);
-    }
-
-    // Since this outputs linear RGB rather than companded RGB, we
-    // want to linearize any brightness additions. 2 is a reasonable
-    // approximation for any sort of gamma function that could be in use.
-    // As this is an aesthetic setting only, any exact values do not matter.
-    if (brightness < 0) {
-        brightness *= -brightness;
-    } else {
-        brightness *= brightness;
-    }
-
-    for (int i = 0; i < 3; i++) {
-        for (int j = 0; j < 3; j++)
-            m[i][j] = tmp[i][j];
-
-        m[i][COL_C] = brightness;
-    }
-}
-
-/**
- * \brief get the coefficients of the yuv -> rgb conversion matrix
- * \param params struct specifying the properties of the conversion like
- *  brightness, ...
- * \param m array to store coefficients into
- */
-void mp_get_yuv2rgb_coeffs(struct mp_csp_params *params, float m[3][4])
-{
-    int format = params->colorspace.format;
-    if (format <= MP_CSP_AUTO || format >= MP_CSP_COUNT)
-        format = MP_CSP_BT_601;
-    int levels_in = params->colorspace.levels_in;
+    int colorspace = params->colorspace;
+    if (colorspace <= MP_CSP_AUTO || colorspace >= MP_CSP_COUNT)
+        colorspace = MP_CSP_BT_601;
+    int levels_in = params->levels_in;
     if (levels_in <= MP_CSP_LEVELS_AUTO || levels_in >= MP_CSP_LEVELS_COUNT)
         levels_in = MP_CSP_LEVELS_TV;
 
-    switch (format) {
+    switch (colorspace) {
     case MP_CSP_BT_601:     luma_coeffs(m, 0.299,  0.587,  0.114 ); break;
     case MP_CSP_BT_709:     luma_coeffs(m, 0.2126, 0.7152, 0.0722); break;
     case MP_CSP_SMPTE_240M: luma_coeffs(m, 0.2122, 0.7013, 0.0865); break;
@@ -563,13 +514,11 @@ void mp_get_yuv2rgb_coeffs(struct mp_csp_params *params, float m[3][4])
         // If this clips on any VO, a constant 0.5 coefficient can be added
         // to the chroma channels to normalize them into [0,1]. This is not
         // currently needed by anything, though.
-        static const float ycbcr_to_crycb[3][4] = {{0, 0, 1}, {1, 0, 0}, {0, 1, 0}};
-        memcpy(m, ycbcr_to_crycb, sizeof(ycbcr_to_crycb));
+        *m = (struct mp_cmat){{{0, 0, 1}, {1, 0, 0}, {0, 1, 0}}};
         break;
     }
     case MP_CSP_RGB: {
-        static const float ident[3][4] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
-        memcpy(m, ident, sizeof(ident));
+        *m = (struct mp_cmat){{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}};
         levels_in = -1;
         break;
     }
@@ -583,12 +532,11 @@ void mp_get_yuv2rgb_coeffs(struct mp_csp_params *params, float m[3][4])
         break;
     }
     case MP_CSP_YCGCO: {
-        static const float ycgco_to_rgb[3][4] = {
-            {1,  -1,  1},
-            {1,   1,  0},
-            {1,  -1, -1},
+        *m = (struct mp_cmat) {
+            {{1,  -1,  1},
+             {1,   1,  0},
+             {1,  -1, -1}},
         };
-        memcpy(m, ycgco_to_rgb, sizeof(ycgco_to_rgb));
         break;
     }
     default:
@@ -597,12 +545,12 @@ void mp_get_yuv2rgb_coeffs(struct mp_csp_params *params, float m[3][4])
 
     // Hue is equivalent to rotating input [U, V] subvector around the origin.
     // Saturation scales [U, V].
-    float huecos = params->saturation * cos(params->hue);
-    float huesin = params->saturation * sin(params->hue);
+    float huecos = params->gray ? 0 : params->saturation * cos(params->hue);
+    float huesin = params->gray ? 0 : params->saturation * sin(params->hue);
     for (int i = 0; i < 3; i++) {
-        float u = m[i][COL_U];
-        m[i][COL_U] = huecos * u - huesin * m[i][COL_V];
-        m[i][COL_V] = huesin * u + huecos * m[i][COL_V];
+        float u = m->m[i][1], v = m->m[i][2];
+        m->m[i][1] = huecos * u - huesin * v;
+        m->m[i][2] = huesin * u + huecos * v;
     }
 
     assert(params->input_bits >= 8);
@@ -622,7 +570,7 @@ void mp_get_yuv2rgb_coeffs(struct mp_csp_params *params, float m[3][4])
         abort();
     }
 
-    int levels_out = params->colorspace.levels_out;
+    int levels_out = params->levels_out;
     if (levels_out <= MP_CSP_LEVELS_AUTO || levels_out >= MP_CSP_LEVELS_COUNT)
         levels_out = MP_CSP_LEVELS_PC;
     struct rgblevels { double min, max; }
@@ -639,20 +587,20 @@ void mp_get_yuv2rgb_coeffs(struct mp_csp_params *params, float m[3][4])
     double ymul = (rgblev.max - rgblev.min) / (yuvlev.ymax - yuvlev.ymin);
     double cmul = (rgblev.max - rgblev.min) / (yuvlev.cmid - yuvlev.cmin) / 2;
     for (int i = 0; i < 3; i++) {
-        m[i][COL_Y] *= ymul;
-        m[i][COL_U] *= cmul;
-        m[i][COL_V] *= cmul;
-        // Set COL_C so that Y=umin,UV=cmid maps to RGB=min (black to black)
-        m[i][COL_C] = rgblev.min - m[i][COL_Y] * yuvlev.ymin
-                      -(m[i][COL_U] + m[i][COL_V]) * yuvlev.cmid;
+        m->m[i][0] *= ymul;
+        m->m[i][1] *= cmul;
+        m->m[i][2] *= cmul;
+        // Set c so that Y=umin,UV=cmid maps to RGB=min (black to black)
+        m->c[i] = rgblev.min - m->m[i][0] * yuvlev.ymin
+                  -(m->m[i][1] + m->m[i][2]) * yuvlev.cmid;
     }
 
     // Brightness adds a constant to output R,G,B.
     // Contrast scales Y around 1/2 (not 0 in this implementation).
     for (int i = 0; i < 3; i++) {
-        m[i][COL_C] += params->brightness;
-        m[i][COL_Y] *= params->contrast;
-        m[i][COL_C] += (rgblev.max-rgblev.min) * (1 - params->contrast)/2;
+        m->c[i] += params->brightness;
+        m->m[i][0] *= params->contrast;
+        m->c[i] += (rgblev.max-rgblev.min) * (1 - params->contrast)/2;
     }
 
     int in_bits = FFMAX(params->int_bits_in, 1);
@@ -660,51 +608,21 @@ void mp_get_yuv2rgb_coeffs(struct mp_csp_params *params, float m[3][4])
     double in_scale = (1 << in_bits) - 1.0;
     double out_scale = (1 << out_bits) - 1.0;
     for (int i = 0; i < 3; i++) {
-        m[i][COL_C] *= out_scale; // constant is 1.0
+        m->c[i] *= out_scale; // constant is 1.0
         for (int x = 0; x < 3; x++)
-            m[i][x] *= out_scale / in_scale;
+            m->m[i][x] *= out_scale / in_scale;
     }
 }
 
-//! size of gamma map use to avoid slow exp function in gen_yuv2rgb_map
-#define GMAP_SIZE (1024)
-/**
- * \brief generate a 3D YUV -> RGB map
- * \param params struct containing parameters like brightness, gamma, ...
- * \param map where to store map. Must provide space for (size + 2)^3 elements
- * \param size size of the map, excluding border
- */
-void mp_gen_yuv2rgb_map(struct mp_csp_params *params, unsigned char *map, int size)
+// Set colorspace related fields in p from f. Don't touch other fields.
+void mp_csp_set_image_params(struct mp_csp_params *params,
+                             const struct mp_image_params *imgparams)
 {
-    int i, j, k, l;
-    float step = 1.0 / size;
-    float y, u, v;
-    float yuv2rgb[3][4];
-    unsigned char gmaps[3][GMAP_SIZE];
-    mp_gen_gamma_map(gmaps[0], GMAP_SIZE, params->rgamma);
-    mp_gen_gamma_map(gmaps[1], GMAP_SIZE, params->ggamma);
-    mp_gen_gamma_map(gmaps[2], GMAP_SIZE, params->bgamma);
-    mp_get_yuv2rgb_coeffs(params, yuv2rgb);
-    for (i = 0; i < 3; i++)
-        for (j = 0; j < 4; j++)
-            yuv2rgb[i][j] *= GMAP_SIZE - 1;
-    v = 0;
-    for (i = -1; i <= size; i++) {
-        u = 0;
-        for (j = -1; j <= size; j++) {
-            y = 0;
-            for (k = -1; k <= size; k++) {
-                for (l = 0; l < 3; l++) {
-                    float rgb = yuv2rgb[l][COL_Y] * y + yuv2rgb[l][COL_U] * u +
-                                yuv2rgb[l][COL_V] * v + yuv2rgb[l][COL_C];
-                    *map++ = gmaps[l][av_clip(rgb, 0, GMAP_SIZE - 1)];
-                }
-                y += (k == -1 || k == size - 1) ? step / 2 : step;
-            }
-            u += (j == -1 || j == size - 1) ? step / 2 : step;
-        }
-        v += (i == -1 || i == size - 1) ? step / 2 : step;
-    }
+    struct mp_image_params p = *imgparams;
+    mp_image_params_guess_csp(&p); // ensure consistency
+    params->colorspace = p.colorspace;
+    params->levels_in = p.colorlevels;
+    params->levels_out = p.outputlevels;
 }
 
 // Copy settings from eq into params.
@@ -713,12 +631,9 @@ void mp_csp_copy_equalizer_values(struct mp_csp_params *params,
 {
     params->brightness = eq->values[MP_CSP_EQ_BRIGHTNESS] / 100.0;
     params->contrast = (eq->values[MP_CSP_EQ_CONTRAST] + 100) / 100.0;
-    params->hue = eq->values[MP_CSP_EQ_HUE] / 100.0 * 3.1415927;
+    params->hue = eq->values[MP_CSP_EQ_HUE] / 100.0 * M_PI;
     params->saturation = (eq->values[MP_CSP_EQ_SATURATION] + 100) / 100.0;
-    float gamma = exp(log(8.0) * eq->values[MP_CSP_EQ_GAMMA] / 100.0);
-    params->rgamma = gamma;
-    params->ggamma = gamma;
-    params->bgamma = gamma;
+    params->gamma = exp(log(8.0) * eq->values[MP_CSP_EQ_GAMMA] / 100.0);
 }
 
 static int find_eq(int capabilities, const char *name)
@@ -754,42 +669,31 @@ int mp_csp_equalizer_set(struct mp_csp_equalizer *eq, const char *property,
     return 1;
 }
 
-void mp_invert_yuv2rgb(float out[3][4], float in[3][4])
+void mp_invert_yuv2rgb(struct mp_cmat *out, struct mp_cmat *in)
 {
-    float tmp[3][3];
-
-    for (int i = 0; i < 3; i++) {
-        for (int j = 0; j < 3; j++)
-            tmp[i][j] = in[i][j];
-    }
-
-    mp_invert_matrix3x3(tmp);
-
-    for (int i = 0; i < 3; i++) {
-        for (int j = 0; j < 3; j++)
-            out[i][j] = tmp[i][j];
-    }
+    *out = *in;
+    mp_invert_matrix3x3(out->m);
 
     // fix the constant coefficient
     // rgb = M * yuv + C
     // M^-1 * rgb = yuv + M^-1 * C
     // yuv = M^-1 * rgb - M^-1 * C
     //                  ^^^^^^^^^^
-    out[0][3] = -(out[0][0] * in[0][3] + out[0][1] * in[1][3] + out[0][2] * in[2][3]);
-    out[1][3] = -(out[1][0] * in[0][3] + out[1][1] * in[1][3] + out[1][2] * in[2][3]);
-    out[2][3] = -(out[2][0] * in[0][3] + out[2][1] * in[1][3] + out[2][2] * in[2][3]);
+    out->c[0] = -(out->m[0][0] * in->c[0] + out->m[0][1] * in->c[1] + out->m[0][2] * in->c[2]);
+    out->c[1] = -(out->m[1][0] * in->c[0] + out->m[1][1] * in->c[1] + out->m[1][2] * in->c[2]);
+    out->c[2] = -(out->m[2][0] * in->c[0] + out->m[2][1] * in->c[1] + out->m[2][2] * in->c[2]);
 }
 
 // Multiply the color in c with the given matrix.
 // c is {R, G, B} or {Y, U, V} (depending on input/output and matrix).
 // Output is clipped to the given number of bits.
-void mp_map_int_color(float matrix[3][4], int clip_bits, int c[3])
+void mp_map_int_color(struct mp_cmat *matrix, int clip_bits, int c[3])
 {
     int in[3] = {c[0], c[1], c[2]};
     for (int i = 0; i < 3; i++) {
-        double val = matrix[i][3];
+        double val = matrix->c[i];
         for (int x = 0; x < 3; x++)
-            val += matrix[i][x] * in[x];
+            val += matrix->m[i][x] * in[x];
         int ival = lrint(val);
         c[i] = av_clip(ival, 0, (1 << clip_bits) - 1);
     }

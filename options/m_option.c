@@ -135,8 +135,12 @@ static int parse_flag(struct mp_log *log, const m_option_t *opt,
                 VAL(dst) = 0;
             return 1;
         }
-        mp_err(log, "Invalid parameter for %.*s flag: %.*s\n",
-               BSTR_P(name), BSTR_P(param));
+        mp_fatal(log, "Invalid parameter for %.*s flag: %.*s\n",
+                 BSTR_P(name), BSTR_P(param));
+        mp_info(log, "Valid values are:\n");
+        mp_info(log, "    yes\n");
+        mp_info(log, "    no\n");
+        mp_info(log, "    (passing nothing)\n");
         return M_OPT_INVALID;
     } else {
         if (dst)
@@ -545,20 +549,19 @@ static int parse_choice(struct mp_log *log, const struct m_option *opt,
             return M_OPT_MISSING_PARAM;
         if ((opt->flags & M_OPT_MIN) && (opt->flags & M_OPT_MAX)) {
             long long val;
-            if (parse_longlong(log, opt, name, param, &val) == 1) {
+            if (parse_longlong(mp_null_log, opt, name, param, &val) == 1) {
                 if (dst)
                     *(int *)dst = val;
                 return 1;
             }
         }
-        mp_err(log, "Invalid value for option %.*s: %.*s\n",
-               BSTR_P(name), BSTR_P(param));
-        mp_err(log, "Valid values are:");
+        mp_fatal(log, "Invalid value for option %.*s: %.*s\n",
+                 BSTR_P(name), BSTR_P(param));
+        mp_info(log, "Valid values are:\n");
         for (alt = opt->priv; alt->name; alt++)
-            mp_err(log, " %s", alt->name);
+            mp_info(log, "    %s\n", alt->name[0] ? alt->name : "(passing nothing)");
         if ((opt->flags & M_OPT_MIN) && (opt->flags & M_OPT_MAX))
-            mp_err(log, " %g-%g", opt->min, opt->max);
-        mp_err(log, "\n");
+            mp_info(log, "    %g-%g (integer range)\n", opt->min, opt->max);
         return M_OPT_INVALID;
     }
     if (dst)
@@ -1406,7 +1409,7 @@ static int parse_keyvalue_list(struct mp_log *log, const m_option_t *opt,
             MP_TARRAY_APPEND(NULL, lst, num, bstrto0(NULL, val));
         }
 
-        if (!bstr_eatstart0(&param, ","))
+        if (!bstr_eatstart0(&param, ",") && !bstr_eatstart0(&param, ":"))
             break;
     }
     if (dst)
@@ -1490,6 +1493,73 @@ const m_option_type_t m_option_type_keyvalue_list = {
     .free  = free_str_list,
     .get   = keyvalue_list_get,
     .set   = keyvalue_list_set,
+};
+
+
+#undef VAL
+#define VAL(x) (*(char **)(x))
+
+static int check_msg_levels(struct mp_log *log, char **list)
+{
+    for (int n = 0; list && list[n * 2 + 0]; n++) {
+        char *level = list[n * 2 + 1];
+        if (mp_msg_find_level(level) < 0 && strcmp(level, "no") != 0) {
+            mp_err(log, "Invalid message level '%s'\n", level);
+            return M_OPT_INVALID;
+        }
+    }
+    return 1;
+}
+
+static int parse_msglevels(struct mp_log *log, const m_option_t *opt,
+                           struct bstr name, struct bstr param, void *dst)
+{
+    if (bstr_equals0(param, "help")) {
+        mp_info(log, "Syntax: --msglevel=module1=level:module2=level:...\n"
+                     "'module' is output prefix as shown with -v, or a prefix\n"
+                     "of it. level is one of:\n\n"
+                     "  fatal error warn info status v debug trace\n\n"
+                     "The level specifies the minimum log level a message\n"
+                     "must have to be printed.\n"
+                     "The special module name 'all' affects all modules.\n");
+        return M_OPT_EXIT;
+    }
+
+    char **dst_copy = NULL;
+    int r = m_option_type_keyvalue_list.parse(log, opt, name, param, &dst_copy);
+    if (r >= 0)
+        r = check_msg_levels(log, dst_copy);
+
+    if (r >= 0)
+        m_option_type_keyvalue_list.copy(opt, dst, &dst_copy);
+    m_option_type_keyvalue_list.free(&dst_copy);
+    return r;
+}
+
+static int set_msglevels(const m_option_t *opt, void *dst,
+                             struct mpv_node *src)
+{
+    char **dst_copy = NULL;
+    int r = m_option_type_keyvalue_list.set(opt, &dst_copy, src);
+    if (r >= 0)
+        r = check_msg_levels(mp_null_log, dst_copy);
+
+    if (r >= 0)
+        m_option_type_keyvalue_list.copy(opt, dst, &dst_copy);
+    m_option_type_keyvalue_list.free(&dst_copy);
+    return r;
+}
+
+const m_option_type_t m_option_type_msglevels = {
+    .name = "Output verbosity levels",
+    .size  = sizeof(char **),
+    .flags = M_OPT_TYPE_DYNAMIC,
+    .parse = parse_msglevels,
+    .print = print_keyvalue_list,
+    .copy  = copy_str_list,
+    .free  = free_str_list,
+    .get   = keyvalue_list_get,
+    .set   = set_msglevels,
 };
 
 /////////////////// Print
@@ -1628,62 +1698,6 @@ const m_option_type_t m_option_type_subconfig = {
 };
 
 #undef VAL
-#define VAL(x) (*(char **)(x))
-
-static int parse_msglevels(struct mp_log *log, const m_option_t *opt,
-                           struct bstr name, struct bstr param, void *dst)
-{
-    if (param.start == NULL)
-        return M_OPT_MISSING_PARAM;
-
-    if (bstr_equals0(param, "help")) {
-        mp_info(log, "Syntax: --msglevel=module1=level:module2=level:...\n"
-                     "'module' is output prefix as shown with -v, or a prefix\n"
-                     "of it. level is one of:\n\n"
-                     "  fatal error warn info status v debug trace\n\n"
-                     "The level specifies the minimum log level a message\n"
-                     "must have to be printed.\n"
-                     "The special module name 'all' affects all modules.\n");
-        return M_OPT_EXIT;
-    }
-
-    bstr s = param;
-    while (1) {
-        int res = mp_msg_split_msglevel(&s, &(bstr){0}, &(int){0});
-        if (res == 0)
-            break;
-        if (res < 0) {
-            mp_err(log, "Invalid syntax: %.*s\n", BSTR_P(s));
-            return M_OPT_INVALID;
-        }
-    }
-
-    if (dst && param.len) {
-        char *prev = VAL(dst);
-        char *new;
-        if (prev && prev[0]) {
-            new = talloc_asprintf(NULL, "%s:%.*s", prev, BSTR_P(param));
-        } else {
-            new = bstrdup0(NULL, param);
-        }
-        talloc_free(prev);
-        VAL(dst) = new;
-    }
-
-    return 1;
-}
-
-const m_option_type_t m_option_type_msglevels = {
-    .name = "Output verbosity levels",
-    .size  = sizeof(char *),
-    .flags = M_OPT_TYPE_DYNAMIC,
-    .parse = parse_msglevels,
-    .print = print_str,
-    .copy  = copy_str,
-    .free  = free_str,
-};
-
-#undef VAL
 
 // Split the string on the given split character.
 // out_arr is at least max entries long.
@@ -1798,7 +1812,7 @@ static bool parse_geometry_str(struct m_geometry *gm, bstr s)
     if (s.len == 0)
         return true;
     // Approximate grammar:
-    // [W[xH]][{+-}X{+-}Y] | [X:Y]
+    // [[W][xH]][{+-}X{+-}Y] | [X:Y]
     // (meaning: [optional] {one character of} one|alternative)
     // Every number can be followed by '%'
     int num;
@@ -1822,7 +1836,8 @@ static bool parse_geometry_str(struct m_geometry *gm, bstr s)
     if (bstrchr(s, ':') < 0) {
         gm->wh_valid = true;
         if (!bstr_startswith0(s, "+") && !bstr_startswith0(s, "-")) {
-            READ_NUM(w, w_per);
+            if (!bstr_startswith0(s, "x"))
+                READ_NUM(w, w_per);
             if (bstr_eatstart0(&s, "x"))
                 READ_NUM(h, h_per);
         }
@@ -2114,8 +2129,9 @@ const m_option_type_t m_option_type_afmt = {
 static int parse_chmap(struct mp_log *log, const m_option_t *opt,
                        struct bstr name, struct bstr param, void *dst)
 {
-    // min>0: at least min channels, min=0: empty ok, min=-1: invalid ok
+    // min>0: at least min channels, min=0: empty ok
     int min_ch = (opt->flags & M_OPT_MIN) ? opt->min : 1;
+    assert(min_ch >= 0);
 
     if (bstr_equals0(param, "help")) {
         mp_chmap_print_help(log);
@@ -2131,9 +2147,7 @@ static int parse_chmap(struct mp_log *log, const m_option_t *opt,
         return M_OPT_INVALID;
     }
 
-    if ((min_ch >= 0 && !mp_chmap_is_valid(&res)) &&
-        !(min_ch == 0 && mp_chmap_is_empty(&res)))
-    {
+    if (!mp_chmap_is_valid(&res) && !(min_ch == 0 && mp_chmap_is_empty(&res))) {
         mp_err(log, "Invalid channel layout: %.*s\n", BSTR_P(param));
         return M_OPT_INVALID;
     }
@@ -2181,7 +2195,7 @@ static int parse_time(struct mp_log *log, const m_option_t *opt,
     if (param.len == 0)
         return M_OPT_MISSING_PARAM;
 
-    if (HAS_NOPTS(opt) == MP_NOPTS_VALUE && bstr_equals0(param, "no")) {
+    if (HAS_NOPTS(opt) && bstr_equals0(param, "no")) {
         time = MP_NOPTS_VALUE;
     } else if (!parse_timestring(param, &time, 0)) {
         mp_err(log, "Option %.*s: invalid time: '%.*s'\n",
@@ -3181,4 +3195,12 @@ const m_option_type_t m_option_type_node = {
     .free  = free_node,
     .set   = node_set,
     .get   = node_get,
+};
+
+// Special-cased by m_config.c.
+const m_option_type_t m_option_type_alias = {
+    .name  = "alias",
+};
+const m_option_type_t m_option_type_removed = {
+    .name  = "removed",
 };

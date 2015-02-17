@@ -121,18 +121,40 @@ extern "C" {
  *   process (such as ffmpeg OpenSSL support, or the mpv IPC code).
  * - On memory exhaustion, mpv will kill the process.
  *
+ * Encoding of filenames
+ * ---------------------
+ *
+ * mpv uses UTF-8 everywhere.
+ *
+ * On some platforms (like Linux), filenames actually do not have to be UTF-8;
+ * for this reason libmpv supports non-UTF-8 strings. libmpv uses what the
+ * kernel uses and does not recode filenames. At least on Linux, passing a
+ * string to libmpv is like passing a string to the fopen() function.
+ *
+ * On Windows, filenames are always UTF-8, libmpv converts between UTF-8 and
+ * UTF-16 when using win32 API functions. libmpv never uses or accepts
+ * filenames in the local 8 bit encoding. It does not use fopen() either;
+ * it uses _wfopen().
+ *
+ * On OS X, filenames and other strings taken/returned by libmpv can have
+ * inconsistent unicode normalization. This can sometimes lead to problems.
+ * You have to hope for the best.
+ *
+ * Also see the remarks for MPV_FORMAT_STRING.
+ *
  * Embedding the video window
  * --------------------------
  *
  * Currently you have to get the raw window handle, and set it as "wid" option.
- * This works on X11 and win32 only. In addition, it works with a few VOs only,
- * and VOs which do not support this will just create a freestanding window.
+ * This works on X11, win32, and OSX only. In addition, it works with a few VOs
+ * only, and VOs which do not support this will just create a freestanding
+ * window.
  *
  * Both on X11 and win32, the player will fill the window referenced by the
  * "wid" option fully and letterbox the video (i.e. add black bars if the
  * aspect ratio of the window and the video mismatch).
  *
- * On OSX, embedding is not yet possible, because Cocoa makes this non-trivial.
+ * Also see client API examples and the mpv manpage.
  *
  * Compatibility
  * -------------
@@ -166,7 +188,7 @@ extern "C" {
  * relational operators (<, >, <=, >=).
  */
 #define MPV_MAKE_VERSION(major, minor) (((major) << 16) | (minor) | 0UL)
-#define MPV_CLIENT_API_VERSION MPV_MAKE_VERSION(1, 10)
+#define MPV_CLIENT_API_VERSION MPV_MAKE_VERSION(1, 14)
 
 /**
  * Return the MPV_CLIENT_API_VERSION the mpv source has been compiled with.
@@ -271,7 +293,16 @@ typedef enum mpv_error {
      * When trying to load the file, the file format could not be determined,
      * or the file was too broken to open it.
      */
-    MPV_ERROR_UNKNOWN_FORMAT    = -17
+    MPV_ERROR_UNKNOWN_FORMAT    = -17,
+    /**
+     * Generic error for signaling that certain system requirements are not
+     * fulfilled.
+     */
+    MPV_ERROR_UNSUPPORTED       = -18,
+    /**
+     * The API function which was called is a stub only.
+     */
+    MPV_ERROR_NOT_IMPLEMENTED   = -19
 } mpv_error;
 
 /**
@@ -383,6 +414,32 @@ void mpv_detach_destroy(mpv_handle *ctx);
 void mpv_terminate_destroy(mpv_handle *ctx);
 
 /**
+ * Create a new client handle connected to the same player core as ctx. This
+ * context has its own event queue, its own mpv_request_event() state, its own
+ * mpv_request_log_messages() state, its own set of observed properties, and
+ * its own state for asynchronous operations. Otherwise, everything is shared.
+ *
+ * This handle should be destroyed with mpv_detach_destroy() if no longer
+ * needed. The core will live as long as there is at least 1 handle referencing
+ * it. Any handle can make the core quit, which will result in every handle
+ * receiving MPV_EVENT_SHUTDOWN.
+ *
+ * This function can not be called before the main handle was initialized with
+ * mpv_initialize(). The new handle is always initialized, unless ctx=NULL was
+ * passed.
+ *
+ * @param ctx Used to get the reference to the mpv core; handle-specific
+ *            settings and parameters are not used.
+ *            If NULL, this function behaves like mpv_create() (ignores name).
+ * @param name The client name. This will be returned by mpv_client_name(). If
+ *             the name is already in use, or contains non-alphanumeric
+ *             characters (other than '_'), the name is modified to fit.
+ *             If NULL, an arbitrary name is automatically chosen.
+ * @return a new handle, or NULL on error
+ */
+mpv_handle *mpv_create_client(mpv_handle *ctx, const char *name);
+
+/**
  * Load a config file. This loads and parses the file, and sets every entry in
  * the config file's default section as if mpv_set_option_string() is called.
  *
@@ -439,6 +496,9 @@ void mpv_resume(mpv_handle *ctx);
  * with playback time. For example, playback could go faster or slower due to
  * playback speed, or due to playback being paused. Use the "time-pos" property
  * instead to get the playback status.
+ *
+ * Unlike other libmpv APIs, this can be called at absolutely any time (even
+ * within wakeup callbacks), as long as the context is valid.
  */
 int64_t mpv_get_time_us(mpv_handle *ctx);
 
@@ -463,6 +523,9 @@ typedef enum mpv_format {
      *          and even filenames don't necessarily have to be in UTF-8 (at
      *          least on Linux). If you pass the strings to code that requires
      *          valid UTF-8, you have to sanitize it in some way.
+     *          On Windows, filenames are always UTF-8, and libmpv converts
+     *          between UTF-8 and UTF-16 when using win32 API functions. See
+     *          the "Encoding of filenames" section for details.
      *
      * Example for reading:
      *
@@ -1078,7 +1141,17 @@ typedef enum mpv_event_id {
      *             "chapter" property. The event is redundant, and might
      *             be removed in the far future.
      */
-    MPV_EVENT_CHAPTER_CHANGE = 23
+    MPV_EVENT_CHAPTER_CHANGE    = 23,
+    /**
+     * Happens if the internal per-mpv_handle ringbuffer overflows, and at
+     * least 1 event had to be dropped. This can happen if the client doesn't
+     * read the event queue quickly enough with mpv_wait_event(), or if the
+     * client makes a very large number of asynchronous calls at once.
+     *
+     * Event delivery will continue normally once this event was returned
+     * (this forces the client to empty the queue completely).
+     */
+    MPV_EVENT_QUEUE_OVERFLOW    = 24
     // Internal note: adjust INTERNAL_EVENT_BASE when adding new events.
 } mpv_event_id;
 
@@ -1314,8 +1387,8 @@ int mpv_request_log_messages(mpv_handle *ctx, const char *min_level);
  * The API won't complain if more than one thread calls this, but it will cause
  * race conditions in the client when accessing the shared mpv_event struct.
  * Note that most other API functions are not restricted by this, and no API
- * function internally calls mpv_wait_event(). This does not apply to concurrent
- * calls of this function on different mpv_handles: these are always safe.
+ * function internally calls mpv_wait_event(). Additionally, concurrent calls
+ * to different mpv_handles are always safe.
  *
  * @param timeout Timeout in seconds, after which the function returns even if
  *                no event was received. A MPV_EVENT_NONE is returned on
@@ -1325,7 +1398,8 @@ int mpv_request_log_messages(mpv_handle *ctx, const char *min_level);
  *         fields in the struct) stay valid until the next mpv_wait_event()
  *         call, or until the mpv_handle is destroyed. You must not write to
  *         the struct, and all memory referenced by it will be automatically
- *         released by the API. The return value is never NULL.
+ *         released by the API on the next mpv_wait_event() call, or when the
+ *         context is destroyed. The return value is never NULL.
  */
 mpv_event *mpv_wait_event(mpv_handle *ctx, double timeout);
 
@@ -1427,6 +1501,37 @@ void mpv_set_wakeup_callback(mpv_handle *ctx, void (*cb)(void *d), void *d);
  *         On MS Windows/MinGW, this will always return -1.
  */
 int mpv_get_wakeup_pipe(mpv_handle *ctx);
+
+/**
+ * Block until all asynchronous requests are done. This affects functions like
+ * mpv_command_async(), which return immediately and return their result as
+ * events.
+ *
+ * This is a helper, and somewhat equivalent to calling mpv_wait_event() in a
+ * loop until all known asynchronous requests have sent their reply as event,
+ * except that the event queue is not emptied.
+ *
+ * In case you called mpv_suspend() before, this will also forcibly reset the
+ * suspend counter of the given handle.
+ */
+void mpv_wait_async_requests(mpv_handle *ctx);
+
+typedef enum mpv_sub_api {
+    /**
+     * For using mpv's OpenGL renderer on an external OpenGL context.
+     * mpv_get_sub_api(MPV_SUB_API_OPENGL_CB) returns mpv_opengl_cb_context*.
+     * This context can be used with mpv_opengl_cb_* functions.
+     * Will return NULL if unavailable (if OpenGL support was not compiled in).
+     * See opengl_cb.h for details.
+     */
+    MPV_SUB_API_OPENGL_CB = 1
+} mpv_sub_api;
+
+/**
+ * This is used for additional APIs that are not strictly part of the core API.
+ * See the individual mpv_sub_api member values.
+ */
+void *mpv_get_sub_api(mpv_handle *ctx, mpv_sub_api sub_api);
 
 #ifdef __cplusplus
 }

@@ -15,6 +15,9 @@
  * with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <stddef.h>
+#include <limits.h>
+#include <strings.h>
 #include <libavutil/dict.h>
 #include "tags.h"
 #include "misc/bstr.h"
@@ -70,6 +73,31 @@ struct mp_tags *mp_tags_dup(void *tparent, struct mp_tags *tags)
     for (int n = 0; n < tags->num_keys; n++) {
         new->keys[n] = talloc_strdup(new, tags->keys[n]);
         new->values[n] = talloc_strdup(new, tags->values[n]);
+    }
+    return new;
+}
+
+// Return a copy of the tags, but containing only keys in list. Also forces
+// the order and casing of the keys (for cosmetic reasons).
+// A trailing '*' matches the rest.
+struct mp_tags *mp_tags_filtered(void *tparent, struct mp_tags *tags, char **list)
+{
+    struct mp_tags *new = talloc_zero(tparent, struct mp_tags);
+    for (int n = 0; list && list[n]; n++) {
+        char *key = list[n];
+        size_t keylen = strlen(key);
+        if (keylen >= INT_MAX)
+            continue;
+        bool prefix = keylen && key[keylen - 1] == '*';
+        int matchlen = prefix ? keylen - 1 : keylen + 1;
+        for (int x = 0; x < tags->num_keys; x++) {
+            if (strncasecmp(tags->keys[x], key, matchlen) == 0) {
+                char skey[320];
+                snprintf(skey, sizeof(skey), "%.*s%s", matchlen, key,
+                         prefix ? tags->keys[x] + keylen - 1 : "");
+                mp_tags_set_str(new, skey, tags->values[x]);
+            }
+        }
     }
     return new;
 }

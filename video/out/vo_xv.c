@@ -48,7 +48,6 @@
 #include "talloc.h"
 #include "common/msg.h"
 #include "vo.h"
-#include "video/vfcap.h"
 #include "video/mp_image.h"
 #include "video/img_fourcc.h"
 #include "x11_common.h"
@@ -649,15 +648,6 @@ static void flip_page(struct vo *vo)
         XSync(vo->x11->display, False);
 }
 
-static mp_image_t *get_screenshot(struct vo *vo)
-{
-    struct xvctx *ctx = vo->priv;
-    if (!ctx->original_image)
-        return NULL;
-
-    return mp_image_new_ref(ctx->original_image);
-}
-
 // Note: REDRAW_FRAME can call this with NULL.
 static void draw_image(struct vo *vo, mp_image_t *mpi)
 {
@@ -681,17 +671,16 @@ static void draw_image(struct vo *vo, mp_image_t *mpi)
     }
 }
 
-static int query_format(struct vo *vo, uint32_t format)
+static int query_format(struct vo *vo, int format)
 {
     struct xvctx *ctx = vo->priv;
     uint32_t i;
-    int flag = VFCAP_CSP_SUPPORTED | VFCAP_CSP_SUPPORTED_BY_HW;
 
     int fourcc = find_xv_format(format);
     if (fourcc) {
         for (i = 0; i < ctx->formats; i++) {
             if (ctx->fo[i].id == fourcc)
-                return flag;
+                return 1;
         }
     }
     return 0;
@@ -841,11 +830,6 @@ static int control(struct vo *vo, uint32_t request, void *data)
     case VOCTRL_REDRAW_FRAME:
         draw_image(vo, ctx->original_image);
         return true;
-    case VOCTRL_SCREENSHOT: {
-        struct voctrl_screenshot_args *args = data;
-        args->out_image = get_screenshot(vo);
-        return true;
-    }
     }
     int events = 0;
     int r = vo_x11_control(vo, &events, request, data);

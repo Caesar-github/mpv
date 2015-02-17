@@ -55,6 +55,8 @@ enum demux_ctrl {
     DEMUXER_CTRL_IDENTIFY_PROGRAM,
     DEMUXER_CTRL_STREAM_CTRL,
     DEMUXER_CTRL_GET_READER_STATE,
+    DEMUXER_CTRL_GET_NAV_EVENT,
+    DEMUXER_CTRL_GET_BITRATE_STATS, // double[STREAM_TYPE_COUNT]
 };
 
 struct demux_ctrl_reader_state {
@@ -69,11 +71,12 @@ struct demux_ctrl_stream_ctrl {
     int res;
 };
 
-#define SEEK_ABSOLUTE (1 << 0)
-#define SEEK_FACTOR   (1 << 1)
-#define SEEK_FORWARD  (1 << 2)
-#define SEEK_BACKWARD (1 << 3)
-#define SEEK_SUBPREROLL (1 << 4)
+#define SEEK_ABSOLUTE (1 << 0)      // argument is a timestamp
+#define SEEK_FACTOR   (1 << 1)      // argument is in range [0,1]
+#define SEEK_FORWARD  (1 << 2)      // prefer later time if not exact
+#define SEEK_BACKWARD (1 << 3)      // prefer earlier time if not exact
+#define SEEK_SUBPREROLL (1 << 4)    // try to get more subtitle packets
+#define SEEK_HR       (1 << 5)      // hr-seek (this is a weak hint only)
 
 // Strictness of the demuxer open format check.
 // demux.c will try by default: NORMAL, UNSAFE (in this order)
@@ -182,10 +185,14 @@ typedef struct demuxer {
     int64_t filepos;  // input stream current pos.
     char *filename;  // same as stream->url
     enum demuxer_type type;
-    int seekable; // flag
+    bool seekable;
+    bool partially_seekable; // implies seekable=true
     double start_time;
     // File format allows PTS resets (even if the current file is without)
     bool ts_resets_possible;
+    // Send relative seek requests, instead of SEEK_ABSOLUTE or SEEK_FACTOR.
+    // This is only done if the user explicitly uses a relative seek.
+    bool rel_seeks;
 
     // Bitmask of DEMUX_EVENT_*
     int events;

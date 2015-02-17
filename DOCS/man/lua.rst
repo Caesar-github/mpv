@@ -1,14 +1,14 @@
 LUA SCRIPTING
 =============
 
-mpv can load Lua scripts. Scripts passed to the ``--lua`` option, or found in
-the ``lua`` subdirectory of the mpv configuration directory (usually
-``~/.config/mpv/lua/``) will be loaded on program start. mpv also appends the
-``lua`` subdirectory to the end of Lua's path so you can import scripts from
+mpv can load Lua scripts. Scripts passed to the ``--script`` option, or found in
+the ``scripts`` subdirectory of the mpv configuration directory (usually
+``~/.config/mpv/scripts/``) will be loaded on program start. mpv also appends the
+``scripts`` subdirectory to the end of Lua's path so you can import scripts from
 there too. Since it's added to the end, don't name scripts you want to import
 the same as Lua libraries because they will be overshadowed by them.
 
-mpv provides the built-in module ``mp``, which provides functions to send
+mpv provides the built-in module ``mp``, which contains functions to send
 commands to the mpv core and to retrieve information about playback state, user
 settings, file information, and so on.
 
@@ -29,16 +29,14 @@ A script which leaves fullscreen mode when the player is paused:
     end
     mp.observe_property("pause", "bool", on_pause_change)
 
-This script provides a pretty weird feature, but Lua scripting was made to
-allow users implement features which are not going to be added to the mpv core.
 
-Mode of operation
------------------
+Details on the script initialization and lifecycle
+--------------------------------------------------
 
-Your script will be loaded by the player at program start from the ``lua``
-configuration subdirectory, from a path specified with the ``--lua`` option, or
-in some cases, internally (like ``--osc``). Each script runs in its own
-thread. Your script is first run "as is", and once that is done, the event loop
+Your script will be loaded by the player at program start from the ``scripts``
+configuration subdirectory, or from a path specified with the ``--script``
+option. Some scripts are loaded internally (like ``--osc``). Each script runs in
+its own thread. Your script is first run "as is", and once that is done, the event loop
 is entered. This event loop will dispatch events received by mpv and call your
 own event handlers which you have registered with ``mp.register_event``, or
 timers added with ``mp.add_timeout`` or similar.
@@ -361,7 +359,7 @@ The ``mp`` module is preloaded, although it can be loaded manually with
 
 
 ``mp.get_opt(key)``
-    Return a setting from the ``--lua-opts`` option. It's up to the user and
+    Return a setting from the ``--script-opts`` option. It's up to the user and
     the script how this mechanism is used. Currently, all scripts can access
     this equally, so you should be careful about collisions.
 
@@ -513,12 +511,12 @@ Example config::
     optionC=no
 
 
-Command-line options are read from the ``--lua-opts`` parameter. To avoid
+Command-line options are read from the ``--script-opts`` parameter. To avoid
 collisions, all keys have to be prefixed with ``identifier-``.
 
 Example command-line::
 
-     --lua-opts=myscript-optionA=TEST:myscript-optionB=0:myscript-optionC=yes
+     --script-opts=myscript-optionA=TEST,myscript-optionB=0,myscript-optionC=yes
 
 
 mp.utils options
@@ -646,7 +644,7 @@ Example:
         print("start of playback!")
     end
 
-    mp.register_event("playback-start", my_fn)
+    mp.register_event("file-loaded", my_fn)
 
 
 
@@ -665,7 +663,9 @@ List of events
     Happens after a file was loaded and begins playback.
 
 ``seek``
-    Happens on seeking (including ordered chapter segment changes).
+    Happens on seeking. (This might include cases when the player seeks
+    internally, even without user interaction. This includes e.g. segment
+    changes when playing ordered chapters Matroska files.)
 
 ``playback-restart``
     Start of playback after seek or after file was loaded.
@@ -682,7 +682,7 @@ List of events
 
 ``shutdown``
     Sent when the player quits, and the script should terminate. Normally
-    handled automatically. See `Mode of operation`_.
+    handled automatically. See `Details on the script initialization and lifecycle`_.
 
 ``log-message``
     Receives messages enabled with ``mp.enable_messages``. The message data
@@ -701,13 +701,8 @@ List of events
         (undocumented) existing ones.
 
     ``text``
-        The log message. Note that this is the direct output of a printf()
-        style output API. The text will contain embedded newlines, and it's
-        possible that a single message contains multiple lines, or that a
-        message contains a partial line.
-
-        It's safe to display messages only if they end with a newline character,
-        and to buffer them otherwise.
+        The log message. The text will end with a newline character. Sometimes
+        it can contain multiple lines.
 
     Keep in mind that these messages are meant to be hints for humans. You
     should not parse them, and prefix/level/text of messages might change
@@ -738,8 +733,8 @@ The following events also happen, but are deprecated: ``tracks-changed``,
 Extras
 ------
 
-This documents experimental features, or features that are "too special" and
-we don't guarantee a stable interface to it.
+This documents experimental features, or features that are "too special" to
+guarantee a stable interface.
 
 ``mp.add_hook(type, priority, fn)``
     Add a hook callback for ``type`` (a string identifying a certain kind of
@@ -750,13 +745,6 @@ we don't guarantee a stable interface to it.
     recommended as neutral default value. ``fn`` is the function that will be
     called during execution of the hook.
 
-    Currently existing hooks:
-
-    ``on_load``
-        Called when a file is to be opened, before anything is actually done.
-        For example, you could read and write the ``stream-open-filename``
-        property to redirect an URL to something else (consider support for
-        streaming sites which rarely give the user a direct media URL), or
-        you could set per-file options with by setting the property
-        ``file-local-options/<option name>``. The player will wait until all
-        hooks are run.
+    See `Hooks`_ for currently existing hooks and what they do - only the hook
+    list is interesting; handling hook execution is done by the Lua script
+    function automatically.

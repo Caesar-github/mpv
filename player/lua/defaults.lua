@@ -14,7 +14,7 @@ function mp.get_script_name()
 end
 
 function mp.get_opt(key, def)
-    local opts = mp.get_property_native("options/lua-opts")
+    local opts = mp.get_property_native("options/script-opts")
     local val = opts[key]
     if val == nil then
         val = def
@@ -203,6 +203,7 @@ end
 
 function mp.remove_key_binding(name)
     key_bindings[name] = nil
+    dispatch_key_bindings[name] = nil
     update_key_bindings()
     mp.unregister_script_message(name)
 end
