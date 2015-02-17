@@ -7,9 +7,9 @@ Last-Update: 2013-10-30
 
 --- a/etc/mpv.desktop
 +++ b/etc/mpv.desktop
-@@ -18,8 +18,8 @@
- Comment[ru]=Воспроизвести фильмы и музыку
- Comment[zh]=多媒体播放器
+@@ -23,8 +23,8 @@
+ Comment[zh-CN]=播放电影和歌曲
+ Comment[zh-TW]=播放電影和歌曲
  Icon=mpv
 -TryExec=mpv
 -Exec=mpv --no-terminal --force-window -- %U
