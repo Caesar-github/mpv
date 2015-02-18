@@ -1,8 +1,13 @@
-mpv (0.8.0-1) UNRELEASED; urgency=medium
+mpv (0.8.0-1) unstable; urgency=medium
 
   * New upstream release
+  * Update to waf 1.8.4
+  * Don't run clean if no waf is present
+  * Refresh patches
+  * Update symbols file
+  * Only enable joystick support on linux
 
- -- Alessandro Ghedini <ghedo@debian.org>  Tue, 17 Feb 2015 10:34:38 +0100
+ -- Alessandro Ghedini <ghedo@debian.org>  Wed, 18 Feb 2015 15:12:55 +0100
 
 mpv (0.7.3-1) unstable; urgency=medium
 
