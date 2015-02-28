@@ -744,7 +744,7 @@ static void demux_export_replaygain(demuxer_t *demuxer)
 static void demux_copy(struct demuxer *dst, struct demuxer *src)
 {
     if (src->events & DEMUX_EVENT_INIT) {
-        // Note that we do as shallow copies as possible. We expect the date
+        // Note that we do as shallow copies as possible. We expect the data
         // that is not-copied (only referenced) to be immutable.
         // This implies e.g. that no chapters are added after initialization.
         dst->chapters = src->chapters;
@@ -755,7 +755,6 @@ static void demux_copy(struct demuxer *dst, struct demuxer *src)
         dst->attachments = src->attachments;
         dst->num_attachments = src->num_attachments;
         dst->matroska_data = src->matroska_data;
-        dst->file_contents = src->file_contents;
         dst->playlist = src->playlist;
         dst->seekable = src->seekable;
         dst->partially_seekable = src->partially_seekable;
@@ -763,6 +762,7 @@ static void demux_copy(struct demuxer *dst, struct demuxer *src)
         dst->ts_resets_possible = src->ts_resets_possible;
         dst->rel_seeks = src->rel_seeks;
         dst->start_time = src->start_time;
+        dst->priv = src->priv;
     }
     if (src->events & DEMUX_EVENT_STREAMS) {
         // The stream structs themselves are immutable.
@@ -841,7 +841,6 @@ static struct demuxer *open_given_type(struct mpv_global *global,
     struct demuxer *demuxer = talloc_ptrtype(NULL, demuxer);
     *demuxer = (struct demuxer) {
         .desc = desc,
-        .type = desc->type,
         .stream = stream,
         .seekable = stream->seekable,
         .filepos = -1,
@@ -1385,7 +1384,8 @@ struct demux_chapter *demux_copy_chapter_data(struct demux_chapter *c, int num)
     for (int n = 0; n < num; n++) {
         new[n] = c[n];
         new[n].name = talloc_strdup(new, new[n].name);
-        new[n].metadata = mp_tags_dup(new, new[n].metadata);
+        if (new[n].metadata)
+            new[n].metadata = mp_tags_dup(new, new[n].metadata);
     }
     return new;
 }
