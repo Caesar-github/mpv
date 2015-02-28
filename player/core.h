@@ -26,6 +26,7 @@
 #include "common/common.h"
 #include "options/options.h"
 #include "sub/osd.h"
+#include "demux/timeline.h"
 
 // definitions used internally by the core player code
 
@@ -39,12 +40,6 @@ enum stop_play_reason {
     PT_RELOAD_DEMUXER,  // restart playback, but keep stream open
     PT_QUIT,            // stop playback, quit player
     PT_ERROR,           // play next playlist entry (due to an error)
-};
-
-struct timeline_part {
-    double start;
-    double source_start;
-    struct demuxer *source;
 };
 
 enum mp_osd_seek_info {
@@ -185,9 +180,10 @@ typedef struct MPContext {
     int64_t shown_vframes, shown_aframes;
 
     struct stream *stream; // stream that was initially opened
-    struct demuxer **sources;
+    struct demuxer **sources; // all open demuxers
     int num_sources;
 
+    struct timeline *tl;
     struct timeline_part *timeline;
     int num_timeline_parts;
     int timeline_part;
@@ -195,7 +191,7 @@ typedef struct MPContext {
     int num_chapters;
     double video_offset;
 
-    struct demuxer *demuxer;
+    struct demuxer *demuxer; // can change with timeline
     struct mp_tags *filtered_tags;
 
     struct track **tracks;
@@ -416,8 +412,8 @@ bool mp_get_cache_idle(struct MPContext *mpctx);
 void update_window_title(struct MPContext *mpctx, bool force);
 void error_on_track(struct MPContext *mpctx, struct track *track);
 void stream_dump(struct MPContext *mpctx);
-int mpctx_run_non_blocking(struct MPContext *mpctx, void (*thread_fn)(void *arg),
-                           void *thread_arg);
+int mpctx_run_reentrant(struct MPContext *mpctx, void (*thread_fn)(void *arg),
+                        void *thread_arg);
 struct mpv_global *create_sub_global(struct MPContext *mpctx);
 
 // osd.c
@@ -477,13 +473,6 @@ void update_subtitles(struct MPContext *mpctx);
 void uninit_sub_renderer(struct MPContext *mpctx);
 void update_osd_sub_state(struct MPContext *mpctx, int order,
                           struct osd_sub_state *out_state);
-
-// timeline/tl_matroska.c
-void build_ordered_chapter_timeline(struct MPContext *mpctx);
-// timeline/tl_mpv_edl.c
-void build_mpv_edl_timeline(struct MPContext *mpctx);
-// timeline/tl_cue.c
-void build_cue_timeline(struct MPContext *mpctx);
 
 // video.c
 void reset_video_state(struct MPContext *mpctx);

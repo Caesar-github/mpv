@@ -252,7 +252,6 @@ float[6] weights6(sampler2D lookup, float f) {
     vec4 c2 = texture(lookup, vec2(0.75, f));
     return float[6](c1.r, c1.g, c1.b, c2.r, c2.g, c2.b);
 }
-#endif
 
 // For N=n*4 with n>1.
 #define WEIGHTS_N(NAME, N)                          \
@@ -305,12 +304,12 @@ float[6] weights6(sampler2D lookup, float f) {
         w = texture1D(LUT, length(vec2(X, Y) - fcoord)/R).r;                \
         c = texture(tex, base + pt * vec2(X, Y));                           \
         wsum += w;                                                          \
-        res  += vec4(w) * c;                                                \
+        res  += vec4(w) * c;
 
 #define SAMPLE_POLAR_PRIMARY(LUT, R, X, Y)                                  \
         SAMPLE_POLAR_HELPER(LUT, R, X, Y)                                   \
         lo = min(lo, c);                                                    \
-        hi = max(hi, c);                                                    \
+        hi = max(hi, c);
 
 #define SAMPLE_CONVOLUTION_POLAR_R(NAME, R, LUT, WEIGHTS_FN, ANTIRING)      \
     vec4 NAME(VIDEO_SAMPLER tex, vec2 texsize, vec2 texcoord) {             \
@@ -327,6 +326,8 @@ float[6] weights6(sampler2D lookup, float f) {
         res = res / vec4(wsum);                                             \
         return mix(res, clamp(res, lo, hi), ANTIRING);                      \
     }
+
+#endif /* HAVE_ARRAYS */
 
 #ifdef DEF_SCALER0
 DEF_SCALER0
@@ -387,9 +388,6 @@ void main() {
         texture(texture0, texcoord),
         texture(texture1, texcoord),
         inter_coeff);
-    // debug code to visually check the interpolation amount
-    // vec4 acolor = texture(texture0, texcoord) -
-    //               inter_coeff * texture(texture1, texcoord);
 #elif USE_CONV == CONV_PLANAR
     vec4 acolor = vec4(SAMPLE(texture0, textures_size[0], texcoord).r,
                        SAMPLE_C(texture1, textures_size[1], chr_texcoord).r,

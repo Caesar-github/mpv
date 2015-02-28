@@ -168,7 +168,6 @@ typedef struct mkv_demuxer {
     mkv_index_t *indexes;
     size_t num_indexes;
     bool index_complete;
-    uint64_t deferred_cues;
 
     struct header_elem {
         int32_t id;
@@ -183,6 +182,8 @@ typedef struct mkv_demuxer {
     int subtitle_preroll;
 
     bool index_has_durations;
+
+    bool eof_warning;
 } mkv_demuxer_t;
 
 #define REALHEADER_SIZE    16
@@ -704,8 +705,6 @@ static int demux_mkv_read_cues(demuxer_t *demuxer)
     mkv_demuxer_t *mkv_d = (mkv_demuxer_t *) demuxer->priv;
     stream_t *s = demuxer->stream;
 
-    mkv_d->deferred_cues = 0;
-
     if (opts->index_mode != 1) {
         ebml_read_skip(demuxer->log, -1, s);
         return 0;
@@ -748,26 +747,6 @@ static int demux_mkv_read_cues(demuxer_t *demuxer)
     MP_VERBOSE(demuxer, "\\---- [ parsing cues ] -----------\n");
     talloc_free(parse_ctx.talloc_ctx);
     return 0;
-}
-
-static void read_deferred_cues(demuxer_t *demuxer)
-{
-    mkv_demuxer_t *mkv_d = demuxer->priv;
-    stream_t *s = demuxer->stream;
-
-    if (mkv_d->deferred_cues) {
-        int64_t pos = mkv_d->deferred_cues;
-        mkv_d->deferred_cues = 0;
-        if (!stream_seek(s, pos)) {
-            MP_WARN(demuxer, "Failed to seek to cues\n");
-            return;
-        }
-        if (ebml_read_id(s) != MATROSKA_ID_CUES) {
-            MP_WARN(demuxer, "Expected element not found\n");
-            return;
-        }
-        demux_mkv_read_cues(demuxer);
-    }
 }
 
 static int demux_mkv_read_chapters(struct demuxer *demuxer)
@@ -1009,9 +988,6 @@ static int demux_mkv_read_attachments(demuxer_t *demuxer)
     return 0;
 }
 
-static int read_header_element(struct demuxer *demuxer, uint32_t id,
-                               int64_t at_filepos);
-
 static struct header_elem *get_header_element(struct demuxer *demuxer,
                                               uint32_t id,
                                               int64_t element_filepos)
@@ -1060,6 +1036,9 @@ static int demux_mkv_read_seekhead(demuxer_t *demuxer)
     struct ebml_seek_head seekhead = {0};
     struct ebml_parse_ctx parse_ctx = {demuxer->log};
 
+    int64_t end = 0;
+    stream_control(s, STREAM_CTRL_GET_SIZE, &end);
+
     MP_VERBOSE(demuxer, "/---- [ parsing seek head ] ---------\n");
     if (ebml_read_element(s, &parse_ctx, &seekhead, &ebml_seek_head_desc) < 0) {
         res = -1;
@@ -1074,13 +1053,16 @@ static int demux_mkv_read_seekhead(demuxer_t *demuxer)
         uint64_t pos = seek->seek_position + mkv_d->segment_start;
         MP_DBG(demuxer, "Element 0x%x at %"PRIu64".\n",
                (unsigned)seek->seek_id, pos);
-        get_header_element(demuxer, seek->seek_id, pos);
-        // This is nice to warn against incomplete files.
-        int64_t end = 0;
-        stream_control(s, STREAM_CTRL_GET_SIZE, &end);
-        if (pos >= end)
-            MP_WARN(demuxer, "SeekHead position beyond "
-                    "end of file - incomplete file?\n");
+        struct header_elem *elem = get_header_element(demuxer, seek->seek_id, pos);
+        // Warn against incomplete files.
+        if (elem && pos >= end) {
+            elem->parsed = true; // don't bother
+            if (!mkv_d->eof_warning) {
+                MP_WARN(demuxer, "SeekHead position beyond "
+                        "end of file - incomplete file?\n");
+                mkv_d->eof_warning = true;
+            }
+        }
     }
  out:
     MP_VERBOSE(demuxer, "\\---- [ parsing seek head ] ---------\n");
@@ -1116,6 +1098,45 @@ static int read_header_element(struct demuxer *demuxer, uint32_t id,
 skip:
     ebml_read_skip(demuxer->log, -1, demuxer->stream);
     return 0;
+}
+
+static int read_deferred_element(struct demuxer *demuxer,
+                                 struct header_elem *elem)
+{
+    stream_t *s = demuxer->stream;
+
+    if (elem->parsed)
+        return 0;
+    elem->parsed = true;
+    MP_VERBOSE(demuxer, "Seeking to %"PRIu64" to read header element 0x%x.\n",
+               elem->pos, (unsigned)elem->id);
+    if (!stream_seek(s, elem->pos)) {
+        MP_WARN(demuxer, "Failed to seek when reading header element.\n");
+        return 0;
+    }
+    if (ebml_read_id(s) != elem->id) {
+        MP_ERR(demuxer, "Expected element 0x%x not found\n",
+               (unsigned int)elem->id);
+        return 0;
+    }
+    elem->parsed = false; // don't make read_header_element skip it
+    return read_header_element(demuxer, elem->id, elem->pos);
+}
+
+static void read_deferred_cues(demuxer_t *demuxer)
+{
+    struct MPOpts *opts = demuxer->opts;
+    mkv_demuxer_t *mkv_d = demuxer->priv;
+
+    if (mkv_d->index_complete || opts->index_mode != 1)
+        return;
+
+    for (int n = 0; n < mkv_d->num_headers; n++) {
+        struct header_elem *elem = &mkv_d->headers[n];
+
+        if (elem->id == MATROSKA_ID_CUES)
+            read_deferred_element(demuxer, elem);
+    }
 }
 
 static void add_coverart(struct demuxer *demuxer)
@@ -1283,8 +1304,6 @@ static int demux_mkv_open_video(demuxer_t *demuxer, mkv_track_t *track)
         return 1;
     }
 
-    sh_v->coded_width = track->v_width;
-    sh_v->coded_height = track->v_height;
     sh_v->extradata = talloc_memdup(sh_v, extradata, extradata_size);
     sh_v->extradata_len = extradata_size;
     if (!sh->codec) {
@@ -1796,36 +1815,12 @@ static int demux_mkv_open(demuxer_t *demuxer, enum demux_check check)
     //       Likewise, ->headers might be reallocated.
     for (int n = 0; n < mkv_d->num_headers; n++) {
         struct header_elem *elem = &mkv_d->headers[n];
-        if (elem->parsed)
-            continue;
-        elem->parsed = true;
-        if (elem->id == MATROSKA_ID_CUES) {
+        if (elem->id == MATROSKA_ID_CUES && !elem->parsed) {
             // Read cues when they are needed, to avoid seeking on opening.
             MP_VERBOSE(demuxer, "Deferring reading cues.\n");
-            mkv_d->deferred_cues = elem->pos;
             continue;
         }
-        MP_VERBOSE(demuxer, "Seeking to %"PRIu64" to read header element 0x%x.\n",
-                   elem->pos, (unsigned)elem->id);
-        int64_t end = 0;
-        stream_control(s, STREAM_CTRL_GET_SIZE, &end);
-        if (elem->pos >= end) {
-            MP_WARN(demuxer, "SeekHead position beyond "
-                    "end of file - incomplete file?\n");
-            continue;
-        }
-        if (!stream_seek(s, elem->pos)) {
-            MP_WARN(demuxer, "Failed to seek when reading header element.\n");
-            continue;
-        }
-        if (ebml_read_id(s) != elem->id) {
-            MP_ERR(demuxer, "Expected element 0x%x not found\n",
-                   (unsigned int)elem->id);
-            continue;
-        }
-        elem->parsed = false; // don't make read_header_element skip it
-        int res = read_header_element(demuxer, elem->id, elem->pos);
-        if (res < 0)
+        if (read_deferred_element(demuxer, elem) < 0)
             return -1;
     }
     if (!stream_seek(s, start_pos)) {
@@ -2882,12 +2877,12 @@ static void mkv_free(struct demuxer *demuxer)
 const demuxer_desc_t demuxer_desc_matroska = {
     .name = "mkv",
     .desc = "Matroska",
-    .type = DEMUXER_TYPE_MATROSKA,
     .open = demux_mkv_open,
     .fill_buffer = demux_mkv_fill_buffer,
     .close = mkv_free,
     .seek = demux_mkv_seek,
-    .control = demux_mkv_control
+    .control = demux_mkv_control,
+    .load_timeline = build_ordered_chapter_timeline,
 };
 
 bool demux_matroska_uid_cmp(struct matroska_segment_uid *a,
