@@ -2297,15 +2297,15 @@ static int panscan_property_helper(void *ctx, struct m_property *prop,
 static int mp_property_vo_flag(struct m_property *prop, int action, void *arg,
                                int vo_ctrl, int *vo_var, MPContext *mpctx)
 {
-    if (!mpctx->video_out)
-        return M_PROPERTY_UNAVAILABLE;
-
     if (action == M_PROPERTY_SET) {
         int desired = !!*(int *) arg;
         if (*vo_var == desired)
             return M_PROPERTY_OK;
-        if (mpctx->video_out->config_ok)
+        if (mpctx->video_out) {
             vo_control(mpctx->video_out, vo_ctrl, 0);
+        } else {
+            *vo_var = desired;
+        }
         return *vo_var == desired ? M_PROPERTY_OK : M_PROPERTY_ERROR;
     }
     return mp_property_generic_option(mpctx, prop, action, arg);
@@ -3808,7 +3808,6 @@ static bool reinit_filters(MPContext *mpctx, enum stream_type mediatype)
     case STREAM_VIDEO:
         return reinit_video_filters(mpctx) >= 0;
     case STREAM_AUDIO:
-        clear_audio_output_buffers(mpctx);
         return reinit_audio_filters(mpctx) >= 0;
     }
     return false;

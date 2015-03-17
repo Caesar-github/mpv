@@ -52,12 +52,13 @@
 #define cocoa_unlock(s)  pthread_mutex_unlock(&s->mutex)
 
 static void vo_cocoa_fullscreen(struct vo *vo);
-static void cocoa_rm_fs_screen_profile_observer(struct vo *vo);
+static void cocoa_rm_fs_screen_profile_observer(struct vo_cocoa_state *s);
 
 struct vo_cocoa_state {
     NSWindow *window;
     NSView *view;
     MpvVideoView *video;
+    MpvCocoaAdapter *adapter;
     NSOpenGLContext *gl_ctx;
 
     NSScreen *current_screen;
@@ -87,9 +88,8 @@ struct vo_cocoa_state {
     void (*resize_redraw)(struct vo *vo, int w, int h);
 };
 
-static void with_cocoa_lock(struct vo *vo, void(^block)(void))
+static void with_cocoa_lock(struct vo_cocoa_state *s, void(^block)(void))
 {
-    struct vo_cocoa_state *s = vo->cocoa;
     cocoa_lock(s);
     block();
     cocoa_unlock(s);
@@ -97,8 +97,9 @@ static void with_cocoa_lock(struct vo *vo, void(^block)(void))
 
 static void with_cocoa_lock_on_main_thread(struct vo *vo, void(^block)(void))
 {
+    struct vo_cocoa_state *s = vo->cocoa;
     dispatch_async(dispatch_get_main_queue(), ^{
-        with_cocoa_lock(vo, block);
+        with_cocoa_lock(s, block);
     });
 }
 
@@ -111,17 +112,15 @@ static void queue_new_video_size(struct vo *vo, int w, int h)
     }
 }
 
-static void enable_power_management(struct vo *vo)
+static void enable_power_management(struct vo_cocoa_state *s)
 {
-    struct vo_cocoa_state *s = vo->cocoa;
     if (!s->power_mgmt_assertion) return;
     IOPMAssertionRelease(s->power_mgmt_assertion);
     s->power_mgmt_assertion = kIOPMNullAssertionID;
 }
 
-static void disable_power_management(struct vo *vo)
+static void disable_power_management(struct vo_cocoa_state *s)
 {
-    struct vo_cocoa_state *s = vo->cocoa;
     if (s->power_mgmt_assertion) return;
     IOPMAssertionCreateWithName(
             kIOPMAssertionTypePreventUserIdleDisplaySleep,
@@ -148,7 +147,7 @@ static void set_application_icon(NSApplication *app)
 
 int vo_cocoa_init(struct vo *vo)
 {
-    struct vo_cocoa_state *s = talloc_zero(vo, struct vo_cocoa_state);
+    struct vo_cocoa_state *s = talloc_zero(NULL, struct vo_cocoa_state);
     *s = (struct vo_cocoa_state){
         .waiting_frame = false,
         .power_mgmt_assertion = kIOPMNullAssertionID,
@@ -190,16 +189,10 @@ void vo_cocoa_register_resize_callback(struct vo *vo,
 void vo_cocoa_uninit(struct vo *vo)
 {
     struct vo_cocoa_state *s = vo->cocoa;
-    NSView *ev = s->view;
-
-    // keep the event view around for later in order to call -clear
-    if (!s->embedded) {
-        [ev retain];
-    }
 
     with_cocoa_lock_on_main_thread(vo, ^{
-        enable_power_management(vo);
-        cocoa_rm_fs_screen_profile_observer(vo);
+        enable_power_management(s);
+        cocoa_rm_fs_screen_profile_observer(s);
 
         [s->gl_ctx release];
 
@@ -208,21 +201,15 @@ void vo_cocoa_uninit(struct vo *vo)
         [s->video removeFromSuperview];
 
         [s->view removeFromSuperview];
+        [(MpvEventsView *)s->view clear];
         [s->view release];
 
         // if using --wid + libmpv there's no window to release
         if (s->window)
             [s->window release];
-    });
 
-    // don't use the mutex, because at that point it could have been destroyed
-    // and no one is accessing the events view anyway
-    if (!s->embedded) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [(MpvEventsView *)ev clear];
-            [ev release];
-        });
-    }
+        talloc_free(s);
+    });
 }
 
 static int get_screen_handle(struct vo *vo, int identifier, NSWindow *window,
@@ -279,6 +266,8 @@ static void vo_cocoa_update_screen_fps(struct vo *vo)
             s->screen_fps = (t.timeScale / (double) t.timeValue);
         CVDisplayLinkRelease(link);
     }
+
+    s->pending_events |= VO_EVENT_WIN_STATE;
 }
 
 static void vo_cocoa_update_screen_info(struct vo *vo, struct mp_rect *out_rc)
@@ -379,10 +368,9 @@ static void create_ui(struct vo *vo, struct mp_rect *win, int geo_flags)
     view.adapter = adapter;
     s->view = view;
     [parent addSubview:s->view];
-
-    // insert ourselves as the next key view so that clients can give key
-    // focus to the mpv view by calling -[NSWindow selectNextKeyView:]
-    [parent setNextKeyView:s->view];
+    // update the cursor position now that the view has been added.
+    [view signalMousePosition];
+    s->adapter = adapter;
 
 #if HAVE_COCOA_APPLICATION
     cocoa_register_menu_item_action(MPM_H_SIZE,   @selector(halfSize));
@@ -427,9 +415,8 @@ static int cocoa_set_window_title(struct vo *vo, const char *title)
     return VO_TRUE;
 }
 
-static void cocoa_rm_fs_screen_profile_observer(struct vo *vo)
+static void cocoa_rm_fs_screen_profile_observer(struct vo_cocoa_state *s)
 {
-    struct vo_cocoa_state *s = vo->cocoa;
     [[NSNotificationCenter defaultCenter]
         removeObserver:s->fs_icc_changed_ns_observer];
 }
@@ -439,7 +426,7 @@ static void cocoa_add_fs_screen_profile_observer(struct vo *vo)
     struct vo_cocoa_state *s = vo->cocoa;
 
     if (s->fs_icc_changed_ns_observer)
-        cocoa_rm_fs_screen_profile_observer(vo);
+        cocoa_rm_fs_screen_profile_observer(s);
 
     if (vo->opts->fsscreen_id < 0)
         return;
@@ -501,7 +488,7 @@ int vo_cocoa_config_window(struct vo *vo, uint32_t flags, void *gl_ctx)
         }
 
         // trigger a resize -> don't set vo->dwidth and vo->dheight directly
-        // since this block is executed asynchrolously to the video
+        // since this block is executed asynchronously to the video
         // reconfiguration code.
         s->pending_events |= VO_EVENT_RESIZE;
     });
@@ -612,6 +599,13 @@ static void vo_cocoa_fullscreen(struct vo *vo)
     draw_changes_after_next_frame(vo);
     [(MpvEventsView *)s->view setFullScreen:opts->fullscreen];
 
+    if ([s->view window] != s->window) {
+        // cocoa implements fullscreen views by moving the view to a fullscreen
+        // window. Set that window delegate to the cocoa adapter to trigger
+        // calls to -windowDidResignKey: and -windowDidBecomeKey:
+        [[s->view window] setDelegate:s->adapter];
+    }
+
     s->pending_events |= VO_EVENT_ICC_PROFILE_CHANGED;
     s->pending_events |= VO_EVENT_RESIZE;
 }
@@ -645,7 +639,7 @@ int vo_cocoa_control(struct vo *vo, int *events, int request, void *arg)
         return vo_cocoa_ontop(vo);
     case VOCTRL_GET_UNFS_WINDOW_SIZE: {
         int *s = arg;
-        with_cocoa_lock(vo, ^{
+        with_cocoa_lock(vo->cocoa, ^{
             NSSize size = [vo->cocoa->view frame].size;
             s[0] = size.width;
             s[1] = size.height;
@@ -667,10 +661,10 @@ int vo_cocoa_control(struct vo *vo, int *events, int request, void *arg)
     case VOCTRL_UPDATE_WINDOW_TITLE:
         return cocoa_set_window_title(vo, (const char *) arg);
     case VOCTRL_RESTORE_SCREENSAVER:
-        enable_power_management(vo);
+        enable_power_management(vo->cocoa);
         return VO_TRUE;
     case VOCTRL_KILL_SCREENSAVER:
-        disable_power_management(vo);
+        disable_power_management(vo->cocoa);
         return VO_TRUE;
     case VOCTRL_GET_ICC_PROFILE:
         vo_cocoa_control_get_icc_profile(vo, arg);
@@ -769,4 +763,21 @@ int vo_cocoa_control(struct vo *vo, int *events, int request, void *arg)
     struct vo_cocoa_state *s = self.vout->cocoa;
     s->pending_events |= VO_EVENT_ICC_PROFILE_CHANGED;
 }
+
+- (void)didChangeMousePosition
+{
+    struct vo_cocoa_state *s = self.vout->cocoa;
+    [(MpvEventsView *)s->view signalMousePosition];
+}
+
+- (void)windowDidResignKey:(NSNotification *)notification
+{
+    [self didChangeMousePosition];
+}
+
+- (void)windowDidBecomeKey:(NSNotification *)notification
+{
+    [self didChangeMousePosition];
+}
+
 @end
