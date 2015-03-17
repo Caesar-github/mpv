@@ -98,6 +98,9 @@ struct vo_w32_state {
     int mouse_x;
     int mouse_y;
 
+    // Should SetCursor be called when handling VOCTRL_SET_CURSOR_VISIBILITY?
+    bool can_set_cursor;
+
     // UTF-16 decoding state for WM_CHAR and VK_PACKET
     int high_surrogate;
 
@@ -312,16 +315,9 @@ static void subtract_window_borders(HWND hwnd, RECT *rc)
     rc->bottom -= b.bottom;
 }
 
-static bool is_maximized(struct vo_w32_state *w32)
-{
-    WINDOWPLACEMENT wp = { .length = sizeof(WINDOWPLACEMENT) };
-    GetWindowPlacement(w32->window, &wp);
-    return wp.showCmd == SW_SHOWMAXIMIZED;
-}
-
 static LRESULT borderless_nchittest(struct vo_w32_state *w32, int x, int y)
 {
-    if (is_maximized(w32))
+    if (IsMaximized(w32->window))
         return HTCLIENT;
 
     POINT mouse = { x, y };
@@ -403,7 +399,7 @@ static int mod_state(struct vo_w32_state *w32)
 
 static int decode_surrogate_pair(wchar_t lead, wchar_t trail)
 {
-    return 0x10000 + ((lead & 0x3ff) << 10) | (trail & 0x3ff);
+    return 0x10000 + (((lead & 0x3ff) << 10) | (trail & 0x3ff));
 }
 
 static int decode_utf16(struct vo_w32_state *w32, wchar_t c)
@@ -686,7 +682,10 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam,
         mp_input_put_key(w32->input_ctx, MP_INPUT_RELEASE_ALL);
         break;
     case WM_SETCURSOR:
-        if (LOWORD(lParam) == HTCLIENT && !w32->cursor_visible) {
+        // The cursor should only be hidden if the mouse is in the client area
+        // and if the window isn't in menu mode (HIWORD(lParam) is non-zero)
+        w32->can_set_cursor = LOWORD(lParam) == HTCLIENT && HIWORD(lParam);
+        if (w32->can_set_cursor && !w32->cursor_visible) {
             SetCursor(NULL);
             return TRUE;
         }
@@ -1206,12 +1205,6 @@ fail:
     return 0;
 }
 
-static bool vo_w32_is_cursor_in_client(struct vo_w32_state *w32)
-{
-    DWORD pos = GetMessagePos();
-    return SendMessage(w32->window, WM_NCHITTEST, 0, pos) == HTCLIENT;
-}
-
 static int gui_thread_control(struct vo_w32_state *w32, int request, void *arg)
 {
     switch (request) {
@@ -1257,7 +1250,7 @@ static int gui_thread_control(struct vo_w32_state *w32, int request, void *arg)
     case VOCTRL_SET_CURSOR_VISIBILITY:
         w32->cursor_visible = *(bool *)arg;
 
-        if (vo_w32_is_cursor_in_client(w32)) {
+        if (w32->can_set_cursor && w32->tracking) {
             if (w32->cursor_visible)
                 SetCursor(LoadCursor(NULL, IDC_ARROW));
             else

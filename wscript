@@ -84,6 +84,7 @@ build_options = [
         'name': '--test',
         'desc': 'test suite (using cmocka)',
         'func': check_pkg_config('cmocka >= 0.4.1'),
+        'default': 'disable',
     }, {
         'name': '--clang-database',
         'desc': 'generate a clang compilation database',
@@ -691,7 +692,7 @@ hwaccel_features = [
         'name': '--vaapi-hwaccel',
         'desc': 'libavcodec VAAPI hwaccel',
         'deps': [ 'vaapi' ],
-        'func': check_true,
+        'func': check_headers('libavcodec/vaapi.h', use='libav'),
     } , {
         'name': '--vda-hwaccel',
         'desc': 'libavcodec VDA hwaccel',
@@ -710,12 +711,14 @@ hwaccel_features = [
         'name': '--vdpau-hwaccel',
         'desc': 'libavcodec VDPAU hwaccel',
         'deps': [ 'vdpau' ],
-        'func': check_true,
+        'func': check_statement('libavcodec/vdpau.h',
+                                'av_vdpau_alloc_context()',
+                                use='libav'),
     }, {
         'name': '--dxva2-hwaccel',
         'desc': 'libavcodec DXVA2 hwaccel',
         'deps': [ 'gdi' ],
-        'func': check_true,
+        'func': check_headers('libavcodec/dxva2.h', use='libav'),
     }
 ]
 

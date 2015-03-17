@@ -1036,9 +1036,6 @@ static int demux_mkv_read_seekhead(demuxer_t *demuxer)
     struct ebml_seek_head seekhead = {0};
     struct ebml_parse_ctx parse_ctx = {demuxer->log};
 
-    int64_t end = 0;
-    stream_control(s, STREAM_CTRL_GET_SIZE, &end);
-
     MP_VERBOSE(demuxer, "/---- [ parsing seek head ] ---------\n");
     if (ebml_read_element(s, &parse_ctx, &seekhead, &ebml_seek_head_desc) < 0) {
         res = -1;
@@ -1053,16 +1050,7 @@ static int demux_mkv_read_seekhead(demuxer_t *demuxer)
         uint64_t pos = seek->seek_position + mkv_d->segment_start;
         MP_DBG(demuxer, "Element 0x%x at %"PRIu64".\n",
                (unsigned)seek->seek_id, pos);
-        struct header_elem *elem = get_header_element(demuxer, seek->seek_id, pos);
-        // Warn against incomplete files.
-        if (elem && pos >= end) {
-            elem->parsed = true; // don't bother
-            if (!mkv_d->eof_warning) {
-                MP_WARN(demuxer, "SeekHead position beyond "
-                        "end of file - incomplete file?\n");
-                mkv_d->eof_warning = true;
-            }
-        }
+        get_header_element(demuxer, seek->seek_id, pos);
     }
  out:
     MP_VERBOSE(demuxer, "\\---- [ parsing seek head ] ---------\n");
@@ -1810,12 +1798,27 @@ static int demux_mkv_open(demuxer_t *demuxer, enum demux_check check)
             return -1;
     }
 
+    int64_t end = 0;
+    stream_control(s, STREAM_CTRL_GET_SIZE, &end);
+
     // Read headers that come after the first cluster (i.e. require seeking).
     // Note: reading might increase ->num_headers.
     //       Likewise, ->headers might be reallocated.
     for (int n = 0; n < mkv_d->num_headers; n++) {
         struct header_elem *elem = &mkv_d->headers[n];
-        if (elem->id == MATROSKA_ID_CUES && !elem->parsed) {
+        if (elem->parsed)
+            continue;
+        // Warn against incomplete files and skip headers outside of range.
+        if (elem->pos >= end) {
+            elem->parsed = true; // don't bother if file is incomplete
+            if (!mkv_d->eof_warning) {
+                MP_WARN(demuxer, "SeekHead position beyond "
+                        "end of file - incomplete file?\n");
+                mkv_d->eof_warning = true;
+            }
+            continue;
+        }
+        if (elem->id == MATROSKA_ID_CUES) {
             // Read cues when they are needed, to avoid seeking on opening.
             MP_VERBOSE(demuxer, "Deferring reading cues.\n");
             continue;
@@ -2518,6 +2521,8 @@ static int read_next_block(demuxer_t *demuxer, struct block_info *block)
             if (id == MATROSKA_ID_CLUSTER)
                 break;
             if (s->eof)
+                return -1;
+            if (demux_cancel_test(demuxer))
                 return -1;
             if (id == EBML_ID_EBML && stream_tell(s) >= mkv_d->segment_end) {
                 // Appended segment - don't use its clusters, consider this EOF.

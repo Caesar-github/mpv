@@ -931,6 +931,8 @@ int vo_x11_check_events(struct vo *vo)
             x11->win_drag_button1_down = false;
             break;
         case LeaveNotify:
+            if (Event.xcrossing.mode != NotifyNormal)
+                break;
             x11->win_drag_button1_down = false;
             mp_input_put_key(vo->input_ctx, MP_KEY_MOUSE_LEAVE);
             break;
@@ -1672,6 +1674,7 @@ int vo_x11_control(struct vo *vo, int *events, int request, void *arg)
     case VOCTRL_GET_WIN_STATE: {
         if (!x11->pseudo_mapped)
             return VO_FALSE;
+        *(int *)arg = 0;
         int num_elems;
         long *elems = x11_get_property(x11, x11->window, XA(x11, _NET_WM_STATE),
                                        XA_ATOM, 32, &num_elems);
@@ -1700,6 +1703,8 @@ int vo_x11_control(struct vo *vo, int *events, int request, void *arg)
         return VO_TRUE;
     }
     case VOCTRL_GET_ICC_PROFILE: {
+        if (!x11->pseudo_mapped)
+            return VO_NOTAVAIL;
         int screen = 0; // xinerama screen number
         for (int n = 0; n < x11->num_displays; n++) {
             struct xrandr_display *disp = &x11->displays[n];
@@ -1714,6 +1719,7 @@ int vo_x11_control(struct vo *vo, int *events, int request, void *arg)
             mp_snprintf_cat(prop, sizeof(prop), "_%d", screen);
         x11->icc_profile_property = XAs(x11, prop);
         int len;
+        MP_VERBOSE(x11, "Retrieving ICC profile for display: %d\n", screen);
         void *icc = x11_get_property(x11, x11->rootwin, x11->icc_profile_property,
                                      XA_CARDINAL, 8, &len);
         if (!icc)
