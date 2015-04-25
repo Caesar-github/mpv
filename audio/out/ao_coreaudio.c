@@ -38,11 +38,6 @@ struct priv {
 bool ca_layout_to_mp_chmap(struct ao *ao, AudioChannelLayout *layout,
                            struct mp_chmap *chmap);
 
-static int64_t ca_frames_to_us(struct ao *ao, uint32_t frames)
-{
-    return frames / (float) ao->samplerate * 1e6;
-}
-
 static int64_t ca_get_hardware_latency(struct ao *ao) {
     struct priv *p = ao->priv;
 
@@ -71,17 +66,6 @@ static int64_t ca_get_hardware_latency(struct ao *ao) {
 
 coreaudio_error:
     return 0;
-}
-
-static int64_t ca_get_latency(const AudioTimeStamp *ts)
-{
-    uint64_t out = AudioConvertHostTimeToNanos(ts->mHostTime);
-    uint64_t now = AudioConvertHostTimeToNanos(AudioGetCurrentHostTime());
-
-    if (now > out)
-        return 0;
-
-    return (out - now) * 1e-3;
 }
 
 static OSStatus render_cb_lpcm(void *ctx, AudioUnitRenderActionFlags *aflags,
@@ -134,8 +118,6 @@ static int control(struct ao *ao, enum aocontrol cmd, void *arg)
         return set_volume(ao, arg);
     case AOCONTROL_HAS_SOFT_VOLUME:
         return CONTROL_TRUE;
-    case AOCONTROL_HAS_PER_APP_VOLUME:
-        return CONTROL_TRUE;
     }
     return CONTROL_UNKNOWN;
 }
@@ -143,14 +125,7 @@ static int control(struct ao *ao, enum aocontrol cmd, void *arg)
 static bool init_chmap(struct ao *ao);
 static bool init_audiounit(struct ao *ao, AudioStreamBasicDescription asbd);
 
-static int init(struct ao *ao)
-{
-    if (AF_FORMAT_IS_IEC61937(ao->format)) {
-        MP_WARN(ao, "detected IEC61937, redirecting to coreaudio_exclusive\n");
-        ao->redirect = "coreaudio_exclusive";
-        return CONTROL_ERROR;
-    }
-
+static bool reinit_device(struct ao *ao) {
     struct priv *p = ao->priv;
 
     OSStatus err = ca_select_device(ao, ao->device, &p->device);
@@ -160,6 +135,23 @@ static int init(struct ao *ao)
     err = CA_GET_STR(p->device, kAudioDevicePropertyDeviceUID, &uid);
     CHECK_CA_ERROR("failed to get device UID");
     ao->detected_device = talloc_steal(ao, uid);
+
+    return true;
+
+coreaudio_error:
+    return false;
+}
+
+static int init(struct ao *ao)
+{
+    if (AF_FORMAT_IS_IEC61937(ao->format)) {
+        MP_WARN(ao, "detected IEC61937, redirecting to coreaudio_exclusive\n");
+        ao->redirect = "coreaudio_exclusive";
+        return CONTROL_ERROR;
+    }
+
+    if (!reinit_device(ao))
+        goto coreaudio_error;
 
     if (!init_chmap(ao))
         goto coreaudio_error;
@@ -361,6 +353,67 @@ static void uninit(struct ao *ao)
     AudioComponentInstanceDispose(p->audio_unit);
 }
 
+static OSStatus hotplug_cb(AudioObjectID id, UInt32 naddr,
+                           const AudioObjectPropertyAddress addr[],
+                           void *ctx) {
+    reinit_device(ctx);
+    ao_hotplug_event(ctx);
+    return noErr;
+}
+
+static uint32_t hotplug_properties[] = {
+    kAudioHardwarePropertyDevices,
+    kAudioHardwarePropertyDefaultOutputDevice
+};
+
+static int hotplug_init(struct ao *ao)
+{
+    if (!reinit_device(ao))
+        goto coreaudio_error;
+
+    OSStatus err = noErr;
+    for (int i = 0; i < MP_ARRAY_SIZE(hotplug_properties); i++) {
+        AudioObjectPropertyAddress addr = {
+            hotplug_properties[i],
+            kAudioObjectPropertyScopeGlobal,
+            kAudioObjectPropertyElementMaster
+        };
+        err = AudioObjectAddPropertyListener(
+            kAudioObjectSystemObject, &addr, hotplug_cb, (void *)ao);
+        if (err != noErr) {
+            char *c1 = fourcc_repr(ao, hotplug_properties[i]);
+            char *c2 = fourcc_repr(ao, err);
+            MP_ERR(ao, "failed to set device listener %s (%s)", c1, c2);
+            goto coreaudio_error;
+        }
+    }
+
+    return 0;
+
+coreaudio_error:
+    return -1;
+}
+
+static void hotplug_uninit(struct ao *ao)
+{
+    OSStatus err = noErr;
+    for (int i = 0; i < MP_ARRAY_SIZE(hotplug_properties); i++) {
+        AudioObjectPropertyAddress addr = {
+            hotplug_properties[i],
+            kAudioObjectPropertyScopeGlobal,
+            kAudioObjectPropertyElementMaster
+        };
+        err = AudioObjectRemovePropertyListener(
+            kAudioObjectSystemObject, &addr, hotplug_cb, (void *)ao);
+        if (err != noErr) {
+            char *c1 = fourcc_repr(ao, hotplug_properties[i]);
+            char *c2 = fourcc_repr(ao, err);
+            MP_ERR(ao, "failed to set device listener %s (%s)", c1, c2);
+        }
+    }
+}
+
+
 // Channel Mapping functions
 static const int speaker_map[][2] = {
     { kAudioChannelLabel_Left,                 MP_SPEAKER_ID_FL   },
@@ -513,13 +566,15 @@ coreaudio_error:
 #define OPT_BASE_STRUCT struct priv
 
 const struct ao_driver audio_out_coreaudio = {
-    .description = "CoreAudio AudioUnit",
-    .name      = "coreaudio",
-    .uninit    = uninit,
-    .init      = init,
-    .control   = control,
-    .pause     = stop,
-    .resume    = start,
-    .list_devs = ca_get_device_list,
-    .priv_size = sizeof(struct priv),
+    .description    = "CoreAudio AudioUnit",
+    .name           = "coreaudio",
+    .uninit         = uninit,
+    .init           = init,
+    .control        = control,
+    .pause          = stop,
+    .resume         = start,
+    .hotplug_init   = hotplug_init,
+    .hotplug_uninit = hotplug_uninit,
+    .list_devs      = ca_get_device_list,
+    .priv_size      = sizeof(struct priv),
 };

@@ -1,19 +1,18 @@
 /*
- * This file is part of MPlayer.
+ * This file is part of mpv.
  *
- * MPlayer is free software; you can redistribute it and/or modify
+ * mpv is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
- * MPlayer is distributed in the hope that it will be useful,
+ * mpv is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with MPlayer; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ * with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <stdio.h>
@@ -62,8 +61,6 @@ struct mp_log_root {
     int num_buffers;
     FILE *log_file;
     FILE *stats_file;
-    // --- semi-atomic access
-    bool mute;
     // --- must be accessed atomically
     /* This is incremented every time the msglevels must be reloaded.
      * (This is perhaps better than maintaining a globally accessible and
@@ -134,7 +131,7 @@ static void update_loglevel(struct mp_log *log)
 bool mp_msg_test(struct mp_log *log, int lev)
 {
     struct mp_log_root *root = log->root;
-    if (!root || root->mute)
+    if (!root)
         return false;
     if (atomic_load_explicit(&log->reload_counter, memory_order_relaxed) !=
         atomic_load_explicit(&root->reload_counter, memory_order_relaxed))
@@ -485,13 +482,6 @@ void mp_msg_update_msglevels(struct mpv_global *global)
 
     atomic_fetch_add(&root->reload_counter, 1);
     pthread_mutex_unlock(&mp_msg_lock);
-}
-
-void mp_msg_mute(struct mpv_global *global, bool mute)
-{
-    struct mp_log_root *root = global->log->root;
-
-    root->mute = mute;
 }
 
 void mp_msg_force_stderr(struct mpv_global *global, bool force_stderr)

@@ -1,18 +1,18 @@
 /*
- * This file is part of mplayer.
+ * This file is part of mpv.
  *
- * mplayer is free software; you can redistribute it and/or modify
+ * mpv is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
- * mplayer is distributed in the hope that it will be useful,
+ * mpv is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with mplayer.  If not, see <http://www.gnu.org/licenses/>.
+ * with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 struct mp_image;
@@ -28,6 +28,7 @@ struct image_writer_opts {
     int jpeg_dpi;
     int jpeg_progressive;
     int jpeg_baseline;
+    int tag_csp;
 };
 
 extern const struct image_writer_opts image_writer_opts_defaults;
@@ -47,8 +48,14 @@ const char *image_writer_file_ext(const struct image_writer_opts *opts);
  *       accordingly. Setting w and width or h and height to different values
  *       can be used to store snapshots of anamorphic video.
  */
-int write_image(struct mp_image *image, const struct image_writer_opts *opts,
-                const char *filename, struct mp_log *log);
+bool write_image(struct mp_image *image, const struct image_writer_opts *opts,
+                 const char *filename, struct mp_log *log);
+
+/* Return the image converted to the given format. If the pixel aspect ratio is
+ * not 1:1, the image is scaled as well. Returns NULL on failure.
+ */
+struct mp_image *convert_image(struct mp_image *image, int destfmt,
+                               struct mp_log *log);
 
 // Debugging helper.
 void dump_png(struct mp_image *image, const char *filename, struct mp_log *log);

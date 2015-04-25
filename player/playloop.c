@@ -1,19 +1,18 @@
 /*
- * This file is part of MPlayer.
+ * This file is part of mpv.
  *
- * MPlayer is free software; you can redistribute it and/or modify
+ * mpv is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
- * MPlayer is distributed in the hope that it will be useful,
+ * mpv is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with MPlayer; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ * with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <stddef.h>
@@ -68,7 +67,7 @@ void mp_process_input(struct MPContext *mpctx)
         mp_cmd_t *cmd = mp_input_read_cmd(mpctx->input);
         if (!cmd)
             break;
-        run_command(mpctx, cmd);
+        run_command(mpctx, cmd, NULL);
         mp_cmd_free(cmd);
         mp_dispatch_queue_process(mpctx->dispatch, 0);
     }
@@ -183,7 +182,7 @@ static int mp_seek(MPContext *mpctx, struct seek_params seek,
         mpctx->stop_play = KEEP_PLAYING;
 
     double hr_seek_offset = opts->hr_seek_demuxer_offset;
-    bool hr_seek_very_exact = seek.exact > 1;
+    bool hr_seek_very_exact = seek.exact == MPSEEK_VERY_EXACT;
     // Always try to compensate for possibly bad demuxers in "special"
     // situations where we need more robustness from the hr-seek code, even
     // if the user doesn't use --hr-seek-demuxer-offset.
@@ -191,9 +190,9 @@ static int mp_seek(MPContext *mpctx, struct seek_params seek,
     if (hr_seek_very_exact)
         hr_seek_offset = MPMAX(hr_seek_offset, 0.5); // arbitrary
 
-    bool hr_seek = opts->correct_pts && seek.exact >= 0;
+    bool hr_seek = opts->correct_pts && seek.exact != MPSEEK_KEYFRAME;
     hr_seek &= (opts->hr_seek == 0 && seek.type == MPSEEK_ABSOLUTE) ||
-               opts->hr_seek > 0 || seek.exact > 0;
+               opts->hr_seek > 0 || seek.exact >= MPSEEK_EXACT;
     if (seek.type == MPSEEK_FACTOR || seek.amount < 0 ||
         (seek.type == MPSEEK_ABSOLUTE && seek.amount < mpctx->last_chapter_pts))
         mpctx->last_chapter_seek = -2;
@@ -241,8 +240,6 @@ static int mp_seek(MPContext *mpctx, struct seek_params seek,
     }
     if (hr_seek)
         demuxer_style |= SEEK_HR;
-    if (hr_seek || opts->mkv_subtitle_preroll)
-        demuxer_style |= SEEK_SUBPREROLL;
 
     if (hr_seek)
         demuxer_amount -= hr_seek_offset;
@@ -303,7 +300,7 @@ static int mp_seek(MPContext *mpctx, struct seek_params seek,
 
 // This combines consecutive seek requests.
 void queue_seek(struct MPContext *mpctx, enum seek_type type, double amount,
-                int exact, bool immediate)
+                enum seek_precision exact, bool immediate)
 {
     struct seek_params *seek = &mpctx->seek;
     switch (type) {
@@ -339,7 +336,7 @@ void execute_queued_seek(struct MPContext *mpctx)
 {
     if (mpctx->seek.type) {
         // Let explicitly imprecise seeks cancel precise seeks:
-        if (mpctx->hrseek_active && mpctx->seek.exact < 0)
+        if (mpctx->hrseek_active && mpctx->seek.exact == MPSEEK_KEYFRAME)
             mpctx->start_timestamp = -1e9;
         /* If the user seeks continuously (keeps arrow key down)
          * try to finish showing a frame from one location before doing
@@ -505,7 +502,7 @@ bool mp_seek_chapter(struct MPContext *mpctx, int chapter)
     if (pts == MP_NOPTS_VALUE)
         return false;
 
-    queue_seek(mpctx, MPSEEK_ABSOLUTE, pts, 0, true);
+    queue_seek(mpctx, MPSEEK_ABSOLUTE, pts, MPSEEK_DEFAULT, true);
     mpctx->last_chapter_seek = chapter;
     mpctx->last_chapter_pts = pts;
     return true;
@@ -717,14 +714,15 @@ static void handle_backstep(struct MPContext *mpctx)
     if (mpctx->d_video && current_pts != MP_NOPTS_VALUE) {
         double seek_pts = find_previous_pts(mpctx, current_pts);
         if (seek_pts != MP_NOPTS_VALUE) {
-            queue_seek(mpctx, MPSEEK_ABSOLUTE, seek_pts, 2, true);
+            queue_seek(mpctx, MPSEEK_ABSOLUTE, seek_pts, MPSEEK_VERY_EXACT, true);
         } else {
             double last = get_last_frame_pts(mpctx);
             if (last != MP_NOPTS_VALUE && last >= current_pts &&
                 mpctx->backstep_start_seek_ts != mpctx->vo_pts_history_seek_ts)
             {
                 MP_ERR(mpctx, "Backstep failed.\n");
-                queue_seek(mpctx, MPSEEK_ABSOLUTE, current_pts, 2, true);
+                queue_seek(mpctx, MPSEEK_ABSOLUTE, current_pts,
+                           MPSEEK_VERY_EXACT, true);
             } else if (!mpctx->hrseek_active) {
                 MP_VERBOSE(mpctx, "Start backstep indexing.\n");
                 // Force it to index the video up until current_pts.
@@ -761,7 +759,7 @@ static void handle_sstep(struct MPContext *mpctx)
 
     if (opts->step_sec > 0 && !mpctx->paused) {
         set_osd_function(mpctx, OSD_FFW);
-        queue_seek(mpctx, MPSEEK_RELATIVE, opts->step_sec, 0, true);
+        queue_seek(mpctx, MPSEEK_RELATIVE, opts->step_sec, MPSEEK_DEFAULT, true);
     }
 
     if (mpctx->video_status >= STATUS_EOF) {
@@ -778,7 +776,8 @@ static void handle_loop_file(struct MPContext *mpctx)
     if (opts->loop_file && mpctx->stop_play == AT_END_OF_FILE) {
         mpctx->stop_play = KEEP_PLAYING;
         set_osd_function(mpctx, OSD_FFW);
-        queue_seek(mpctx, MPSEEK_ABSOLUTE, get_start_time(mpctx), 0, true);
+        queue_seek(mpctx, MPSEEK_ABSOLUTE, get_start_time(mpctx),
+                   MPSEEK_DEFAULT, true);
         if (opts->loop_file > 0)
             opts->loop_file--;
     }
@@ -799,7 +798,7 @@ void seek_to_last_frame(struct MPContext *mpctx)
     mp_seek(mpctx, (struct seek_params){
                    .type = MPSEEK_ABSOLUTE,
                    .amount = end,
-                   .exact = 2, // "very exact", no framedrop
+                   .exact = MPSEEK_VERY_EXACT,
                    }, false);
     // Make it exact: stop seek only if last frame was reached.
     if (mpctx->hrseek_active) {
@@ -915,13 +914,13 @@ static void handle_playback_restart(struct MPContext *mpctx, double endpts)
         mpctx->restart_complete = true;
         mp_notify(mpctx, MPV_EVENT_PLAYBACK_RESTART, NULL);
         if (!mpctx->playing_msg_shown) {
-            if (opts->playing_msg) {
+            if (opts->playing_msg && opts->playing_msg[0]) {
                 char *msg =
                     mp_property_expand_escaped_string(mpctx, opts->playing_msg);
                 MP_INFO(mpctx, "%s\n", msg);
                 talloc_free(msg);
             }
-            if (opts->osd_playing_msg) {
+            if (opts->osd_playing_msg && opts->osd_playing_msg[0]) {
                 char *msg =
                     mp_property_expand_escaped_string(mpctx, opts->osd_playing_msg);
                 set_osd_msg(mpctx, 1, opts->osd_duration, "%s", msg);
@@ -986,6 +985,7 @@ void run_playloop(struct MPContext *mpctx)
     handle_cursor_autohide(mpctx);
     handle_vo_events(mpctx);
     handle_heartbeat_cmd(mpctx);
+    handle_command_updates(mpctx);
 
     fill_audio_out_buffers(mpctx, endpts);
     write_video(mpctx, endpts);

@@ -1,19 +1,18 @@
 /*
- * This file is part of MPlayer.
+ * This file is part of mpv.
  *
- * MPlayer is free software; you can redistribute it and/or modify
+ * mpv is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
- * MPlayer is distributed in the hope that it will be useful,
+ * mpv is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with MPlayer; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ * with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <stddef.h>
@@ -268,8 +267,8 @@ static void enable_demux_thread(struct MPContext *mpctx)
         demux_start_thread(mpctx->demuxer);
         for (int n = 0; n < mpctx->num_tracks; n++) {
             struct track *track = mpctx->tracks[n];
-            if (track->is_external && track->stream &&
-                track->stream->type != STREAM_SUB)
+            if (track->is_external && track->stream && !track->preloaded &&
+                !track->demuxer->fully_read)
             {
                 demux_set_wakeup_cb(track->demuxer, wakeup_demux, mpctx);
                 demux_start_thread(track->demuxer);
@@ -449,9 +448,8 @@ static bool compare_track(struct track *t1, struct track *t2, char **langs,
     }
     return t1->user_tid <= t2->user_tid;
 }
-static struct track *select_track(struct MPContext *mpctx,
-                                  enum stream_type type, int tid, int ffid,
-                                  char **langs)
+struct track *select_track(struct MPContext *mpctx, enum stream_type type,
+                           int tid, int ffid, char **langs)
 {
     if (ffid != -1)
         tid = -1; // prefer selecting ffid
@@ -556,6 +554,9 @@ void mp_switch_track_n(struct MPContext *mpctx, int order, enum stream_type type
     if (current)
         current->selected = false;
 
+    if (track && track->demuxer == mpctx->demuxer)
+        demux_set_enable_refresh_seeks(mpctx->demuxer, true);
+
     reselect_demux_streams(mpctx);
 
     mpctx->current_track[order][type] = track;
@@ -564,6 +565,8 @@ void mp_switch_track_n(struct MPContext *mpctx, int order, enum stream_type type
         track->selected = true;
 
     reselect_demux_streams(mpctx);
+
+    demux_set_enable_refresh_seeks(mpctx->demuxer, false);
 
     if (type == STREAM_VIDEO && order == 0) {
         reinit_video_chain(mpctx);
@@ -650,11 +653,8 @@ bool mp_remove_track(struct MPContext *mpctx, struct track *track)
     for (int n = mpctx->num_tracks - 1; n >= 0 && !in_use; n--)
         in_use |= mpctx->tracks[n]->demuxer == d;
 
-    if (!in_use) {
-        struct stream *s = d->stream;
-        free_demuxer(d);
-        free_stream(s);
-    }
+    if (!in_use)
+        free_demuxer_and_stream(d);
 
     mp_notify(mpctx, MPV_EVENT_TRACKS_CHANGED, NULL);
 
@@ -672,30 +672,23 @@ struct track *mp_add_external_file(struct MPContext *mpctx, char *filename,
     if (strncmp(disp_filename, "memory://", 9) == 0)
         disp_filename = "memory://"; // avoid noise
 
-    struct stream *stream = stream_open(filename, mpctx->global);
-    if (!stream)
-        goto err_out;
-
-    char *demuxer_name = NULL;
-    switch (filter) {
-    case STREAM_SUB:
-        demuxer_name = opts->sub_demuxer_name;
-        break;
-    case STREAM_AUDIO:
-        demuxer_name = opts->audio_demuxer_name;
-        stream_enable_cache(&stream, &opts->stream_cache);
-        break;
-    }
-
     struct demuxer_params params = {
         .expect_subtitle = filter == STREAM_SUB,
     };
-    struct demuxer *demuxer =
-        demux_open(stream, demuxer_name, &params, mpctx->global);
-    if (!demuxer) {
-        free_stream(stream);
-        goto err_out;
+
+    switch (filter) {
+    case STREAM_SUB:
+        params.force_format = opts->sub_demuxer_name;
+        break;
+    case STREAM_AUDIO:
+        params.force_format = opts->audio_demuxer_name;
+        break;
     }
+
+    struct demuxer *demuxer =
+        demux_open_url(filename, &params, mpctx->playback_abort, mpctx->global);
+    if (!demuxer)
+        goto err_out;
 
     struct track *first = NULL;
     for (int n = 0; n < demuxer->num_streams; n++) {
@@ -709,19 +702,18 @@ struct track *mp_add_external_file(struct MPContext *mpctx, char *filename,
         }
     }
     if (!first) {
-        free_demuxer(demuxer);
-        free_stream(stream);
-        MP_WARN(mpctx, "No streams added from file %s.\n",
-                disp_filename);
+        free_demuxer_and_stream(demuxer);
+        MP_WARN(mpctx, "No streams added from file %s.\n", disp_filename);
         goto err_out;
     }
 
     MP_TARRAY_APPEND(NULL, mpctx->sources, mpctx->num_sources, demuxer);
+    if (mpctx->playback_initialized)
+        enable_demux_thread(mpctx);
     return first;
 
 err_out:
-    MP_ERR(mpctx, "Can not open external file %s.\n",
-           disp_filename);
+    MP_ERR(mpctx, "Can not open external file %s.\n", disp_filename);
     return false;
 }
 
@@ -739,7 +731,7 @@ static void open_subtitles_from_options(struct MPContext *mpctx)
         mp_add_external_file(mpctx, opts->sub_name[i], STREAM_SUB);
 }
 
-static void autoload_external_files(struct MPContext *mpctx)
+void autoload_external_files(struct MPContext *mpctx)
 {
     if (mpctx->opts->sub_auto < 0 && mpctx->opts->audiofile_auto < 0)
         return;
@@ -877,7 +869,7 @@ static void load_chapters(struct MPContext *mpctx)
         struct stream *stream = stream_create(chapter_file, STREAM_READ,
                                         mpctx->playback_abort, mpctx->global);
         if (stream) {
-            struct demuxer *demux = demux_open(stream, NULL, NULL, mpctx->global);
+            struct demuxer *demux = demux_open(stream, NULL, mpctx->global);
             if (demux) {
                 src = demux;
                 free_src = true;
@@ -955,7 +947,8 @@ static void open_demux_thread(void *pctx)
     struct demux_open_args *args = pctx;
     struct stream *s = args->stream;
     struct mpv_global *global = args->global;
-    args->demux = demux_open(s, global->opts->demuxer_name, NULL, global);
+    struct demuxer_params p = {.force_format = global->opts->demuxer_name};
+    args->demux = demux_open(s, &p, global);
     if (args->demux)
         args->tl = timeline_load(global, args->log, args->demux);
 }
@@ -1425,7 +1418,7 @@ void mp_play_files(struct MPContext *mpctx)
 // e must be on the mpctx->playlist.
 void mp_set_playlist_entry(struct MPContext *mpctx, struct playlist_entry *e)
 {
-    assert(playlist_entry_to_index(mpctx->playlist, e) >= 0);
+    assert(!e || playlist_entry_to_index(mpctx->playlist, e) >= 0);
     mpctx->playlist->current = e;
     mpctx->playlist->current_was_replaced = false;
     mpctx->stop_play = PT_CURRENT_ENTRY;

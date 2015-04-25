@@ -63,7 +63,7 @@ Available filters are:
         Set AVOptions on the SwrContext or AVAudioResampleContext. These should
         be documented by FFmpeg or Libav.
 
-``lavcac3enc[=tospdif[:bitrate[:minchn]]]``
+``lavcac3enc[=tospdif[:bitrate[:minch]]]``
     Encode multi-channel audio to AC-3 at runtime using libavcodec. Supports
     16-bit native-endian input format, maximum 6 channels. The output is
     big-endian when outputting a raw AC-3 stream, native-endian when
@@ -92,8 +92,8 @@ Available filters are:
         :5ch: 448
         :6ch: 448
 
-    ``minchn=<n>``
-        If the input channel number is less than ``<minchn>``, the filter will
+    ``minch=<n>``
+        If the input channel number is less than ``<minch>``, the filter will
         detach itself (default: 3).
 
 ``sweep[=speed]``
@@ -225,14 +225,21 @@ Available filters are:
         automatically up- and downmix standard channel layouts.
 
 ``format=format:srate:channels:out-format:out-srate:out-channels``
-    Force a specific audio format/configuration without actually changing the
-    audio data. Keep in mind that the filter system might auto-insert actual
-    conversion filters before or after this filter if needed.
+    Does not do any format conversion itself. Rather, it may cause the
+    filter system to insert necessary conversion filters before or after this
+    filter if needed. It is primarily useful for controlling the audio format
+    going into other filters. To specify the format for audio output, see
+    ``--audio-format``, ``--audio-samplerate``, and ``--audio-channels``. This
+    filter is able to force a particular format, whereas ``--audio-*``
+    may be overridden by the ao based on output compatibility.
 
     All parameters are optional. The first 3 parameters restrict what the filter
-    accepts as input. The ``out-`` parameters change the audio format, without
-    actually doing a conversion. The data will be 'reinterpreted' by the
-    filters or audio outputs following this filter.
+    accepts as input. They will therefore cause conversion filters to be
+    inserted before this one.  The ``out-`` parameters tell the filters or audio
+    outputs following this filter how to interpret the data without actually
+    doing a conversion. Setting these will probably just break things unless you
+    really know you want this for some reason, such as testing or dealing with
+    broken media.
 
     ``<format>``
         Force conversion to this format. Use ``--af=format=format=help`` to get
@@ -252,14 +259,9 @@ Available filters are:
 
     ``<out-channels>``
 
-    See also ``--audio-format``, ``--audio-samplerate``, and
-    ``--audio-channels`` for related options. Keep in mind that
-    ``--audio-channels`` does not actually force the number of
-    channels in most cases, while this filter can do this.
-
-    *NOTE*: this filter used to be named ``force``. Also, unlike the old
-    ``format`` filter, this does not do any actual conversion anymore.
-    Conversion is done by other, automatically inserted filters.
+    *NOTE*: this filter used to be named ``force``. The old ``format`` filter
+    used to do conversion itself, unlike this one which lets the filter system
+    handle the conversion.
 
 ``convert24``
     Filter for internal use only. Converts between 24-bit and 32-bit sample
@@ -601,6 +603,20 @@ Available filters are:
             Changing playback speed would change pitch, leaving audio tempo at
             1.2x.
 
+``rubberband``
+    High quality pitch correction with librubberband. This can be used in place
+    of ``scaletempo``, and will be used to adjust audio pitch when playing
+    at speed different from normal.
+
+    This filter has a number of sub-options. You can list them with
+    ``mpv --af=rubberband=help``. This will also show the default values
+    for each option. The options are not documented here, because they are
+    merely passed to librubberband. Look at the librubberband documentation
+    to learn what each option does:
+    http://breakfastquay.com/rubberband/code-doc/classRubberBand_1_1RubberBandStretcher.html
+    (The mapping of the mpv rubberband filter sub-option names and values to
+    those of librubberband follows a simple pattern: ``"Option" + Name + Value``.)
+
 ``lavfi=graph``
     Filter audio using FFmpeg's libavfilter.
 
@@ -615,4 +631,3 @@ Available filters are:
 
     ``o=<string>``
         AVOptions.
-

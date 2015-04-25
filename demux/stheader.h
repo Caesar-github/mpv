@@ -1,19 +1,18 @@
 /*
- * This file is part of MPlayer.
+ * This file is part of mpv.
  *
- * MPlayer is free software; you can redistribute it and/or modify
+ * mpv is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
- * MPlayer is distributed in the hope that it will be useful,
+ * mpv is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with MPlayer; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ * with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #ifndef MPLAYER_STHEADER_H
@@ -58,6 +57,8 @@ struct sh_stream {
     bool default_track;         // container default track flag
     int hls_bitrate;
 
+    bool missing_timestamps;
+
     // stream is a picture (such as album art)
     struct demux_packet *attached_picture;
 
@@ -81,7 +82,6 @@ typedef struct sh_video {
     bool avi_dts;         // use DTS timing; first frame and DTS is 0
     float fps;            // frames per second (set only if constant fps)
     float aspect;         // aspect ratio stored in the file (for prescaling)
-    int bitrate;          // compressed bits/sec
     int bits_per_coded_sample;
     unsigned char *extradata;
     int extradata_len;
@@ -93,7 +93,6 @@ typedef struct sh_video {
 typedef struct sh_sub {
     unsigned char *extradata;   // extra header data passed from demuxer
     int extradata_len;
-    int w, h;                   // mp4 vobsubs
     double frame_based;         // timestamps are frame-based (and this is the
                                 // fallback framerate used for timestamps)
     bool is_utf8;               // if false, subtitle packet charset is unknown

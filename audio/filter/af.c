@@ -1,19 +1,18 @@
 /*
- * This file is part of MPlayer.
+ * This file is part of mpv.
  *
- * MPlayer is free software; you can redistribute it and/or modify
+ * mpv is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
- * MPlayer is distributed in the hope that it will be useful,
+ * mpv is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with MPlayer; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ * with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include "config.h"
@@ -54,11 +53,11 @@ extern const struct af_info af_info_center;
 extern const struct af_info af_info_sinesuppress;
 extern const struct af_info af_info_karaoke;
 extern const struct af_info af_info_scaletempo;
-extern const struct af_info af_info_forcespeed;
 extern const struct af_info af_info_bs2b;
 extern const struct af_info af_info_lavfi;
 extern const struct af_info af_info_convert24;
 extern const struct af_info af_info_convertsignendian;
+extern const struct af_info af_info_rubberband;
 
 static const struct af_info *const filter_list[] = {
     &af_info_dummy,
@@ -80,10 +79,12 @@ static const struct af_info *const filter_list[] = {
 #if HAVE_LADSPA
     &af_info_ladspa,
 #endif
+#if HAVE_RUBBERBAND
+    &af_info_rubberband,
+#endif
     &af_info_center,
     &af_info_sinesuppress,
     &af_info_karaoke,
-    &af_info_forcespeed,
     &af_info_scaletempo,
 #if HAVE_LIBBS2B
     &af_info_bs2b,
@@ -503,6 +504,15 @@ static int af_fix_rate(struct af_stream *s, struct af_instance **p_af,
     return AF_OK;
 }
 
+static void reset_formats(struct af_stream *s)
+{
+    for (struct af_instance *af = s->first; af; af = af->next) {
+        af->control(af, AF_CONTROL_SET_RESAMPLE_RATE, &(int){0});
+        af->control(af, AF_CONTROL_SET_CHANNELS, &(struct mp_chmap){0});
+        af->control(af, AF_CONTROL_SET_FORMAT, &(int){0});
+    }
+}
+
 // Return AF_OK on success or AF_ERROR on failure.
 // Warning:
 // A failed af_reinit() leaves the audio chain behind in a useless, broken
@@ -513,6 +523,7 @@ static int af_reinit(struct af_stream *s)
 {
     remove_auto_inserted_filters(s);
     af_chain_forget_frames(s);
+    reset_formats(s);
     s->first->fmt_in = s->first->fmt_out = s->input;
     // Start with the second filter, as the first filter is the special input
     // filter which needs no initialization.
@@ -558,6 +569,23 @@ static int af_reinit(struct af_stream *s)
             if (af_fix_format_conversion(s, &af, in) == AF_OK) {
                 retry++;
                 continue;
+            }
+            // If the format conversion is (probably) caused by spdif, then
+            // (as a feature) drop the filter, instead of failing hard.
+            int fmt_in1 = af->prev->data->format;
+            int fmt_in2 = in.format;
+            if (af_fmt_is_valid(fmt_in1) && af_fmt_is_valid(fmt_in2)) {
+                bool spd1 = AF_FORMAT_IS_IEC61937(fmt_in1);
+                bool spd2 = AF_FORMAT_IS_IEC61937(fmt_in2);
+                if (spd1 != spd2) {
+                    MP_WARN(af, "Filter %s apparently cannot be used due to "
+                                "spdif passthrough - removing it.\n",
+                                af->info->name);
+                    struct af_instance *aft = af->prev;
+                    af_remove(s, af);
+                    af = aft->next;
+                    break;
+                }
             }
             goto negotiate_error;
         }
@@ -687,8 +715,14 @@ int af_init(struct af_stream *s)
    to the stream s. The filter will be inserted somewhere nice in the
    list of filters. The return value is a pointer to the new filter,
    If the filter couldn't be added the return value is NULL. */
-struct af_instance *af_add(struct af_stream *s, char *name, char **args)
+struct af_instance *af_add(struct af_stream *s, char *name, char *label,
+                           char **args)
 {
+    assert(label);
+
+    if (af_find_by_label(s, label))
+        return NULL;
+
     struct af_instance *new;
     // Insert the filter somewhere nice
     if (af_is_conversion_filter(s->first->next))
@@ -697,17 +731,14 @@ struct af_instance *af_add(struct af_stream *s, char *name, char **args)
         new = af_prepend(s, s->first->next, name, args);
     if (!new)
         return NULL;
+    new->label = talloc_strdup(new, label);
 
     // Reinitalize the filter list
     if (af_reinit(s) != AF_OK) {
-        af_remove(s, new);
-        if (af_reinit(s) != AF_OK) {
-            af_uninit(s);
-            af_init(s);
-        }
+        af_remove_by_label(s, label);
         return NULL;
     }
-    return new;
+    return af_find_by_label(s, label);
 }
 
 struct af_instance *af_find_by_label(struct af_stream *s, char *label)

@@ -181,6 +181,7 @@ Playback Control
                file, such as a chapter seek, but not for relative seeks like
                the default behavior of arrow keys (default).
     :yes:      Use precise seeks whenever possible.
+    :always:   Same as ``yes`` (for compatibility).
 
 ``--hr-seek-demuxer-offset=<seconds>``
     This option exists to work around failures to do precise seeks (as in
@@ -439,7 +440,8 @@ Program Behavior
     Enable the youtube-dl hook-script. It will look at the input URL, and will
     play the video located on the website. This works with many streaming sites,
     not just the one that the script is named after. This requires a recent
-    version of youtube-dl to be installed on the system. (Enabled by default.)
+    version of youtube-dl to be installed on the system. (Enabled by default,
+    except when the client API / libmpv is used.)
 
     If the script can't do anything with an URL, it will do nothing.
 
@@ -453,6 +455,18 @@ Program Behavior
     available aliases. To use experimental DASH support for youtube, use
     ``bestvideo+bestaudio``.
     (Default: ``best``)
+
+``--ytdl-raw-options=<key>=<value>[,<key>=<value>[,...]]``
+    Pass arbitraty options to youtube-dl. Parameter and argument should be
+    passed as a key-value pair. Options without argument must include ``=``.
+    
+    There is no sanity checking so it's possible to break things (i.e.
+    passing invalid parameters to youtube-dl).
+
+    .. admonition:: Example
+ 
+        ``--ytdl-raw-options=username=user,password=pass``
+        ``--ytdl-raw-options=force-ipv6=``
 
 Video
 -----
@@ -541,7 +555,8 @@ Video
     :vaapi:     requires ``--vo=opengl`` or ``--vo=vaapi`` (Linux with Intel GPUs only)
     :vaapi-copy: copies video back into system RAM (Linux with Intel GPUs only)
     :vda:       requires ``--vo=opengl`` (OS X only)
-    :dxva2-copy: copies video back to system RAM (Windows only) (experimental)
+    :dxva2-copy: copies video back to system RAM (Windows only)
+    :rpi:      requires ``--vo=rpi`` (Raspberry Pi only - default if available)
 
     ``auto`` tries to automatically enable hardware decoding using the first
     available method. This still depends what VO you are using. For example,
@@ -552,8 +567,7 @@ Video
 
     The ``vaapi-copy`` mode allows you to use vaapi with any VO. Because
     this copies the decoded video back to system RAM, it's likely less efficient
-    than the ``vaapi`` mode. But there are reports that this is actually faster
-    as well, and avoids many issues with ``vaapi``.
+    than the ``vaapi`` mode.
 
     .. note::
 
@@ -614,7 +628,7 @@ Video
 
     This option is disabled if the ``--no-keepaspect`` option is used.
 
-``--video-rotate=<0-359|no>``
+``--video-rotate=<0-360|no>``
     Rotate the video clockwise, in degrees. Currently supports 90° steps only.
     If ``no`` is given, the video is never rotated, even if the file has
     rotation metadata. (The rotation value is added to the rotation metadata,
@@ -801,7 +815,7 @@ Audio
 -----
 
 ``--audio-pitch-correction=<yes|no>``
-    If this is enabled (default), playing with a speed higher than normal
+    If this is enabled (default), playing with a speed different from normal
     automatically inserts the ``scaletempo`` audio filter. For details, see
     audio filter section.
 
@@ -873,8 +887,7 @@ Audio
     delay the audio, and negative values delay the video.
 
 ``--no-audio``
-    Do not play sound. With some demuxers this may not work. In those cases
-    you can try ``--ao=null`` instead.
+    Do not play sound.
 
 ``--mute=<auto|yes|no>``
     Set startup audio mute status. ``auto`` (default) will not change the mute
@@ -903,10 +916,13 @@ Audio
 ``--ad-lavc-ac3drc=<level>``
     Select the Dynamic Range Compression level for AC-3 audio streams.
     ``<level>`` is a float value ranging from 0 to 1, where 0 means no
-    compression and 1 (which is the default) means full compression (make loud
-    passages more silent and vice versa). Values up to 2 are also accepted, but
+    compression (which is the default) and 1 means full compression (make loud
+    passages more silent and vice versa). Values up to 6 are also accepted, but
     are purely experimental. This option only shows an effect if the AC-3 stream
     contains the required range compression information.
+
+    The standard mandates that DRC is enabled by default, but mpv (and some
+    other players) ignore this for the sake of better audio quality.
 
 ``--ad-lavc-downmix=<yes|no>``
     Whether to request audio channel downmixing from the decoder (default: yes).
@@ -967,8 +983,9 @@ Audio
 
 ``--audio-display=<no|attachment>``
     Setting this option to ``attachment`` (default) will display image
-    attachments when playing audio files. It will display the first image
-    found, and additional images are available as video tracks.
+    attachments (e.g. album cover art) when playing audio files. It will
+    display the first image found, and additional images are available as
+    video tracks.
 
     Setting this option to ``no`` disables display of video entirely when
     playing audio files.
@@ -1157,12 +1174,21 @@ Subtitles
     doesn't covert the window fully, e.g. because screen aspect and window
     aspect mismatch (and the player adds black bars).
 
+    Default: yes.
+
     This option is misnamed. The difference to the confusingly similar sounding
     option ``--sub-scale-by-window`` is that ``--sub-scale-with-window`` still
     scales with the approximate window size, while the other option disables
     this scaling.
 
+    Affects plain text subtitles only (or ASS if ``--ass-style-override`` is
+    set high enough).
+
+``--ass-scale-with-window=<yes|no>``
+    Like ``--sub-scale-with-window``, but affects subtitles in ASS format only.
     Like ``--sub-scale``, this can break ASS subtitles.
+
+    Default: no.
 
 ``--embeddedfonts``, ``--no-embeddedfonts``
     Use fonts embedded in Matroska container files and ASS scripts (default:
@@ -1244,12 +1270,23 @@ Subtitles
     :signfs: like ``yes``, but apply ``--sub-scale`` only to signs
     :no:    Render subtitles as forced by subtitle scripts.
     :force: Try to force the font style as defined by the ``--sub-text-*``
-            options. Requires a modified libass, can break rendering easily.
-            Probably more reliable than ``force``.
+            options. Can break rendering easily.
 
-``--ass-use-margins``
+``--ass-force-margins``
     Enables placing toptitles and subtitles in black borders when they are
-    available.
+    available, if the subtitles are in the ASS format.
+
+    Default: no.
+
+``--sub-use-margins``
+    Enables placing toptitles and subtitles in black borders when they are
+    available, if the subtitles are in a plain text format  (or ASS if
+    ``--ass-style-override`` is set high enough).
+
+    Default: yes.
+
+    Renamed from ``--ass-use-margins``. To place ASS subtitles in the borders
+    too (like the old option did), also add ``--ass-force-margins``.
 
 ``--ass-vsfilter-aspect-compat=<yes|no>``
     Stretch SSA/ASS subtitles when playing anamorphic videos for compatibility
@@ -1687,19 +1724,13 @@ Window
             (depending on the video aspect ratio, the width or height will be
             larger than 500 in order to keep the aspect ratio the same).
 
-``--autosync=<factor>``
-    Gradually adjusts the A/V sync based on audio delay measurements.
-    Specifying ``--autosync=0``, the default, will cause frame timing to be
-    based entirely on audio delay measurements. Specifying ``--autosync=1``
-    will do the same, but will subtly change the A/V correction algorithm. An
-    uneven video framerate in a video which plays fine with ``--no-audio`` can
-    often be helped by setting this to an integer value greater than 1. The
-    higher the value, the closer the timing will be to ``--no-audio``. Try
-    ``--autosync=30`` to smooth out problems with sound drivers which do not
-    implement a perfect audio delay measurement. With this value, if large A/V
-    sync offsets occur, they will only take about 1 or 2 seconds to settle
-    out. This delay in reaction time to sudden A/V offsets should be the only
-    side-effect of turning this option on, for all sound drivers.
+``--window-scale=<factor>``
+    Resize the video window to a multiple (or fraction) of the video size. This
+    option is applied before ``--autofit`` and other options are applied (so
+    they override this option).
+
+    For example, ``--window-scale=0.5`` would show the window at half the
+    video size.
 
 ``--cursor-autohide=<number|no|always>``
     Make mouse cursor automatically hide after given number of milliseconds.
@@ -1911,6 +1942,10 @@ Disc Devices
 ``--cdda-skip=<yes|no>``
     (Never) accept imperfect data reconstruction.
 
+``--cdda-cdtext=<yes|no>``
+    Print CD text. This is disabled by default, because it ruins perfomance
+    with CD-ROM drives for unknown reasons.
+
 ``--dvd-speed=<speed>``
     Try to limit DVD speed (default: 0, no change). DVD base speed is 1385
     kB/s, so an 8x drive can read at speeds up to 11080 kB/s. Slower speeds
@@ -1954,101 +1989,6 @@ Equalizer
     negative of the image with this option. Not supported by all video output
     drivers.
 
-``--colormatrix=<colorspace>``
-    Controls the YUV to RGB color space conversion when playing video. There
-    are various standards. Normally, BT.601 should be used for SD video, and
-    BT.709 for HD video. (This is done by default.) Using incorrect color space
-    results in slightly under or over saturated and shifted colors.
-
-    The color space conversion is additionally influenced by the related
-    options --colormatrix-input-range and --colormatrix-output-range.
-
-    These options are not always supported. Different video outputs provide
-    varying degrees of support. The ``opengl`` and ``vdpau`` video output
-    drivers usually offer full support. The ``xv`` output can set the color
-    space if the system video driver supports it, but not input and output
-    levels. The ``scale`` video filter can configure color space and input
-    levels, but only if the output format is RGB (if the video output driver
-    supports RGB output, you can force this with ``-vf scale,format=rgba``).
-
-    If this option is set to ``auto`` (which is the default), the video's
-    color space flag will be used. If that flag is unset, the color space
-    will be selected automatically. This is done using a simple heuristic that
-    attempts to distinguish SD and HD video. If the video is larger than
-    1279x576 pixels, BT.709 (HD) will be used; otherwise BT.601 (SD) is
-    selected.
-
-    Available color spaces are:
-
-    :auto:          automatic selection (default)
-    :BT.601:        ITU-R BT.601 (SD)
-    :BT.709:        ITU-R BT.709 (HD)
-    :BT.2020-NCL:   ITU-R BT.2020 non-constant luminance system
-    :BT.2020-CL:    ITU-R BT.2020 constant luminance system
-    :SMPTE-240M:    SMPTE-240M
-
-``--colormatrix-input-range=<color-range>``
-    YUV color levels used with YUV to RGB conversion. This option is only
-    necessary when playing broken files which do not follow standard color
-    levels or which are flagged wrong. If the video does not specify its
-    color range, it is assumed to be limited range.
-
-    The same limitations as with --colormatrix apply.
-
-    Available color ranges are:
-
-    :auto:      automatic selection (normally limited range) (default)
-    :limited:   limited range (16-235 for luma, 16-240 for chroma)
-    :full:      full range (0-255 for both luma and chroma)
-
-``--colormatrix-output-range=<color-range>``
-    RGB color levels used with YUV to RGB conversion. Normally, output devices
-    such as PC monitors use full range color levels. However, some TVs and
-    video monitors expect studio RGB levels. Providing full range output to a
-    device expecting studio level input results in crushed blacks and whites,
-    the reverse in dim gray blacks and dim whites.
-
-    The same limitations as with ``--colormatrix`` apply.
-
-    Available color ranges are:
-
-    :auto:      automatic selection (equals to full range) (default)
-    :limited:   limited range (16-235 per component), studio levels
-    :full:      full range (0-255 per component), PC levels
-
-    .. note::
-
-        It is advisable to use your graphics driver's color range option
-        instead, if available.
-
-``--colormatrix-primaries=<primaries>``
-    RGB primaries the source file was encoded with. Normally this should be set
-    in the file header, but when playing broken or mistagged files this can be
-    used to override the setting. By default, when unset, BT.709 is used for
-    all files except those tagged with a BT.2020 color matrix.
-
-    This option only affects video output drivers that perform color
-    management, for example ``opengl`` with the ``srgb`` or ``icc-profile``
-    suboptions set.
-
-    If this option is set to ``auto`` (which is the default), the video's
-    primaries flag will be used. If that flag is unset, the color space will
-    be selected automatically, using the following heuristics: If the
-    ``--colormatrix`` is set or determined as BT.2020 or BT.709, the
-    corresponding primaries are used. Otherwise, if the video height is
-    exactly 576 (PAL), BT.601-625 is used. If it's exactly 480 or 486 (NTSC),
-    BT.601-525 is used. If the video resolution is anything else, BT.709 is
-    used.
-
-    Available primaries are:
-
-    :auto:         automatic selection (default)
-    :BT.601-525:   ITU-R BT.601 (SD) 525-line systems (NTSC, SMPTE-C)
-    :BT.601-625:   ITU-R BT.601 (SD) 625-line systems (PAL, SECAM)
-    :BT.709:       ITU-R BT.709 (HD) (same primaries as sRGB)
-    :BT.2020:      ITU-R BT.2020 (UHD)
-
-
 Demuxer
 -------
 
@@ -2075,6 +2015,12 @@ Demuxer
 
 ``--demuxer-lavf-format=<name>``
     Force a specific libavformat demuxer.
+
+``--demuxer-lavf-hacks=<yes|no>``
+    By default, some formats will be handled differently from other formats
+    by explicitly checking for them. Most of these compensate for weird or
+    imperfect behavior from libavformat demuxers. Passing ``no`` disables
+    these. For debugging and testing only.
 
 ``--demuxer-lavf-genpts-mode=<no|lavf>``
     Mode for deriving missing packet PTS values from packet DTS. ``lavf``
@@ -2160,6 +2106,18 @@ Demuxer
     will be slower (especially when playing over http), or that behavior with
     broken files is much worse. So don't use this option.
 
+``--demuxer-mkv-fix-timestamps=<yes|no>``
+    Fix rounded Matroska timestamps (enabled by default). Matroska usually
+    stores timestamps rounded to milliseconds. This means timestamps jitter
+    by some amount around the intended timestamp. mpv can correct the timestamps
+    based on the framerate value stored in the file: the timestamp is rounded
+    to the next frame (according to the framerate), unless the new timestamp
+    would deviate more than 1ms from the old one. This should undo the rounding
+    done by the muxer.
+
+    (The allowed deviation can be less than 1ms if the file uses a non-standard
+    timecode scale.)
+
 ``--demuxer-rawaudio-channels=<value>``
     Number of channels (or channel layout) if ``--demuxer=rawaudio`` is used
     (default: stereo).
@@ -2208,7 +2166,7 @@ Demuxer
 
 ``--demuxer-readahead-secs=<seconds>``
     If ``--demuxer-thread`` is enabled, this controls how much the demuxer
-    should buffer ahead in seconds (default: 0.2). As long as no packet has
+    should buffer ahead in seconds (default: 1). As long as no packet has
     a timestamp difference higher than the readahead amount relative to the
     last packet returned to the decoder, the demuxer keeps reading.
 
@@ -2286,6 +2244,9 @@ Input
     get replies or events. Use ``--input-unix-socket`` for something
     bi-directional. On MS Windows, JSON commands are not available.
 
+    This can also specify a direct file descriptor with ``fd://N`` (UNIX only).
+    In this case, JSON replies will be written if the FD is writable.
+
     See also ``--slave-broken``.
 
     .. note::
@@ -2317,19 +2278,6 @@ Input
     Permit mpv to receive pointer events reported by the video output
     driver. Necessary to use the OSC, or to select the buttons in DVD menus.
     Support depends on the VO in use.
-
-``--input-joystick``, ``--no-input-joystick``
-    Enable/disable joystick support. Disabled by default.
-
-``--input-js-dev``
-    Specifies the joystick device to use (default: ``/dev/input/js0``).
-
-``--input-lirc``, ``--no-input-lirc``
-    Enable/disable LIRC support. Enabled by default.
-
-``--input-lirc-conf=<filename>``
-    (LIRC only)
-    Specifies a configuration file for LIRC (default: ``~/.lircrc``).
 
 ``--input-media-keys=<yes|no>``
     (OS X only)
@@ -2469,6 +2417,9 @@ OSD
 ``--osd-blur=<0..20.0>``, ``--sub-text-blur=<0..20.0>``
     Gaussian blur factor. 0 means no blur applied (default).
 
+``--osd-bold=<yes|no>``, ``--sub-text-bold=<yes|no>``
+    Format text on bold.
+
 ``--osd-border-color=<color>``, ``--sub-text-border-color=<color>``
     See ``--osd-color``. Color used for the OSD/sub font border.
 
@@ -2513,7 +2464,8 @@ OSD
         - ``--osd-color='#C0808080'`` set OSD to 50% gray with 75% alpha
 
 ``--osd-fractions``
-    Show OSD times with fractions of seconds.
+    Show OSD times with fractions of seconds (in millisecond precision). Useful
+    to see the exact timestamp of a video frame.
 
 ``--osd-level=<0-3>``
     Specifies which mode the OSD should start in.
@@ -2541,6 +2493,17 @@ OSD
     subtitle position, use ``--sub-pos``.
 
     Default: 22.
+
+``--osd-align-x=<left|center|right>``,  ``--sub-text-align-x=...``
+    Control to which corner of the screen OSD or text subtitles should be
+    aligned to (default: ``center`` for subs, ``left`` for OSD).
+
+    Never applied to ASS subtitles, except in ``--no-sub-ass`` mode. Likewise,
+    this does not apply to image subtitles.
+
+``--osd-align-y=<top|center|bottom>`` ``--sub-text-align-y=...``
+    Vertical position (default: ``bottom`` for subs, ``top`` for OSD).
+    Details see ``--osd-align-x``.
 
 ``--osd-scale=<factor>``
     OSD font size multiplier, multiplied with ``--osd-font-size`` value.
@@ -2593,6 +2556,13 @@ Screenshot
     :tga:       TARGA
     :jpg:       JPEG (default)
     :jpeg:      JPEG (same as jpg, but with .jpeg file ending)
+
+``--screenshot-tag-colorspace=<yes|no>``
+    Tag screenshots with the appropriate colorspace.
+
+    Note that not all formats are supported.
+
+    Default: ``yes``.
 
 ``--screenshot-template=<template>``
     Specify the filename template used to save screenshots. The template
@@ -2892,7 +2862,7 @@ TV
         Use _ for spaces in names (or play with quoting ;-) ). The channel
         names will then be written using OSD, and the slave commands
         ``tv_step_channel``, ``tv_set_channel`` and ``tv_last_channel``
-        will be usable for a remote control (see LIRC). Not compatible with
+        will be usable for a remote control. Not compatible with
         the ``frequency`` parameter.
 
     .. note::
@@ -3001,11 +2971,13 @@ TV
 Cache
 -----
 
-``--cache=<kBytes|no|auto>``
+``--cache=<kBytes|yes|no|auto>``
     Set the size of the cache in kilobytes, disable it with ``no``, or
     automatically enable it if needed with ``auto`` (default: ``auto``).
     With ``auto``, the cache will usually be enabled for network streams,
-    using the size set by ``--cache-default``.
+    using the size set by ``--cache-default``. With ``yes``, the cache will
+    always be enabled with the size set by ``--cache-default`` (unless the
+    stream can not be cached, or ``--cache-default`` disables caching).
 
     May be useful when playing files from slow media, but can also have
     negative effects, especially with file formats that require a lot of
@@ -3018,7 +2990,7 @@ Cache
     because no space is reserved for seeking back yet.
 
 ``--cache-default=<kBytes|no>``
-    Set the size of the cache in kilobytes (default: 25000 KB). Using ``no``
+    Set the size of the cache in kilobytes (default: 150000 KB). Using ``no``
     will not automatically enable the cache e.g. when playing from a network
     stream. Note that using ``--cache`` will always override this option.
 
@@ -3091,7 +3063,7 @@ Cache
 ``--cache-secs=<seconds>``
     How many seconds of audio/video to prefetch if the cache is active. This
     overrides the ``--demuxer-readahead-secs`` option if and only if the cache
-    is enabled and the value is larger. (Default: 2.)
+    is enabled and the value is larger. (Default: 10.)
 
 ``--cache-pause``, ``--no-cache-pause``
     Whether the player should automatically pause when the cache runs low,
@@ -3271,6 +3243,20 @@ Miscellaneous
 
 ``--mc=<seconds/frame>``
     Maximum A-V sync correction per frame (in seconds)
+
+``--autosync=<factor>``
+    Gradually adjusts the A/V sync based on audio delay measurements.
+    Specifying ``--autosync=0``, the default, will cause frame timing to be
+    based entirely on audio delay measurements. Specifying ``--autosync=1``
+    will do the same, but will subtly change the A/V correction algorithm. An
+    uneven video framerate in a video which plays fine with ``--no-audio`` can
+    often be helped by setting this to an integer value greater than 1. The
+    higher the value, the closer the timing will be to ``--no-audio``. Try
+    ``--autosync=30`` to smooth out problems with sound drivers which do not
+    implement a perfect audio delay measurement. With this value, if large A/V
+    sync offsets occur, they will only take about 1 or 2 seconds to settle
+    out. This delay in reaction time to sudden A/V offsets should be the only
+    side-effect of turning this option on, for all sound drivers.
 
 ``--mf-fps=<value>``
     Framerate used when decoding from multiple PNG or JPEG files with ``mf://``

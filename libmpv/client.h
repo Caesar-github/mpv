@@ -24,6 +24,7 @@
 #ifndef MPV_CLIENT_API_H_
 #define MPV_CLIENT_API_H_
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -195,7 +196,7 @@ extern "C" {
  * relational operators (<, >, <=, >=).
  */
 #define MPV_MAKE_VERSION(major, minor) (((major) << 16) | (minor) | 0UL)
-#define MPV_CLIENT_API_VERSION MPV_MAKE_VERSION(1, 14)
+#define MPV_CLIENT_API_VERSION MPV_MAKE_VERSION(1, 16)
 
 /**
  * Return the MPV_CLIENT_API_VERSION the mpv source has been compiled with.
@@ -360,8 +361,10 @@ const char *mpv_client_name(mpv_handle *ctx);
  *   equivalent to setting the --no-terminal option.
  *   (Technically, this also suppresses C signal handling.)
  * - No config files will be loaded. This is roughly equivalent to using
- *   --no-config (but actually the code path for loading config files is
- *   disabled).
+ *   --no-config. Since libmpv 1.15, you can actually re-enable this option,
+ *   which will make libmpv load config files during mpv_initialize(). If you
+ *   do this, you are strongly encouraged to set the "config-dir" option too.
+ *   (Otherwise it will load the mpv command line player's config.)
  * - Idle mode is enabled, which means the playback core will enter idle mode
  *   if there are no more files to play on the internal playlist, instead of
  *   exiting. This is equivalent to the --idle option.
@@ -630,7 +633,13 @@ typedef enum mpv_format {
     /**
      * See MPV_FORMAT_NODE_ARRAY.
      */
-    MPV_FORMAT_NODE_MAP         = 8
+    MPV_FORMAT_NODE_MAP         = 8,
+    /**
+     * A raw, untyped byte array. Only used only with mpv_node, and only in
+     * some very special situations. (Currently, only for the screenshot_raw
+     * command.)
+     */
+    MPV_FORMAT_BYTE_ARRAY       = 9
 } mpv_format;
 
 /**
@@ -652,6 +661,10 @@ typedef struct mpv_node {
          *    or if format==MPV_FORMAT_NODE_MAP
          */
         struct mpv_node_list *list;
+        /**
+         * valid if format==MPV_FORMAT_BYTE_ARRAY
+         */
+        struct mpv_byte_array *ba;
     } u;
     /**
      * Type of the data stored in this struct. This value rules what members in
@@ -664,6 +677,7 @@ typedef struct mpv_node {
      *  MPV_FORMAT_DOUBLE       (u.double_)
      *  MPV_FORMAT_NODE_ARRAY   (u.list)
      *  MPV_FORMAT_NODE_MAP     (u.list)
+     *  MPV_FORMAT_BYTE_ARRAY   (u.ba)
      *  MPV_FORMAT_NONE         (no member)
      *
      * If you encounter a value you don't know, you must not make any
@@ -703,6 +717,21 @@ typedef struct mpv_node_list {
      */
     char **keys;
 } mpv_node_list;
+
+/**
+ * (see mpv_node)
+ */
+typedef struct mpv_byte_array {
+    /**
+     * Pointer to the data. In what format the data is stored is up to whatever
+     * uses MPV_FORMAT_BYTE_ARRAY.
+     */
+    void *data;
+    /**
+     * Size of the data pointed to by ptr.
+     */
+    size_t size;
+} mpv_byte_array;
 
 /**
  * Frees any data referenced by the node. It doesn't free the node itself.

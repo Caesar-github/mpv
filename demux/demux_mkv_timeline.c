@@ -1,19 +1,18 @@
 /*
- * This file is part of MPlayer.
+ * This file is part of mpv.
  *
- * MPlayer is free software; you can redistribute it and/or modify
+ * mpv is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
- * MPlayer is distributed in the hope that it will be useful,
+ * mpv is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with MPlayer; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ * with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <stdlib.h>
@@ -47,6 +46,7 @@
 struct tl_ctx {
     struct mp_log *log;
     struct mpv_global *global;
+    struct timeline *tl;
 
     struct demuxer *demuxer;
 
@@ -149,37 +149,6 @@ static char **find_files(const char *original_file)
     return results;
 }
 
-static int enable_cache(struct mpv_global *global, struct stream **stream,
-                        struct demuxer **demuxer, struct demuxer_params *params)
-{
-    struct MPOpts *opts = global->opts;
-
-    if (!stream_wants_cache(*stream, &opts->stream_cache))
-        return 0;
-
-    char *filename = talloc_strdup(NULL, (*demuxer)->filename);
-    free_demuxer(*demuxer);
-    free_stream(*stream);
-
-    *stream = stream_open(filename, global);
-    if (!*stream) {
-        talloc_free(filename);
-        return -1;
-    }
-
-    stream_enable_cache(stream, &opts->stream_cache);
-
-    *demuxer = demux_open(*stream, "mkv", params, global);
-    if (!*demuxer) {
-        talloc_free(filename);
-        free_stream(*stream);
-        return -1;
-    }
-
-    talloc_free(filename);
-    return 1;
-}
-
 static bool has_source_request(struct tl_ctx *ctx,
                                struct matroska_segment_uid *new_uid)
 {
@@ -195,20 +164,20 @@ static bool check_file_seg(struct tl_ctx *ctx, char *filename, int segment)
 {
     bool was_valid = false;
     struct demuxer_params params = {
+        .force_format = "mkv",
         .matroska_num_wanted_uids = ctx->num_sources,
         .matroska_wanted_uids = ctx->uids,
         .matroska_wanted_segment = segment,
         .matroska_was_valid = &was_valid,
+        .disable_cache = true,
     };
-    struct stream *s = stream_open(filename, ctx->global);
-    if (!s)
+    struct mp_cancel *cancel = ctx->tl->cancel;
+    if (mp_cancel_test(cancel))
         return false;
-    struct demuxer *d = demux_open(s, "mkv", &params, ctx->global);
 
-    if (!d) {
-        free_stream(s);
-        return was_valid;
-    }
+    struct demuxer *d = demux_open_url(filename, &params, cancel, ctx->global);
+    if (!d)
+        return false;
 
     struct matroska_data *m = &d->matroska_data;
 
@@ -240,17 +209,22 @@ static bool check_file_seg(struct tl_ctx *ctx, char *filename, int segment)
                 MP_TARRAY_APPEND(NULL, ctx->sources, ctx->num_sources, NULL);
             }
 
-            params.matroska_wanted_uids = ctx->uids; // potentially reallocated, same data
-            if (enable_cache(ctx->global, &s, &d, &params) < 0)
-                continue;
+            if (stream_wants_cache(d->stream, &ctx->global->opts->stream_cache))
+            {
+                free_demuxer_and_stream(d);
+                params.disable_cache = false;
+                params.matroska_wanted_uids = ctx->uids; // potentially reallocated, same data
+                d = demux_open_url(filename, &params, cancel, ctx->global);
+                if (!d)
+                    return false;
+            }
 
             ctx->sources[i] = d;
             return true;
         }
     }
 
-    free_demuxer(d);
-    free_stream(s);
+    free_demuxer_and_stream(d);
     return was_valid;
 }
 
@@ -538,6 +512,7 @@ void build_ordered_chapter_timeline(struct timeline *tl)
     *ctx = (struct tl_ctx){
         .log = tl->log,
         .global = tl->global,
+        .tl = tl,
         .demuxer = demuxer,
     };
 

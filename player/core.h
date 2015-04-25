@@ -1,19 +1,18 @@
 /*
- * This file is part of MPlayer.
+ * This file is part of mpv.
  *
- * MPlayer is free software; you can redistribute it and/or modify
+ * mpv is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
- * MPlayer is distributed in the hope that it will be useful,
+ * mpv is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with MPlayer; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ * with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #ifndef MPLAYER_MP_CORE_H
@@ -65,6 +64,14 @@ enum seek_type {
     MPSEEK_RELATIVE,
     MPSEEK_ABSOLUTE,
     MPSEEK_FACTOR,
+};
+
+enum seek_precision {
+    MPSEEK_DEFAULT = 0,
+    // The following values are numerically sorted by increasing precision
+    MPSEEK_KEYFRAME,
+    MPSEEK_EXACT,
+    MPSEEK_VERY_EXACT,
 };
 
 struct track {
@@ -293,8 +300,8 @@ typedef struct MPContext {
     // Used to communicate the parameters of a seek between parts
     struct seek_params {
         enum seek_type type;
+        enum seek_precision exact;
         double amount;
-        int exact;  // -1 = disable, 0 = default, 1 = enable
         bool immediate; // disable seek delay logic
     } seek;
 
@@ -366,6 +373,7 @@ void mp_nav_destroy(struct MPContext *mpctx);
 void mp_nav_user_input(struct MPContext *mpctx, char *command);
 void mp_handle_nav(struct MPContext *mpctx);
 int mp_nav_in_menu(struct MPContext *mpctx);
+bool mp_nav_mouse_on_button(struct MPContext *mpctx);
 
 // loadfile.c
 void uninit_player(struct MPContext *mpctx, unsigned int mask);
@@ -390,10 +398,13 @@ void mp_play_files(struct MPContext *mpctx);
 void update_demuxer_properties(struct MPContext *mpctx);
 void reselect_demux_streams(struct MPContext *mpctx);
 void prepare_playlist(struct MPContext *mpctx, struct playlist *pl);
+void autoload_external_files(struct MPContext *mpctx);
+struct track *select_track(struct MPContext *mpctx, enum stream_type type,
+                           int tid, int ffid, char **langs);
 
 // main.c
 int mpv_main(int argc, char *argv[]);
-int mp_initialize(struct MPContext *mpctx);
+int mp_initialize(struct MPContext *mpctx, char **argv);
 struct MPContext *mp_create(void);
 void mp_destroy(struct MPContext *mpctx);
 void mp_print_version(struct mp_log *log, int always);
@@ -434,7 +445,7 @@ void pause_player(struct MPContext *mpctx);
 void unpause_player(struct MPContext *mpctx);
 void add_step_frame(struct MPContext *mpctx, int dir);
 void queue_seek(struct MPContext *mpctx, enum seek_type type, double amount,
-                int exact, bool immediate);
+                enum seek_precision exact, bool immediate);
 bool mp_seek_chapter(struct MPContext *mpctx, int chapter);
 double get_time_length(struct MPContext *mpctx);
 double get_current_time(struct MPContext *mpctx);
@@ -480,7 +491,6 @@ int reinit_video_chain(struct MPContext *mpctx);
 int reinit_video_filters(struct MPContext *mpctx);
 void write_video(struct MPContext *mpctx, double endpts);
 void mp_force_video_refresh(struct MPContext *mpctx);
-void update_fps(struct MPContext *mpctx);
 void uninit_video_out(struct MPContext *mpctx);
 void uninit_video_chain(struct MPContext *mpctx);
 

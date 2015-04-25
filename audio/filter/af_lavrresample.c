@@ -2,28 +2,29 @@
  * Copyright (c) 2004 Michael Niedermayer <michaelni@gmx.at>
  * Copyright (c) 2013 Stefano Pigozzi <stefano.pigozzi@gmail.com>
  *
- * This file is part of mpv.
  * Based on Michael Niedermayer's lavcresample.
  *
- * MPlayer is free software; you can redistribute it and/or modify
+ * This file is part of mpv.
+ *
+ * mpv is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
- * MPlayer is distributed in the hope that it will be useful,
+ * mpv is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with MPlayer; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ * with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <inttypes.h>
+#include <math.h>
 #include <assert.h>
 
 #include <libavutil/opt.h>
@@ -32,7 +33,7 @@
 #include <libavutil/samplefmt.h>
 #include <libavutil/mathematics.h>
 
-#include "talloc.h"
+#include "common/common.h"
 #include "config.h"
 
 #if HAVE_LIBAVRESAMPLE
@@ -64,7 +65,8 @@ struct af_resample_opts {
     int linear;
     double cutoff;
 
-    int in_rate;
+    int in_rate_af; // filter input sample rate
+    int in_rate;    // actual rate (used by lavr), adjusted for playback speed
     int in_format;
     struct mp_chmap in_channels;
     int out_rate;
@@ -75,6 +77,9 @@ struct af_resample_opts {
 struct af_resample {
     int allow_detach;
     char **avopts;
+    double playback_speed;
+    struct mp_audio *pending;
+    bool avrctx_ok;
     struct AVAudioResampleContext *avrctx;
     struct AVAudioResampleContext *avrctx_out; // for output channel reordering
     struct af_resample_opts ctx;   // opts in the context
@@ -94,6 +99,10 @@ static void drop_all_output(struct af_resample *s)
 {
     while (avresample_read(s->avrctx, NULL, 1000) > 0) {}
 }
+static int get_drain_samples(struct af_resample *s)
+{
+    return avresample_get_out_samples(s->avrctx, 0);
+}
 #else
 static int get_delay(struct af_resample *s)
 {
@@ -103,18 +112,39 @@ static void drop_all_output(struct af_resample *s)
 {
     while (swr_drop_output(s->avrctx, 1000) > 0) {}
 }
+static int get_drain_samples(struct af_resample *s)
+{
+    return 4096; // libswscale does not have this
+}
 #endif
+
+static int resample_frame(struct AVAudioResampleContext *r,
+                          struct mp_audio *out, struct mp_audio *in)
+{
+    return avresample_convert(r,
+        out ? (uint8_t **)out->planes : NULL,
+        out ? mp_audio_get_allocated_size(out) : 0,
+        out ? out->samples : 0,
+        in ? (uint8_t **)in->planes : NULL,
+        in ? mp_audio_get_allocated_size(in) : 0,
+        in ? in->samples : 0);
+}
 
 static double af_resample_default_cutoff(int filter_size)
 {
     return FFMAX(1.0 - 6.5 / (filter_size + 8), 0.80);
 }
 
+static int rate_from_speed(int rate, double speed)
+{
+    return lrint(rate * speed);
+}
+
 static bool needs_lavrctx_reconfigure(struct af_resample *s,
                                       struct mp_audio *in,
                                       struct mp_audio *out)
 {
-    return s->ctx.in_rate     != in->rate ||
+    return s->ctx.in_rate_af  != in->rate ||
            s->ctx.in_format   != in->format ||
            !mp_chmap_equals(&s->ctx.in_channels, &in->channels) ||
            s->ctx.out_rate    != out->rate ||
@@ -138,6 +168,8 @@ static int configure_lavrr(struct af_instance *af, struct mp_audio *in,
 {
     struct af_resample *s = af->priv;
 
+    s->avrctx_ok = false;
+
     enum AVSampleFormat in_samplefmt = af_to_avformat(in->format);
     enum AVSampleFormat out_samplefmt = af_to_avformat(out->format);
 
@@ -147,8 +179,12 @@ static int configure_lavrr(struct af_instance *af, struct mp_audio *in,
     avresample_close(s->avrctx);
     avresample_close(s->avrctx_out);
 
+    talloc_free(s->pending);
+    s->pending = NULL;
+
     s->ctx.out_rate    = out->rate;
-    s->ctx.in_rate     = in->rate;
+    s->ctx.in_rate_af  = in->rate;
+    s->ctx.in_rate     = rate_from_speed(in->rate, s->playback_speed);
     s->ctx.out_format  = out->format;
     s->ctx.in_format   = in->format;
     s->ctx.out_channels= out->channels;
@@ -163,6 +199,10 @@ static int configure_lavrr(struct af_instance *af, struct mp_audio *in,
     av_opt_set_int(s->avrctx, "linear_interp",      s->ctx.linear, 0);
 
     av_opt_set_double(s->avrctx, "cutoff",          s->ctx.cutoff, 0);
+
+#if HAVE_LIBSWRESAMPLE
+    av_opt_set_double(s->avrctx, "rematrix_maxval", 1.0, 0);
+#endif
 
     if (mp_set_avopts(af->log, s->avrctx, s->avopts) < 0)
         return AF_ERROR;
@@ -217,24 +257,25 @@ static int configure_lavrr(struct af_instance *af, struct mp_audio *in,
         MP_ERR(af, "Cannot open Libavresample Context. \n");
         return AF_ERROR;
     }
+    s->avrctx_ok = true;
     return AF_OK;
 }
 
 
 static int control(struct af_instance *af, int cmd, void *arg)
 {
-    struct af_resample *s = (struct af_resample *) af->priv;
-    struct mp_audio *in   = (struct mp_audio *) arg;
-    struct mp_audio *out  = (struct mp_audio *) af->data;
+    struct af_resample *s = af->priv;
 
     switch (cmd) {
     case AF_CONTROL_REINIT: {
+        struct mp_audio *in = arg;
+        struct mp_audio *out = af->data;
         struct mp_audio orig_in = *in;
 
         if (((out->rate    == in->rate) || (out->rate == 0)) &&
             (out->format   == in->format) &&
             (mp_chmap_equals(&out->channels, &in->channels) || out->nch == 0) &&
-            s->allow_detach)
+            s->allow_detach && s->playback_speed == 1.0)
             return AF_DETACH;
 
         if (out->rate == 0)
@@ -257,10 +298,11 @@ static int control(struct af_instance *af, int cmd, void *arg)
         return r;
     }
     case AF_CONTROL_SET_FORMAT: {
-        if (af_to_avformat(*(int*)arg) == AV_SAMPLE_FMT_NONE)
+        int format = *(int *)arg;
+        if (format && af_to_avformat(format) == AV_SAMPLE_FMT_NONE)
             return AF_FALSE;
 
-        mp_audio_set_format(af->data, *(int*)arg);
+        mp_audio_set_format(af->data, format);
         return AF_OK;
     }
     case AF_CONTROL_SET_CHANNELS: {
@@ -268,8 +310,28 @@ static int control(struct af_instance *af, int cmd, void *arg)
         return AF_OK;
     }
     case AF_CONTROL_SET_RESAMPLE_RATE:
-        out->rate = *(int *)arg;
+        af->data->rate = *(int *)arg;
         return AF_OK;
+    case AF_CONTROL_SET_PLAYBACK_SPEED_RESAMPLE: {
+        s->playback_speed = *(double *)arg;
+        int new_rate = rate_from_speed(s->ctx.in_rate_af, s->playback_speed);
+        if (new_rate != s->ctx.in_rate && s->avrctx_ok && af->fmt_out.format) {
+            // Before reconfiguring, drain the audio that is still buffered
+            // in the resampler.
+            struct mp_audio *pending = talloc_zero(NULL, struct mp_audio);
+            mp_audio_copy_config(pending, &af->fmt_out);
+            pending->samples = get_drain_samples(s);
+            if (pending->samples > 0) {
+                mp_audio_realloc_min(pending, pending->samples);
+                int r = resample_frame(s->avrctx, pending, NULL);
+                pending->samples = MPMAX(r, 0);
+            }
+            // Reinitialize resampler.
+            configure_lavrr(af, &af->fmt_in, &af->fmt_out);
+            s->pending = pending;
+        }
+        return AF_OK;
+    }
     case AF_CONTROL_RESET:
         drop_all_output(s);
         return AF_OK;
@@ -289,6 +351,7 @@ static void uninit(struct af_instance *af)
     if (s->avrctx_out)
         avresample_close(s->avrctx_out);
     avresample_free(&s->avrctx_out);
+    talloc_free(s->pending);
 }
 
 static bool needs_reorder(int *reorder, int num_ch)
@@ -309,21 +372,18 @@ static void reorder_planes(struct mp_audio *mpa, int *reorder)
     }
 }
 
-static int resample_frame(struct AVAudioResampleContext *r,
-                          struct mp_audio *out, struct mp_audio *in)
-{
-    return avresample_convert(r,
-        out ? (uint8_t **)out->planes : NULL,
-        out ? mp_audio_get_allocated_size(out) : 0,
-        out ? out->samples : 0,
-        in ? (uint8_t **)in->planes : NULL,
-        in ? mp_audio_get_allocated_size(in) : 0,
-        in ? in->samples : 0);
-}
-
 static int filter(struct af_instance *af, struct mp_audio *in)
 {
     struct af_resample *s = af->priv;
+
+    if (s->pending) {
+        if (s->pending->samples) {
+            af_add_output_frame(af, s->pending);
+        } else {
+            talloc_free(s->pending);
+        }
+        s->pending = NULL;
+    }
 
     int samples = avresample_available(s->avrctx) +
         av_rescale_rnd(get_delay(s) + (in ? in->samples : 0),
@@ -345,7 +405,7 @@ static int filter(struct af_instance *af, struct mp_audio *in)
     }
 
     if (needs_reorder(s->reorder_out, out->nch)) {
-        if (af_fmt_is_planar(out->format)) {
+        if (AF_FORMAT_IS_PLANAR(out->format)) {
             reorder_planes(out, s->reorder_out);
         } else if (out->samples) {
             struct mp_audio *new = mp_audio_pool_get(s->reorder_buffer, out,
@@ -412,6 +472,7 @@ const struct af_info af_info_lavrresample = {
             .cutoff      = 0.0,
             .phase_shift = 10,
         },
+        .playback_speed = 1.0,
         .allow_detach = 1,
     },
     .options = (const struct m_option[]) {

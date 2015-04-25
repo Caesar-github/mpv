@@ -1,19 +1,18 @@
 /*
- * This file is part of MPlayer.
+ * This file is part of mpv.
  *
- * MPlayer is free software; you can redistribute it and/or modify
+ * mpv is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
- * MPlayer is distributed in the hope that it will be useful,
+ * mpv is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with MPlayer; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ * with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include "config.h"
@@ -200,6 +199,12 @@ bool video_init_best_codec(struct dec_video *d_video, char* video_decoders)
                d_video->header->codec ? d_video->header->codec : "<unknown>");
     }
 
+    if (d_video->header->missing_timestamps) {
+        MP_WARN(d_video, "This stream has no timestamps!\n");
+        MP_WARN(d_video, "Making up playback time using %f FPS.\n", d_video->fps);
+        MP_WARN(d_video, "Seeking will probably fail badly.\n");
+    }
+
     talloc_free(list);
     return !!d_video->vd_driver;
 }
@@ -351,7 +356,7 @@ struct mp_image *video_decode(struct dec_video *d_video,
         pts = retrieve_sorted_pts(d_video, pts);
 
     if (!opts->correct_pts || pts == MP_NOPTS_VALUE) {
-        if (opts->correct_pts)
+        if (opts->correct_pts && !d_video->header->missing_timestamps)
             MP_WARN(d_video, "No video PTS! Making something up.\n");
 
         double frame_time = 1.0f / (d_video->fps > 0 ? d_video->fps : 25);
@@ -361,11 +366,6 @@ struct mp_image *video_decode(struct dec_video *d_video,
             pts = base == MP_NOPTS_VALUE ? 0 : base;
 
         pts += frame_time;
-    }
-
-    if (d_video->decoded_pts != MP_NOPTS_VALUE && pts <= d_video->decoded_pts) {
-        MP_WARN(d_video, "Non-monotonic video pts: %f <= %f\n",
-                pts, d_video->decoded_pts);
     }
 
     if (d_video->has_broken_packet_pts < 0)
@@ -384,13 +384,6 @@ int video_reconfig_filters(struct dec_video *d_video,
     struct MPOpts *opts = d_video->opts;
     struct mp_image_params p = *params;
     struct sh_video *sh = d_video->header->video;
-
-    MP_VERBOSE(d_video, "VIDEO:  %dx%d  %5.3f fps  %5.1f kbps (%4.1f kB/s)\n",
-               p.w, p.h, sh->fps, sh->bitrate / 1000.0,
-               sh->bitrate / 8000.0);
-
-    MP_VERBOSE(d_video, "VDec: vo config request - %d x %d (%s)\n",
-               p.w, p.h, vo_format_name(p.imgfmt));
 
     float decoder_aspect = p.d_w / (float)p.d_h;
     if (d_video->initial_decoder_aspect == 0)
@@ -411,22 +404,8 @@ int video_reconfig_filters(struct dec_video *d_video,
     if (force_aspect >= 0.0)
         vf_set_dar(&p.d_w, &p.d_h, p.w, p.h, force_aspect);
 
-    // Apply user overrides
-    if (opts->requested_colorspace != MP_CSP_AUTO)
-        p.colorspace = opts->requested_colorspace;
-    if (opts->requested_input_range != MP_CSP_LEVELS_AUTO)
-        p.colorlevels = opts->requested_input_range;
-    p.outputlevels = opts->requested_output_range;
-    if (opts->requested_primaries != MP_CSP_PRIM_AUTO)
-        p.primaries = opts->requested_primaries;
-
     // Detect colorspace from resolution.
-    // Make sure the user-overrides are consistent (no RGB csp for YUV, etc.).
     mp_image_params_guess_csp(&p);
-
-    // Time to config libvo!
-    MP_VERBOSE(d_video, "VO Config (%dx%d->%dx%d,0x%X)\n",
-               p.w, p.h, p.d_w, p.d_h, p.imgfmt);
 
     if (vf_reconfig(d_video->vfilter, params, &p) < 0) {
         MP_FATAL(d_video, "Cannot initialize video filters.\n");

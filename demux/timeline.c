@@ -14,6 +14,7 @@ struct timeline *timeline_load(struct mpv_global *global, struct mp_log *log,
     *tl = (struct timeline){
         .global = global,
         .log = log,
+        .cancel = demuxer->stream->cancel,
         .demuxer = demuxer,
         .track_layout = demuxer,
     };
@@ -32,11 +33,8 @@ void timeline_destroy(struct timeline *tl)
         return;
     for (int n = 0; n < tl->num_sources; n++) {
         struct demuxer *d = tl->sources[n];
-        if (d != tl->demuxer) {
-            struct stream *s = d->stream;
-            free_demuxer(d);
-            free_stream(s);
-        }
+        if (d != tl->demuxer)
+            free_demuxer_and_stream(d);
     }
     talloc_free(tl);
 }

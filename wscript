@@ -83,7 +83,7 @@ build_options = [
     }, {
         'name': '--test',
         'desc': 'test suite (using cmocka)',
-        'func': check_pkg_config('cmocka >= 0.4.1'),
+        'func': check_pkg_config('cmocka', '>= 0.4.1'),
         'default': 'disable',
     }, {
         'name': '--clang-database',
@@ -120,17 +120,22 @@ main_dependencies = [
             'struct pollfd pfd; poll(&pfd, 1, 0); fork(); int f[2]; pipe(f); munmap(f,0)'),
     }, {
         'name': 'posix-or-mingw',
-        'desc': 'programming environment',
+        'desc': 'development environment',
         'deps_any': [ 'posix', 'mingw' ],
         'func': check_true,
         'req': True,
         'fmsg': 'Unable to find either POSIX or MinGW-w64 environment, ' \
                 'or compiler does not work.',
     }, {
+        'name': 'win32',
+        'desc': 'win32',
+        'deps_any': [ 'os-win32', 'os-cygwin' ],
+        'func': check_cc(lib=['winmm', 'gdi32', 'ole32', 'uuid']),
+    }, {
         'name': '--win32-internal-pthreads',
         'desc': 'internal pthread wrapper for win32 (Vista+)',
         'deps_neg': [ 'posix' ],
-        'deps': [ 'mingw' ],
+        'deps': [ 'win32' ],
         'func': check_true,
         'default': 'disable',
     }, {
@@ -208,7 +213,13 @@ iconv support use --disable-iconv.",
         'name': 'posix-spawn',
         'desc': 'POSIX spawnp()/kill()',
         'func': check_statement(['spawn.h', 'signal.h'],
-            'posix_spawnp(0,0,0,0,0,0); kill(0,0)')
+            'posix_spawnp(0,0,0,0,0,0); kill(0,0)'),
+        'deps_neg': ['mingw'],
+    }, {
+        'name': 'subprocess',
+        'desc': 'posix_spawnp() or MinGW',
+        'func': check_true,
+        'deps_any': ['posix-spawn', 'mingw'],
     }, {
         'name': 'glob',
         'desc': 'glob()',
@@ -219,6 +230,15 @@ iconv support use --disable-iconv.",
         'deps_neg': [ 'glob' ],
         'deps_any': [ 'os-win32', 'os-cygwin' ],
         'func': check_true
+    }, {
+        'name': 'fchmod',
+        'desc': 'fchmod()',
+        'func': check_statement('sys/stat.h', 'fchmod(0, 0)'),
+    }, {
+        'name': 'vt.h',
+        'desc': 'vt.h',
+        'func': check_statement(['sys/vt.h', 'sys/ioctl.h'],
+                                'int m; ioctl(0, VT_GETMODE, &m)'),
     }, {
         'name': 'glibc-thread-name',
         'desc': 'GLIBC API for setting thread name',
@@ -273,10 +293,11 @@ iconv support use --disable-iconv.",
     }, {
         'name': '--libass',
         'desc': 'SSA/ASS support',
-        'func': check_pkg_config('libass'),
+        'func': check_pkg_config('libass', '>= 0.12.1'),
         'req': True,
-        'fmsg': "Unable to find development files for libass. Aborting. \
-If you really mean to compile without libass support use --disable-libass."
+        'fmsg': "Unable to find development files for libass, or the version " +
+                "found is too old. Aborting. If you really mean to compile " +
+                "without libass support use --disable-libass."
     }, {
         'name': '--libass-osd',
         'desc': 'libass OSD support',
@@ -299,15 +320,6 @@ If you really mean to compile without libass support use --disable-libass."
         'desc' : 'Encoding',
         'func': check_true,
     }, {
-        'name' : '--joystick',
-        'desc' : 'joystick',
-        'func': check_cc(header_name='linux/joystick.h'),
-        'default': 'disable'
-    }, {
-        'name' : '--lirc',
-        'desc' : 'lirc',
-        'func': check_cc(header_name='lirc/lirc_client.h', lib='lirc_client'),
-    }, {
         'name': '--libbluray',
         'desc': 'Bluray support',
         'func': check_pkg_config('libbluray', '>= 0.3.0'),
@@ -329,13 +341,13 @@ If you really mean to compile without libass support use --disable-libass."
         'desc': 'ENCA support',
         'func': check_statement('enca.h', 'enca_get_languages(NULL)', lib='enca'),
     }, {
-        'name': '--mpg123',
-        'desc': 'mpg123 support',
-        'func': check_pkg_config('libmpg123', '>= 1.14.0'),
-    }, {
         'name': '--ladspa',
         'desc': 'LADSPA plugin support',
         'func': check_statement('ladspa.h', 'LADSPA_Descriptor ld = {0}'),
+    }, {
+        'name': '--rubberband',
+        'desc': 'librubberband support',
+        'func': check_pkg_config('rubberband', '>= 1.8.0'),
     }, {
         'name': '--libbs2b',
         'desc': 'libbs2b audio filter support',
@@ -347,7 +359,7 @@ If you really mean to compile without libass support use --disable-libass."
     }, {
         'name': 'vapoursynth-core',
         'desc': 'VapourSynth filter bridge (core)',
-        'func': check_pkg_config('vapoursynth >= 23'),
+        'func': check_pkg_config('vapoursynth >= 24'),
     }, {
         'name': '--vapoursynth',
         'desc': 'VapourSynth filter bridge (Python)',
@@ -362,11 +374,12 @@ If you really mean to compile without libass support use --disable-libass."
 ]
 
 libav_pkg_config_checks = [
-    'libavutil',   '>= 52.48.101',
-    'libavcodec',  '>= 55.34.1',
-    'libavformat', '>= 55.12.0',
-    'libswscale',  '>= 2.1.2'
+    'libavutil',   '>= 54.02.0',
+    'libavcodec',  '>= 56.1.0',
+    'libavformat', '>= 56.01.0',
+    'libswscale',  '>= 2.1.3'
 ]
+libav_versions_string = "FFmpeg 2.4 or Libav 11"
 
 libav_dependencies = [
     {
@@ -375,15 +388,15 @@ libav_dependencies = [
         'func': check_pkg_config(*libav_pkg_config_checks),
         'req': True,
         'fmsg': "Unable to find development files for some of the required \
-Libav libraries ({0}). Aborting.".format(" ".join(libav_pkg_config_checks))
+FFmpeg/Libav libraries. You need at least {0}. Aborting.".format(libav_versions_string)
     }, {
         'name': '--libswresample',
         'desc': 'libswresample',
-        'func': check_pkg_config('libswresample', '>= 0.17.104'),
+        'func': check_pkg_config('libswresample', '>= 1.1.100'),
     }, {
         'name': '--libavresample',
         'desc': 'libavresample',
-        'func': check_pkg_config('libavresample',  '>= 1.1.0'),
+        'func': check_pkg_config('libavresample',  '>= 2.1.0'),
         'deps_neg': ['libswresample'],
     }, {
         'name': 'resampler',
@@ -395,11 +408,11 @@ Libav libraries ({0}). Aborting.".format(" ".join(libav_pkg_config_checks))
     }, {
         'name': '--libavfilter',
         'desc': 'libavfilter',
-        'func': check_pkg_config('libavfilter', '>= 3.90.100'),
+        'func': check_pkg_config('libavfilter', '>= 5.0.0'),
     }, {
         'name': '--libavdevice',
         'desc': 'libavdevice',
-        'func': check_pkg_config('libavdevice', '>= 54.0.0'),
+        'func': check_pkg_config('libavdevice', '>= 55.0.0'),
     }, {
         'name': 'avcodec-chroma-pos-api',
         'desc': 'libavcodec avcodec_enum_to_chroma_pos API',
@@ -407,42 +420,6 @@ Libav libraries ({0}). Aborting.".format(" ".join(libav_pkg_config_checks))
             avcodec_enum_to_chroma_pos(&x, &y, AVCHROMA_LOC_UNSPECIFIED)""",
             use='libav')
     }, {
-        'name': 'avcol-spc-bt2020',
-        'desc': 'libavcodec avcol_spc_bt2020 available',
-        'func': check_statement('libavcodec/avcodec.h',
-                                'int x = AVCOL_SPC_BT2020_NCL',
-                                use='libav')
-    }, {
-        'name': 'avcodec-vdpau-alloc-context',
-        'desc': 'libavcodec vdpau non-sense',
-        'func': check_statement('libavcodec/vdpau.h',
-                                'AVVDPAUContext *x = av_vdpau_alloc_context()',
-                                use='libav')
-    }, {
-        'name': 'avcodec-metadata-update-side-data',
-        'desc': 'libavcodec AV_PKT_DATA_METADATA_UPDATE side data type',
-        'func': check_statement('libavcodec/avcodec.h',
-                                'enum AVPacketSideDataType type = AV_PKT_DATA_METADATA_UPDATE',
-                                use='libav')
-    }, {
-        'name': 'avformat-metadata-update-flag',
-        'desc': "libavformat metadata update flags",
-        'func': check_statement('libavformat/avformat.h',
-                                'int x = AVFMT_EVENT_FLAG_METADATA_UPDATED',
-                                use='libav')
-    }, {
-        'name': 'avcodec-replaygain-side-data',
-        'desc': 'libavcodec AV_PKT_DATA_REPLAYGAIN side data type',
-        'func': check_statement('libavcodec/avcodec.h',
-                                'enum AVPacketSideDataType type = AV_PKT_DATA_REPLAYGAIN',
-                                use='libav')
-    }, {
-        'name': 'av-displaymatrix',
-        'desc': 'libavutil/libavcodec display matrix side data',
-        'func': check_statement('libavutil/frame.h',
-                                'enum AVFrameSideDataType type = AV_FRAME_DATA_DISPLAYMATRIX',
-                                use='libav')
-    },{
         'name': 'avframe-metadata',
         'desc': 'libavutil AVFrame metadata',
         'func': check_statement('libavutil/frame.h',
@@ -454,6 +431,12 @@ Libav libraries ({0}). Aborting.".format(" ".join(libav_pkg_config_checks))
         'func': check_statement('libavutil/frame.h',
                                 'enum AVFrameSideDataType type = AV_FRAME_DATA_SKIP_SAMPLES',
                                 use='libav')
+    }, {
+        'name': 'av-pix-fmt-mmal',
+        'desc': 'libavutil AV_PIX_FMT_MMAL',
+        'func': check_statement('libavutil/pixfmt.h',
+                                'int x = AV_PIX_FMT_MMAL',
+                                use='libav'),
     }
 ]
 
@@ -528,7 +511,7 @@ audio_output_features = [
     }, {
         'name': '--alsa',
         'desc': 'ALSA audio output',
-        'func': check_pkg_config('alsa >= 1.0.18'),
+        'func': check_pkg_config('alsa', '>= 1.0.18'),
     }, {
         'name': '--coreaudio',
         'desc': 'CoreAudio audio output',
@@ -543,8 +526,8 @@ audio_output_features = [
     }, {
         'name': '--wasapi',
         'desc': 'WASAPI audio output',
-        'deps': ['atomics'],
-        'func': check_cc(fragment=load_fragment('wasapi.c'), lib='ole32'),
+        'deps': ['win32', 'atomics'],
+        'func': check_cc(fragment=load_fragment('wasapi.c')),
     }
 ]
 
@@ -553,22 +536,6 @@ video_output_features = [
         'name': '--cocoa',
         'desc': 'Cocoa',
         'func': check_cocoa
-    } , {
-        'name': 'gdi',
-        'desc': 'GDI',
-        'func': check_cc(lib='gdi32')
-    } , {
-        'name': 'winmm',
-        'desc': 'WinMM',
-        'func': check_cc(lib='winmm')
-    } , {
-        'name': 'ole',
-        'desc': 'OLE',
-        'func': check_cc(lib='ole32')
-    } , {
-        'name': 'uuid',
-        'desc': 'UUID',
-        'func': check_cc(lib='uuid')
     } , {
         'name': '--wayland',
         'desc': 'Wayland',
@@ -635,15 +602,10 @@ video_output_features = [
     } , {
         'name': '--gl-win32',
         'desc': 'OpenGL Win32 Backend',
-        'deps': [ 'gdi', 'winmm', 'ole', 'uuid' ],
+        'deps': [ 'win32' ],
         'groups': [ 'gl' ],
         'func': check_statement('windows.h', 'wglCreateContext(0)',
                                 lib='opengl32')
-    } , {
-        'name': '--gl',
-        'desc': 'OpenGL video outputs',
-        'deps_any': [ 'gl-cocoa', 'gl-x11', 'gl-win32', 'gl-wayland' ],
-        'func': check_true
     } , {
         'name': '--vdpau',
         'desc': 'VDPAU acceleration',
@@ -669,11 +631,16 @@ video_output_features = [
         'name': '--vaapi-glx',
         'desc': 'VAAPI GLX',
         'deps': [ 'vaapi', 'gl-x11' ],
-        'func': check_pkg_config('libva-glx', '>= 0.32.0'),
+        'func': check_true,
     }, {
         'name': '--caca',
         'desc': 'CACA',
         'func': check_pkg_config('caca', '>= 0.99.beta18'),
+    }, {
+        'name': '--drm',
+        'desc': 'DRM',
+        'deps': [ 'vt.h' ],
+        'func': check_pkg_config('libdrm'),
     }, {
         'name': '--jpeg',
         'desc': 'JPEG support',
@@ -682,8 +649,41 @@ video_output_features = [
     }, {
         'name': '--direct3d',
         'desc': 'Direct3D support',
-        'deps': [ 'gdi', 'winmm', 'ole', 'uuid' ],
+        'deps': [ 'win32' ],
         'func': check_cc(header_name='d3d9.h'),
+    }, {
+        # We need MMAL/bcm_host/dispmanx APIs. Also, most RPI distros require
+        # every project to hardcode the paths to the include directories. Also,
+        # these headers are so broken that they spam tons of warnings by merely
+        # including them (compensate with -isystem and -fgnu89-inline).
+        'name': '--rpi',
+        'desc': 'Raspberry Pi support',
+        'func':
+            check_cc(cflags="-isystem/opt/vc/include/ "+
+                            "-isystem/opt/vc/include/interface/vcos/pthreads " +
+                            "-isystem/opt/vc/include/interface/vmcs_host/linux " +
+                            "-fgnu89-inline",
+                     linkflags="-L/opt/vc/lib",
+                     header_name="bcm_host.h",
+                     lib=['mmal_core', 'mmal_util', 'mmal_vc_client', 'bcm_host']),
+    }, {
+        'name': '--rpi-gles',
+        'desc': 'GLES on Raspberry Pi',
+        'groups': [ 'gl' ],
+        'deps': ['rpi'],
+        # We still need all OpenGL symbols, because the vo_opengl code is
+        # generic and supports anything from GLES2/OpenGL 2.1 to OpenGL 4 core.
+        'func': compose_checks(
+            check_cc(lib="EGL"),
+            check_cc(lib="GLESv2"),
+            check_statement('GL/gl.h', '(void)GL_RGB32F'),     # arbitrary OpenGL 3.0 symbol
+            check_statement('GL/gl.h', '(void)GL_LUMINANCE16') # arbitrary OpenGL legacy-only symbol
+            ),
+    } , {
+        'name': '--gl',
+        'desc': 'OpenGL video outputs',
+        'deps_any': [ 'gl-cocoa', 'gl-x11', 'gl-win32', 'gl-wayland', 'rpi-gles' ],
+        'func': check_true
     }
 ]
 
@@ -717,7 +717,7 @@ hwaccel_features = [
     }, {
         'name': '--dxva2-hwaccel',
         'desc': 'libavcodec DXVA2 hwaccel',
-        'deps': [ 'gdi' ],
+        'deps': [ 'win32' ],
         'func': check_headers('libavcodec/dxva2.h', use='libav'),
     }
 ]

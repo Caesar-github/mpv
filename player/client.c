@@ -516,10 +516,8 @@ static void *playback_thread(void *p)
 
 int mpv_initialize(mpv_handle *ctx)
 {
-    if (mp_initialize(ctx->mpctx) < 0)
+    if (mp_initialize(ctx->mpctx, NULL) < 0)
         return MPV_ERROR_INVALID_PARAMETER;
-
-    mp_print_version(ctx->mpctx->log, false);
 
     pthread_t thread;
     if (pthread_create(&thread, NULL, playback_thread, ctx->mpctx) != 0)
@@ -902,7 +900,6 @@ int mpv_set_option(mpv_handle *ctx, const char *name, mpv_format format,
     if (format != MPV_FORMAT_NODE) {
         tmp.format = format;
         memcpy(&tmp.u, data, type->type->size);
-        format = MPV_FORMAT_NODE;
         data = &tmp;
     }
     lock_core(ctx);
@@ -957,6 +954,7 @@ static int run_async(mpv_handle *ctx, void (*fn)(void *fn_data), void *fn_data)
 struct cmd_request {
     struct MPContext *mpctx;
     struct mp_cmd *cmd;
+    struct mpv_node *res;
     int status;
     struct mpv_handle *reply_ctx;
     uint64_t userdata;
@@ -965,7 +963,7 @@ struct cmd_request {
 static void cmd_fn(void *data)
 {
     struct cmd_request *req = data;
-    int r = run_command(req->mpctx, req->cmd);
+    int r = run_command(req->mpctx, req->cmd, req->res);
     req->status = r >= 0 ? 0 : MPV_ERROR_COMMAND;
     talloc_free(req->cmd);
     if (req->reply_ctx) {
@@ -974,7 +972,7 @@ static void cmd_fn(void *data)
     }
 }
 
-static int run_client_command(mpv_handle *ctx, struct mp_cmd *cmd)
+static int run_client_command(mpv_handle *ctx, struct mp_cmd *cmd, mpv_node *res)
 {
     if (!ctx->mpctx->initialized)
         return MPV_ERROR_UNINITIALIZED;
@@ -989,6 +987,7 @@ static int run_client_command(mpv_handle *ctx, struct mp_cmd *cmd)
     struct cmd_request req = {
         .mpctx = ctx->mpctx,
         .cmd = cmd,
+        .res = res,
     };
     run_locked(ctx, cmd_fn, &req);
     return req.status;
@@ -996,21 +995,22 @@ static int run_client_command(mpv_handle *ctx, struct mp_cmd *cmd)
 
 int mpv_command(mpv_handle *ctx, const char **args)
 {
-    return run_client_command(ctx, mp_input_parse_cmd_strv(ctx->log, args));
+    return run_client_command(ctx, mp_input_parse_cmd_strv(ctx->log, args), NULL);
 }
 
 int mpv_command_node(mpv_handle *ctx, mpv_node *args, mpv_node *result)
 {
-    int r = run_client_command(ctx, mp_input_parse_cmd_node(ctx->log, args));
+    struct mpv_node rn = {.format = MPV_FORMAT_NONE};
+    int r = run_client_command(ctx, mp_input_parse_cmd_node(ctx->log, args), &rn);
     if (result && r >= 0)
-        *result = (mpv_node){.format = MPV_FORMAT_NONE};
+        *result = rn;
     return r;
 }
 
 int mpv_command_string(mpv_handle *ctx, const char *args)
 {
     return run_client_command(ctx,
-        mp_input_parse_cmd(ctx->mpctx->input, bstr0((char*)args), ctx->name));
+        mp_input_parse_cmd(ctx->mpctx->input, bstr0((char*)args), ctx->name), NULL);
 }
 
 static int run_cmd_async(mpv_handle *ctx, uint64_t ud, struct mp_cmd *cmd)
@@ -1687,7 +1687,7 @@ static mpv_opengl_cb_context *opengl_cb_get_context(mpv_handle *ctx)
 {
     mpv_opengl_cb_context *cb = ctx->mpctx->gl_cb_ctx;
     if (!cb) {
-        cb = mp_opengl_create(ctx->mpctx->global, ctx->mpctx->osd, ctx->clients);
+        cb = mp_opengl_create(ctx->mpctx->global, ctx->clients);
         ctx->mpctx->gl_cb_ctx = cb;
     }
     return cb;
@@ -1708,7 +1708,11 @@ int mpv_opengl_cb_init_gl(mpv_opengl_cb_context *ctx, const char *exts,
 {
     return MPV_ERROR_NOT_IMPLEMENTED;
 }
-int mpv_opengl_cb_render(mpv_opengl_cb_context *ctx, int fbo, int vp[4])
+int mpv_opengl_cb_draw(mpv_opengl_cb_context *ctx, int fbo, int w, int h)
+{
+    return MPV_ERROR_NOT_IMPLEMENTED;
+}
+int mpv_opengl_cb_report_flip(mpv_opengl_cb_context *ctx, int64_t time)
 {
     return MPV_ERROR_NOT_IMPLEMENTED;
 }
@@ -1717,6 +1721,11 @@ int mpv_opengl_cb_uninit_gl(mpv_opengl_cb_context *ctx)
     return MPV_ERROR_NOT_IMPLEMENTED;
 }
 #endif
+
+int mpv_opengl_cb_render(mpv_opengl_cb_context *ctx, int fbo, int vp[4])
+{
+    return mpv_opengl_cb_draw(ctx, fbo, vp[2], vp[3]);
+}
 
 void *mpv_get_sub_api(mpv_handle *ctx, mpv_sub_api sub_api)
 {
