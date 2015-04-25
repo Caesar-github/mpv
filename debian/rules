@@ -2,21 +2,18 @@
 
 export DEB_BUILD_MAINT_OPTIONS:=hardening=+all # #741439
 
-FEATURES = --enable-cdda		\
-           --enable-sdl2		\
-           --enable-zsh-comp		\
-           --enable-libmpv-shared
-
 %:
 	dh $@
 
 override_dh_auto_configure:
-	python ./waf -v configure			\
-			--prefix=/usr				\
-			--libdir=/usr/lib/$(DEB_HOST_MULTIARCH)	\
-			--confdir=/etc/mpv			\
-			--zshdir=/usr/share/zsh/vendor-completions \
-			$(FEATURES)
+	python ./waf -v configure					\
+			--prefix=/usr					\
+			--libdir=/usr/lib/$(DEB_HOST_MULTIARCH)		\
+			--confdir=/etc/mpv				\
+			--zshdir=/usr/share/zsh/vendor-completions	\
+			--enable-cdda --enable-sdl2			\
+			--enable-zsh-comp --enable-libmpv-shared
+
 
 override_dh_auto_build:
 	python ./waf -v build
