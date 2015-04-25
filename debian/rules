@@ -7,10 +7,6 @@ FEATURES = --enable-cdda		\
            --enable-zsh-comp		\
            --enable-libmpv-shared
 
-ifeq ($(DEB_HOST_ARCH_OS),linux)
-	FEATURES += --enable-joystick
-endif
-
 %:
 	dh $@
 
