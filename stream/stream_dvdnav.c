@@ -1,20 +1,20 @@
 /*
- * This file is part of MPlayer.
+ * This file is part of mpv.
  *
- * MPlayer is free software; you can redistribute it and/or modify
+ * mpv is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
- * MPlayer is distributed in the hope that it will be useful,
+ * mpv is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with MPlayer; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ * with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
+
 #include <libavutil/common.h>
 
 #include "config.h"
@@ -202,18 +202,19 @@ static void handle_menu_input(stream_t *stream, const char *cmd)
     }
 }
 
-static void handle_mouse_pos(stream_t *stream, int x, int y)
+static dvdnav_status_t handle_mouse_pos(stream_t *stream, int x, int y)
 {
     struct priv *priv = stream->priv;
     dvdnav_t *nav = priv->dvdnav;
     pci_t *pci = dvdnav_get_current_nav_pci(nav);
 
     if (!pci)
-        return;
+        return DVDNAV_STATUS_ERR;
 
-    dvdnav_mouse_select(nav, pci, x, y);
+    dvdnav_status_t status = dvdnav_mouse_select(nav, pci, x, y);
     priv->mousex = x;
     priv->mousey = y;
+    return status;
 }
 
 /**
@@ -305,7 +306,7 @@ static void handle_cmd(stream_t *s, struct mp_nav_cmd *ev)
         handle_menu_input(s, ev->u.menu.action);
         break;
     case MP_NAV_CMD_MOUSE_POS:
-        handle_mouse_pos(s, ev->u.mouse_pos.x, ev->u.mouse_pos.y);
+        ev->mouse_on_button = handle_mouse_pos(s, ev->u.mouse_pos.x, ev->u.mouse_pos.y);
         break;
     }
 

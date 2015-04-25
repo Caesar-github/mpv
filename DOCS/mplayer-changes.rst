@@ -46,6 +46,11 @@ Input
 * Allow customizing whether a key binding for seeking shows the video time, the
   OSD bar, or nothing (see the `Input Command Prefixes`_ section).
 * Support mapping multiple commands to one key.
+* Classic LIRC support was removed. Install remotes as input devices instead.
+  This way they will send X11 key events to the mpv window, which can be bound
+  using the normal ``input.conf``.
+* Joystick support was removed. It was considered useless and was the cause
+  of some problems (e.g. a laptop's accelerator being recognized as joystick).
 
 Audio
 ~~~~~
@@ -227,7 +232,6 @@ Command Line Switches
     ``-idx``                    ``--index``
     ``-lavdopts ...``           ``--vd-lavc-...``
     ``-lavfdopts``              ``--demuxer-lavf-...``
-    ``-lircconf``               ``--input-lirc-conf``
     ``-loop 0``                 ``--loop=inf``
     ``-mixer-channel``          AO suboptions (``alsa``, ``oss``)
     ``-mixer``                  AO suboptions (``alsa``, ``oss``)
@@ -239,7 +243,6 @@ Command Line Switches
     ``-noar``                   ``--no-input-appleremote``
     ``-noautosub``              ``--no-sub-auto``
     ``-noconsolecontrols``      ``--no-input-terminal``
-    ``-nojoystick``             ``--no-input-joystick``
     ``-nosound``                ``--no-audio``
     ``-osdlevel``               ``--osd-level``
     ``-panscanrange``           ``--video-zoom``, ``--video-pan-x/y``

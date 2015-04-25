@@ -1,18 +1,18 @@
 /*
- * This file is part of mplayer.
+ * This file is part of mpv.
  *
- * mplayer is free software; you can redistribute it and/or modify
+ * mpv is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
- * mplayer is distributed in the hope that it will be useful,
+ * mpv is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with mplayer.  If not, see <http://www.gnu.org/licenses/>.
+ * with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <assert.h>
@@ -270,21 +270,19 @@ struct playlist *playlist_parse_file(const char *file, struct mpv_global *global
     struct mp_log *log = mp_log_new(NULL, global->log, "!playlist_parser");
     mp_verbose(log, "Parsing playlist file %s...\n", file);
 
-    struct playlist *ret = NULL;
-    stream_t *stream = stream_open(file, global);
-    if(!stream) {
-        mp_err(log, "Error while opening playlist file %s\n", file);
+    struct demuxer_params p = {.force_format = "playlist"};
+    struct demuxer *d = demux_open_url(file, &p, NULL, global);
+    if (!d) {
         talloc_free(log);
         return NULL;
     }
 
-    struct demuxer *pl_demux = demux_open(stream, "playlist", NULL, global);
-    if (pl_demux && pl_demux->playlist) {
+    struct playlist *ret = NULL;
+    if (d && d->playlist) {
         ret = talloc_zero(NULL, struct playlist);
-        playlist_transfer_entries(ret, pl_demux->playlist);
+        playlist_transfer_entries(ret, d->playlist);
     }
-    free_demuxer(pl_demux);
-    free_stream(stream);
+    free_demuxer_and_stream(d);
 
     if (ret) {
         mp_verbose(log, "Playlist successfully parsed\n");

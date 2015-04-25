@@ -5,21 +5,20 @@
  *
  * mp_invert_yuv2rgb based on DarkPlaces engine, original code (GPL2 or later)
  *
- * This file is part of MPlayer.
+ * This file is part of mpv.
  *
- * MPlayer is free software; you can redistribute it and/or modify
+ * mpv is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
- * MPlayer is distributed in the hope that it will be useful,
+ * mpv is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with MPlayer; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ * with mpv.  If not, see <http://www.gnu.org/licenses/>.
  *
  * You can alternatively redistribute this file and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -37,31 +36,52 @@
 
 #include "mp_image.h"
 #include "csputils.h"
+#include "options/m_option.h"
 
-const char *const mp_csp_names[MP_CSP_COUNT] = {
-    "Autoselect",
-    "BT.601 (SD)",
-    "BT.709 (HD)",
-    "SMPTE-240M",
-    "BT.2020-NCL (UHD)",
-    "BT.2020-CL (UHD)",
-    "RGB",
-    "XYZ",
-    "YCgCo",
+const struct m_opt_choice_alternatives mp_csp_names[] = {
+    {"auto",        MP_CSP_AUTO},
+    {"bt.601",      MP_CSP_BT_601},
+    {"bt.709",      MP_CSP_BT_709},
+    {"smpte-240m",  MP_CSP_SMPTE_240M},
+    {"bt.2020-ncl", MP_CSP_BT_2020_NC},
+    {"bt.2020-cl",  MP_CSP_BT_2020_C},
+    {"rgb",         MP_CSP_RGB},
+    {"xyz",         MP_CSP_XYZ},
+    {"ycgco",       MP_CSP_YCGCO},
+    {0}
 };
 
-const char *const mp_csp_levels_names[MP_CSP_LEVELS_COUNT] = {
-    "Autoselect",
-    "TV",
-    "PC",
+const struct m_opt_choice_alternatives mp_csp_levels_names[] = {
+    {"auto",        MP_CSP_LEVELS_AUTO},
+    {"limited",     MP_CSP_LEVELS_TV},
+    {"full",        MP_CSP_LEVELS_PC},
+    {0}
 };
 
-const char *const mp_csp_prim_names[MP_CSP_PRIM_COUNT] = {
-    "Autoselect",
-    "BT.601 (525-line SD)",
-    "BT.601 (625-line SD)",
-    "BT.709 (HD)",
-    "BT.2020 (UHD)",
+const struct m_opt_choice_alternatives mp_csp_prim_names[] = {
+    {"auto",        MP_CSP_PRIM_AUTO},
+    {"bt.601-525",  MP_CSP_PRIM_BT_601_525},
+    {"bt.601-625",  MP_CSP_PRIM_BT_601_625},
+    {"bt.709",      MP_CSP_PRIM_BT_709},
+    {"bt.2020",     MP_CSP_PRIM_BT_2020},
+    {"bt.470m",     MP_CSP_PRIM_BT_470M},
+    {"apple",       MP_CSP_PRIM_APPLE},
+    {"adobe",       MP_CSP_PRIM_ADOBE},
+    {"prophoto",    MP_CSP_PRIM_PRO_PHOTO},
+    {"cie1931",     MP_CSP_PRIM_CIE_1931},
+    {0}
+};
+
+const struct m_opt_choice_alternatives mp_csp_trc_names[] = {
+    {"auto",        MP_CSP_TRC_AUTO},
+    {"bt.1886",     MP_CSP_TRC_BT_1886},
+    {"srgb",        MP_CSP_TRC_SRGB},
+    {"linear",      MP_CSP_TRC_LINEAR},
+    {"gamma1.8",    MP_CSP_TRC_GAMMA18},
+    {"gamma2.2",    MP_CSP_TRC_GAMMA22},
+    {"gamma2.8",    MP_CSP_TRC_GAMMA28},
+    {"prophoto",    MP_CSP_TRC_PRO_PHOTO},
+    {0}
 };
 
 const char *const mp_csp_equalizer_names[MP_CSP_EQ_COUNT] = {
@@ -72,32 +92,32 @@ const char *const mp_csp_equalizer_names[MP_CSP_EQ_COUNT] = {
     "gamma",
 };
 
-const char *const mp_chroma_names[MP_CHROMA_COUNT] = {
-    "unknown",
-    "mpeg2/4/h264",
-    "mpeg1/jpeg",
+const struct m_opt_choice_alternatives mp_chroma_names[] = {
+    {"unknown",     MP_CHROMA_AUTO},
+    {"mpeg2/4/h264",MP_CHROMA_LEFT},
+    {"mpeg1/jpeg",  MP_CHROMA_CENTER},
+    {0}
 };
 
 // The short name _must_ match with what vf_stereo3d accepts (if supported).
-// The long name is closer to the Matroska spec (StereoMode element).
+// The long name in comments is closer to the Matroska spec (StereoMode element).
 // The numeric index matches the Matroska StereoMode value. If you add entries
 // that don't match Matroska, make sure demux_mkv.c rejects them properly.
-// The long name is unused.
-#define E(index, short, long) [index] = short
-const char *const mp_stereo3d_names[MP_STEREO3D_COUNT] = {
-    E(0,  "mono",   "mono"),                    // unsupported by vf_stereo3d
-    E(1,  "sbs2l",  "side_by_side_left"),
-    E(2,  "ab2r",   "top_bottom_right"),
-    E(3,  "ab2l",   "top_bottom_left"),
-    E(4,  "checkr", "checkboard_right"),        // unsupported by vf_stereo3d
-    E(5,  "checkl", "checkboard_left"),         // unsupported by vf_stereo3d
-    E(6,  "irr",    "row_interleaved_right"),
-    E(7,  "irl",    "row_interleaved_left"),
-    E(8,  "icr",    "column_interleaved_right"),// unsupported by vf_stereo3d
-    E(9,  "icl",    "column_interleaved_left"), // unsupported by vf_stereo3d
-    E(10, "arcc",   "anaglyph_cyan_red"),       // Matroska: unclear which mode
-    E(11, "sbs2r",  "side_by_side_right"),
-    E(12, "agmc",   "anaglyph_green_magenta"),  // Matroska: unclear which mode
+const struct m_opt_choice_alternatives mp_stereo3d_names[] = {
+    {"mono",    0},
+    {"sbs2l",   1}, // "side_by_side_left"
+    {"ab2r",    2}, // "top_bottom_right"
+    {"ab2l",    3}, // "top_bottom_left"
+    {"checkr",  4}, // "checkboard_right" (unsupported by vf_stereo3d)
+    {"checkl",  5}, // "checkboard_left"  (unsupported by vf_stereo3d)
+    {"irr",     6}, // "row_interleaved_right"
+    {"irl",     7}, // "row_interleaved_left"
+    {"icr",     8}, // "column_interleaved_right" (unsupported by vf_stereo3d)
+    {"icl",     9}, // "column_interleaved_left" (unsupported by vf_stereo3d)
+    {"arcc",   10}, // "anaglyph_cyan_red" (Matroska: unclear which mode)
+    {"sbs2r",  11}, // "side_by_side_right"
+    {"agmc",   12}, // "anaglyph_green_magenta" (Matroska: unclear which mode)
+    {0}
 };
 
 enum mp_csp avcol_spc_to_mp_csp(int avcolorspace)
@@ -105,10 +125,8 @@ enum mp_csp avcol_spc_to_mp_csp(int avcolorspace)
     switch (avcolorspace) {
     case AVCOL_SPC_BT709:       return MP_CSP_BT_709;
     case AVCOL_SPC_BT470BG:     return MP_CSP_BT_601;
-#if HAVE_AVCOL_SPC_BT2020
     case AVCOL_SPC_BT2020_NCL:  return MP_CSP_BT_2020_NC;
     case AVCOL_SPC_BT2020_CL:   return MP_CSP_BT_2020_C;
-#endif
     case AVCOL_SPC_SMPTE170M:   return MP_CSP_BT_601;
     case AVCOL_SPC_SMPTE240M:   return MP_CSP_SMPTE_240M;
     case AVCOL_SPC_RGB:         return MP_CSP_RGB;
@@ -133,10 +151,26 @@ enum mp_csp_prim avcol_pri_to_mp_csp_prim(int avpri)
     case AVCOL_PRI_SMPTE170M:   return MP_CSP_PRIM_BT_601_525;
     case AVCOL_PRI_BT470BG:     return MP_CSP_PRIM_BT_601_625;
     case AVCOL_PRI_BT709:       return MP_CSP_PRIM_BT_709;
-#if HAVE_AVCOL_SPC_BT2020
     case AVCOL_PRI_BT2020:      return MP_CSP_PRIM_BT_2020;
-#endif
+    case AVCOL_PRI_BT470M:      return MP_CSP_PRIM_BT_470M;
     default:                    return MP_CSP_PRIM_AUTO;
+    }
+}
+
+enum mp_csp_trc avcol_trc_to_mp_csp_trc(int avtrc)
+{
+    switch (avtrc) {
+    case AVCOL_TRC_BT709:
+    case AVCOL_TRC_SMPTE170M:
+    case AVCOL_TRC_SMPTE240M:
+    case AVCOL_TRC_BT1361_ECG:
+    case AVCOL_TRC_BT2020_10:
+    case AVCOL_TRC_BT2020_12:    return MP_CSP_TRC_BT_1886;
+    case AVCOL_TRC_IEC61966_2_1: return MP_CSP_TRC_SRGB;
+    case AVCOL_TRC_LINEAR:       return MP_CSP_TRC_LINEAR;
+    case AVCOL_TRC_GAMMA22:      return MP_CSP_TRC_GAMMA22;
+    case AVCOL_TRC_GAMMA28:      return MP_CSP_TRC_GAMMA28;
+    default:                     return MP_CSP_TRC_AUTO;
     }
 }
 
@@ -145,10 +179,8 @@ int mp_csp_to_avcol_spc(enum mp_csp colorspace)
     switch (colorspace) {
     case MP_CSP_BT_709:         return AVCOL_SPC_BT709;
     case MP_CSP_BT_601:         return AVCOL_SPC_BT470BG;
-#if HAVE_AVCOL_SPC_BT2020
     case MP_CSP_BT_2020_NC:     return AVCOL_SPC_BT2020_NCL;
     case MP_CSP_BT_2020_C:      return AVCOL_SPC_BT2020_CL;
-#endif
     case MP_CSP_SMPTE_240M:     return AVCOL_SPC_SMPTE240M;
     case MP_CSP_RGB:            return AVCOL_SPC_RGB;
     case MP_CSP_YCGCO:          return AVCOL_SPC_YCOCG;
@@ -171,10 +203,22 @@ int mp_csp_prim_to_avcol_pri(enum mp_csp_prim prim)
     case MP_CSP_PRIM_BT_601_525: return AVCOL_PRI_SMPTE170M;
     case MP_CSP_PRIM_BT_601_625: return AVCOL_PRI_BT470BG;
     case MP_CSP_PRIM_BT_709:     return AVCOL_PRI_BT709;
-#if HAVE_AVCOL_SPC_BT2020
     case MP_CSP_PRIM_BT_2020:    return AVCOL_PRI_BT2020;
-#endif
+    case MP_CSP_PRIM_BT_470M:    return AVCOL_PRI_BT470M;
     default:                     return AVCOL_PRI_UNSPECIFIED;
+    }
+}
+
+int mp_csp_trc_to_avcol_trc(enum mp_csp_trc trc)
+{
+    switch (trc) {
+    // We just call it BT.1886 since we're decoding, but it's still BT.709
+    case MP_CSP_TRC_BT_1886:     return AVCOL_TRC_BT709;
+    case MP_CSP_TRC_SRGB:        return AVCOL_TRC_IEC61966_2_1;
+    case MP_CSP_TRC_LINEAR:      return AVCOL_TRC_LINEAR;
+    case MP_CSP_TRC_GAMMA22:     return AVCOL_TRC_GAMMA22;
+    case MP_CSP_TRC_GAMMA28:     return AVCOL_TRC_GAMMA28;
+    default:                     return AVCOL_TRC_UNSPECIFIED;
     }
 }
 
@@ -276,16 +320,31 @@ static void mp_mul_matrix3x3(float a[3][3], float b[3][3])
 struct mp_csp_primaries mp_get_csp_primaries(enum mp_csp_prim spc)
 {
     /*
-    Values from: ITU-R Recommendations BT.601-7, BT.709-5, BT.2020-0
+    Values from: ITU-R Recommendations BT.470-6, BT.601-7, BT.709-5, BT.2020-0
 
+    https://www.itu.int/dms_pubrec/itu-r/rec/bt/R-REC-BT.470-6-199811-S!!PDF-E.pdf
     https://www.itu.int/dms_pubrec/itu-r/rec/bt/R-REC-BT.601-7-201103-I!!PDF-E.pdf
     https://www.itu.int/dms_pubrec/itu-r/rec/bt/R-REC-BT.709-5-200204-I!!PDF-E.pdf
     https://www.itu.int/dms_pubrec/itu-r/rec/bt/R-REC-BT.2020-0-201208-I!!PDF-E.pdf
+
+    Other colorspaces from https://en.wikipedia.org/wiki/RGB_color_space#Specifications
     */
 
-    static const struct mp_csp_col_xy d65 = {0.3127, 0.3290};
+    // CIE standard illuminant series
+    static const struct mp_csp_col_xy
+        d50 = {0.34577, 0.35850},
+        d65 = {0.31271, 0.32902},
+        c   = {0.31006, 0.31616},
+        e   = {1.0/3.0, 1.0/3.0};
 
     switch (spc) {
+    case MP_CSP_PRIM_BT_470M:
+        return (struct mp_csp_primaries) {
+            .red   = {0.670, 0.330},
+            .green = {0.210, 0.710},
+            .blue  = {0.140, 0.080},
+            .white = c
+        };
     case MP_CSP_PRIM_BT_601_525:
         return (struct mp_csp_primaries) {
             .red   = {0.630, 0.340},
@@ -316,6 +375,34 @@ struct mp_csp_primaries mp_get_csp_primaries(enum mp_csp_prim spc)
             .green = {0.170, 0.797},
             .blue  = {0.131, 0.046},
             .white = d65
+        };
+    case MP_CSP_PRIM_APPLE:
+        return (struct mp_csp_primaries) {
+            .red   = {0.625, 0.340},
+            .green = {0.280, 0.595},
+            .blue  = {0.115, 0.070},
+            .white = d65
+        };
+    case MP_CSP_PRIM_ADOBE:
+        return (struct mp_csp_primaries) {
+            .red   = {0.640, 0.330},
+            .green = {0.210, 0.710},
+            .blue  = {0.150, 0.060},
+            .white = d65
+        };
+    case MP_CSP_PRIM_PRO_PHOTO:
+        return (struct mp_csp_primaries) {
+            .red   = {0.7347, 0.2653},
+            .green = {0.1596, 0.8404},
+            .blue  = {0.0366, 0.0001},
+            .white = d50
+        };
+    case MP_CSP_PRIM_CIE_1931:
+        return (struct mp_csp_primaries) {
+            .red   = {0.7347, 0.2653},
+            .green = {0.2738, 0.7174},
+            .blue  = {0.1666, 0.0089},
+            .white = e
         };
     default:
         return (struct mp_csp_primaries) {{0}};

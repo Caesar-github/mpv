@@ -1,25 +1,24 @@
 /*
- * This file is part of MPlayer.
+ * This file is part of mpv.
  *
- * MPlayer is free software; you can redistribute it and/or modify
+ * mpv is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
- * MPlayer is distributed in the hope that it will be useful,
+ * mpv is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with MPlayer; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ * with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 // Time in seconds the main thread waits for the cache thread. On wakeups, the
 // code checks for user requested aborts and also prints warnings that the
 // cache is being slow.
-#define CACHE_WAIT_TIME 0.5
+#define CACHE_WAIT_TIME 1.0
 
 // The time the cache sleeps in idle mode. This controls how often the cache
 // retries reading from the stream after EOF has reached (in case the stream is
@@ -32,9 +31,6 @@
 // will block the cache from doing this, and this timeout is honored only if
 // the cache is active.
 #define CACHE_UPDATE_CONTROLS_TIME 2.0
-
-// Time in seconds the cache prints a new message at all.
-#define CACHE_NO_SPAM 5.0
 
 
 #include <stdio.h>
@@ -82,7 +78,6 @@ struct priv {
 
     // Owned by the main thread
     stream_t *cache;        // wrapper stream, used by demuxer etc.
-    double last_warn_time;
 
     // Owned by the cache thread
     stream_t *stream;       // "real" stream, used to read from the source media
@@ -119,8 +114,6 @@ struct priv {
 };
 
 enum {
-    CACHE_INTERRUPTED = -1,
-
     CACHE_CTRL_NONE = 0,
     CACHE_CTRL_QUIT = -1,
     CACHE_CTRL_PING = -2,
@@ -132,31 +125,19 @@ enum {
 // Used by the main thread to wakeup the cache thread, and to wait for the
 // cache thread. The cache mutex has to be locked when calling this function.
 // *retry_time should be set to 0 on the first call.
-// Returns CACHE_INTERRUPTED if the caller is supposed to abort.
-static int cache_wakeup_and_wait(struct priv *s, double *retry_time)
+static void cache_wakeup_and_wait(struct priv *s, double *retry_time)
 {
-    if (mp_cancel_test(s->cache->cancel))
-        return CACHE_INTERRUPTED;
-
     double start = mp_time_sec();
-
-    if (!s->last_warn_time || start - s->last_warn_time >= CACHE_NO_SPAM) {
-        // Print a "more severe" warning after waiting 1 second and no new data
-        if ((*retry_time) >= 1.0) {
-            MP_ERR(s, "Cache keeps not responding.\n");
-            s->last_warn_time = start;
-        } else if (*retry_time > 0.1) {
-            MP_WARN(s, "Cache is not responding - slow/stuck network connection?\n");
-            s->last_warn_time = start;
-        }
+    if (*retry_time >= CACHE_WAIT_TIME) {
+        MP_WARN(s, "Cache is not responding - slow/stuck network connection?\n");
+        *retry_time = -1; // do not warn again for this call
     }
 
     pthread_cond_signal(&s->wakeup);
     mpthread_cond_timedwait_rel(&s->wakeup, &s->mutex, CACHE_WAIT_TIME);
 
-    *retry_time += mp_time_sec() - start;
-
-    return 0;
+    if (*retry_time >= 0)
+        *retry_time += mp_time_sec() - start;
 }
 
 // Runs in the cache thread
@@ -226,6 +207,9 @@ static bool cache_fill(struct priv *s)
         if (stream_tell(s->stream) != s->max_filepos)
             goto done;
     }
+
+    if (mp_cancel_test(s->cache->cancel))
+        goto done;
 
     // number of buffer bytes which should be preserved in backwards direction
     int64_t back = MPCLAMP(read - s->min_filepos, 0, s->back_size);
@@ -512,8 +496,9 @@ static int cache_fill_buffer(struct stream *cache, char *buffer, int max_len)
             if (s->eof && s->read_filepos >= s->max_filepos && s->reads >= retry)
                 break;
             s->idle = false;
-            if (cache_wakeup_and_wait(s, &retry_time) == CACHE_INTERRUPTED)
+            if (mp_cancel_test(s->cache->cancel))
                 break;
+            cache_wakeup_and_wait(s, &retry_time);
         }
     }
 
@@ -571,11 +556,12 @@ static int cache_control(stream_t *cache, int cmd, void *arg)
     s->control_arg = arg;
     double retry = 0;
     while (s->control != CACHE_CTRL_NONE) {
-        if (cache_wakeup_and_wait(s, &retry) == CACHE_INTERRUPTED) {
+        if (mp_cancel_test(s->cache->cancel)) {
             s->eof = 1;
             r = STREAM_UNSUPPORTED;
             goto done;
         }
+        cache_wakeup_and_wait(s, &retry);
     }
     r = s->control_res;
     if (s->control_flush) {

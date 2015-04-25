@@ -89,7 +89,7 @@ class Libav < TravisDepsBuilder
     {
       "libav-stable" => {
         :action => :stable,
-        :url    => 'http://libav.org/releases/libav-10.tar.gz'
+        :url    => 'http://libav.org/releases/libav-11.tar.gz'
       },
       "libav-git" => {
         :action => :git,
@@ -97,7 +97,7 @@ class Libav < TravisDepsBuilder
       },
       "ffmpeg-stable" => {
         :action => :stable,
-        :url    => 'http://www.ffmpeg.org/releases/ffmpeg-2.1.4.tar.gz'
+        :url    => 'http://www.ffmpeg.org/releases/ffmpeg-2.4.tar.gz'
       },
       "ffmpeg-git" => {
         :action => :git,
@@ -124,7 +124,7 @@ class Libass < TravisDepsBuilder
     {
       "libass-stable" => {
         :action => :stable,
-        :url    => 'http://libass.googlecode.com/files/libass-0.10.1.tar.gz'
+        :url    => 'https://github.com/libass/libass/releases/download/0.12.1/libass-0.12.1.tar.gz'
       }
     }
   end

@@ -4,21 +4,20 @@
  * Copyright (C) 2008-2009 Splitted-Desktop Systems
  * Gwenole Beauchesne <gbeauchesne@splitted-desktop.com>
  *
- * This file is part of MPlayer.
+ * This file is part of mpv.
  *
- * MPlayer is free software; you can redistribute it and/or modify
+ * mpv is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
- * MPlayer is distributed in the hope that it will be useful,
+ * mpv is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with MPlayer; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ * with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <assert.h>
@@ -32,7 +31,6 @@
 #include "config.h"
 #include "common/msg.h"
 #include "video/out/vo.h"
-#include "video/memcpy_pic.h"
 #include "video/mp_image_pool.h"
 #include "sub/osd.h"
 #include "sub/img_convert.h"
@@ -57,7 +55,7 @@ struct vaapi_subpic {
 
 struct vaapi_osd_part {
     bool active;
-    int bitmap_pos_id;
+    int change_id;
     struct vaapi_osd_image image;
     struct vaapi_subpic subpic;
     struct osd_conv_cache *conv_cache;
@@ -345,8 +343,8 @@ static void draw_osd_cb(void *pctx, struct sub_bitmaps *imgs)
     struct priv *p = pctx;
 
     struct vaapi_osd_part *part = &p->osd_parts[imgs->render_index];
-    if (imgs->bitmap_pos_id != part->bitmap_pos_id) {
-        part->bitmap_pos_id = imgs->bitmap_pos_id;
+    if (imgs->change_id != part->change_id) {
+        part->change_id = imgs->change_id;
 
         osd_scale_rgba(part->conv_cache, imgs);
 
@@ -539,12 +537,6 @@ static int control(struct vo *vo, uint32_t request, void *data)
     case VOCTRL_GET_HWDEC_INFO: {
         struct mp_hwdec_info **arg = data;
         *arg = &p->hwdec_info;
-        return true;
-    }
-    case VOCTRL_GET_COLORSPACE: {
-        struct mp_image_params *params = data;
-        if (va_get_colorspace_flag(p->image_params.colorspace))
-            params->colorspace = p->image_params.colorspace;
         return true;
     }
     case VOCTRL_SET_EQUALIZER: {

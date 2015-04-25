@@ -1,19 +1,18 @@
 /*
- * This file is part of MPlayer.
+ * This file is part of mpv.
  *
- * MPlayer is free software; you can redistribute it and/or modify
+ * mpv is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
- * MPlayer is distributed in the hope that it will be useful,
+ * mpv is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with MPlayer; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ * with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #ifndef MPLAYER_DEMUXER_H
@@ -68,7 +67,6 @@ struct demux_ctrl_stream_ctrl {
 #define SEEK_FACTOR   (1 << 1)      // argument is in range [0,1]
 #define SEEK_FORWARD  (1 << 2)      // prefer later time if not exact
 #define SEEK_BACKWARD (1 << 3)      // prefer earlier time if not exact
-#define SEEK_SUBPREROLL (1 << 4)    // try to get more subtitle packets
 #define SEEK_HR       (1 << 5)      // hr-seek (this is a weak hint only)
 
 // Strictness of the demuxer open format check.
@@ -166,11 +164,13 @@ typedef struct demux_attachment
 } demux_attachment_t;
 
 struct demuxer_params {
+    char *force_format;
     int matroska_num_wanted_uids;
     struct matroska_segment_uid *matroska_wanted_uids;
     int matroska_wanted_segment;
     bool *matroska_was_valid;
     bool expect_subtitle;
+    bool disable_cache; // demux_open_url() only
 };
 
 typedef struct demuxer {
@@ -186,6 +186,17 @@ typedef struct demuxer {
     // Send relative seek requests, instead of SEEK_ABSOLUTE or SEEK_FACTOR.
     // This is only done if the user explicitly uses a relative seek.
     bool rel_seeks;
+    // Enable fast track switching hacks. This requires from the demuxer:
+    // - seeking is somewhat reliable; packet contents must not change
+    // - packet position (demux_packet.pos) is set, not negative, unique, and
+    //   monotonically increasing
+    // - seeking leaves packet positions invariant
+    bool allow_refresh_seeks;
+    // The file data was fully read, and there is no need to keep the stream
+    // open, keep the cache active, or to run the demuxer thread. Generating
+    // packets is not slow either (unlike e.g. libavdevice pseudo-demuxers).
+    // Typical examples: text subtitles, playlists
+    bool fully_read;
 
     // Bitmask of DEMUX_EVENT_*
     int events;
@@ -231,6 +242,7 @@ typedef struct {
 } demux_program_t;
 
 void free_demuxer(struct demuxer *demuxer);
+void free_demuxer_and_stream(struct demuxer *demuxer);
 
 int demux_add_packet(struct sh_stream *stream, demux_packet_t *dp);
 
@@ -243,9 +255,14 @@ struct demux_packet *demux_read_any_packet(struct demuxer *demuxer);
 
 struct sh_stream *new_sh_stream(struct demuxer *demuxer, enum stream_type type);
 
-struct demuxer *demux_open(struct stream *stream, char *force_format,
-                           struct demuxer_params *params,
+struct demuxer *demux_open(struct stream *stream, struct demuxer_params *params,
                            struct mpv_global *global);
+
+struct mp_cancel;
+struct demuxer *demux_open_url(const char *url,
+                               struct demuxer_params *params,
+                               struct mp_cancel *cancel,
+                               struct mpv_global *global);
 
 void demux_start_thread(struct demuxer *demuxer);
 void demux_stop_thread(struct demuxer *demuxer);
@@ -255,6 +272,7 @@ bool demux_cancel_test(struct demuxer *demuxer);
 
 void demux_flush(struct demuxer *demuxer);
 int demux_seek(struct demuxer *demuxer, double rel_seek_secs, int flags);
+void demux_set_enable_refresh_seeks(struct demuxer *demuxer, bool enabled);
 
 int demux_control(struct demuxer *demuxer, int cmd, void *arg);
 

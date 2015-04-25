@@ -1,19 +1,18 @@
 /*
- * This file is part of MPlayer.
+ * This file is part of mpv.
  *
- * MPlayer is free software; you can redistribute it and/or modify
+ * mpv is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
- * MPlayer is distributed in the hope that it will be useful,
+ * mpv is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with MPlayer; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ * with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <stddef.h>
@@ -73,16 +72,14 @@ void mp_parse_cfgfiles(struct MPContext *mpctx)
     // So we "divert" normal options into a separate section, and the diverted
     // section is never used - unless maybe it's explicitly referenced from an
     // encoding profile.
-    if (encoding)
+    if (encoding) {
         section = "playback-default";
 
-    // The #if is a stupid hack to avoid errors if libavfilter is not available.
-#if HAVE_LIBAVFILTER && HAVE_ENCODING
-    char *cf = mp_find_config_file(NULL, mpctx->global, "encoding-profiles.conf");
-    if (cf)
-        m_config_parse_config_file(mpctx->mconfig, cf, SECT_ENCODE, 0);
-    talloc_free(cf);
-#endif
+        char *cf = mp_find_config_file(NULL, mpctx->global, "encoding-profiles.conf");
+        if (cf)
+            m_config_parse_config_file(mpctx->mconfig, cf, SECT_ENCODE, 0);
+        talloc_free(cf);
+    }
 
     load_all_cfgfiles(mpctx, section, "mpv.conf|config");
 
@@ -243,7 +240,8 @@ static const char *const backup_properties[] = {
     "options/sub-pos",
     "options/sub-visibility",
     "options/sub-scale",
-    "options/ass-use-margins",
+    "options/sub-use-margins",
+    "options/ass-force-margins",
     "options/ass-vsfilter-aspect-compat",
     "options/ass-style-override",
     "options/ab-loop-a",
@@ -287,6 +285,12 @@ void mp_write_watch_later_conf(struct MPContext *mpctx)
     char *conffile = NULL;
     if (!filename)
         goto exit;
+
+    struct demuxer *demux = mpctx->demuxer;
+    if (demux && (!demux->seekable || demux->partially_seekable)) {
+        MP_INFO(mpctx, "Not seekable - not saving state.\n");
+        goto exit;
+    }
 
     double pos = get_current_time(mpctx);
     if (pos == MP_NOPTS_VALUE)

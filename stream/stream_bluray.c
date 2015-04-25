@@ -1,21 +1,20 @@
 /*
  * Copyright (C) 2010 Benjamin Zores <ben@geexbox.org>
  *
- * This file is part of MPlayer.
+ * This file is part of mpv.
  *
- * MPlayer is free software; you can redistribute it and/or modify
+ * mpv is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
- * MPlayer is distributed in the hope that it will be useful,
+ * mpv is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with MPlayer; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ * with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 /*
@@ -456,7 +455,9 @@ static void handle_nav_command(stream_t *s, struct mp_nav_cmd *ev)
         bd_vk_key_e key = translate_nav_menu_action(action);
         if (key != BD_VK_NONE) {
             if (key == BD_VK_MOUSE_ACTIVATE)
-                bd_mouse_select(priv->bd, pts, priv->mousex, priv->mousey);
+                ev->mouse_on_button = bd_mouse_select(priv->bd, pts, 
+                                                      priv->mousex, 
+                                                      priv->mousey);
             bd_user_input(priv->bd, pts, key);
         } else if (strcmp(action, "menu") == 0) {
             if (priv->popup_enabled)
@@ -468,7 +469,9 @@ static void handle_nav_command(stream_t *s, struct mp_nav_cmd *ev)
     } case MP_NAV_CMD_MOUSE_POS:
         priv->mousex = ev->u.mouse_pos.x;
         priv->mousey = ev->u.mouse_pos.y;
-        bd_mouse_select(priv->bd, mp_time_us(), priv->mousex, priv->mousey);
+        ev->mouse_on_button = bd_mouse_select(priv->bd, mp_time_us(), 
+                                              priv->mousex, 
+                                              priv->mousey);
         break;
     case MP_NAV_CMD_SKIP_STILL:
         bd_read_skip_still(priv->bd);

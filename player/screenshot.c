@@ -1,19 +1,18 @@
 /*
- * This file is part of mplayer2.
+ * This file is part of mpv.
  *
- * mplayer2 is free software; you can redistribute it and/or modify
+ * mpv is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
- * mplayer2 is distributed in the hope that it will be useful,
+ * mpv is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with mplayer2; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ * with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <stdlib.h>
@@ -33,7 +32,6 @@
 #include "options/path.h"
 #include "video/mp_image.h"
 #include "video/decode/dec_video.h"
-#include "video/filter/vf.h"
 #include "video/out/vo.h"
 #include "video/image_writer.h"
 #include "sub/osd.h"
@@ -331,11 +329,7 @@ static struct mp_image *screenshot_get(struct MPContext *mpctx, int mode)
     if (mode == MODE_SUBTITLES && osd_get_render_subs_in_filter(mpctx->osd))
         mode = 0;
 
-    // vf_screenshot
-    if (mpctx->d_video && mpctx->d_video->vfilter)
-        vf_control_any(mpctx->d_video->vfilter, VFCTRL_SCREENSHOT, &image);
-
-    if (!image && mpctx->video_out && mpctx->video_out->config_ok) {
+    if (mpctx->video_out && mpctx->video_out->config_ok) {
         vo_wait_frame(mpctx->video_out); // important for each-frame mode
 
         if (mode != MODE_FULL_WINDOW)
@@ -349,7 +343,7 @@ static struct mp_image *screenshot_get(struct MPContext *mpctx, int mode)
     if (image && mpctx->d_video && mpctx->d_video->hwdec_info) {
         struct mp_hwdec_ctx *ctx = mpctx->d_video->hwdec_info->hwctx;
         struct mp_image *nimage = NULL;
-        if (ctx && ctx->download_image)
+        if (ctx && ctx->download_image && (image->fmt.flags & MP_IMGFLAG_HWACCEL))
             nimage = ctx->download_image(ctx, image, NULL);
         if (nimage) {
             talloc_free(image);
@@ -363,6 +357,16 @@ static struct mp_image *screenshot_get(struct MPContext *mpctx, int mode)
     return image;
 }
 
+struct mp_image *screenshot_get_rgb(struct MPContext *mpctx, int mode)
+{
+    struct mp_image *mpi = screenshot_get(mpctx, mode);
+    if (!mpi)
+        return NULL;
+    struct mp_image *res = convert_image(mpi, IMGFMT_BGR0, mpctx->log);
+    talloc_free(mpi);
+    return res;
+}
+
 void screenshot_to_file(struct MPContext *mpctx, const char *filename, int mode,
                         bool osd)
 {
@@ -371,11 +375,6 @@ void screenshot_to_file(struct MPContext *mpctx, const char *filename, int mode,
     bool old_osd = ctx->osd;
     ctx->osd = osd;
 
-    if (mp_path_exists(filename)) {
-        screenshot_msg(ctx, SMSG_ERR, "Screenshot: file '%s' already exists.",
-                       filename);
-        goto end;
-    }
     char *ext = mp_splitext(filename, NULL);
     if (ext)
         opts.format = ext;

@@ -30,6 +30,7 @@ typedef struct mp_vo_opts {
     struct m_geometry autofit;
     struct m_geometry autofit_larger;
     struct m_geometry autofit_smaller;
+    float window_scale;
 
     int keepaspect;
     int keepaspect_window;
@@ -68,6 +69,7 @@ typedef struct MPOpts {
     int lua_load_osc;
     int lua_load_ytdl;
     char *lua_ytdl_format;
+    char **lua_ytdl_raw_options;
 
     int auto_load_scripts;
 
@@ -100,11 +102,6 @@ typedef struct MPOpts {
     int stop_screensaver;
     int cursor_autohide_delay;
     int cursor_autohide_fs;
-
-    int requested_colorspace;
-    int requested_input_range;
-    int requested_output_range;
-    int requested_primaries;
 
     int video_rotate;
     int video_stereo_mode;
@@ -203,9 +200,6 @@ typedef struct MPOpts {
     double demuxer_min_secs;
     char *audio_demuxer_name;
     char *sub_demuxer_name;
-    int mkv_subtitle_preroll;
-    double mkv_subtitle_preroll_secs;
-    int mkv_probe_duration;
 
     double demuxer_min_secs_cache;
     int cache_pausing;
@@ -241,6 +235,7 @@ typedef struct MPOpts {
     int osd_scale_by_window;
     int sub_scale_by_window;
     int sub_scale_with_window;
+    int ass_scale_with_window;
     struct osd_style_opts *osd_style;
     struct osd_style_opts *sub_text_style;
     float sub_scale;
@@ -249,6 +244,7 @@ typedef struct MPOpts {
     int ass_enabled;
     float ass_line_spacing;
     int ass_use_margins;
+    int sub_use_margins;
     int ass_vsfilter_aspect_compat;
     int ass_vsfilter_color_compat;
     int ass_vsfilter_blur_compat;
@@ -296,6 +292,7 @@ typedef struct MPOpts {
     struct demux_rawaudio_opts *demux_rawaudio;
     struct demux_rawvideo_opts *demux_rawvideo;
     struct demux_lavf_opts *demux_lavf;
+    struct demux_mkv_opts *demux_mkv;
 
     struct vd_lavc_params *vd_lavc_params;
     struct ad_lavc_params *ad_lavc_params;

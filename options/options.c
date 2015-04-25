@@ -1,19 +1,18 @@
 /*
- * This file is part of MPlayer.
+ * This file is part of mpv.
  *
- * MPlayer is free software; you can redistribute it and/or modify
+ * mpv is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
- * MPlayer is distributed in the hope that it will be useful,
+ * mpv is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with MPlayer; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ * with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #ifndef MPLAYER_CFG_MPLAYER_H
@@ -68,6 +67,7 @@ extern const struct m_sub_options sws_conf;
 extern const struct m_sub_options demux_rawaudio_conf;
 extern const struct m_sub_options demux_rawvideo_conf;
 extern const struct m_sub_options demux_lavf_conf;
+extern const struct m_sub_options demux_mkv_conf;
 extern const struct m_sub_options vd_lavc_conf;
 extern const struct m_sub_options ad_lavc_conf;
 extern const struct m_sub_options input_config;
@@ -99,7 +99,7 @@ const m_option_t mp_opts[] = {
     { "leak-report", CONF_TYPE_STORE, CONF_GLOBAL | CONF_NOCFG | M_OPT_FIXED,
       .offset = -1 },
 
-    OPT_FLAG("shuffle", shuffle, CONF_GLOBAL | CONF_NOCFG),
+    OPT_FLAG("shuffle", shuffle, 0),
 
 // ------------------------- common options --------------------
     OPT_FLAG("quiet", quiet, CONF_GLOBAL),
@@ -109,7 +109,7 @@ const m_option_t mp_opts[] = {
                 .type = &m_option_type_msglevels),
     OPT_STRING("dump-stats", dump_stats, CONF_GLOBAL | CONF_PRE_PARSE),
     OPT_FLAG("msg-color", msg_color, CONF_GLOBAL | CONF_PRE_PARSE),
-    OPT_STRING("log-file", log_file, CONF_GLOBAL | CONF_PRE_PARSE),
+    OPT_STRING("log-file", log_file, CONF_GLOBAL | CONF_PRE_PARSE | M_OPT_FILE),
     OPT_FLAG("msg-module", msg_module, CONF_GLOBAL),
     OPT_FLAG("msg-time", msg_time, CONF_GLOBAL),
 #ifdef _WIN32
@@ -133,6 +133,7 @@ const m_option_t mp_opts[] = {
     OPT_FLAG("osc", lua_load_osc, CONF_GLOBAL),
     OPT_FLAG("ytdl", lua_load_ytdl, CONF_GLOBAL),
     OPT_STRING("ytdl-format", lua_ytdl_format, CONF_GLOBAL),
+    OPT_KEYVALUELIST("ytdl-raw-options", lua_ytdl_raw_options, CONF_GLOBAL),
     OPT_FLAG("load-scripts", auto_load_scripts, CONF_GLOBAL),
 #endif
 
@@ -140,7 +141,8 @@ const m_option_t mp_opts[] = {
 
     OPT_CHOICE_OR_INT("cache", stream_cache.size, 0, 32, 0x7fffffff,
                       ({"no", 0},
-                       {"auto", -1})),
+                       {"auto", -1},
+                       {"yes", -2})),
     OPT_CHOICE_OR_INT("cache-default", stream_cache.def_size, 0, 32, 0x7fffffff,
                       ({"no", 0})),
     OPT_INTRANGE("cache-initial", stream_cache.initial, 0, 0, 0x7fffffff),
@@ -188,9 +190,9 @@ const m_option_t mp_opts[] = {
     OPT_TIME("ab-loop-b", ab_loop[1], 0, .min = MP_NOPTS_VALUE),
 
     OPT_FLAG("pause", pause, M_OPT_FIXED),
-    OPT_CHOICE("keep-open", keep_open, M_OPT_OPTIONAL_PARAM,
+    OPT_CHOICE("keep-open", keep_open, 0,
                ({"no", 0},
-                {"yes", 1}, {"", 1},
+                {"yes", 1},
                 {"always", 2})),
 
     OPT_CHOICE("index", index_mode, 0, ({"default", 1}, {"recreate", 0})),
@@ -273,10 +275,10 @@ const m_option_t mp_opts[] = {
     OPT_SETTINGSLIST("vf-defaults", vf_defs, 0, &vf_obj_list),
     OPT_SETTINGSLIST("vf*", vf_settings, 0, &vf_obj_list),
 
-    OPT_CHOICE("deinterlace", deinterlace, M_OPT_OPTIONAL_PARAM,
+    OPT_CHOICE("deinterlace", deinterlace, 0,
                ({"auto", -1},
                 {"no", 0},
-                {"yes", 1}, {"", 1})),
+                {"yes", 1})),
 
     OPT_STRING("ad", audio_decoders, 0),
     OPT_STRING("vd", video_decoders, 0),
@@ -290,7 +292,8 @@ const m_option_t mp_opts[] = {
                 {"vda", 2},
                 {"vaapi", 4},
                 {"vaapi-copy", 5},
-                {"dxva2-copy", 6})),
+                {"dxva2-copy", 6},
+                {"rpi", 7})),
     OPT_STRING("hwdec-codecs", hwdec_codecs, 0),
 
     OPT_SUBSTRUCT("sws", vo.sws_opts, sws_conf, 0),
@@ -309,11 +312,7 @@ const m_option_t mp_opts[] = {
     OPT_SUBSTRUCT("demuxer-lavf", demux_lavf, demux_lavf_conf, 0),
     OPT_SUBSTRUCT("demuxer-rawaudio", demux_rawaudio, demux_rawaudio_conf, 0),
     OPT_SUBSTRUCT("demuxer-rawvideo", demux_rawvideo, demux_rawvideo_conf, 0),
-
-    OPT_FLAG("demuxer-mkv-subtitle-preroll", mkv_subtitle_preroll, 0),
-    OPT_DOUBLE("demuxer-mkv-subtitle-preroll-secs", mkv_subtitle_preroll_secs,
-               M_OPT_MIN, .min = 0),
-    OPT_FLAG("demuxer-mkv-probe-video-duration", mkv_probe_duration, 0),
+    OPT_SUBSTRUCT("demuxer-mkv", demux_mkv, demux_mkv_conf, 0),
 
 // ------------------------- subtitles options --------------------
 
@@ -337,7 +336,8 @@ const m_option_t mp_opts[] = {
     OPT_FLAG("sub-ass", ass_enabled, 0),
     OPT_FLOATRANGE("sub-scale", sub_scale, 0, 0, 100),
     OPT_FLOATRANGE("ass-line-spacing", ass_line_spacing, 0, -1000, 1000),
-    OPT_FLAG("ass-use-margins", ass_use_margins, 0),
+    OPT_FLAG("sub-use-margins", sub_use_margins, 0),
+    OPT_FLAG("ass-force-margins", ass_use_margins, 0),
     OPT_FLAG("ass-vsfilter-aspect-compat", ass_vsfilter_aspect_compat, 0),
     OPT_CHOICE("ass-vsfilter-color-compat", ass_vsfilter_color_compat, 0,
                ({"no", 0}, {"basic", 1}, {"full", 2}, {"force-601", 3})),
@@ -353,6 +353,7 @@ const m_option_t mp_opts[] = {
                ({"no", 0}, {"yes", 1}, {"force", 3}, {"signfs", 4})),
     OPT_FLAG("sub-scale-by-window", sub_scale_by_window, 0),
     OPT_FLAG("sub-scale-with-window", sub_scale_with_window, 0),
+    OPT_FLAG("ass-scale-with-window", ass_scale_with_window, 0),
     OPT_FLAG("osd-bar", osd_bar_visible, 0),
     OPT_FLOATRANGE("osd-bar-align-x", osd_bar_align_x, 0, -1.0, +1.0),
     OPT_FLOATRANGE("osd-bar-align-y", osd_bar_align_y, 0, -1.0, +1.0),
@@ -360,7 +361,7 @@ const m_option_t mp_opts[] = {
     OPT_FLOATRANGE("osd-bar-h", osd_bar_h, 0, 0.1, 50),
     OPT_SUBSTRUCT("osd", osd_style, osd_style_conf, 0),
     OPT_FLAG("use-text-osd", use_text_osd, CONF_GLOBAL),
-    OPT_SUBSTRUCT("sub-text", sub_text_style, osd_style_conf, 0),
+    OPT_SUBSTRUCT("sub-text", sub_text_style, sub_style_conf, 0),
     OPT_FLAG("sub-clear-on-seek", sub_clear_on_seek, 0),
 
 //---------------------- libao/libvo options ------------------------
@@ -370,7 +371,7 @@ const m_option_t mp_opts[] = {
     OPT_SETTINGSLIST("ao-defaults", ao_defs, 0, &ao_obj_list),
     OPT_STRING("audio-device", audio_device, 0),
     OPT_STRING("audio-client-name", audio_client_name, 0),
-    OPT_FLAG("force-window", force_vo, CONF_GLOBAL),
+    OPT_FLAG("force-window", force_vo, 0),
     OPT_FLAG("ontop", vo.ontop, M_OPT_FIXED),
     OPT_FLAG("border", vo.border, M_OPT_FIXED),
     OPT_FLAG("on-all-workspaces", vo.all_workspaces, M_OPT_FIXED),
@@ -383,14 +384,14 @@ const m_option_t mp_opts[] = {
                 {"auto", SOFTVOL_AUTO})),
     OPT_FLOATRANGE("softvol-max", softvol_max, 0, 10, 10000),
     OPT_FLOATRANGE("volume", mixer_init_volume, 0, -1, 100),
-    OPT_CHOICE("mute", mixer_init_mute, M_OPT_OPTIONAL_PARAM,
+    OPT_CHOICE("mute", mixer_init_mute, 0,
                ({"auto", -1},
                 {"no", 0},
-                {"yes", 1}, {"", 1})),
+                {"yes", 1})),
     OPT_STRING("volume-restore-data", mixer_restore_volume_data, 0),
-    OPT_CHOICE("gapless-audio", gapless_audio, M_OPT_OPTIONAL_PARAM,
+    OPT_CHOICE("gapless-audio", gapless_audio, 0,
                ({"no", 0},
-                {"yes", 1}, {"", 1},
+                {"yes", 1},
                 {"weak", -1})),
     OPT_DOUBLE("audio-buffer", audio_buffer, M_OPT_MIN | M_OPT_MAX,
                .min = 0, .max = 10),
@@ -399,6 +400,7 @@ const m_option_t mp_opts[] = {
     OPT_SIZE_BOX("autofit", vo.autofit, 0),
     OPT_SIZE_BOX("autofit-larger", vo.autofit_larger, 0),
     OPT_SIZE_BOX("autofit-smaller", vo.autofit_smaller, 0),
+    OPT_FLOATRANGE("window-scale", vo.window_scale, 0, 0.001, 100),
     OPT_FLAG("force-window-position", vo.force_window_position, 0),
     // vo name (X classname) and window title strings
     OPT_STRING("x11-name", vo.winname, 0),
@@ -419,31 +421,9 @@ const m_option_t mp_opts[] = {
     OPT_FLOATRANGE("video-align-y", vo.align_y, 0, -1.0, 1.0),
     OPT_FLAG("video-unscaled", vo.unscaled, 0),
     OPT_FLAG("force-rgba-osd-rendering", force_rgba_osd, 0),
-    OPT_CHOICE("colormatrix", requested_colorspace, 0,
-               ({"auto", MP_CSP_AUTO},
-                {"BT.601", MP_CSP_BT_601},
-                {"BT.709", MP_CSP_BT_709},
-                {"SMPTE-240M", MP_CSP_SMPTE_240M},
-                {"BT.2020-NCL", MP_CSP_BT_2020_NC},
-                {"BT.2020-CL", MP_CSP_BT_2020_C},
-                {"YCgCo", MP_CSP_YCGCO})),
-    OPT_CHOICE("colormatrix-input-range", requested_input_range, 0,
-               ({"auto", MP_CSP_LEVELS_AUTO},
-                {"limited", MP_CSP_LEVELS_TV},
-                {"full", MP_CSP_LEVELS_PC})),
-    OPT_CHOICE("colormatrix-output-range", requested_output_range, 0,
-               ({"auto", MP_CSP_LEVELS_AUTO},
-                {"limited", MP_CSP_LEVELS_TV},
-                {"full", MP_CSP_LEVELS_PC})),
-    OPT_CHOICE("colormatrix-primaries", requested_primaries, 0,
-               ({"auto", MP_CSP_PRIM_AUTO},
-                {"BT.601-525", MP_CSP_PRIM_BT_601_525},
-                {"BT.601-625", MP_CSP_PRIM_BT_601_625},
-                {"BT.709", MP_CSP_PRIM_BT_709},
-                {"BT.2020", MP_CSP_PRIM_BT_2020})),
-    OPT_CHOICE_OR_INT("video-rotate", video_rotate, 0, 0, 359,
+    OPT_CHOICE_OR_INT("video-rotate", video_rotate, 0, 0, 360,
                       ({"no", -1})),
-    OPT_VID_STEREO_MODE("video-stereo-mode", video_stereo_mode, 0),
+    OPT_CHOICE_C("video-stereo-mode", video_stereo_mode, 0, mp_stereo3d_names),
 
     OPT_CHOICE_OR_INT("cursor-autohide", cursor_autohide_delay, 0,
                       0, 30000, ({"no", -1}, {"always", -2})),
@@ -473,9 +453,7 @@ const m_option_t mp_opts[] = {
     OPT_FLAG("keepaspect", vo.keepaspect, 0),
     OPT_FLAG("keepaspect-window", vo.keepaspect_window, 0),
 
-//---------------------- mplayer-only options ------------------------
-
-    OPT_FLAG("use-filedir-conf", use_filedir_conf, M_OPT_GLOBAL),
+    OPT_FLAG("use-filedir-conf", use_filedir_conf, 0),
     OPT_CHOICE("osd-level", osd_level, 0,
                ({"0", 0}, {"1", 1}, {"2", 2}, {"3", 3})),
     OPT_INTRANGE("osd-duration", osd_duration, 0, 0, 3600000),
@@ -500,12 +478,13 @@ const m_option_t mp_opts[] = {
 
     OPT_FLAG("stop-playback-on-init-failure", stop_playback_on_init_failure, 0),
 
-    OPT_CHOICE_OR_INT("loop", loop_times, M_OPT_GLOBAL, 1, 10000,
+    OPT_CHOICE_OR_INT("loop", loop_times, 0, 1, 10000,
                       ({"no", 1},
                        {"inf", -1},
                        {"force", -2})),
-    OPT_CHOICE_OR_INT("loop-file", loop_file, M_OPT_OPTIONAL_PARAM, 0, 10000,
-                      ({"yes", -1}, {"", -1}, {"no", 0}, // compat
+    OPT_CHOICE_OR_INT("loop-file", loop_file, 0, 0, 10000,
+                      ({"no", 0},
+                       {"yes", -1},
                        {"inf", -1})),
 
     OPT_FLAG("resume-playback", position_resume, 0),
@@ -530,8 +509,8 @@ const m_option_t mp_opts[] = {
                ({"auto", 0}, {"decoder", 1}, {"sort", 2})),
     OPT_FLAG("initial-audio-sync", initial_audio_sync, 0),
     OPT_CHOICE("hr-seek", hr_seek, 0,
-               ({"no", -1}, {"absolute", 0}, {"always", 1}, {"yes", 1})),
-    OPT_FLOATRANGE("hr-seek-demuxer-offset", hr_seek_demuxer_offset, 0, -9, 99),
+               ({"no", -1}, {"absolute", 0}, {"yes", 1}, {"always", 1})),
+    OPT_FLOAT("hr-seek-demuxer-offset", hr_seek_demuxer_offset, 0),
     OPT_FLAG("hr-seek-framedrop", hr_seek_framedrop, 0),
     OPT_CHOICE_OR_INT("autosync", autosync, 0, 0, 10000,
                       ({"no", -1})),
@@ -552,11 +531,10 @@ const m_option_t mp_opts[] = {
     OPT_STRING("osd-msg2", osd_msg[1], 0),
     OPT_STRING("osd-msg3", osd_msg[2], 0),
 
-    OPT_CHOICE("idle", player_idle_mode, M_OPT_OPTIONAL_PARAM,
+    OPT_CHOICE("idle", player_idle_mode, 0,
                ({"no",   0},
                 {"once", 1},
-                {"yes",  2},
-                {"",     2})),
+                {"yes",  2})),
 
     OPT_FLAG("input-terminal", consolecontrols, CONF_GLOBAL),
 
@@ -602,7 +580,6 @@ const m_option_t mp_opts[] = {
     OPT_REMOVED("identify", "use TOOLS/mpv_identify.sh"),
     OPT_REMOVED("lavdopts", "use --vd-lavc-..."),
     OPT_REMOVED("lavfdopts", "use --demuxer-lavf-..."),
-    OPT_REPLACED("lircconf", "input-lirc-conf"),
     OPT_REPLACED("lua", "script"),
     OPT_REPLACED("lua-opts", "script-opts"),
     OPT_REMOVED("mixer-channel", "use AO suboptions (alsa, oss)"),
@@ -615,7 +592,6 @@ const m_option_t mp_opts[] = {
     OPT_REPLACED("noar", "no-input-appleremote"),
     OPT_REPLACED("noautosub", "no-sub-auto"),
     OPT_REPLACED("noconsolecontrols", "no-input-terminal"),
-    OPT_REPLACED("nojoystick", "no-input-joystick"),
     OPT_REPLACED("nosound", "no-audio"),
     OPT_REPLACED("osdlevel", "osd-level"),
     OPT_REMOVED("panscanrange", "use --video-zoom, --video-pan-x/y"),
@@ -645,7 +621,6 @@ const m_option_t mp_opts[] = {
     OPT_REMOVED("xy", "use --autofit"),
     OPT_REMOVED("zoom", "Inverse available as ``--video-unscaled"),
     OPT_REPLACED("media-keys", "input-media-keys"),
-    OPT_REPLACED("lirc", "input-lirc"),
     OPT_REPLACED("right-alt-gr", "input-right-alt-gr"),
     OPT_REPLACED("autosub", "sub-auto"),
     OPT_REPLACED("autosub-match", "sub-auto"),
@@ -658,6 +633,7 @@ const m_option_t mp_opts[] = {
     OPT_REMOVED("fixed-vo", "--fixed-vo=yes is now the default"),
     OPT_REPLACED("mkv-subtitle-preroll", "demuxer-mkv-subtitle-preroll"),
     OPT_REPLACED("dtshd", "ad-spdif-dtshd"),
+    OPT_REPLACED("ass-use-margins", "sub-use-margins"),
 
     {0}
 };
@@ -666,7 +642,7 @@ const struct MPOpts mp_default_opts = {
     .use_terminal = 1,
     .msg_color = 1,
     .audio_driver_list = NULL,
-    .audio_decoders = "-spdif:*", // never select spdif by default
+    .audio_decoders = "lavc:libdcadec,-spdif:*", // never select spdif by default
     .video_decoders = NULL,
     .deinterlace = -1,
     .softvol = SOFTVOL_AUTO,
@@ -687,6 +663,7 @@ const struct MPOpts mp_default_opts = {
         .keepaspect_window = 1,
         .border = 1,
         .WinID = -1,
+        .window_scale = 1.0,
     },
     .allow_win_drag = 1,
     .wintitle = "mpv - ${?media-title:${media-title}}${!media-title:No file.}",
@@ -706,11 +683,16 @@ const struct MPOpts mp_default_opts = {
     .osd_scale = 1,
     .osd_scale_by_window = 1,
     .sub_scale_by_window = 1,
+    .ass_use_margins = 0,
+    .sub_use_margins = 1,
+    .ass_scale_with_window = 0,
+    .sub_scale_with_window = 1,
     .use_text_osd = 1,
 #if HAVE_LUA
     .lua_load_osc = 1,
     .lua_load_ytdl = 1,
     .lua_ytdl_format = NULL,
+    .lua_ytdl_raw_options = NULL,
 #endif
     .auto_load_scripts = 1,
     .loop_times = 1,
@@ -722,7 +704,7 @@ const struct MPOpts mp_default_opts = {
     .position_resume = 1,
     .stream_cache = {
         .size = -1,
-        .def_size = 25000,
+        .def_size = 150000,
         .initial = 0,
         .seek_min = 500,
         .file_max = 1024 * 1024,
@@ -730,11 +712,11 @@ const struct MPOpts mp_default_opts = {
     .demuxer_thread = 1,
     .demuxer_min_packs = 0,
     .demuxer_min_bytes = 0,
-    .demuxer_min_secs = 0.2,
+    .demuxer_min_secs = 1.0,
     .network_rtsp_transport = 2,
     .network_timeout = 0.0,
     .hls_bitrate = 2,
-    .demuxer_min_secs_cache = 2,
+    .demuxer_min_secs_cache = 10.0,
     .cache_pausing = 1,
     .chapterrange = {-1, -1},
     .ab_loop = {MP_NOPTS_VALUE, MP_NOPTS_VALUE},
@@ -781,7 +763,6 @@ const struct MPOpts mp_default_opts = {
     .use_embedded_fonts = 1,
     .sub_fix_timing = 1,
     .sub_cp = "auto",
-    .mkv_subtitle_preroll_secs = 1.0,
     .screenshot_template = "shot%n",
 
     .hwdec_codecs = "h264,vc1,wmv3",
@@ -791,6 +772,10 @@ const struct MPOpts mp_default_opts = {
     .dvd_angle = 1,
 
     .mf_fps = 1.0,
+
+#if HAVE_RPI
+    .hwdec_api = -1,
+#endif
 
     .display_tags = (char **)(const char*[]){
         "Artist", "Album", "Album_Artist", "Comment", "Composer", "Genre",

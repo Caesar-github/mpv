@@ -55,6 +55,14 @@ Available audio output drivers are:
         Allow output of non-interleaved formats (if the audio decoder uses
         this format). Currently disabled by default, because some popular
         ALSA plugins are utterly broken with non-interleaved formats.
+    ``ingore-chmap``
+        Don't read or set the channel map of the ALSA device - only request the
+        required number of channels, and then pass the audio as-is to it. This
+        option most likely should not be used. It can be useful for debugging,
+        or for static setups with a specially engineered ALSA configuration (in
+        this case you should always force the same layout with ``--audio-channels``,
+        or it will work only for files which use the layout implicit to your
+        ALSA device).
 
     .. note::
 
@@ -99,8 +107,10 @@ Available audio output drivers are:
         ``--audio-device`` to select the device (use ``--audio-device=help``
         to get a list of all devices and their mpv name).
 
-        You can also try
-        `Using the upmix plugin <https://github.com/mpv-player/mpv/wiki/ALSA:-Surround-Sound-and-Upmixing>`_.
+        You can also try `using the upmix plugin <http://git.io/vfuAy>`_.
+        This setup enables multichannel audio on the ``default`` device
+        with automatic upmixing with shared access, so playing stereo
+        and multichannel audio at the same time will work as expected.
 
 ``oss``
     OSS audio output driver
@@ -294,19 +304,19 @@ Available audio output drivers are:
 ``wasapi``
     Audio output to the Windows Audio Session API.
 
-    ``device=<id>``
-        Uses the requested endpoint instead of the system's default audio
-        endpoint. Both the number and the ID String are valid; the ID String
-        is guaranteed to not change unless the driver is uninstalled.
-
-        Also supports searching active devices by name. If more than one
-        device matches the name, refuses loading it.
-
-        To get a list of the valid devices, give ``help`` as the id. The
-        list is the same as the ``list`` suboption, but stops the player
-        initialization.
     ``exclusive``
         Requests exclusive, direct hardware access. By definition prevents
         sound playback of any other program until mpv exits.
-    ``list``
-        Lists all audio endpoints (output devices) present in the system.
+    ``device=<id>``
+        Uses the requested endpoint instead of the system's default audio
+        endpoint. Both an ordinal number (0,1,2,...) and the GUID
+        String are valid; the GUID string is guaranteed to not change
+        unless the driver is uninstalled.
+
+        Also supports searching active devices by human readable name. If more
+        than one device matches the name, refuses loading it.
+
+        This option is mostly deprecated in favour of the more general
+        ``--audio-device`` option. That said, ``--audio-device=help`` will give
+        a list of valid device GUIDs (prefixed with ``wasapi/``), as well as
+        their human readable names, which should work here.

@@ -164,8 +164,6 @@ options_state_machine() {
     opt_yes_no _libguess    "libguess"
     opt_yes_no _termios     "termios database for key codes"
     opt_yes_no _iconv       "iconv for encoding conversion"
-    opt_yes_no _lirc        "LIRC (remote control) support"
-    opt_yes_no _joystick    "joystick support" no
     opt_yes_no _vm          "X video mode extensions"
     opt_yes_no _dvb         "DVB input"
     opt_yes_no _tv          "TV interface (TV/DVB grabbers)" yes
@@ -183,10 +181,10 @@ options_state_machine() {
     opt_yes_no _libavfilter "libavfilter"
     opt_yes_no _jpeg        "support for writing JPEG screenshots"
     opt_yes_no _libcdio     "libcdio support"
+    opt_yes_no _librubberband "librubberband support"
     opt_yes_no _ffmpeg      "skip FFmpeg/Libav autodetection"
     opt_yes_no _ladspa      "LADSPA plugin support"
     opt_yes_no _libbs2b     "libbs2b audio filter support"
-    opt_yes_no _mpg123      " libmpg123 MP3 decoding support"
     opt_yes_no _libavresample "libavresample (preferred over libswresample)"
     opt_yes_no _libswresample "libswresample"
     opt_yes_no _caca        "CACA  video output"
@@ -326,7 +324,7 @@ test -z "$_bindir"  && _bindir="$_prefix/bin"
 test -z "$_mandir"  && _mandir="$_prefix/share/man"
 test -z "$_confdir" && _confdir="$_prefix/etc/mpv"
 
-mplayer_tmpdir=$(mktemp -d --tmpdir mpv-configure-XXXX)
+mplayer_tmpdir=$(mktemp -d -p ${TMPDIR:=/tmp} mpv-configure-XXXXXX)
 test -n "$mplayer_tmpdir" || die "Unable to create tmpdir."
 trap 'rm -rf "$mplayer_tmpdir"' EXIT
 
@@ -378,7 +376,7 @@ addcflags() { cflag_check "$@" && OURCFLAGS="$OURCFLAGS $@" ; }
 OURCFLAGS="-std=c99 -Wall $_opt"
 
 addcflags -g -g3 -ggdb
-addcflags -Wundef -Wmissing-prototypes -Wshadow -Wno-switch -Wno-parentheses -Wpointer-arith -Wredundant-decls -Wno-pointer-sign -Werror=implicit-function-declaration -Wno-error=deprecated-declarations -Wno-error=unused-function
+addcflags -Wundef -Wmissing-prototypes -Wshadow -Wno-switch -Wparentheses -Wpointer-arith -Wredundant-decls -Wno-pointer-sign -Werror=implicit-function-declaration -Wno-error=deprecated-declarations -Wno-error=unused-function
 # clang
 addcflags -Wno-logical-op-parentheses -fcolor-diagnostics -Wno-tautological-compare -Wno-tautological-constant-out-of-range-compare
 # extra
@@ -663,6 +661,8 @@ EOF
     _gl_wayland=yes
     libs_mplayer="$libs_mplayer -lGL -lEGL"
     test "$_gl_wayland" = yes && res_comment="$res_comment wayland"
+  else
+    _gl_wayland=no
   fi
   if test "$_x11" = yes && test "$_gl" = yes && pkg_config_add "egl"; then
     _gl_x11_egl=yes
@@ -717,6 +717,8 @@ check_pkg_config "dvdnav" $_dvdnav DVDNAV 'dvdnav >= 4.2.0'
 
 check_pkg_config "libcdio" $_libcdio CDDA 'libcdio_paranoia'
 
+check_pkg_config "rubberband" $_librubberband RUBBERBAND 'rubberband'
+
 _oldass=$_libass
 check_pkg_config "SSA/ASS support" $_libass LIBASS 'libass'
 _libass=$(defretval)
@@ -734,8 +736,6 @@ check_pkg_config "ENCA" $_enca ENCA 'enca'
 check_pkg_config "zlib" auto ZLIB 'zlib'
 test $(defretval) = no && die "Unable to find development files for zlib."
 
-check_pkg_config "mpg123 support" $_mpg123 MPG123 'libmpg123 >= 1.14.0'
-
 test "$_dl" = no && _ladspa=no
 check_statement_libs "LADSPA plugin support" $_ladspa LADSPA ladspa.h 'LADSPA_Descriptor ld = {0}'
 
@@ -744,15 +744,15 @@ check_pkg_config "libbs2b audio filter support" $_libbs2b LIBBS2B 'libbs2b'
 check_pkg_config "LCMS2 support" $_lcms2 LCMS2 'lcms2 >= 2.6'
 
 check_pkg_config "FFmpeg/Libav" $_ffmpeg FFMPEG \
-    "libavutil >= 52.48.101 libavcodec >= 55.34.1 libavformat >= 55.12.0 libswscale >= 2.1.2"
+    "libavutil >= 54.02.0 libavcodec >= 56.1.0 libavformat >= 56.01.0 libswscale >= 2.1.3"
 test $(defretval) = no && die "Unable to find development files for some of the required Libav libraries above. Aborting."
 
-check_pkg_config "Libswresample" $_libswresample LIBSWRESAMPLE 'libswresample >= 0.17.104'
+check_pkg_config "Libswresample" $_libswresample LIBSWRESAMPLE 'libswresample >= 1.1.100'
 _libswresample=$(defretval)
 
 _libavresample=auto
 test $_libswresample = yes && _libavresample=no
-check_pkg_config "Libavresample" $_libavresample LIBAVRESAMPLE 'libavresample >= 1.1.0'
+check_pkg_config "Libavresample" $_libavresample LIBAVRESAMPLE 'libavresample >= 2.1.0'
 _libavresample=$(defretval)
 
 if test "$_libswresample" = no && test "$_libavresample" = no ; then
@@ -775,36 +775,6 @@ api_statement_check \
     'int x, y; avcodec_enum_to_chroma_pos(&x, &y, AVCHROMA_LOC_UNSPECIFIED)'
 
 api_statement_check \
-    "libavcodec avcol_spc_bt2020 available" \
-    HAVE_AVCOL_SPC_BT2020 \
-    libavcodec/avcodec.h \
-    'int x = AVCOL_SPC_BT2020_NCL'
-
-api_statement_check \
-    "libavcodec metadata update side data" \
-    HAVE_AVCODEC_METADATA_UPDATE_SIDE_DATA \
-    libavcodec/avcodec.h \
-    'enum AVPacketSideDataType type = AV_PKT_DATA_METADATA_UPDATE'
-
-api_statement_check \
-    "libavformat metadata update flags" \
-    HAVE_AVFORMAT_METADATA_UPDATE_FLAG \
-    libavformat/avformat.h \
-    'int x = AVFMT_EVENT_FLAG_METADATA_UPDATED'
-
-api_statement_check \
-    "libavcodec replaygain side data" \
-    HAVE_AVCODEC_REPLAYGAIN_SIDE_DATA \
-    libavcodec/avcodec.h \
-    'enum AVPacketSideDataType type = AV_PKT_DATA_REPLAYGAIN'
-
-api_statement_check \
-    "libavutil/libavcodec display matrix side data" \
-    HAVE_AV_DISPLAYMATRIX \
-    libavutil/frame.h \
-    'enum AVFrameSideDataType type = AV_FRAME_DATA_DISPLAYMATRIX'
-
-api_statement_check \
     "libavutil AVFrame metadata" \
     HAVE_AVFRAME_METADATA \
     libavutil/frame.h \
@@ -816,15 +786,9 @@ api_statement_check \
     libavutil/frame.h \
     'enum AVFrameSideDataType type = AV_FRAME_DATA_SKIP_SAMPLES'
 
-api_statement_check \
-    "libavcodec av_vdpau_alloc_context()" \
-    HAVE_AVCODEC_VDPAU_ALLOC_CONTEXT \
-    libavcodec/vdpau.h \
-    'AVVDPAUContext *x = av_vdpau_alloc_context()'
+check_pkg_config "libavfilter" $_libavfilter LIBAVFILTER 'libavfilter >= 5.0.0'
 
-check_pkg_config "libavfilter" $_libavfilter LIBAVFILTER 'libavfilter >= 3.90.100'
-
-check_pkg_config "libavdevice" $_libavdevice LIBAVDEVICE 'libavdevice >= 54.0.0'
+check_pkg_config "libavdevice" $_libavdevice LIBAVDEVICE 'libavdevice >= 55.0.0'
 
 check_trivial "TV interface" $_tv TV
 
@@ -851,13 +815,15 @@ test_lua() {
 
 test_lua "lua >= 5.1.0 lua < 5.2.0"
 test_lua "lua5.1 >= 5.1.0" # debian
+test_lua "lua51 >= 5.1.0" # OpenBSD
 test_lua "luajit >= 2.0.0"
 test_lua "lua >= 5.2.0"
 test_lua "lua5.2 >= 5.2.0" # debian
+test_lua "lua52 >= 5.2.0" # OpenBSD
 
 test "$_lua" != yes && check_yes_no no LUA
 
-if ! ( $_pkg_config 'vapoursynth >= 23' ) ; then
+if ! ( $_pkg_config 'vapoursynth >= 24' ) ; then
     _vapoursynth=no
     _vapoursynth_lazy=no
 fi
@@ -874,10 +840,6 @@ if test "$_vapoursynth" = no && test "$_vapoursynth_lazy" = no ; then
     _vapoursynth_core=no
 fi
 check_trivial "VapourSynth core" $_vapoursynth_core VAPOURSYNTH_CORE
-
-check_trivial "joystick" $_joystick JOYSTICK
-
-check_statement_libs "lirc" $_lirc LIRC lirc/lirc_client.h "" -llirc_client
 
 check_trivial "encoding" $_encoding ENCODING
 
@@ -969,9 +931,19 @@ cat > $TMPC << EOF
 #define HAVE_BSD_THREAD_NAME 0
 #define HAVE_NETBSD_THREAD_NAME 0
 #define HAVE_DXVA2_HWACCEL 0
+#define HAVE_FCHMOD 0
+#define HAVE_RPI 0
+#define HAVE_RPI_GLES 0
+#define HAVE_AV_PIX_FMT_MMAL 0
+#define HAVE_DRM 0
 
+#ifdef __OpenBSD__
+#define DEFAULT_CDROM_DEVICE "/dev/rcd0c"
+#define DEFAULT_DVD_DEVICE   "/dev/rcd0c"
+#else
 #define DEFAULT_CDROM_DEVICE "/dev/cdrom"
 #define DEFAULT_DVD_DEVICE   "/dev/dvd"
+#endif
 #define PATH_DEV_DSP "/dev/dsp"
 #define PATH_DEV_MIXER "/dev/mixer"
 

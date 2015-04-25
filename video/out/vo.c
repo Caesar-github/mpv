@@ -1,19 +1,18 @@
 /*
- * This file is part of MPlayer.
+ * This file is part of mpv.
  *
- * MPlayer is free software; you can redistribute it and/or modify
+ * mpv is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
- * MPlayer is distributed in the hope that it will be useful,
+ * mpv is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with MPlayer; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ * with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <stdio.h>
@@ -58,53 +57,61 @@ extern const struct vo_driver video_out_null;
 extern const struct vo_driver video_out_image;
 extern const struct vo_driver video_out_lavc;
 extern const struct vo_driver video_out_caca;
+extern const struct vo_driver video_out_drm;
 extern const struct vo_driver video_out_direct3d;
 extern const struct vo_driver video_out_direct3d_shaders;
 extern const struct vo_driver video_out_sdl;
 extern const struct vo_driver video_out_vaapi;
 extern const struct vo_driver video_out_wayland;
+extern const struct vo_driver video_out_rpi;
 
 const struct vo_driver *const video_out_drivers[] =
 {
+#if HAVE_RPI
+    &video_out_rpi,
+#endif
 #if HAVE_GL
-        &video_out_opengl,
+    &video_out_opengl,
 #endif
 #if HAVE_VDPAU
-        &video_out_vdpau,
+    &video_out_vdpau,
 #endif
 #if HAVE_DIRECT3D
-        &video_out_direct3d_shaders,
-        &video_out_direct3d,
+    &video_out_direct3d_shaders,
+    &video_out_direct3d,
 #endif
 #if HAVE_XV
-        &video_out_xv,
+    &video_out_xv,
 #endif
 #if HAVE_SDL2
-        &video_out_sdl,
+    &video_out_sdl,
 #endif
 #if HAVE_VAAPI
-        &video_out_vaapi,
+    &video_out_vaapi,
 #endif
 #if HAVE_X11
-        &video_out_x11,
+    &video_out_x11,
 #endif
-        &video_out_null,
-        // should not be auto-selected
-        &video_out_image,
+    &video_out_null,
+    // should not be auto-selected
+    &video_out_image,
 #if HAVE_CACA
-        &video_out_caca,
+    &video_out_caca,
+#endif
+#if HAVE_DRM
+    &video_out_drm,
 #endif
 #if HAVE_ENCODING
-        &video_out_lavc,
+    &video_out_lavc,
 #endif
 #if HAVE_GL
-        &video_out_opengl_hq,
-        &video_out_opengl_cb,
+    &video_out_opengl_hq,
+    &video_out_opengl_cb,
 #endif
 #if HAVE_WAYLAND
-        &video_out_wayland,
+    &video_out_wayland,
 #endif
-        NULL
+    NULL
 };
 
 struct vo_internal {
@@ -146,9 +153,10 @@ struct vo_internal {
     int64_t frame_pts;              // realtime of intended display
     int64_t frame_duration;         // realtime frame duration (for framedrop)
 
-    int64_t vsync_interval;
+    double display_fps;
 
     // --- The following fields can be accessed from the VO thread only
+    int64_t vsync_interval;
     int64_t vsync_interval_approx;
     int64_t last_flip;
     char *window_title;
@@ -232,7 +240,6 @@ static struct vo *vo_create(bool probing, struct mpv_global *global,
     talloc_steal(vo, log);
     *vo->in = (struct vo_internal) {
         .dispatch = mp_dispatch_create(vo),
-        .internal_events = VO_EVENT_WIN_STATE,
     };
     mp_make_wakeup_pipe(vo->in->wakeup_pipe);
     mp_dispatch_set_wakeup_fn(vo->in->dispatch, dispatch_wakeup_cb, vo);
@@ -312,18 +319,23 @@ static void update_display_fps(struct vo *vo)
 
         pthread_mutex_unlock(&in->lock);
 
-        double display_fps = 1000.0; // assume infinite if unset
+        double display_fps = 0;
         if (vo->global->opts->frame_drop_fps > 0) {
             display_fps = vo->global->opts->frame_drop_fps;
         } else {
             vo->driver->control(vo, VOCTRL_GET_DISPLAY_FPS, &display_fps);
         }
-        int64_t n_interval = MPMAX((int64_t)(1e6 / display_fps), 1);
 
         pthread_mutex_lock(&in->lock);
-        if (vo->in->vsync_interval != n_interval)
+
+        if (in->display_fps != display_fps) {
+            in->display_fps = display_fps;
             MP_VERBOSE(vo, "Assuming %f FPS for framedrop.\n", display_fps);
-        vo->in->vsync_interval = n_interval;
+
+            // make sure to update the player
+            in->queued_events |= VO_EVENT_WIN_STATE;
+            mp_input_wakeup(vo->input_ctx);
+        }
     }
     pthread_mutex_unlock(&in->lock);
 }
@@ -567,6 +579,9 @@ static bool render_frame(struct vo *vo)
 
     pthread_mutex_lock(&in->lock);
 
+    vo->in->vsync_interval = in->display_fps > 0 ? 1e6 / in->display_fps : 0;
+    vo->in->vsync_interval = MPMAX(vo->in->vsync_interval, 1);
+
     int64_t pts = in->frame_pts;
     int64_t duration = in->frame_duration;
     struct mp_image *img = in->frame_queued;
@@ -593,7 +608,15 @@ static bool render_frame(struct vo *vo)
     if (!in->hasframe_rendered)
         duration = -1; // disable framedrop
 
-    in->dropped_frame = duration >= 0 && end_time < next_vsync;
+    // if the clip and display have similar/identical fps, it's possible that
+    // we'll be very slightly late frequently due to timing jitter, or if the
+    // clip/container timestamps are not very accurate.
+    // so if we dropped the previous frame, keep dropping until we're aligned
+    // perfectly, else, allow some slack (1 vsync) to let it settle into a rhythm.
+    in->dropped_frame = duration >= 0 &&
+                            ((in->dropped_frame && end_time < next_vsync) ||
+                            (end_time < prev_vsync)); // hard threshold - 1 vsync late
+
     in->dropped_frame &= !(vo->driver->caps & VO_CAP_FRAMEDROP);
     in->dropped_frame &= (vo->global->opts->frame_dropping & 1);
     // Even if we're hopelessly behind, rather degrade to 10 FPS playback,
@@ -603,7 +626,7 @@ static bool render_frame(struct vo *vo)
     if (in->vsync_timed) {
         // this is a heuristic that wakes the thread up some
         // time before the next vsync
-        target = next_vsync - MPMIN(in->vsync_interval / 3, 4e3);
+        target = next_vsync - MPMIN(in->vsync_interval / 2, 8e3);
 
         // We are very late with the frame and using vsync timing: probably
         // no new frames are coming in. This must be done whether or not
@@ -730,6 +753,9 @@ static void *vo_thread(void *ptr)
     mp_rendezvous(vo, r); // init barrier
     if (r < 0)
         return NULL;
+
+    update_display_fps(vo);
+    vo_event(vo, VO_EVENT_WIN_STATE);
 
     while (1) {
         mp_dispatch_queue_process(vo->in->dispatch, 0);
@@ -908,11 +934,21 @@ void vo_set_flip_queue_params(struct vo *vo, int64_t offset_us, bool vsync_timed
     pthread_mutex_unlock(&in->lock);
 }
 
+// to be called from the VO thread only
 int64_t vo_get_vsync_interval(struct vo *vo)
 {
     struct vo_internal *in = vo->in;
     pthread_mutex_lock(&in->lock);
     int64_t res = vo->in->vsync_interval;
+    pthread_mutex_unlock(&in->lock);
+    return res;
+}
+
+double vo_get_display_fps(struct vo *vo)
+{
+    struct vo_internal *in = vo->in;
+    pthread_mutex_lock(&in->lock);
+    double res = vo->in->display_fps;
     pthread_mutex_unlock(&in->lock);
     return res;
 }
@@ -951,10 +987,10 @@ struct mp_image *vo_get_current_frame(struct vo *vo)
     return r;
 }
 
-/**
- * \brief lookup an integer in a table, table must have 0 as the last key
- * \param key key to search for
- * \result translation corresponding to key or "to" value of last mapping
+/*
+ * lookup an integer in a table, table must have 0 as the last key
+ * param: key key to search for
+ * returns translation corresponding to key or "to" value of last mapping
  *         if not found.
  */
 int lookup_keymap_table(const struct mp_keymap *map, int key)

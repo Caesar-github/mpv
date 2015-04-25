@@ -1,19 +1,18 @@
 /*
- * This file is part of mplayer2.
+ * This file is part of mpv.
  *
- * mplayer2 is free software; you can redistribute it and/or modify
+ * mpv is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
- * mplayer2 is distributed in the hope that it will be useful,
+ * mpv is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with mplayer2; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ * with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #ifndef MPLAYER_SCREENSHOT_H
@@ -39,6 +38,9 @@ void screenshot_request(struct MPContext *mpctx, int mode, bool each_frame,
 // mode, osd: same as in screenshot_request()
 void screenshot_to_file(struct MPContext *mpctx, const char *filename, int mode,
                         bool osd);
+
+// mode is the same as in screenshot_request()
+struct mp_image *screenshot_get_rgb(struct MPContext *mpctx, int mode);
 
 // Called by the playback core code when a new frame is displayed.
 void screenshot_flip(struct MPContext *mpctx);

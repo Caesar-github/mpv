@@ -1,19 +1,18 @@
 /*
- * This file is part of MPlayer.
+ * This file is part of mpv.
  *
- * MPlayer is free software; you can redistribute it and/or modify
+ * mpv is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
- * MPlayer is distributed in the hope that it will be useful,
+ * mpv is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with MPlayer; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ * with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <stdio.h>
@@ -105,6 +104,9 @@ struct vo_w32_state {
     int high_surrogate;
 
     ITaskbarList2 *taskbar_list;
+
+    // updates on move/resize/displaychange
+    double display_fps;
 };
 
 typedef struct tagDropTarget {
@@ -563,6 +565,53 @@ static void wakeup_gui_thread(void *ctx)
     PostMessage(w32->window, WM_USER, 0, 0);
 }
 
+static double vo_w32_get_display_fps(struct vo_w32_state *w32)
+{
+    // Get the device name of the monitor containing the window
+    HMONITOR mon = MonitorFromWindow(w32->window, MONITOR_DEFAULTTOPRIMARY);
+    MONITORINFOEXW mi = { .cbSize = sizeof mi };
+    GetMonitorInfoW(mon, (MONITORINFO*)&mi);
+
+    DEVMODE dm = { .dmSize = sizeof dm };
+    if (!EnumDisplaySettingsW(mi.szDevice, ENUM_CURRENT_SETTINGS, &dm))
+        return -1;
+
+    // May return 0 or 1 which "represent the display hardware's default refresh rate"
+    // https://msdn.microsoft.com/en-us/library/windows/desktop/dd183565%28v=vs.85%29.aspx
+    // mpv validates this value with a threshold of 1, so don't return exactly 1
+    if (dm.dmDisplayFrequency == 1)
+        return 0;
+
+    // dm.dmDisplayFrequency is an integer which is rounded down, so it's
+    // highly likely that 23 represents 24/1.001, 59 represents 60/1.001, etc.
+    // A caller can always reproduce the original value by using floor.
+    double rv = dm.dmDisplayFrequency;
+    switch (dm.dmDisplayFrequency) {
+        case  23:
+        case  29:
+        case  47:
+        case  59:
+        case  71:
+        case  89:
+        case  95:
+        case 119:
+        case 143:
+            rv = (rv + 1) / 1.001;
+    }
+
+    return rv;
+}
+
+static void update_display_fps(struct vo_w32_state *w32)
+{
+    double fps = vo_w32_get_display_fps(w32);
+    if (fps != w32->display_fps) {
+        w32->display_fps = fps;
+        signal_events(w32, VO_EVENT_WIN_STATE);
+        MP_VERBOSE(w32, "display-fps: %f\n", fps);
+    }
+}
+
 static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam,
                                 LPARAM lParam)
 {
@@ -588,6 +637,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam,
         ClientToScreen(w32->window, &p);
         w32->window_x = p.x;
         w32->window_y = p.y;
+        update_display_fps(w32);  // if we moved between monitors
         MP_VERBOSE(w32, "move window: %d:%d\n", w32->window_x, w32->window_y);
         break;
     }
@@ -596,9 +646,13 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam,
         if (GetClientRect(w32->window, &r) && r.right > 0 && r.bottom > 0) {
             w32->dw = r.right;
             w32->dh = r.bottom;
+            update_display_fps(w32); // if we moved between monitors
             signal_events(w32, VO_EVENT_RESIZE);
             MP_VERBOSE(w32, "resize window: %d:%d\n", w32->dw, w32->dh);
         }
+
+        // Window may have been minimized or restored
+        signal_events(w32, VO_EVENT_WIN_STATE);
         break;
     }
     case WM_SIZING:
@@ -695,8 +749,10 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam,
         mp_input_put_key(w32->input_ctx, MP_KEY_MOUSE_LEAVE);
         break;
     case WM_MOUSEMOVE: {
-        if (!w32->tracking)
+        if (!w32->tracking) {
             w32->tracking = TrackMouseEvent(&w32->trackEvent);
+            mp_input_put_key(w32->input_ctx, MP_KEY_MOUSE_ENTER);
+        }
         // Windows can send spurious mouse events, which would make the mpv
         // core unhide the mouse cursor on completely unrelated events. See:
         //  https://blogs.msdn.com/b/oldnewthing/archive/2003/10/01/55108.aspx
@@ -739,6 +795,9 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam,
     case WM_XBUTTONUP:
         mouse_button = HIWORD(wParam) == 1 ? MP_MOUSE_BTN5 : MP_MOUSE_BTN6;
         mouse_button |= MP_KEY_STATE_UP;
+        break;
+    case WM_DISPLAYCHANGE:
+        update_display_fps(w32);
         break;
     }
 
@@ -1247,6 +1306,9 @@ static int gui_thread_control(struct vo_w32_state *w32, int request, void *arg)
         reinit_window_state(w32);
         return VO_TRUE;
     }
+    case VOCTRL_GET_WIN_STATE:
+        *(int *)arg = IsIconic(w32->window) ? VO_WIN_STATE_MINIMIZED : 0;
+        return VO_TRUE;
     case VOCTRL_SET_CURSOR_VISIBILITY:
         w32->cursor_visible = *(bool *)arg;
 
@@ -1259,7 +1321,8 @@ static int gui_thread_control(struct vo_w32_state *w32, int request, void *arg)
         return VO_TRUE;
     case VOCTRL_KILL_SCREENSAVER:
         w32->disable_screensaver = true;
-        SetThreadExecutionState(ES_CONTINUOUS | ES_DISPLAY_REQUIRED);
+        SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED |
+                                ES_DISPLAY_REQUIRED);
         return VO_TRUE;
     case VOCTRL_RESTORE_SCREENSAVER:
         w32->disable_screensaver = false;
@@ -1271,6 +1334,10 @@ static int gui_thread_control(struct vo_w32_state *w32, int request, void *arg)
         talloc_free(title);
         return VO_TRUE;
     }
+    case VOCTRL_GET_DISPLAY_FPS:
+        update_display_fps(w32);
+        *(double*) arg = w32->display_fps;
+        return VO_TRUE;
     }
     return VO_NOTIMPL;
 }

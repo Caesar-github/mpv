@@ -1,18 +1,18 @@
 /*
- * This file is part of mplayer2.
+ * This file is part of mpv.
  *
- * mplayer2 is free software; you can redistribute it and/or modify
+ * mpv is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
- * mplayer2 is distributed in the hope that it will be useful,
+ * mpv is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with mplayer2.  If not, see <http://www.gnu.org/licenses/>.
+ * with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <stdio.h>
@@ -111,7 +111,6 @@ static void create_ass_track(struct osd_state *osd, struct osd_object *obj,
         int sid = ass_alloc_style(track);
         track->default_style = sid;
         ASS_Style *style = track->styles + sid;
-        style->Alignment = 5; // top-title, left
         style->Name = strdup("OSD");
         // Set to neutral base direction, as opposed to VSFilter LTR default
         style->Encoding = -1;
@@ -317,6 +316,8 @@ static void get_osd_bar_box(struct osd_state *osd, struct osd_object *obj,
     // Rendering with shadow is broken (because there's more than one shape)
     style->Shadow = 0;
 
+    style->Alignment = 5;
+
     *o_border = style->Outline;
 
     *o_x = get_align(opts->osd_bar_align_x, track->PlayResX, *o_w, *o_border);
@@ -439,9 +440,7 @@ static void update_sub(struct osd_state *osd, struct osd_object *obj)
     if (obj->type == OSDTYPE_SUB2)
         style->Alignment = 6;
 
-#if LIBASS_VERSION >= 0x01010000
     ass_set_line_position(obj->osd_render, 100 - opts->sub_pos);
-#endif
 
     add_osd_ass_event_escaped(obj->osd_track, obj->text);
 }

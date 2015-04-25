@@ -1,19 +1,18 @@
 /*
- * This file is part of MPlayer.
+ * This file is part of mpv.
  *
- * MPlayer is free software; you can redistribute it and/or modify
+ * mpv is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
- * MPlayer is distributed in the hope that it will be useful,
+ * mpv is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with MPlayer; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ * with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #ifndef MPLAYER_AUDIO_OUT_H
@@ -48,6 +47,7 @@ enum aocontrol {
 
 enum {
     AO_EVENT_RELOAD = 1,
+    AO_EVENT_HOTPLUG = 2,
 };
 
 typedef struct ao_control_vol {
@@ -79,7 +79,6 @@ void ao_uninit(struct ao *ao);
 void ao_get_format(struct ao *ao, struct mp_audio *format);
 const char *ao_get_name(struct ao *ao);
 const char *ao_get_description(struct ao *ao);
-const char *ao_get_detected_device(struct ao *ao);
 bool ao_untimed(struct ao *ao);
 int ao_play(struct ao *ao, void **data, int samples, int flags);
 int ao_control(struct ao *ao, enum aocontrol cmd, void *arg);
@@ -92,8 +91,16 @@ void ao_drain(struct ao *ao);
 bool ao_eof_reached(struct ao *ao);
 int ao_query_and_reset_events(struct ao *ao, int events);
 void ao_request_reload(struct ao *ao);
+void ao_hotplug_event(struct ao *ao);
 
-struct ao_device_list *ao_get_device_list(struct mpv_global *global);
+struct ao_hotplug;
+struct ao_hotplug *ao_hotplug_create(struct mpv_global *global,
+                                     struct input_ctx *input_ctx);
+void ao_hotplug_destroy(struct ao_hotplug *hp);
+bool ao_hotplug_check_update(struct ao_hotplug *hp);
+const char *ao_hotplug_get_detected_device(struct ao_hotplug *hp);
+struct ao_device_list *ao_hotplug_get_device_list(struct ao_hotplug *hp);
+
 void ao_print_devices(struct mpv_global *global, struct mp_log *log);
 
 #endif /* MPLAYER_AUDIO_OUT_H */

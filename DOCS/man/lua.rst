@@ -326,7 +326,6 @@ The ``mp`` module is preloaded, although it can be loaded manually with
     the timer is re-added after the function fn is run.
 
     Returns a timer object. The timer object provides the following methods:
-
         ``stop()``
             Disable the timer. Does nothing if the timer is already disabled.
             This will remember the current elapsed time when stopping, so that
@@ -356,6 +355,23 @@ The ``mp`` module is preloaded, although it can be loaded manually with
             Whether the timer is periodic (``false``) or fires just once
             (``true``). This value is used when the timer expires (but before
             the timer callback function fn is run).
+
+    Note that these are method, and you have to call them using ``:`` instead
+    of ``.`` (Refer to http://www.lua.org/manual/5.2/manual.html#3.4.9 .)
+
+    Example:
+
+    ::
+
+        seconds = 0
+        timer = mp.add_periodic_timer(1, function()
+            print("called every second")
+            # stop it after 10 seconds
+            seconds = seconds + 1
+            if seconds >= 10 then
+                timer:kill()
+            end
+        end)
 
 
 ``mp.get_opt(key)``
@@ -622,6 +638,14 @@ strictly part of the guaranteed API.
     then trailing non-whitespace text is tolerated by the function, and the
     trailing text is returned as 3rd return value. (The 3rd return value is
     always there, but with ``trail`` set, no error is raised.)
+
+``utils.format_json(v)``
+    Format the given Lua table (or value) as a JSON string and return it. On
+    error, returns ``nil, error``. (Errors usually only happen on value types
+    incompatible with JSON.)
+
+    The argument value uses similar conventions as ``mp.set_property_native()``
+    to distinguish empty objects and arrays.
 
 ``utils.to_string(v)``
     Turn the given value into a string. Formats tables and their contents. This

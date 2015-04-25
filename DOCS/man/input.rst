@@ -86,11 +86,11 @@ List of Input Commands
     disabling default bindings, without disabling all bindings with
     ``--no-input-default-bindings``.
 
-``seek <seconds> [relative|absolute|absolute-percent|- [default-precise|exact|keyframes]]``
+``seek <seconds> [relative|absolute|absolute-percent|exact|keyframes]``
     Change the playback position. By default, seeks by a relative amount of
     seconds.
 
-    The second argument sets the seek mode:
+    The second argument consists of flags controlling the seek mode:
 
     relative (default)
         Seek relative to current position (a negative value seeks backwards).
@@ -98,16 +98,19 @@ List of Input Commands
         Seek to a given time.
     absolute-percent
         Seek to a given percent position.
-
-    The third argument defines how exact the seek is:
-
-    default-precise (default)
-        Follow the default behavior as set by ``--hr-seek``, which by default
-        does imprecise seeks (like ``keyframes``).
-    exact
-        Always do exact/hr/precise seeks (slow).
     keyframes
         Always restart playback at keyframe boundaries (fast).
+    exact
+        Always do exact/hr/precise seeks (slow).
+
+    Multiple flags can be combined, e.g.: ``absolute+keyframes``.
+
+    By default, ``keyframes`` is used for relative seeks, and ``exact`` is used
+    for absolute seeks.
+
+    Before mpv 0.9, the ``keyframes`` and ``exact`` flags had to be passed as
+    3rd parameter (essentially using a space instead of ``+``). The 3rd
+    parameter is still parsed, but is considered deprecated.
 
 ``revert_seek [mode]``
     Undoes the ``seek`` command, and some other commands that seek (but not
@@ -170,16 +173,12 @@ List of Input Commands
         Save the contents of the mpv window. Typically scaled, with OSD and
         subtitles. The exact behavior depends on the selected video output, and
         if no support is available, this will act like ``video``.
-
-    Second argument:
-
-    <single> (default)
-        Take a single screenshot.
     <each-frame>
         Take a screenshot each frame. Issue this command again to stop taking
         screenshots. Note that you should disable frame-dropping when using
         this mode - or you might receive duplicate images in cases when a
-        frame was dropped.
+        frame was dropped. This flag can be combined with the other flags,
+        e.g. ``video+each-frame``.
 
 ``screenshot_to_file "<filename>" [subtitles|video|window]``
     Take a screenshot and save it to a given file. The format of the file will
@@ -188,8 +187,7 @@ List of Input Commands
 
     The second argument is like the first argument to ``screenshot``.
 
-    This command tries to never overwrite files. If the file already exists,
-    it fails.
+    If the file already exists, it's overwritten.
 
     Like all input command parameters, the filename is subject to property
     expansion as described in `Property Expansion`_.
@@ -399,6 +397,21 @@ List of Input Commands
 
 ``audio_reload [<id>]``
     Reload the given audio tracks. See ``sub_reload`` command.
+
+``rescan_external_files [<mode>]``
+    Rescan external files according to the current ``--sub-auto`` and
+    ``--audio-file-auto`` settings. This can be used to auto-load external
+    files *after* the file was loaded.
+
+    The ``mode`` argument is one of the following:
+
+    <keep-selection> (default)
+        Do not change current track selections.
+
+    <reselect>
+        Select the default audio and video streams, which typically selects
+        external files with highest preference. (The implementation is not
+        perfect, and could be improved on request.)
 
 
 Input Commands that are Possibly Subject to Change
@@ -617,6 +630,15 @@ Input Commands that are Possibly Subject to Change
     Drop audio/video/demuxer buffers, and restart from fresh. Might help with
     unseekable streams that are going out of sync.
     This command might be changed or removed in the future.
+
+``screenshot_raw [subtitles|video|window]``
+    Return a screenshot in memory. This can be used only through the client
+    API. The MPV_FORMAT_NODE_MAP returned by this command has the ``w``, ``h``,
+    ``stride`` fields set to obvious contents. A ``format`` field is set to
+    ``bgr0`` by default. This format is organized as ``B8G8R8X8`` (where ``B``
+    is the LSB). The contents of the padding ``X`` is undefined. The ``data``
+    field is of type MPV_FORMAT_BYTE_ARRAY with the actual image data. The image
+    is freed as soon as the result node is freed.
 
 Undocumented commands: ``tv_last_channel`` (TV/DVB only),
 ``get_property`` (deprecated), ``ao_reload`` (experimental/internal).
@@ -906,6 +928,10 @@ Property list
     a BD or DVD. Use the ``discnav menu`` command to actually enter or leave
     menu mode.
 
+``disc-mouse-on-button``
+    Return ``yes`` when the mouse cursor is located on a button, or ``no``
+    when cursor is outside of any button for disc navigation.
+
 ``chapters``
     Number of chapters.
 
@@ -1064,6 +1090,11 @@ Property list
     guess is very unreliable, and often the property will not be available
     at all, even if data is buffered.
 
+``demuxer-cache-time``
+    Approximate time of video buffered in the demuxer, in seconds. Same as
+    ``demuxer-cache-duration`` but returns the last timestamp of bufferred
+    data in demuxer.
+
 ``demuxer-cache-idle``
     Returns ``yes`` if the demuxer is idle, which means the demuxer cache is
     filled to the requested amount, and is currently not reading more data.
@@ -1108,9 +1139,6 @@ Property list
 
 ``audio-codec``
     Audio codec selected for decoding.
-
-``audio-bitrate``
-    Audio bitrate. This is probably a very bad guess in most cases.
 
 ``audio-samplerate``
     Audio samplerate.
@@ -1208,9 +1236,6 @@ Property list
 ``video-codec``
     Video codec selected for decoding.
 
-``video-bitrate``
-    Video bitrate (a bad guess).
-
 ``width``, ``height``
     Video size. This uses the size of the video as decoded, or if no video
     frame has been decoded yet, the (possibly incorrect) container indicated
@@ -1254,6 +1279,9 @@ Property list
 
     ``video-params/primaries``
         The primaries in use as string. (Exact values subject to change.)
+
+    ``video-params/gamma``
+        The gamma function in use as string. (Exact values subject to change.)
 
     ``video-params/chroma-location``
         Chroma location as string. (Exact values subject to change.)
@@ -1325,6 +1353,13 @@ Property list
     Names of the displays that the mpv window covers. On X11, these
     are the xrandr names (LVDS1, HDMI1, DP1, VGA1, etc.).
 
+``display-fps``
+    The refresh rate of the current display. Currently, this is the lowest FPS
+    of any display covered by the video, as retrieved by the underlying system
+    APIs (e.g. xrandr on X11). It is not the measured FPS. It's not necessarily
+    available on all platforms. Note that any of the listed facts may change
+    any time without a warning.
+
 ``video-aspect`` (RW)
     Video aspect, see ``--video-aspect``.
 
@@ -1381,8 +1416,11 @@ Property list
 ``sub-scale`` (RW)
     Subtitle font size multiplier.
 
-``ass-use-margins`` (RW)
-    See ``--ass-use-margins``.
+``ass-force-margins`` (RW)
+    See ``--ass-force-margins``.
+
+``sub-use-margins`` (RW)
+    See ``--sub-use-margins``.
 
 ``ass-vsfilter-aspect-compat`` (RW)
     See ``--ass-vsfilter-aspect-compat``.
@@ -1485,6 +1523,13 @@ Property list
 
     ``track-list/N/selected``
         ``yes`` if the track is currently decoded, ``no`` otherwise.
+
+    ``track-list/N/ff-index``
+        The stream index as usually used by the FFmpeg utilities. Note that
+        this can be potentially wrong if a demuxer other than libavformat
+        (``--demuxer=lavf``) is used. For mkv files, the index will usually
+        match even if the default (builtin) demuxer is used, but there is
+        no hard guarantee.
 
     When querying the property with the client API using ``MPV_FORMAT_NODE``,
     or with Lua ``mp.get_property_native``, this will return a mpv_node with
@@ -1607,7 +1652,7 @@ Property list
     whether the video window is visible. If the ``--force-window`` option is
     used, this is usually always returns ``yes``.
 
-``packet-video-bitrate``, ``packet-audio-bitrate``, ``packet-sub-bitrate``
+``video-bitrate``, ``audio-bitrate``, ``sub-bitrate``
     Bitrate values calculated on the packet level. This works by dividing the
     bit size of all packets between two keyframes by their presentation
     timestamp distance. (This uses the timestamps are stored in the file, so
@@ -1616,7 +1661,28 @@ Property list
     bitrate. To make the property more UI friendly, updates to these properties
     are throttled in a certain way.
 
+    The unit is bits per second. OSD formatting turns these values in kilobits
+    (or megabits, if appropriate), which can be prevented by using the
+    raw property value, e.g. with ``${=video-bitrate}``.
+
+    Note that the accuracy of these properties is influenced by a few factors.
+    If the underlying demuxer rewrites the packets on demuxing (done for some
+    file formats), the bitrate might be slightly off. If timestamps are bad
+    or jittery (like in Matroska), even constant bitrate streams might show
+    fluctuating bitrate.
+
     How exactly these values are calculated might change in the future.
+
+    In earlier versions of mpv, these properties returned a static (but bad)
+    guess using a completely different method.
+
+``packet-video-bitrate``, ``packet-audio-bitrate``, ``packet-sub-bitrate``
+    Old and deprecated properties for ``video-bitrate``, ``audio-bitrate``,
+    ``sub-bitrate``. They behave exactly the same, but return a value in
+    kilobits. Also, they don't have any OSD formatting, though the same can be
+    achieved with e.g. ``${=video-bitrate}``.
+
+    These properties shouldn't be used anymore.
 
 ``audio-device-list``
     Return the list of discovered audio devices. This is mostly for use with
@@ -1638,6 +1704,13 @@ Property list
     often a rather cryptic audio API-specific ID), while ``description`` is
     human readable free form text. The description is an empty string if none
     was received.
+
+    The special entry with the name set to ``auto`` selects the default audio
+    output driver and the default device.
+
+    The property can be watched with the property observation mechanism in
+    the client API and in Lua scripts. (Technically, change notification is
+    enabled the first time this property is read.)
 
 ``audio-device`` (RW)
     Set the audio device. This directly reads/writes the ``--audio-device``
@@ -1661,6 +1734,10 @@ Property list
 ``audio-out-detected-device``
     Return the audio device selected by the AO driver (only implemented for
     some drivers: currently only ``coreaudio``).
+
+``working-directory``
+    Return the working directory of the mpv process. Can be useful for JSON IPC
+    users, because the command line player usually works with relative paths.
 
 ``mpv-version``
     Return the mpv version/copyright string. Depending on how the binary was

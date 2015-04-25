@@ -4,27 +4,27 @@
  * Based on the one written by Ronald Bultje for gstreamer
  * and on demux_mkv.cpp from Moritz Bunkus.
  *
- * This file is part of MPlayer.
+ * This file is part of mpv.
  *
- * MPlayer is free software; you can redistribute it and/or modify
+ * mpv is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
- * MPlayer is distributed in the hope that it will be useful,
+ * mpv is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with MPlayer; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ * with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <stdlib.h>
 #include <stdio.h>
 #include <inttypes.h>
 #include <stdbool.h>
+#include <math.h>
 #include <assert.h>
 
 #include <libavutil/common.h>
@@ -44,6 +44,7 @@
 #include "talloc.h"
 #include "common/av_common.h"
 #include "options/options.h"
+#include "options/m_option.h"
 #include "misc/bstr.h"
 #include "stream/stream.h"
 #include "video/csputils.h"
@@ -153,7 +154,6 @@ typedef struct mkv_demuxer {
     int64_t segment_start, segment_end;
 
     double duration, last_pts;
-    uint64_t last_filepos;
 
     mkv_track_t **tracks;
     int num_tracks;
@@ -185,6 +185,30 @@ typedef struct mkv_demuxer {
 
     bool eof_warning;
 } mkv_demuxer_t;
+
+#define OPT_BASE_STRUCT struct demux_mkv_opts
+struct demux_mkv_opts {
+    int subtitle_preroll;
+    double subtitle_preroll_secs;
+    int probe_duration;
+    int fix_timestamps;
+};
+
+const struct m_sub_options demux_mkv_conf = {
+    .opts = (const m_option_t[]) {
+        OPT_FLAG("subtitle-preroll", subtitle_preroll, 0),
+        OPT_DOUBLE("subtitle-preroll-secs", subtitle_preroll_secs,
+                   M_OPT_MIN, .min = 0),
+        OPT_FLAG("probe-video-duration", probe_duration, 0),
+        OPT_FLAG("fix-timestamps", fix_timestamps, 0),
+        {0}
+    },
+    .size = sizeof(struct demux_mkv_opts),
+    .defaults = &(const struct demux_mkv_opts){
+        .subtitle_preroll_secs = 1.0,
+        .fix_timestamps = 1,
+    },
+};
 
 #define REALHEADER_SIZE    16
 #define RVPROPERTIES_SIZE  34
@@ -1753,6 +1777,7 @@ static int read_mkv_segment_header(demuxer_t *demuxer, int64_t *segment_end)
 static int demux_mkv_open(demuxer_t *demuxer, enum demux_check check)
 {
     stream_t *s = demuxer->stream;
+    struct MPOpts *opts = demuxer->opts;
     mkv_demuxer_t *mkv_d;
     int64_t start_pos;
     int64_t end_pos;
@@ -1836,8 +1861,9 @@ static int demux_mkv_open(demuxer_t *demuxer, enum demux_check check)
     process_tags(demuxer);
     display_create_tracks(demuxer);
     add_coverart(demuxer);
+    demuxer->allow_refresh_seeks = true;
 
-    if (demuxer->opts->mkv_probe_duration)
+    if (opts->demux_mkv->probe_duration)
         probe_last_timestamp(demuxer);
 
     return 0;
@@ -1993,8 +2019,8 @@ static bool handle_realaudio(demuxer_t *demuxer, mkv_track_t *track,
                     uint8_t ov = track->audio_buf[o / 2];
                     int x = (i & 1) ? iv >> 4 : iv & 0x0F;
                     int y = (o & 1) ? ov >> 4 : ov & 0x0F;
-                    track->audio_buf[o / 2] = ov & 0x0F | (o & 1 ? x << 4 : x);
-                    track->audio_buf[i / 2] = iv & 0x0F | (i & 1 ? y << 4 : y);
+                    track->audio_buf[o / 2] = (ov & 0x0F) | (o & 1 ? x << 4 : x);
+                    track->audio_buf[i / 2] = (iv & 0x0F) | (i & 1 ? y << 4 : y);
                     i++;
                     o++;
                 }
@@ -2026,7 +2052,7 @@ static bool handle_realaudio(demuxer_t *demuxer, mkv_track_t *track,
              * audio packets in file */
             dp->pts = (x * apk_usize % w) ? MP_NOPTS_VALUE :
                 track->audio_timestamp[x * apk_usize / w];
-            dp->pos = orig->pos;
+            dp->pos = orig->pos + x;
             dp->keyframe = !x;   // Mark first packet as keyframe
             demux_add_packet(track->stream, dp);
         }
@@ -2201,6 +2227,7 @@ static void mkv_parse_and_add_packet(demuxer_t *demuxer, mkv_track_t *track,
             break;
         dp->buffer += len;
         dp->len -= len;
+        dp->pos += len;
         if (size) {
             struct demux_packet *new = new_demux_packet_from(data, size);
             if (!new)
@@ -2304,6 +2331,19 @@ exit:
     return res;
 }
 
+static double fix_timestamp(demuxer_t *demuxer, mkv_track_t *track, double ts)
+{
+    mkv_demuxer_t *mkv_d = demuxer->priv;
+    if (demuxer->opts->demux_mkv->fix_timestamps && track->default_duration > 0) {
+        // Assume that timestamps have been rounded to the timecode scale.
+        double quant = MPMIN(mkv_d->tc_scale / 1e9, 0.001);
+        double rts = rint(ts / track->default_duration) * track->default_duration;
+        if (fabs(rts - ts) < quant)
+            ts = rts;
+    }
+    return ts;
+}
+
 static int handle_block(demuxer_t *demuxer, struct block_info *block_info)
 {
     mkv_demuxer_t *mkv_d = (mkv_demuxer_t *) demuxer->priv;
@@ -2326,7 +2366,7 @@ static int handle_block(demuxer_t *demuxer, struct block_info *block_info)
         return 0;
     }
 
-    current_pts = tc / 1e9 - track->codec_delay;
+    current_pts = fix_timestamp(demuxer, track, tc / 1e9) - track->codec_delay;
 
     if (track->type == MATROSKA_TRACK_AUDIO) {
         if (mkv_d->a_skip_to_keyframe)
@@ -2356,8 +2396,8 @@ static int handle_block(demuxer_t *demuxer, struct block_info *block_info)
     }
 
     if (use_this_block) {
+        uint64_t filepos = block_info->filepos;
         mkv_d->last_pts = current_pts;
-        mkv_d->last_filepos = block_info->filepos;
 
         for (int i = 0; i < laces; i++) {
             bstr block = bstr_splice(data, 0, lace_size[i]);
@@ -2369,7 +2409,7 @@ static int handle_block(demuxer_t *demuxer, struct block_info *block_info)
             if (!dp)
                 break;
             dp->keyframe = keyframe;
-            dp->pos = mkv_d->last_filepos;
+            dp->pos = filepos;
             /* If default_duration is 0, assume no pts value is known
              * for packets after the first one (rather than all pts
              * values being the same). Also, don't use it for extra
@@ -2390,6 +2430,7 @@ static int handle_block(demuxer_t *demuxer, struct block_info *block_info)
 
             mkv_parse_and_add_packet(demuxer, track, dp);
             talloc_free_children(track->parser_tmp);
+            filepos += block.len;
         }
 
         if (stream->type == STREAM_VIDEO) {
@@ -2618,35 +2659,30 @@ static int create_index_until(struct demuxer *demuxer, uint64_t timecode)
     return 0;
 }
 
+#define FLAG_BACKWARD 1
+#define FLAG_SUBPREROLL 2
 static struct mkv_index *seek_with_cues(struct demuxer *demuxer, int seek_id,
                                         int64_t target_timecode, int flags)
 {
+    struct MPOpts *opts = demuxer->opts;
     struct mkv_demuxer *mkv_d = demuxer->priv;
     struct mkv_index *index = NULL;
 
-    /* Find the entry in the index closest to the target timecode in the
-     * give direction. If there are no such entries - we're trying to seek
-     * backward from a target time before the first entry or forward from a
-     * target time after the last entry - then still seek to the first/last
-     * entry if that's further in the direction wanted than mkv_d->last_pts.
-     */
-    int64_t min_diff = target_timecode - (int64_t)(mkv_d->last_pts * 1e9 + 0.5);
-    if (flags & SEEK_BACKWARD)
-        min_diff = -min_diff;
-    min_diff = FFMAX(min_diff, 1);
-
+    int64_t min_diff = INT64_MIN;
     for (size_t i = 0; i < mkv_d->num_indexes; i++) {
         if (seek_id < 0 || mkv_d->indexes[i].tnum == seek_id) {
             int64_t diff =
                 target_timecode -
                 (int64_t) (mkv_d->indexes[i].timecode * mkv_d->tc_scale);
-            if (flags & SEEK_BACKWARD)
+            if (flags & FLAG_BACKWARD)
                 diff = -diff;
-            if (diff <= 0) {
-                if (min_diff <= 0 && diff <= min_diff)
+            if (min_diff != INT64_MIN) {
+                if (diff <= 0) {
+                    if (min_diff <= 0 && diff <= min_diff)
+                        continue;
+                } else if (diff >= min_diff)
                     continue;
-            } else if (diff >= min_diff)
-                continue;
+            }
             min_diff = diff;
             index = mkv_d->indexes + i;
         }
@@ -2654,10 +2690,10 @@ static struct mkv_index *seek_with_cues(struct demuxer *demuxer, int seek_id,
 
     if (index) {        /* We've found an entry. */
         uint64_t seek_pos = index->filepos;
-        if (flags & SEEK_SUBPREROLL) {
+        if (flags & FLAG_SUBPREROLL) {
             // Find the cluster with the highest filepos, that has a timestamp
             // still lower than min_tc.
-            double secs = demuxer->opts->mkv_subtitle_preroll_secs;
+            double secs = opts->demux_mkv->subtitle_preroll_secs;
             uint64_t pre = MPMIN(INT64_MAX, secs * 1e9 / mkv_d->tc_scale);
             uint64_t min_tc = pre < index->timecode ? index->timecode - pre : 0;
             uint64_t prev_target = 0;
@@ -2716,9 +2752,13 @@ static void demux_mkv_seek(demuxer_t *demuxer, double rel_seek_secs, int flags)
                 a_tnum = track->tnum;
         }
     }
+
+    int cueflags = (flags & SEEK_BACKWARD) ? FLAG_BACKWARD : 0;
+
     mkv_d->subtitle_preroll = NUM_SUB_PREROLL_PACKETS;
-    if (!st_active[STREAM_SUB] || !st_active[STREAM_VIDEO])
-        flags &= ~SEEK_SUBPREROLL;
+    if (((flags & SEEK_HR) || demuxer->opts->demux_mkv->subtitle_preroll) &&
+        st_active[STREAM_SUB] && st_active[STREAM_VIDEO])
+        cueflags |= FLAG_SUBPREROLL;
 
     // Adjust the target a little bit to catch cases where the target position
     // specifies a keyframe with high, but not perfect, precision.
@@ -2734,9 +2774,9 @@ static void demux_mkv_seek(demuxer_t *demuxer, double rel_seek_secs, int flags)
 
         if (create_index_until(demuxer, target_timecode) >= 0) {
             int seek_id = st_active[STREAM_VIDEO] ? v_tnum : a_tnum;
-            index = seek_with_cues(demuxer, seek_id, target_timecode, flags);
+            index = seek_with_cues(demuxer, seek_id, target_timecode, cueflags);
             if (!index)
-                index = seek_with_cues(demuxer, -1, target_timecode, flags);
+                index = seek_with_cues(demuxer, -1, target_timecode, cueflags);
         }
 
         if (!index)
