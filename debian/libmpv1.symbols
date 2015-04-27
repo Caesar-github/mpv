@@ -23,8 +23,10 @@ libmpv.so.1 libmpv1 #MINVER#
  mpv_initialize@Base 0.4.0
  mpv_load_config_file@Base 0.4.0
  mpv_observe_property@Base 0.4.0
+ mpv_opengl_cb_draw@Base 0.9.0
  mpv_opengl_cb_init_gl@Base 0.8.0
  mpv_opengl_cb_render@Base 0.8.0
+ mpv_opengl_cb_report_flip@Base 0.9.0
  mpv_opengl_cb_set_update_callback@Base 0.8.0
  mpv_opengl_cb_uninit_gl@Base 0.8.0
  mpv_request_event@Base 0.4.0
