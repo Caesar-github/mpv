@@ -1,3 +1,37 @@
+Release 0.9.1
+=============
+
+Changes
+-------
+
+- mpv's IRC channel moved from #mpv-player to #mpv on chat.freenode.net.
+- Documentation updates.
+- The default value for the `--ytdl-format` option is now `best`, in order to
+  work around `youtube-dl`'s 2015.04.26 release enabling DASH by default, as
+  FFmpeg / Libav do not yet properly support DASH.
+- When seeking, the current timestamp will show the predicted seek timestamp
+  instead, until the final timestamp is resolved. Improves UI responsiveness
+  on slow streams and/or large seeks.
+
+Bug fixes
+---------
+
+- Corrected the release marker on DOCS/client-api-changes. The release manager
+  forgot to fix it before release...
+- Fix `vo_vdpau` rendering garbage lines on H.264 video with non-mod16 size
+  (issue #1863).
+- Fix a crash on exit if the "sub_reload" command had run successfully.
+- Fixed seeking with the mouse when `osc-seekbarstyle=bar` is set (issue
+  #1876).
+- (IPC) Fixed encoding of UTF-8 data in JSON (issue #1874).
+
+New features
+------------
+
+This listing is not complete. A complete changelog can be seen by running
+`git log v0.9.0..v0.9.1` in the git repository or by visiting
+https://github.com/mpv-player/mpv/compare/v0.9.0...v0.9.1.
+
 Release 0.9.0
 =============
 
@@ -152,7 +186,8 @@ New features
   "fd://N", where N is the FD number.
 
 This listing is not complete. A complete changelog can be seen by running
-`git log v0.8.0..v0.9.0` in the git repository.
+`git log v0.8.0..v0.9.0` in the git repository or by visiting
+https://github.com/mpv-player/mpv/compare/v0.8.0...v0.9.0 (only 250 commits).
 
 Release 0.8.3
 =============
@@ -185,7 +220,8 @@ Bug fixes
 - Fix anamorphic scaling being ignored if it was very minor.
 
 This listing is not complete. A complete changelog can be seen by running
-`git log v0.8.2..v0.8.3` in the git repository.
+`git log v0.8.2..v0.8.3` in the git repository or by visiting
+https://github.com/mpv-player/mpv/compare/v0.8.2...v0.8.3.
 
 Release 0.8.2
 =============
@@ -193,7 +229,7 @@ Release 0.8.2
 Bug fixes
 ---------
 
-- Fix OSD placement accidentally messed up in 0.8.1.
+- Fix OSD placement accidentally messed up in 0.8.1 (commit 22863d6).
 
 Release 0.8.1
 =============
@@ -224,7 +260,8 @@ New features
 - mpv now tries to load '.vtt' subtitles.
 
 This listing is not complete. A complete changelog can be seen by running
-`git log v0.8.0..v0.8.1` in the git repository.
+`git log v0.8.0..v0.8.1` in the git repository or by visiting
+https://github.com/mpv-player/mpv/compare/v0.8.0...v0.8.1.
 
 Release 0.8.0
 =============
@@ -390,7 +427,8 @@ New features
   files.
 
 This listing is not complete. A complete changelog can be seen by running
-`git log v0.7.0..v0.8.0` in the git repository.
+`git log v0.7.0..v0.8.0` in the git repository or by visiting
+https://github.com/mpv-player/mpv/compare/v0.7.0...v0.8.0 (only 250 commits).
 
 Release 0.7.3
 =============
@@ -469,7 +507,8 @@ New features
 - Client API: "display-names" property is now observable.
 
 This listing is not complete. A complete changelog can be seen by running
-`git log v0.7.2..v0.7.3` in the git repository.
+`git log v0.7.2..v0.7.3` in the git repository or by visiting
+https://github.com/mpv-player/mpv/compare/v0.7.2...v0.7.3.
 
 Release 0.7.2
 =============
@@ -507,7 +546,8 @@ New features
 
 This listing is not complete. There are many more bug fixes and changes. The
 complete change log can be viewed by running ``git log 47ec404..c7d6b21`` in
-the git repository.
+the git repository or by visiting
+https://github.com/mpv-player/mpv/compare/47ec404...c7d6b21.
 
 Release 0.7.1
 =============
@@ -537,7 +577,8 @@ Bug fixes
 
 This listing is not complete. There are many more bug fixes and changes. The
 complete change log can be viewed by running ``git log 8d8b36d..6583ad6`` in
-the git repository.
+the git repository or by visiting
+https://github.com/mpv-player/mpv/compare/8d8b36d...6583ad6.
 
 Release 0.7.0
 =============
@@ -605,4 +646,5 @@ New features
 
 This listing is not complete. There are many more bug fixes and changes. The
 complete change log can be viewed by running ``git log 7759c18..9479daa`` in
-the git repository.
+the git repository or by visiting
+https://github.com/mpv-player/mpv/compare/7759c18...9479daa (only 250 commits).
