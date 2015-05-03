@@ -1,8 +1,9 @@
-mpv (0.9.1-1) UNRELEASED; urgency=medium
+mpv (0.9.1-1) unstable; urgency=medium
 
   * New upstream release
+  * Update 02_fix-config-path.patch
 
- -- Alessandro Ghedini <ghedo@debian.org>  Sun, 03 May 2015 12:43:28 +0200
+ -- Alessandro Ghedini <ghedo@debian.org>  Sun, 03 May 2015 12:51:14 +0200
 
 mpv (0.9.0-1) unstable; urgency=medium
 
