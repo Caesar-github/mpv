@@ -12,7 +12,8 @@ override_dh_auto_configure:
 			--confdir=/etc/mpv				\
 			--zshdir=/usr/share/zsh/vendor-completions	\
 			--enable-cdda --enable-sdl2			\
-			--enable-zsh-comp --enable-libmpv-shared
+			--enable-zsh-comp --enable-libmpv-shared	\
+			--disable-build-date
 
 
 override_dh_auto_build:
