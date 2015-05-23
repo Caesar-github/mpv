@@ -78,7 +78,6 @@ static OSStatus render_cb_lpcm(void *ctx, AudioUnitRenderActionFlags *aflags,
 
     int64_t end = mp_time_us();
     end += p->hw_latency_us + ca_get_latency(ts) + ca_frames_to_us(ao, frames);
-
     ao_read_data(ao, &buf.mData, frames, end);
     return noErr;
 }
@@ -381,8 +380,8 @@ static int hotplug_init(struct ao *ao)
         err = AudioObjectAddPropertyListener(
             kAudioObjectSystemObject, &addr, hotplug_cb, (void *)ao);
         if (err != noErr) {
-            char *c1 = fourcc_repr(ao, hotplug_properties[i]);
-            char *c2 = fourcc_repr(ao, err);
+            char *c1 = fourcc_repr(hotplug_properties[i]);
+            char *c2 = fourcc_repr(err);
             MP_ERR(ao, "failed to set device listener %s (%s)", c1, c2);
             goto coreaudio_error;
         }
@@ -406,8 +405,8 @@ static void hotplug_uninit(struct ao *ao)
         err = AudioObjectRemovePropertyListener(
             kAudioObjectSystemObject, &addr, hotplug_cb, (void *)ao);
         if (err != noErr) {
-            char *c1 = fourcc_repr(ao, hotplug_properties[i]);
-            char *c2 = fourcc_repr(ao, err);
+            char *c1 = fourcc_repr(hotplug_properties[i]);
+            char *c2 = fourcc_repr(err);
             MP_ERR(ao, "failed to set device listener %s (%s)", c1, c2);
         }
     }
@@ -445,7 +444,9 @@ static const int speaker_map[][2] = {
     { kAudioChannelLabel_HeadphonesLeft,       MP_SPEAKER_ID_DL   },
     { kAudioChannelLabel_HeadphonesRight,      MP_SPEAKER_ID_DR   },
 
-    { kAudioChannelLabel_Unknown,              MP_SPEAKER_ID_UNKNOWN0 },
+    { kAudioChannelLabel_Unknown,              MP_SPEAKER_ID_NA  },
+
+    { 0,                                       -1                 },
 };
 
 static int ca_label_to_mp_speaker_id(AudioChannelLabel label)
@@ -541,9 +542,10 @@ bool ca_layout_to_mp_chmap(struct ao *ao, AudioChannelLayout *layout,
         return false;
     }
 
+    int next_na = MP_SPEAKER_ID_NA;
     for (int n = 0; n < l->mNumberChannelDescriptions; n++) {
         AudioChannelLabel label = l->mChannelDescriptions[n].mChannelLabel;
-        uint8_t speaker = ca_label_to_mp_speaker_id(label);
+        int speaker = ca_label_to_mp_speaker_id(label);
         if (speaker < 0) {
             MP_VERBOSE(ao, "channel label=%u unusable to build channel "
                            "bitmap, skipping layout\n", (unsigned) label);
