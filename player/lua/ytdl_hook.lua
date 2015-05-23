@@ -104,11 +104,11 @@ mp.add_hook("on_load", 10, function ()
             "--sub-format", subformat, "--no-playlist"
         }
 
-	-- Checks if video option is "no", change options accordingly
-	if (mp.get_property("options/vid") == "no") then
-	    format = "bestaudio/best"
-	    msg.verbose("Video disabled. Only using audio")
-	end
+        -- Checks if video option is "no", change options accordingly
+        if (mp.get_property("options/vid") == "no") then
+            format = "bestaudio/best"
+            msg.verbose("Video disabled. Only using audio")
+        end
 
         if (format ~= "") then
             table.insert(command, "--format")
@@ -162,7 +162,9 @@ mp.add_hook("on_load", 10, function ()
                 local playlist = "edl://"
                 for i, entry in pairs(json.entries) do
 
-                    playlist = playlist .. entry.url .. ";"
+                    local urllength = string.len(entry.url)
+                    playlist = playlist .. "%" .. urllength .. "%" .. entry.url .. ";"
+
                 end
 
                 msg.debug("EDL: " .. playlist)

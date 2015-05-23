@@ -459,12 +459,12 @@ Program Behavior
 ``--ytdl-raw-options=<key>=<value>[,<key>=<value>[,...]]``
     Pass arbitraty options to youtube-dl. Parameter and argument should be
     passed as a key-value pair. Options without argument must include ``=``.
-    
+
     There is no sanity checking so it's possible to break things (i.e.
     passing invalid parameters to youtube-dl).
 
     .. admonition:: Example
- 
+
         ``--ytdl-raw-options=username=user,password=pass``
         ``--ytdl-raw-options=force-ipv6=``
 
@@ -497,6 +497,10 @@ Video
 ``--no-video``
     Do not play video. With some demuxers this may not work. In those cases
     you can try ``--vo=null`` instead.
+
+    mpv will try to download the audio only if media is streamed with
+    youtube-dl, because it saves bandwidth. This is done by setting the ytdl_format
+    to "bestaudio/best" in the ytdl_hook.lua script.
 
 ``--untimed``
     Do not sleep when outputting video frames. Useful for benchmarks when used
@@ -2140,7 +2144,7 @@ Demuxer
         Play a raw YUV sample::
 
             mpv sample-720x576.yuv --demuxer=rawvideo \
-            --demuxer-rawvideo=w=720:h=576
+            --demuxer-rawvideo-w=720 --demuxer-rawvideo-h=576
 
 ``--demuxer-rawvideo-format=<value>``
     Color space (fourcc) in hex or string for ``--demuxer=rawvideo``

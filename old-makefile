@@ -195,6 +195,7 @@ SOURCES = audio/audio.c \
           options/parse_configfile.c \
           options/path.c \
           osdep/io.c \
+          osdep/path-unix.c \
           osdep/semaphore_osx.c \
           osdep/subprocess.c \
           osdep/subprocess-posix.c \
@@ -334,7 +335,7 @@ all: $(ALL_TARGETS)
 %.o: %.c
 	$(CC) $(DEPFLAGS) $(CFLAGS) -c -o $@ $<
 
-mpv: $(OBJECTS) player/main-fn-unix.o
+mpv: $(OBJECTS) osdep/main-fn-unix.o
 	$(CC) -o $@ $^ $(EXTRALIBS)
 
 input/input.c: input/input_conf.h

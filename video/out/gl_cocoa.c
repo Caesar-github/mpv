@@ -141,7 +141,7 @@ static bool config_window_cocoa(struct MPGLContext *ctx, int flags)
     if (!ctx->gl->SwapInterval)
         ctx->gl->SwapInterval = set_swap_interval;
 
-    vo_cocoa_config_window(ctx->vo, flags, p->ctx);
+    vo_cocoa_config_window(ctx->vo, flags);
 
     return true;
 }
@@ -151,6 +151,11 @@ static void releaseGlContext_cocoa(MPGLContext *ctx)
     struct cgl_context *p = ctx->priv;
     vo_cocoa_release_nsgl_ctx(ctx->vo);
     CGLReleaseContext(p->ctx);
+}
+
+static bool start_frame_cocoa(MPGLContext *ctx)
+{
+    return vo_cocoa_start_frame(ctx->vo);
 }
 
 static void swapGlBuffers_cocoa(MPGLContext *ctx)
@@ -169,6 +174,7 @@ void mpgl_set_backend_cocoa(MPGLContext *ctx)
     ctx->config_window = config_window_cocoa;
     ctx->releaseGlContext = releaseGlContext_cocoa;
     ctx->swapGlBuffers = swapGlBuffers_cocoa;
+    ctx->start_frame = start_frame_cocoa;
     ctx->vo_init = vo_cocoa_init;
     ctx->register_resize_callback = vo_cocoa_register_resize_callback;
     ctx->vo_uninit = vo_cocoa_uninit;
