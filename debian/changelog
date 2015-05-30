@@ -1,4 +1,4 @@
-mpv (0.9.2-1) UNRELEASED; urgency=medium
+mpv (0.9.2-1) unstable; urgency=medium
 
   [ Alessandro Ghedini ]
   * New upstream release
@@ -9,7 +9,7 @@ mpv (0.9.2-1) UNRELEASED; urgency=medium
   [ Jérémy Bobbio ]
   * Stop recording the build date (Closes: #784267)
 
- -- Alessandro Ghedini <ghedo@debian.org>  Sat, 23 May 2015 13:34:42 +0200
+ -- Alessandro Ghedini <ghedo@debian.org>  Sat, 30 May 2015 15:05:54 +0200
 
 mpv (0.9.1-1) unstable; urgency=medium
 
