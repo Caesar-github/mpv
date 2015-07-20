@@ -8,10 +8,10 @@ Last-Update: 2014-11-28
 
 --- /dev/null
 +++ b/waf
-@@ -0,0 +1,165 @@
+@@ -0,0 +1,166 @@
 +#!/usr/bin/env python
 +# encoding: ISO8859-1
-+# Thomas Nagy, 2005-2014
++# Thomas Nagy, 2005-2015
 +
 +"""
 +Redistribution and use in source and binary forms, with or without
@@ -43,12 +43,13 @@ Last-Update: 2014-11-28
 +
 +import os, sys, inspect
 +
-+VERSION="1.8.4"
-+REVISION="6442f4de997a9be97a56ebfe12e49ac5"
++VERSION="1.8.12"
++REVISION="f00e5b53f6bbeab1384a38c9cc5d51f7"
++GIT="1427497785a594dedeaac09013db635791f068c4"
 +INSTALL=''
-+C1='#.'
-+C2='#+'
-+C3='#('
++C1='#+'
++C2='#)'
++C3='#%'
 +cwd = os.getcwd()
 +join = os.path.join
 +
@@ -176,10 +177,10 @@ Last-Update: 2014-11-28
 +
 --- /dev/null
 +++ b/waflib/Build.py
-@@ -0,0 +1,761 @@
+@@ -0,0 +1,759 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import os,sys,errno,re,shutil,stat
 +try:
@@ -517,8 +518,6 @@ Last-Update: 2014-11-28
 +		min_grp=0
 +		for name in self.targets.split(','):
 +			tg=self.get_tgen_by_name(name)
-+			if not tg:
-+				raise Errors.WafError('target %r does not exist'%name)
 +			m=self.get_group_idx(tg)
 +			if m>min_grp:
 +				min_grp=m
@@ -940,10 +939,10 @@ Last-Update: 2014-11-28
 +		return match
 --- /dev/null
 +++ b/waflib/ConfigSet.py
-@@ -0,0 +1,152 @@
+@@ -0,0 +1,153 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import copy,re,os
 +from waflib import Logs,Utils
@@ -1012,6 +1011,7 @@ Last-Update: 2014-11-28
 +			for x in keys:
 +				tbl[x]=copy.deepcopy(tbl[x])
 +			self.table=tbl
++		return self
 +	def get_flat(self,key):
 +		s=self[key]
 +		if isinstance(s,str):return s
@@ -1095,10 +1095,10 @@ Last-Update: 2014-11-28
 +		self.table=self.undo_stack.pop(-1)
 --- /dev/null
 +++ b/waflib/Configure.py
-@@ -0,0 +1,373 @@
+@@ -0,0 +1,383 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import os,shlex,sys,time,re,shutil
 +from waflib import ConfigSet,Utils,Options,Logs,Context,Build,Errors
@@ -1200,11 +1200,11 @@ Last-Update: 2014-11-28
 +		env['hash']=self.hash
 +		env['files']=self.files
 +		env['environ']=dict(self.environ)
-+		if not self.env.NO_LOCK_IN_RUN:
++		if not self.env.NO_LOCK_IN_RUN and not getattr(Options.options,'no_lock_in_run'):
 +			env.store(os.path.join(Context.run_dir,Options.lockfile))
-+		if not self.env.NO_LOCK_IN_TOP:
++		if not self.env.NO_LOCK_IN_TOP and not getattr(Options.options,'no_lock_in_top'):
 +			env.store(os.path.join(Context.top_dir,Options.lockfile))
-+		if not self.env.NO_LOCK_IN_OUT:
++		if not self.env.NO_LOCK_IN_OUT and not getattr(Options.options,'no_lock_in_out'):
 +			env.store(os.path.join(Context.out_dir,Options.lockfile))
 +	def prepare_env(self,env):
 +		if not env.PREFIX:
@@ -1213,9 +1213,15 @@ Last-Update: 2014-11-28
 +			else:
 +				env.PREFIX=''
 +		if not env.BINDIR:
-+			env.BINDIR=Utils.subst_vars('${PREFIX}/bin',env)
++			if Options.options.bindir:
++				env.BINDIR=os.path.abspath(os.path.expanduser(Options.options.bindir))
++			else:
++				env.BINDIR=Utils.subst_vars('${PREFIX}/bin',env)
 +		if not env.LIBDIR:
-+			env.LIBDIR=Utils.subst_vars('${PREFIX}/lib',env)
++			if Options.options.libdir:
++				env.LIBDIR=os.path.abspath(os.path.expanduser(Options.options.libdir))
++			else:
++				env.LIBDIR=Utils.subst_vars('${PREFIX}/lib%s'%Utils.lib64(),env)
 +	def store(self):
 +		n=self.cachedir.make_node('build.config.py')
 +		n.write('version = 0x%x\ntools = %r\n'%(Context.HEXVERSION,self.tools))
@@ -1228,7 +1234,7 @@ Last-Update: 2014-11-28
 +		tools=Utils.to_list(input)
 +		if tooldir:tooldir=Utils.to_list(tooldir)
 +		for tool in tools:
-+			mag=(tool,id(self.env),funs)
++			mag=(tool,id(self.env),tooldir,funs)
 +			if mag in self.tool_cache:
 +				self.to_log('(tool %s is already loaded, skipping)'%tool)
 +				continue
@@ -1286,9 +1292,13 @@ Last-Update: 2014-11-28
 +	setattr(Build.BuildContext,f.__name__,fun)
 +	return f
 +@conf
-+def add_os_flags(self,var,dest=None):
-+	try:self.env.append_value(dest or var,shlex.split(self.environ[var]))
-+	except KeyError:pass
++def add_os_flags(self,var,dest=None,dup=True):
++	try:
++		flags=shlex.split(self.environ[var])
++	except KeyError:
++		return
++	if dup or''.join(flags)not in''.join(Utils.to_list(self.env[dest or var])):
++		self.env.append_value(dest or var,flags)
 +@conf
 +def cmd_to_list(self,cmd):
 +	if isinstance(cmd,str)and cmd.find(' '):
@@ -1474,14 +1484,14 @@ Last-Update: 2014-11-28
 @@ -0,0 +1,360 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import os,re,imp,sys
 +from waflib import Utils,Errors,Logs
 +import waflib.Node
-+HEXVERSION=0x1080400
-+WAFVERSION="1.8.4"
-+WAFREVISION="67a5bb5c730ba3abebccdbe64a4f509d92f33b9e"
++HEXVERSION=0x1080c00
++WAFVERSION="1.8.12"
++WAFREVISION="ae508f2f82fbfad4420f7920b6f68a6801e383fd"
 +ABI=98
 +DBFILE='.wafpickle-%s-%d-%d'%(sys.platform,sys.hexversion,ABI)
 +APPNAME='APPNAME'
@@ -1614,7 +1624,7 @@ Last-Update: 2014-11-28
 +	def exec_command(self,cmd,**kw):
 +		subprocess=Utils.subprocess
 +		kw['shell']=isinstance(cmd,str)
-+		Logs.debug('runner: %r'%cmd)
++		Logs.debug('runner: %r'%(cmd,))
 +		Logs.debug('runner_env: kw=%s'%kw)
 +		if self.logger:
 +			self.logger.info(cmd)
@@ -1652,7 +1662,7 @@ Last-Update: 2014-11-28
 +	def cmd_and_log(self,cmd,**kw):
 +		subprocess=Utils.subprocess
 +		kw['shell']=isinstance(cmd,str)
-+		Logs.debug('runner: %r'%cmd)
++		Logs.debug('runner: %r'%(cmd,))
 +		if'quiet'in kw:
 +			quiet=kw['quiet']
 +			del kw['quiet']
@@ -1837,7 +1847,7 @@ Last-Update: 2014-11-28
 @@ -0,0 +1,37 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import traceback,sys
 +class WafError(Exception):
@@ -1877,7 +1887,7 @@ Last-Update: 2014-11-28
 @@ -0,0 +1,196 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import os,re,traceback,sys,types
 +from waflib import Utils,ansiterm
@@ -1891,13 +1901,13 @@ Last-Update: 2014-11-28
 +HOUR_FORMAT="%H:%M:%S"
 +zones=''
 +verbose=0
-+colors_lst={'USE':True,'BOLD':'\x1b[01;1m','RED':'\x1b[01;31m','GREEN':'\x1b[32m','YELLOW':'\x1b[33m','PINK':'\x1b[35m','BLUE':'\x1b[01;34m','CYAN':'\x1b[36m','NORMAL':'\x1b[0m','cursor_on':'\x1b[?25h','cursor_off':'\x1b[?25l',}
++colors_lst={'USE':True,'BOLD':'\x1b[01;1m','RED':'\x1b[01;31m','GREEN':'\x1b[32m','YELLOW':'\x1b[33m','PINK':'\x1b[35m','BLUE':'\x1b[01;34m','CYAN':'\x1b[36m','GREY':'\x1b[37m','NORMAL':'\x1b[0m','cursor_on':'\x1b[?25h','cursor_off':'\x1b[?25l',}
 +indicator='\r\x1b[K%s%s%s'
 +def enable_colors(use):
 +	if use==1:
 +		if not(sys.stderr.isatty()or sys.stdout.isatty()):
 +			use=0
-+		if Utils.is_win32:
++		if Utils.is_win32 and os.name!='java':
 +			term=os.environ.get('TERM','')
 +		else:
 +			term=os.environ.get('TERM','dumb')
@@ -2073,10 +2083,10 @@ Last-Update: 2014-11-28
 +	info("%s%s%s %s"%(colors(col),msg,colors.NORMAL,label),extra={'terminator':sep})
 --- /dev/null
 +++ b/waflib/Node.py
-@@ -0,0 +1,469 @@
+@@ -0,0 +1,463 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import os,re,sys,shutil
 +from waflib import Utils,Errors
@@ -2111,24 +2121,9 @@ Last-Update: 2014-11-28
 +**/_darcs/**
 +**/.intlcache
 +**/.DS_Store'''
-+def split_path(path):
-+	return path.split('/')
-+def split_path_cygwin(path):
-+	if path.startswith('//'):
-+		ret=path.split('/')[2:]
-+		ret[0]='/'+ret[0]
-+		return ret
-+	return path.split('/')
-+re_sp=re.compile('[/\\\\]')
-+def split_path_win32(path):
-+	if path.startswith('\\\\'):
-+		if path.startswith('\\\\?'):
-+			path=path[4:]
-+		else:
-+			ret=re.split(re_sp,path)[2:]
-+			ret[0]='\\\\'+ret[0]
-+			return ret
-+	return re.split(re_sp,path)
++split_path=Utils.split_path_unix
++split_path_cygwin=Utils.split_path_cygwin
++split_path_win32=Utils.split_path_win32
 +if sys.platform=='cygwin':
 +	split_path=split_path_cygwin
 +elif Utils.is_win32:
@@ -2304,6 +2299,9 @@ Last-Update: 2014-11-28
 +		if c1.parent:
 +			for i in range(up):
 +				lst.append('..')
++		else:
++			if lst and not Utils.is_win32:
++				lst.append('')
 +		lst.reverse()
 +		return os.sep.join(lst)or'.'
 +	def abspath(self):
@@ -2311,22 +2309,28 @@ Last-Update: 2014-11-28
 +			return self.cache_abspath
 +		except AttributeError:
 +			pass
-+		if os.sep=='/':
-+			if not self.parent:
-+				val=os.sep
-+			elif not self.parent.name:
-+				val=os.sep+self.name
-+			else:
-+				val=self.parent.abspath()+os.sep+self.name
++		if not self.parent:
++			val=os.sep
++		elif not self.parent.name:
++			val=os.sep+self.name
 +		else:
++			val=self.parent.abspath()+os.sep+self.name
++		self.cache_abspath=val
++		return val
++	if Utils.is_win32:
++		def abspath(self):
++			try:
++				return self.cache_abspath
++			except AttributeError:
++				pass
 +			if not self.parent:
 +				val=''
 +			elif not self.parent.name:
 +				val=self.name+os.sep
 +			else:
 +				val=self.parent.abspath().rstrip(os.sep)+os.sep+self.name
-+		self.cache_abspath=val
-+		return val
++			self.cache_abspath=val
++			return val
 +	def is_child_of(self,node):
 +		p=self
 +		diff=self.height()-node.height()
@@ -2545,10 +2549,10 @@ Last-Update: 2014-11-28
 +	pass
 --- /dev/null
 +++ b/waflib/Options.py
-@@ -0,0 +1,142 @@
+@@ -0,0 +1,147 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import os,tempfile,optparse,sys,re
 +from waflib import Logs,Utils,Context
@@ -2609,6 +2613,9 @@ Last-Update: 2014-11-28
 +		self.option_groups['configure options']=gr
 +		gr.add_option('-o','--out',action='store',default='',help='build dir for the project',dest='out')
 +		gr.add_option('-t','--top',action='store',default='',help='src dir for the project',dest='top')
++		gr.add_option('--no-lock-in-run',action='store_true',default='',help=optparse.SUPPRESS_HELP,dest='no_lock_in_run')
++		gr.add_option('--no-lock-in-out',action='store_true',default='',help=optparse.SUPPRESS_HELP,dest='no_lock_in_out')
++		gr.add_option('--no-lock-in-top',action='store_true',default='',help=optparse.SUPPRESS_HELP,dest='no_lock_in_top')
 +		default_prefix=getattr(Context.g_module,'default_prefix',os.environ.get('PREFIX'))
 +		if not default_prefix:
 +			if platform=='win32':
@@ -2617,6 +2624,8 @@ Last-Update: 2014-11-28
 +			else:
 +				default_prefix='/usr/local/'
 +		gr.add_option('--prefix',dest='prefix',default=default_prefix,help='installation prefix [default: %r]'%default_prefix)
++		gr.add_option('--bindir',dest='bindir',help='bindir')
++		gr.add_option('--libdir',dest='libdir',help='libdir')
 +		gr=self.add_option_group('Build and installation options')
 +		self.option_groups['build and install options']=gr
 +		gr.add_option('-p','--progress',dest='progress_bar',default=0,action='count',help='-p: progress bar; -pp: ide output')
@@ -2693,7 +2702,7 @@ Last-Update: 2014-11-28
 @@ -0,0 +1,201 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import random,atexit
 +try:
@@ -2894,10 +2903,10 @@ Last-Update: 2014-11-28
 +		self.free_task_pool()
 --- /dev/null
 +++ b/waflib/Scripting.py
-@@ -0,0 +1,385 @@
+@@ -0,0 +1,394 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import os,shlex,shutil,traceback,errno,sys,stat
 +from waflib import Utils,Configure,Logs,Options,ConfigSet,Context,Errors,Build,Node
@@ -2915,6 +2924,11 @@ Last-Update: 2014-11-28
 +		ctx.curdir=current_directory
 +		ctx.parse_args()
 +		sys.exit(0)
++	if len(sys.argv)>1:
++		potential_wscript=os.path.join(current_directory,sys.argv[1])
++		if os.path.basename(potential_wscript)=='wscript'and os.path.isfile(potential_wscript):
++			current_directory=os.path.normpath(os.path.dirname(potential_wscript))
++			sys.argv.pop(1)
 +	Context.waf_dir=wafdir
 +	Context.launch_dir=current_directory
 +	no_climb=os.environ.get('NOCLIMB',None)
@@ -2924,8 +2938,13 @@ Last-Update: 2014-11-28
 +				if y.startswith(k):
 +					no_climb=True
 +					break
++	for x in sys.argv:
++		if x.startswith('--top='):
++			Context.run_dir=Context.top_dir=x[6:]
++		if x.startswith('--out='):
++			Context.out_dir=x[6:]
 +	cur=current_directory
-+	while cur:
++	while cur and not Context.top_dir:
 +		lst=os.listdir(cur)
 +		if Options.lockfile in lst:
 +			env=ConfigSet.ConfigSet()
@@ -3145,7 +3164,7 @@ Last-Update: 2014-11-28
 +				zip.write(x.abspath(),archive_name,zipfile.ZIP_DEFLATED)
 +			zip.close()
 +		else:
-+			self.fatal('Valid algo types are tar.bz2, tar.gz or zip')
++			self.fatal('Valid algo types are tar.bz2, tar.gz, tar.xz or zip')
 +		try:
 +			from hashlib import sha1 as sha
 +		except ImportError:
@@ -3242,7 +3261,6 @@ Last-Update: 2014-11-28
 +	'''checks if the project compiles (tarball from 'dist')'''
 +	pass
 +def update(ctx):
-+	'''updates the plugins from the *waflib/extras* directory'''
 +	lst=Options.options.files.split(',')
 +	if not lst:
 +		lst=[x for x in Utils.listdir(Context.waf_dir+'/waflib/extras')if x.endswith('.py')]
@@ -3282,10 +3300,10 @@ Last-Update: 2014-11-28
 +Build.BuildContext.execute=autoconfigure(Build.BuildContext.execute)
 --- /dev/null
 +++ b/waflib/Task.py
-@@ -0,0 +1,654 @@
+@@ -0,0 +1,659 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import os,re,sys
 +from waflib import Utils,Logs,Errors
@@ -3334,12 +3352,15 @@ Last-Update: 2014-11-28
 +			if getattr(cls,'run_str',None):
 +				(f,dvars)=compile_fun(cls.run_str,cls.shell)
 +				cls.hcode=cls.run_str
++				cls.orig_run_str=cls.run_str
 +				cls.run_str=None
 +				cls.run=f
 +				cls.vars=list(set(cls.vars+dvars))
 +				cls.vars.sort()
 +			elif getattr(cls,'run',None)and not'hcode'in cls.__dict__:
 +				cls.hcode=Utils.h_fun(cls.run)
++			if sys.hexversion>0x3000000:
++				cls.hcode=cls.hcode.encode('iso8859-1','xmlcharrefreplace')
 +			getattr(cls,'register',classes)[name]=cls
 +evil=store_task_type('evil',(object,),{})
 +class TaskBase(evil):
@@ -3419,6 +3440,8 @@ Last-Update: 2014-11-28
 +	def post_run(self):
 +		pass
 +	def log_display(self,bld):
++		if self.generator.bld.progress_bar==3:
++			return
 +		s=self.display()
 +		if s:
 +			if bld.logger:
@@ -3619,7 +3642,7 @@ Last-Update: 2014-11-28
 +				self.hasrun=MISSING
 +				self.err_msg='-> missing file: %r'%node.abspath()
 +				raise Errors.WafError(self.err_msg)
-+			node.sig=sig
++			node.sig=node.cache_sig=sig
 +		bld.task_sigs[self.uid()]=self.cache_sig
 +	def sig_explicit_deps(self):
 +		bld=self.generator.bld
@@ -3732,9 +3755,9 @@ Last-Update: 2014-11-28
 +		except AttributeError:
 +			m=Utils.md5()
 +			up=m.update
-+			up(self.__class__.__name__.encode('iso8859-1'))
++			up(self.__class__.__name__.encode('iso8859-1','xmlcharrefreplace'))
 +			for x in self.inputs+self.outputs:
-+				up(x.abspath().encode('iso8859-1'))
++				up(x.abspath().encode('iso8859-1','xmlcharrefreplace'))
 +			self.uid_=m.digest()
 +			return self.uid_
 +	uid.__doc__=Task.uid.__doc__
@@ -3906,7 +3929,7 @@ Last-Update: 2014-11-28
 +	def post_run(self):
 +		old_post_run(self)
 +		for node in self.outputs:
-+			node.sig=Utils.h_file(node.abspath())
++			node.sig=node.cache_sig=Utils.h_file(node.abspath())
 +			self.generator.bld.task_sigs[node.abspath()]=self.uid()
 +	cls.post_run=post_run
 +	old_runnable_status=cls.runnable_status
@@ -3939,14 +3962,15 @@ Last-Update: 2014-11-28
 +	return cls
 --- /dev/null
 +++ b/waflib/TaskGen.py
-@@ -0,0 +1,407 @@
+@@ -0,0 +1,416 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import copy,re,os
 +from waflib import Task,Utils,Logs,Errors,ConfigSet,Node
 +feats=Utils.defaultdict(set)
++HEADER_EXTS=['.h','.hpp','.hxx','.hh']
 +class task_gen(object):
 +	mappings=Utils.ordered_iter_dict()
 +	prec=Utils.defaultdict(list)
@@ -4273,8 +4297,12 @@ Last-Update: 2014-11-28
 +		except AttributeError:
 +			d={}
 +			for x in lst:
-+				tmp=getattr(self.generator,x,'')or self.env.get_flat(x)or self.env.get_flat(x.upper())
-+				d[x]=str(tmp)
++				tmp=getattr(self.generator,x,'')or self.env[x]or self.env[x.upper()]
++				try:
++					tmp=''.join(tmp)
++				except TypeError:
++					tmp=str(tmp)
++				d[x]=tmp
 +		code=code%d
 +		self.outputs[0].write(code,encoding=getattr(self.generator,'encoding','ISO8859-1'))
 +		self.generator.bld.raw_deps[self.uid()]=self.dep_vars=lst
@@ -4341,8 +4369,12 @@ Last-Update: 2014-11-28
 +			if val:
 +				has_constraints=True
 +				setattr(tsk,k,val)
-+		if not has_constraints and b.name.endswith('.h'):
-+			tsk.before=[k for k in('c','cxx')if k in Task.classes]
++		if not has_constraints:
++			global HEADER_EXTS
++			for xt in HEADER_EXTS:
++				if b.name.endswith(xt):
++					tsk.before=[k for k in('c','cxx')if k in Task.classes]
++					break
 +		inst_to=getattr(self,'install_path',None)
 +		if inst_to:
 +			self.bld.install_files(inst_to,b,chmod=getattr(self,'chmod',Utils.O644))
@@ -4352,14 +4384,14 @@ Last-Update: 2014-11-28
 @@ -0,0 +1,4 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 --- /dev/null
 +++ b/waflib/Tools/ar.py
 @@ -0,0 +1,13 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +from waflib.Configure import conf
 +@conf
@@ -4375,7 +4407,7 @@ Last-Update: 2014-11-28
 @@ -0,0 +1,25 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import os,sys
 +from waflib import Task,Utils
@@ -4403,7 +4435,7 @@ Last-Update: 2014-11-28
 @@ -0,0 +1,28 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +from waflib import Task
 +from waflib.TaskGen import extension
@@ -4434,9 +4466,9 @@ Last-Update: 2014-11-28
 @@ -0,0 +1,26 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
-+from waflib import TaskGen,Task,Utils
++from waflib import TaskGen,Task
 +from waflib.Tools import c_preproc
 +from waflib.Tools.ccroot import link_task,stlink_task
 +@TaskGen.extension('.c')
@@ -4450,7 +4482,7 @@ Last-Update: 2014-11-28
 +	ext_in=['.h']
 +	scan=c_preproc.scan
 +class cprogram(link_task):
-+	run_str='${LINK_CC} ${LINKFLAGS} ${CCLNK_SRC_F}${SRC} ${CCLNK_TGT_F}${TGT[0].abspath()} ${RPATH_ST:RPATH} ${FRAMEWORKPATH_ST:FRAMEWORKPATH} ${FRAMEWORK_ST:FRAMEWORK} ${ARCH_ST:ARCH} ${STLIB_MARKER} ${STLIBPATH_ST:STLIBPATH} ${STLIB_ST:STLIB} ${SHLIB_MARKER} ${LIBPATH_ST:LIBPATH} ${LIB_ST:LIB}'
++	run_str='${LINK_CC} ${LINKFLAGS} ${CCLNK_SRC_F}${SRC} ${CCLNK_TGT_F}${TGT[0].abspath()} ${RPATH_ST:RPATH} ${FRAMEWORKPATH_ST:FRAMEWORKPATH} ${FRAMEWORK_ST:FRAMEWORK} ${ARCH_ST:ARCH} ${STLIB_MARKER} ${STLIBPATH_ST:STLIBPATH} ${STLIB_ST:STLIB} ${SHLIB_MARKER} ${LIBPATH_ST:LIBPATH} ${LIB_ST:LIB} ${LDFLAGS}'
 +	ext_out=['.bin']
 +	vars=['LINKDEPS']
 +	inst_to='${BINDIR}'
@@ -4463,7 +4495,7 @@ Last-Update: 2014-11-28
 @@ -0,0 +1,55 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import os,sys,re
 +from waflib import Utils,Build
@@ -4518,13 +4550,13 @@ Last-Update: 2014-11-28
 +	return bld(*k,**kw)
 --- /dev/null
 +++ b/waflib/Tools/c_config.py
-@@ -0,0 +1,722 @@
+@@ -0,0 +1,743 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import os,re,shlex,sys
-+from waflib import Build,Utils,Task,Options,Logs,Errors,ConfigSet,Runner
++from waflib import Build,Utils,Task,Options,Logs,Errors,Runner
 +from waflib.TaskGen import after_method,feature
 +from waflib.Configure import conf
 +WAF_CONFIG_H='config.h'
@@ -4536,7 +4568,7 @@ Last-Update: 2014-11-28
 +	void *p;
 +	(void)argc; (void)argv;
 +	p=(void*)(%s);
-+	return 0;
++	return (int)p;
 +}
 +'''
 +SNIP_TYPE='''
@@ -4561,7 +4593,7 @@ Last-Update: 2014-11-28
 +	return (size_t) off < sizeof(%(type_name)s);
 +}
 +'''
-+MACRO_TO_DESTOS={'__linux__':'linux','__GNU__':'gnu','__FreeBSD__':'freebsd','__NetBSD__':'netbsd','__OpenBSD__':'openbsd','__sun':'sunos','__hpux':'hpux','__sgi':'irix','_AIX':'aix','__CYGWIN__':'cygwin','__MSYS__':'msys','_UWIN':'uwin','_WIN64':'win32','_WIN32':'win32','__ENVIRONMENT_MAC_OS_X_VERSION_MIN_REQUIRED__':'darwin','__ENVIRONMENT_IPHONE_OS_VERSION_MIN_REQUIRED__':'darwin','__QNX__':'qnx','__native_client__':'nacl'}
++MACRO_TO_DESTOS={'__linux__':'linux','__GNU__':'gnu','__FreeBSD__':'freebsd','__NetBSD__':'netbsd','__OpenBSD__':'openbsd','__sun':'sunos','__hpux':'hpux','__sgi':'irix','_AIX':'aix','__CYGWIN__':'cygwin','__MSYS__':'cygwin','_UWIN':'uwin','_WIN64':'win32','_WIN32':'win32','__ENVIRONMENT_MAC_OS_X_VERSION_MIN_REQUIRED__':'darwin','__ENVIRONMENT_IPHONE_OS_VERSION_MIN_REQUIRED__':'darwin','__QNX__':'qnx','__native_client__':'nacl'}
 +MACRO_TO_DEST_CPU={'__x86_64__':'x86_64','__amd64__':'x86_64','__i386__':'x86','__ia64__':'ia','__mips__':'mips','__sparc__':'sparc','__alpha__':'alpha','__aarch64__':'aarch64','__thumb__':'thumb','__arm__':'arm','__hppa__':'hppa','__powerpc__':'powerpc','__ppc__':'powerpc','__convex__':'convex','__m68k__':'m68k','__s390x__':'s390x','__s390__':'s390','__sh__':'sh',}
 +@conf
 +def parse_flags(self,line,uselib_store,env=None,force_static=False,posix=None):
@@ -4578,6 +4610,7 @@ Last-Update: 2014-11-28
 +	app=env.append_value
 +	appu=env.append_unique
 +	uselib=uselib_store
++	static=False
 +	while lst:
 +		x=lst.pop(0)
 +		st=x[:2]
@@ -4594,13 +4627,15 @@ Last-Update: 2014-11-28
 +			app('DEFINES_'+uselib,[ot])
 +		elif st=='-l':
 +			if not ot:ot=lst.pop(0)
-+			prefix=force_static and'STLIB_'or'LIB_'
++			prefix=(force_static or static)and'STLIB_'or'LIB_'
 +			appu(prefix+uselib,[ot])
 +		elif st=='-L':
 +			if not ot:ot=lst.pop(0)
-+			appu('LIBPATH_'+uselib,[ot])
++			prefix=(force_static or static)and'STLIBPATH_'or'LIBPATH_'
++			appu(prefix+uselib,[ot])
 +		elif x.startswith('/LIBPATH:'):
-+			appu('LIBPATH_'+uselib,[x.replace('/LIBPATH:','')])
++			prefix=(force_static or static)and'STLIBPATH_'or'LIBPATH_'
++			appu(prefix+uselib,[x.replace('/LIBPATH:','')])
 +		elif x=='-pthread'or x.startswith('+')or x.startswith('-std'):
 +			app('CFLAGS_'+uselib,[x])
 +			app('CXXFLAGS_'+uselib,[x])
@@ -4609,12 +4644,18 @@ Last-Update: 2014-11-28
 +			appu('FRAMEWORK_'+uselib,[lst.pop(0)])
 +		elif x.startswith('-F'):
 +			appu('FRAMEWORKPATH_'+uselib,[x[2:]])
-+		elif x=='-Wl,-rpath':
-+			app('RPATH_'+uselib,lst.pop(0))
++		elif x=='-Wl,-rpath'or x=='-Wl,-R':
++			app('RPATH_'+uselib,lst.pop(0).lstrip('-Wl,'))
++		elif x.startswith('-Wl,-R,'):
++			app('RPATH_'+uselib,x[7:])
 +		elif x.startswith('-Wl,-R'):
 +			app('RPATH_'+uselib,x[6:])
 +		elif x.startswith('-Wl,-rpath,'):
 +			app('RPATH_'+uselib,x[11:])
++		elif x=='-Wl,-Bstatic'or x=='-Bstatic':
++			static=True
++		elif x=='-Wl,-Bdynamic'or x=='-Bdynamic':
++			static=False
 +		elif x.startswith('-Wl'):
 +			app('LINKFLAGS_'+uselib,[x])
 +		elif x.startswith('-m')or x.startswith('-f')or x.startswith('-dynamic'):
@@ -4699,7 +4740,7 @@ Last-Update: 2014-11-28
 +		defi=self.env.PKG_CONFIG_DEFINES or{}
 +	for key,val in defi.items():
 +		lst.append('--define-variable=%s=%s'%(key,val))
-+	static=False
++	static=kw.get('force_static',False)
 +	if'args'in kw:
 +		args=Utils.to_list(kw['args'])
 +		if'--static'in args or'--static-libs'in args:
@@ -5057,16 +5098,16 @@ Last-Update: 2014-11-28
 +	return"\n".join(lst)
 +@conf
 +def cc_add_flags(conf):
-+	conf.add_os_flags('CPPFLAGS','CFLAGS')
-+	conf.add_os_flags('CFLAGS')
++	conf.add_os_flags('CPPFLAGS',dup=False)
++	conf.add_os_flags('CFLAGS',dup=False)
 +@conf
 +def cxx_add_flags(conf):
-+	conf.add_os_flags('CPPFLAGS','CXXFLAGS')
-+	conf.add_os_flags('CXXFLAGS')
++	conf.add_os_flags('CPPFLAGS',dup=False)
++	conf.add_os_flags('CXXFLAGS',dup=False)
 +@conf
 +def link_add_flags(conf):
-+	conf.add_os_flags('LINKFLAGS')
-+	conf.add_os_flags('LDFLAGS','LINKFLAGS')
++	conf.add_os_flags('LINKFLAGS',dup=False)
++	conf.add_os_flags('LDFLAGS',dup=False)
 +@conf
 +def cc_load_tools(conf):
 +	if not conf.env.DEST_OS:
@@ -5098,6 +5139,8 @@ Last-Update: 2014-11-28
 +		conf.fatal('Not icc/icpc')
 +	if clang and out.find('__clang__')<0:
 +		conf.fatal('Not clang/clang++')
++	if not clang and out.find('__clang__')>=0:
++		conf.fatal('Could not find gcc/g++ (only Clang), if renamed try eg: CC=gcc48 CXX=g++48 waf configure')
 +	k={}
 +	if icc or gcc or clang:
 +		out=out.splitlines()
@@ -5141,7 +5184,10 @@ Last-Update: 2014-11-28
 +			conf.env['CC_VERSION']=(ver[:-2],ver[-2],ver[-1])
 +		else:
 +			if isD('__clang__'):
-+				conf.env['CC_VERSION']=(k['__clang_major__'],k['__clang_minor__'],k['__clang_patchlevel__'])
++				try:
++					conf.env['CC_VERSION']=(k['__clang_major__'],k['__clang_minor__'],k['__clang_patchlevel__'])
++				except KeyError:
++					conf.env['CC_VERSION']=(k['__GNUC__'],k['__GNUC_MINOR__'],k['__GNUC_PATCHLEVEL__'])
 +			else:
 +				try:
 +					conf.env['CC_VERSION']=(k['__GNUC__'],k['__GNUC_MINOR__'],k['__GNUC_PATCHLEVEL__'])
@@ -5175,7 +5221,7 @@ Last-Update: 2014-11-28
 +		out=e.stdout
 +		err=e.stderr
 +	version=(out or err)
-+	version=version.split('\n')[0]
++	version=version.splitlines()[0]
 +	version_re=re.compile(r'cc:\s+sun\s+(c\+\+|c)\s+(?P<major>\d*)\.(?P<minor>\d*)',re.I).search
 +	match=version_re(version)
 +	if match:
@@ -5186,7 +5232,7 @@ Last-Update: 2014-11-28
 +@conf
 +def add_as_needed(self):
 +	if self.env.DEST_BINFMT=='elf'and'gcc'in(self.env.CXX_NAME,self.env.CC_NAME):
-+		self.env.append_unique('LINKFLAGS','--as-needed')
++		self.env.append_unique('LINKFLAGS','-Wl,--as-needed')
 +class cfgtask(Task.TaskBase):
 +	def display(self):
 +		return''
@@ -5213,6 +5259,7 @@ Last-Update: 2014-11-28
 +			self.keep=False
 +			self.returned_tasks=[]
 +			self.task_sigs={}
++			self.progress_bar=0
 +		def total(self):
 +			return len(tasks)
 +		def to_log(self,*k,**kw):
@@ -5236,17 +5283,23 @@ Last-Update: 2014-11-28
 +	p.start()
 +	for x in tasks:
 +		x.logger.memhandler.flush()
++	if p.error:
++		for x in p.error:
++			if getattr(x,'err_msg',None):
++				self.to_log(x.err_msg)
++				self.end_msg('fail',color='RED')
++				raise Errors.WafError('There is an error in the library, read config.log for more information')
 +	for x in tasks:
 +		if x.hasrun!=Task.SUCCESS:
 +			self.end_msg(kw.get('errmsg','no'),color='YELLOW',**kw)
-+			self.fatal(kw.get('fatalmsg',None)or'One of the tests has failed, see the config.log for more information')
++			self.fatal(kw.get('fatalmsg',None)or'One of the tests has failed, read config.log for more information')
 +	self.end_msg('ok',**kw)
 --- /dev/null
 +++ b/waflib/Tools/c_osx.py
-@@ -0,0 +1,120 @@
+@@ -0,0 +1,138 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import os,shutil,sys,platform
 +from waflib import TaskGen,Task,Build,Options,Utils,Errors
@@ -5265,7 +5318,7 @@ Last-Update: 2014-11-28
 +	<key>NOTE</key>
 +	<string>THIS IS A GENERATED FILE, DO NOT MODIFY</string>
 +	<key>CFBundleExecutable</key>
-+	<string>%s</string>
++	<string>{app_name}</string>
 +</dict>
 +</plist>
 +'''
@@ -5303,6 +5356,18 @@ Last-Update: 2014-11-28
 +		self.apptask=self.create_task('macapp',self.link_task.outputs,n1)
 +		inst_to=getattr(self,'install_path','/Applications')+'/%s/Contents/MacOS/'%name
 +		self.bld.install_files(inst_to,n1,chmod=Utils.O755)
++		if getattr(self,'mac_files',None):
++			mac_files_root=getattr(self,'mac_files_root',None)
++			if isinstance(mac_files_root,str):
++				mac_files_root=self.path.find_node(mac_files_root)
++				if not mac_files_root:
++					self.bld.fatal('Invalid mac_files_root %r'%self.mac_files_root)
++			res_dir=n1.parent.parent.make_node('Resources')
++			inst_to=getattr(self,'install_path','/Applications')+'/%s/Resources'%name
++			for node in self.to_nodes(self.mac_files):
++				relpath=node.path_from(mac_files_root or node.parent)
++				tsk=self.create_task('macapp',node,res_dir.make_node(relpath))
++				self.bld.install_as(os.path.join(inst_to,relpath),node)
 +		if getattr(self,'mac_resources',None):
 +			res_dir=n1.parent.parent.make_node('Resources')
 +			inst_to=getattr(self,'install_path','/Applications')+'/%s/Resources'%name
@@ -5330,6 +5395,10 @@ Last-Update: 2014-11-28
 +		dir=self.create_bundle_dirs(name,out)
 +		n1=dir.find_or_declare(['Contents','Info.plist'])
 +		self.plisttask=plisttask=self.create_task('macplist',[],n1)
++		plisttask.context={'app_name':self.link_task.outputs[0].name,'env':self.env}
++		plist_ctx=getattr(self,'plist_context',None)
++		if(plist_ctx):
++			plisttask.context.update(plist_ctx)
 +		if getattr(self,'mac_plist',False):
 +			node=self.path.find_resource(self.mac_plist)
 +			if node:
@@ -5337,7 +5406,7 @@ Last-Update: 2014-11-28
 +			else:
 +				plisttask.code=self.mac_plist
 +		else:
-+			plisttask.code=app_info%self.link_task.outputs[0].name
++			plisttask.code=app_info
 +		inst_to=getattr(self,'install_path','/Applications')+'/%s/Contents/'%name
 +		self.bld.install_files(inst_to,n1)
 +@feature('cshlib','cxxshlib')
@@ -5363,13 +5432,15 @@ Last-Update: 2014-11-28
 +			txt=self.code
 +		else:
 +			txt=self.inputs[0].read()
++		context=getattr(self,'context',{})
++		txt=txt.format(**context)
 +		self.outputs[0].write(txt)
 --- /dev/null
 +++ b/waflib/Tools/c_preproc.py
-@@ -0,0 +1,612 @@
+@@ -0,0 +1,611 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import re,string,traceback
 +from waflib import Logs,Utils,Errors
@@ -5893,8 +5964,7 @@ Last-Update: 2014-11-28
 +		try:
 +			self.parse_cache=bld.parse_cache
 +		except AttributeError:
-+			bld.parse_cache={}
-+			self.parse_cache=bld.parse_cache
++			self.parse_cache=bld.parse_cache={}
 +		self.current_file=node
 +		self.addlines(node)
 +		if env['DEFINES']:
@@ -5984,7 +6054,7 @@ Last-Update: 2014-11-28
 @@ -0,0 +1,153 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +from waflib import Task
 +from waflib.Configure import conf
@@ -6137,10 +6207,10 @@ Last-Update: 2014-11-28
 +	return tmp[0]
 --- /dev/null
 +++ b/waflib/Tools/ccroot.py
-@@ -0,0 +1,416 @@
+@@ -0,0 +1,444 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import os,re
 +from waflib import Task,Utils,Node,Errors
@@ -6215,7 +6285,9 @@ Last-Update: 2014-11-28
 +				if self.env.DEST_BINFMT=='pe':
 +					name=name+'-'+nums[0]
 +				elif self.env.DEST_OS=='openbsd':
-+					pattern='%s.%s.%s'%(pattern,nums[0],nums[1])
++					pattern='%s.%s'%(pattern,nums[0])
++					if len(nums)>=2:
++						pattern+='.%s'%nums[1]
 +			tmp=folder+os.sep+pattern%name
 +			target=self.generator.path.find_or_declare(tmp)
 +		self.set_outputs(target)
@@ -6427,7 +6499,7 @@ Last-Update: 2014-11-28
 +				if not self.env.IMPLIBDIR:
 +					self.env.IMPLIBDIR=self.env.LIBDIR
 +		self.implib_install_task=self.bld.install_files(inst_to,implib,env=self.env,chmod=self.link_task.chmod,task=self.link_task)
-+re_vnum=re.compile('^([1-9]\\d*|0)[.]([1-9]\\d*|0)[.]([1-9]\\d*|0)$')
++re_vnum=re.compile('^([1-9]\\d*|0)([.]([1-9]\\d*|0)){0,2}?$')
 +@feature('cshlib','cxxshlib','dshlib','fcshlib','vnum')
 +@after_method('apply_link','propagate_uselib_vars')
 +def apply_vnum(self):
@@ -6435,21 +6507,28 @@ Last-Update: 2014-11-28
 +		return
 +	link=self.link_task
 +	if not re_vnum.match(self.vnum):
-+		raise Errors.WafError('Invalid version %r for %r'%(self.vnum,self))
++		raise Errors.WafError('Invalid vnum %r for target %r'%(self.vnum,getattr(self,'name',self)))
 +	nums=self.vnum.split('.')
 +	node=link.outputs[0]
++	cnum=getattr(self,'cnum',str(nums[0]))
++	cnums=cnum.split('.')
++	if len(cnums)>len(nums)or nums[0:len(cnums)]!=cnums:
++		raise Errors.WafError('invalid compatibility version %s'%cnum)
 +	libname=node.name
 +	if libname.endswith('.dylib'):
 +		name3=libname.replace('.dylib','.%s.dylib'%self.vnum)
-+		name2=libname.replace('.dylib','.%s.dylib'%nums[0])
++		name2=libname.replace('.dylib','.%s.dylib'%cnum)
 +	else:
 +		name3=libname+'.'+self.vnum
-+		name2=libname+'.'+nums[0]
++		name2=libname+'.'+cnum
 +	if self.env.SONAME_ST:
 +		v=self.env.SONAME_ST%name2
 +		self.env.append_value('LINKFLAGS',v.split())
 +	if self.env.DEST_OS!='openbsd':
-+		self.create_task('vnum',node,[node.parent.find_or_declare(name2),node.parent.find_or_declare(name3)])
++		outs=[node.parent.find_or_declare(name3)]
++		if name2!=name3:
++			outs.append(node.parent.find_or_declare(name2))
++		self.create_task('vnum',node,outs)
 +	if getattr(self,'install_task',None):
 +		self.install_task.hasrun=Task.SKIP_ME
 +		bld=self.bld
@@ -6460,9 +6539,12 @@ Last-Update: 2014-11-28
 +			self.vnum_install_task=(t1,)
 +		else:
 +			t1=bld.install_as(path+os.sep+name3,node,env=self.env,chmod=self.link_task.chmod)
-+			t2=bld.symlink_as(path+os.sep+name2,name3)
 +			t3=bld.symlink_as(path+os.sep+libname,name3)
-+			self.vnum_install_task=(t1,t2,t3)
++			if name2!=name3:
++				t2=bld.symlink_as(path+os.sep+name2,name3)
++				self.vnum_install_task=(t1,t2,t3)
++			else:
++				self.vnum_install_task=(t1,t3)
 +	if'-dynamiclib'in self.env['LINKFLAGS']:
 +		try:
 +			inst_to=self.install_path
@@ -6470,8 +6552,10 @@ Last-Update: 2014-11-28
 +			inst_to=self.link_task.__class__.inst_to
 +		if inst_to:
 +			p=Utils.subst_vars(inst_to,self.env)
-+			path=os.path.join(p,self.link_task.outputs[0].name)
++			path=os.path.join(p,name2)
 +			self.env.append_value('LINKFLAGS',['-install_name',path])
++			self.env.append_value('LINKFLAGS','-Wl,-compatibility_version,%s'%cnum)
++			self.env.append_value('LINKFLAGS','-Wl,-current_version,%s'%self.vnum)
 +class vnum(Task.Task):
 +	color='CYAN'
 +	quient=True
@@ -6554,12 +6638,26 @@ Last-Update: 2014-11-28
 +	if not isinstance(obj,self.path.__class__):
 +		obj=self.path.find_resource(obj)
 +	return self(features='fake_obj',source=obj,name=obj.name)
++@feature('cxxprogram','cprogram')
++@after_method('apply_link','process_use')
++def set_full_paths_hpux(self):
++	if self.env.DEST_OS!='hp-ux':
++		return
++	base=self.bld.bldnode.abspath()
++	for var in['LIBPATH','STLIBPATH']:
++		lst=[]
++		for x in self.env[var]:
++			if x.startswith('/'):
++				lst.append(x)
++			else:
++				lst.append(os.path.normpath(os.path.join(base,x)))
++		self.env[var]=lst
 --- /dev/null
 +++ b/waflib/Tools/clang.py
 @@ -0,0 +1,20 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import os,sys
 +from waflib.Tools import ccroot,ar,gcc
@@ -6582,7 +6680,7 @@ Last-Update: 2014-11-28
 @@ -0,0 +1,20 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import os,sys
 +from waflib.Tools import ccroot,ar,gxx
@@ -6605,13 +6703,13 @@ Last-Update: 2014-11-28
 @@ -0,0 +1,40 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import os,sys,imp,types,re
 +from waflib.Tools import ccroot
 +from waflib import Utils,Configure
 +from waflib.Logs import debug
-+c_compiler={'win32':['msvc','gcc','clang'],'cygwin':['gcc'],'darwin':['clang','gcc'],'aix':['xlc','gcc','clang'],'linux':['gcc','clang','icc'],'sunos':['suncc','gcc'],'irix':['gcc','irixcc'],'hpux':['gcc'],'gnu':['gcc','clang'],'java':['gcc','msvc','clang','icc'],'default':['gcc','clang'],}
++c_compiler={'win32':['msvc','gcc','clang'],'cygwin':['gcc'],'darwin':['clang','gcc'],'aix':['xlc','gcc','clang'],'linux':['gcc','clang','icc'],'sunos':['suncc','gcc'],'irix':['gcc','irixcc'],'hpux':['gcc'],'osf1V':['gcc'],'gnu':['gcc','clang'],'java':['gcc','msvc','clang','icc'],'default':['gcc','clang'],}
 +def default_compilers():
 +	build_platform=Utils.unversioned_sys_platform()
 +	possible_compiler_list=c_compiler.get(build_platform,c_compiler['default'])
@@ -6648,13 +6746,13 @@ Last-Update: 2014-11-28
 @@ -0,0 +1,40 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import os,sys,imp,types,re
 +from waflib.Tools import ccroot
 +from waflib import Utils,Configure
 +from waflib.Logs import debug
-+cxx_compiler={'win32':['msvc','g++','clang++'],'cygwin':['g++'],'darwin':['clang++','g++'],'aix':['xlc++','g++','clang++'],'linux':['g++','clang++','icpc'],'sunos':['sunc++','g++'],'irix':['g++'],'hpux':['g++'],'gnu':['g++','clang++'],'java':['g++','msvc','clang++','icpc'],'default':['g++','clang++']}
++cxx_compiler={'win32':['msvc','g++','clang++'],'cygwin':['g++'],'darwin':['clang++','g++'],'aix':['xlc++','g++','clang++'],'linux':['g++','clang++','icpc'],'sunos':['sunc++','g++'],'irix':['g++'],'hpux':['g++'],'osf1V':['g++'],'gnu':['g++','clang++'],'java':['g++','msvc','clang++','icpc'],'default':['g++','clang++']}
 +def default_compilers():
 +	build_platform=Utils.unversioned_sys_platform()
 +	possible_compiler_list=cxx_compiler.get(build_platform,cxx_compiler['default'])
@@ -6691,7 +6789,7 @@ Last-Update: 2014-11-28
 @@ -0,0 +1,37 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import os,sys,imp,types,re
 +from waflib import Utils,Configure,Options,Logs
@@ -6731,7 +6829,7 @@ Last-Update: 2014-11-28
 @@ -0,0 +1,39 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import os,sys,imp,types,re
 +from waflib import Utils,Configure,Options,Logs,Errors
@@ -6773,7 +6871,7 @@ Last-Update: 2014-11-28
 @@ -0,0 +1,132 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +from waflib import Utils,Task,Options,Logs,Errors
 +from waflib.TaskGen import before_method,after_method,feature
@@ -6908,9 +7006,9 @@ Last-Update: 2014-11-28
 @@ -0,0 +1,26 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
-+from waflib import TaskGen,Task,Utils
++from waflib import TaskGen,Task
 +from waflib.Tools import c_preproc
 +from waflib.Tools.ccroot import link_task,stlink_task
 +@TaskGen.extension('.cpp','.cc','.cxx','.C','.c++')
@@ -6924,7 +7022,7 @@ Last-Update: 2014-11-28
 +	ext_in=['.h']
 +	scan=c_preproc.scan
 +class cxxprogram(link_task):
-+	run_str='${LINK_CXX} ${LINKFLAGS} ${CXXLNK_SRC_F}${SRC} ${CXXLNK_TGT_F}${TGT[0].abspath()} ${RPATH_ST:RPATH} ${FRAMEWORKPATH_ST:FRAMEWORKPATH} ${FRAMEWORK_ST:FRAMEWORK} ${ARCH_ST:ARCH} ${STLIB_MARKER} ${STLIBPATH_ST:STLIBPATH} ${STLIB_ST:STLIB} ${SHLIB_MARKER} ${LIBPATH_ST:LIBPATH} ${LIB_ST:LIB}'
++	run_str='${LINK_CXX} ${LINKFLAGS} ${CXXLNK_SRC_F}${SRC} ${CXXLNK_TGT_F}${TGT[0].abspath()} ${RPATH_ST:RPATH} ${FRAMEWORKPATH_ST:FRAMEWORKPATH} ${FRAMEWORK_ST:FRAMEWORK} ${ARCH_ST:ARCH} ${STLIB_MARKER} ${STLIBPATH_ST:STLIBPATH} ${STLIB_ST:STLIB} ${SHLIB_MARKER} ${LIBPATH_ST:LIBPATH} ${LIB_ST:LIB} ${LDFLAGS}'
 +	vars=['LINKDEPS']
 +	ext_out=['.bin']
 +	inst_to='${BINDIR}'
@@ -6937,7 +7035,7 @@ Last-Update: 2014-11-28
 @@ -0,0 +1,54 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +from waflib import Utils,Task,Errors
 +from waflib.TaskGen import taskgen_method,feature,extension
@@ -6994,7 +7092,7 @@ Last-Update: 2014-11-28
 @@ -0,0 +1,52 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +from waflib import Utils
 +from waflib.Configure import conf
@@ -7049,7 +7147,7 @@ Last-Update: 2014-11-28
 @@ -0,0 +1,133 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import re
 +from waflib import Utils,Logs
@@ -7185,7 +7283,7 @@ Last-Update: 2014-11-28
 @@ -0,0 +1,29 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +from waflib import Task,Errors
 +from waflib.TaskGen import taskgen_method,before_method
@@ -7217,7 +7315,7 @@ Last-Update: 2014-11-28
 @@ -0,0 +1,51 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import sys
 +from waflib.Tools import ar,d
@@ -7271,7 +7369,7 @@ Last-Update: 2014-11-28
 @@ -0,0 +1,161 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +typos={'feature':'features','sources':'source','targets':'target','include':'includes','export_include':'export_includes','define':'defines','importpath':'includes','installpath':'install_path','iscopy':'is_copy',}
 +meths_typos=['__call__','program','shlib','stlib','objects']
@@ -7310,7 +7408,7 @@ Last-Update: 2014-11-28
 +	if not dupe:
 +		for(k,v)in uids.items():
 +			if len(v)>1:
-+				Logs.error('* Several tasks use the same identifier. Please check the information on\n   http://docs.waf.googlecode.com/git/apidocs_16/Task.html#waflib.Task.Task.uid')
++				Logs.error('* Several tasks use the same identifier. Please check the information on\n   https://waf.io/apidocs/Task.html?highlight=uid#waflib.Task.Task.uid')
 +				for tsk in v:
 +					Logs.error('  - object %r (%r) defined in %r'%(tsk.__class__.__name__,tsk,tsk.generator))
 +def check_invalid_constraints(self):
@@ -7432,15 +7530,14 @@ Last-Update: 2014-11-28
 +	pass
 --- /dev/null
 +++ b/waflib/Tools/fc.py
-@@ -0,0 +1,114 @@
+@@ -0,0 +1,115 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
-+import re
-+from waflib import Utils,Task,TaskGen,Logs
++from waflib import Utils,Task,Logs
 +from waflib.Tools import ccroot,fc_config,fc_scan
-+from waflib.TaskGen import feature,before_method,after_method,extension
++from waflib.TaskGen import feature,extension
 +from waflib.Configure import conf
 +ccroot.USELIB_VARS['fc']=set(['FCFLAGS','DEFINES','INCLUDES'])
 +ccroot.USELIB_VARS['fcprogram_test']=ccroot.USELIB_VARS['fcprogram']=set(['LIB','STLIB','LIBPATH','STLIBPATH','LINKFLAGS','RPATH','LINKDEPS'])
@@ -7491,6 +7588,8 @@ Last-Update: 2014-11-28
 +				if x.startswith('MOD@'):
 +					name=bld.modfile(x.replace('MOD@',''))
 +					node=bld.srcnode.find_or_declare(name)
++					if not getattr(node,'sig',None):
++						node.sig=Utils.SIG_NIL
 +					tsk.set_outputs(node)
 +					outs[id(node)].add(tsk)
 +		for tsk in lst:
@@ -7519,7 +7618,7 @@ Last-Update: 2014-11-28
 +		return super(fc,self).runnable_status()
 +class fcprogram(ccroot.link_task):
 +	color='YELLOW'
-+	run_str='${FC} ${LINKFLAGS} ${FCLNK_SRC_F}${SRC} ${FCLNK_TGT_F}${TGT[0].abspath()} ${RPATH_ST:RPATH} ${FCSTLIB_MARKER} ${FCSTLIBPATH_ST:STLIBPATH} ${FCSTLIB_ST:STLIB} ${FCSHLIB_MARKER} ${FCLIBPATH_ST:LIBPATH} ${FCLIB_ST:LIB}'
++	run_str='${FC} ${LINKFLAGS} ${FCLNK_SRC_F}${SRC} ${FCLNK_TGT_F}${TGT[0].abspath()} ${RPATH_ST:RPATH} ${FCSTLIB_MARKER} ${FCSTLIBPATH_ST:STLIBPATH} ${FCSTLIB_ST:STLIB} ${FCSHLIB_MARKER} ${FCLIBPATH_ST:LIBPATH} ${FCLIB_ST:LIB} ${LDFLAGS}'
 +	inst_to='${BINDIR}'
 +class fcshlib(fcprogram):
 +	inst_to='${LIBDIR}'
@@ -7539,7 +7638,7 @@ Last-Update: 2014-11-28
 +		kw['output']=0
 +		try:
 +			(bld.out,bld.err)=bld.cmd_and_log(cmd,**kw)
-+		except Exception ,e:
++		except Exception:
 +			return-1
 +		if bld.out:
 +			bld.to_log("out: %s\n"%bld.out)
@@ -7549,10 +7648,10 @@ Last-Update: 2014-11-28
 +	pass
 --- /dev/null
 +++ b/waflib/Tools/fc_config.py
-@@ -0,0 +1,285 @@
+@@ -0,0 +1,286 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import re,os,sys,shlex
 +from waflib.Configure import conf
@@ -7583,8 +7682,9 @@ Last-Update: 2014-11-28
 +	v['SONAME_ST']='-Wl,-h,%s'
 +@conf
 +def fc_add_flags(conf):
-+	conf.add_os_flags('FCFLAGS')
-+	conf.add_os_flags('LDFLAGS','LINKFLAGS')
++	conf.add_os_flags('FCFLAGS',dup=False)
++	conf.add_os_flags('LINKFLAGS',dup=False)
++	conf.add_os_flags('LDFLAGS',dup=False)
 +@conf
 +def check_fortran(self,*k,**kw):
 +	self.check_cc(fragment=FC_FRAGMENT,compile_filename='test.f',features='fc fcprogram',msg='Compiling a simple fortran app')
@@ -7604,7 +7704,7 @@ Last-Update: 2014-11-28
 +def fortran_modifier_darwin(conf):
 +	v=conf.env
 +	v['FCFLAGS_fcshlib']=['-fPIC']
-+	v['LINKFLAGS_fcshlib']=['-dynamiclib','-Wl,-compatibility_version,1','-Wl,-current_version,1']
++	v['LINKFLAGS_fcshlib']=['-dynamiclib']
 +	v['fcshlib_PATTERN']='lib%s.dylib'
 +	v['FRAMEWORKPATH_ST']='-F%s'
 +	v['FRAMEWORK_ST']='-framework %s'
@@ -7840,7 +7940,7 @@ Last-Update: 2014-11-28
 @@ -0,0 +1,68 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import re
 +from waflib import Utils,Task,TaskGen,Logs
@@ -7911,7 +8011,7 @@ Last-Update: 2014-11-28
 @@ -0,0 +1,32 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import waflib.TaskGen,os,re
 +def decide_ext(self,node):
@@ -7946,7 +8046,7 @@ Last-Update: 2014-11-28
 @@ -0,0 +1,54 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import re
 +from waflib import Utils
@@ -8003,7 +8103,7 @@ Last-Update: 2014-11-28
 @@ -0,0 +1,12 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import waflib.Tools.asm
 +from waflib.Tools import ar
@@ -8015,10 +8115,10 @@ Last-Update: 2014-11-28
 +	conf.load('asm')
 --- /dev/null
 +++ b/waflib/Tools/gcc.py
-@@ -0,0 +1,98 @@
+@@ -0,0 +1,104 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import os,sys
 +from waflib import Configure,Options,Utils
@@ -8076,7 +8176,7 @@ Last-Update: 2014-11-28
 +def gcc_modifier_darwin(conf):
 +	v=conf.env
 +	v['CFLAGS_cshlib']=['-fPIC']
-+	v['LINKFLAGS_cshlib']=['-dynamiclib','-Wl,-compatibility_version,1','-Wl,-current_version,1']
++	v['LINKFLAGS_cshlib']=['-dynamiclib']
 +	v['cshlib_PATTERN']='lib%s.dylib'
 +	v['FRAMEWORKPATH_ST']='-F%s'
 +	v['FRAMEWORK_ST']=['-framework']
@@ -8095,12 +8195,18 @@ Last-Update: 2014-11-28
 +def gcc_modifier_hpux(conf):
 +	v=conf.env
 +	v['SHLIB_MARKER']=[]
-+	v['STLIB_MARKER']='-Bstatic'
++	v['STLIB_MARKER']=[]
 +	v['CFLAGS_cshlib']=['-fPIC','-DPIC']
 +	v['cshlib_PATTERN']='lib%s.sl'
 +@conf
 +def gcc_modifier_openbsd(conf):
 +	conf.env.SONAME_ST=[]
++@conf
++def gcc_modifier_osf1V(conf):
++	v=conf.env
++	v['SHLIB_MARKER']=[]
++	v['STLIB_MARKER']=[]
++	v['SONAME_ST']=[]
 +@conf
 +def gcc_modifier_platform(conf):
 +	gcc_modifier_func=getattr(conf,'gcc_modifier_'+conf.env.DEST_OS,None)
@@ -8119,7 +8225,7 @@ Last-Update: 2014-11-28
 @@ -0,0 +1,36 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import sys
 +from waflib.Tools import ar,d
@@ -8158,7 +8264,7 @@ Last-Update: 2014-11-28
 @@ -0,0 +1,68 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import re
 +from waflib import Utils
@@ -8204,7 +8310,7 @@ Last-Update: 2014-11-28
 +	if out.find('__GNUC__')<0:
 +		conf.fatal('Could not determine the compiler type')
 +	k={}
-+	out=out.split('\n')
++	out=out.splitlines()
 +	import shlex
 +	for line in out:
 +		lst=shlex.split(line)
@@ -8229,7 +8335,7 @@ Last-Update: 2014-11-28
 @@ -0,0 +1,234 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import os
 +from waflib import Context,Task,Utils,Options,Errors,Logs
@@ -8463,21 +8569,21 @@ Last-Update: 2014-11-28
 +	gr.add_option('--gsettingsschemadir',help='GSettings schema location [DATADIR/glib-2.0/schemas]',default='',dest='GSETTINGSSCHEMADIR')
 --- /dev/null
 +++ b/waflib/Tools/gnu_dirs.py
-@@ -0,0 +1,65 @@
+@@ -0,0 +1,66 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import os,re
 +from waflib import Utils,Options,Context
-+_options=[x.split(', ')for x in'''
++gnuopts='''
 +bindir, user commands, ${EXEC_PREFIX}/bin
 +sbindir, system binaries, ${EXEC_PREFIX}/sbin
 +libexecdir, program-specific binaries, ${EXEC_PREFIX}/libexec
 +sysconfdir, host-specific configuration, ${PREFIX}/etc
 +sharedstatedir, architecture-independent variable data, ${PREFIX}/com
 +localstatedir, variable data, ${PREFIX}/var
-+libdir, object code libraries, ${EXEC_PREFIX}/lib
++libdir, object code libraries, ${EXEC_PREFIX}/lib%s
 +includedir, header files, ${PREFIX}/include
 +oldincludedir, header files for non-GCC compilers, /usr/include
 +datarootdir, architecture-independent data root, ${PREFIX}/share
@@ -8490,7 +8596,8 @@ Last-Update: 2014-11-28
 +dvidir, DVI documentation, ${DOCDIR}
 +pdfdir, PDF documentation, ${DOCDIR}
 +psdir, PostScript documentation, ${DOCDIR}
-+'''.split('\n')if x]
++'''%Utils.lib64()
++_options=[x.split(', ')for x in gnuopts.splitlines()if x]
 +def configure(conf):
 +	def get_param(varname,default):
 +		return getattr(Options.options,varname,'')or default
@@ -8511,7 +8618,7 @@ Last-Update: 2014-11-28
 +				except TypeError:
 +					complete=False
 +	if not complete:
-+		lst=[name for name,_,_ in _options if not env[name.upper()]]
++		lst=[x for x,_,_ in _options if not env[x.upper()]]
 +		raise conf.errors.WafError('Variable substitution failure %r'%lst)
 +def options(opt):
 +	inst_dir=opt.add_option_group('Installation prefix','By default, "waf install" will put the files in\
@@ -8531,10 +8638,10 @@ Last-Update: 2014-11-28
 +		dirs_options.add_option(option_name,help=str_help,default='',dest=name.upper())
 --- /dev/null
 +++ b/waflib/Tools/gxx.py
-@@ -0,0 +1,98 @@
+@@ -0,0 +1,104 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import os,sys
 +from waflib import Configure,Options,Utils
@@ -8592,7 +8699,7 @@ Last-Update: 2014-11-28
 +def gxx_modifier_darwin(conf):
 +	v=conf.env
 +	v['CXXFLAGS_cxxshlib']=['-fPIC']
-+	v['LINKFLAGS_cxxshlib']=['-dynamiclib','-Wl,-compatibility_version,1','-Wl,-current_version,1']
++	v['LINKFLAGS_cxxshlib']=['-dynamiclib']
 +	v['cxxshlib_PATTERN']='lib%s.dylib'
 +	v['FRAMEWORKPATH_ST']='-F%s'
 +	v['FRAMEWORK_ST']=['-framework']
@@ -8611,12 +8718,18 @@ Last-Update: 2014-11-28
 +def gxx_modifier_hpux(conf):
 +	v=conf.env
 +	v['SHLIB_MARKER']=[]
-+	v['STLIB_MARKER']='-Bstatic'
++	v['STLIB_MARKER']=[]
 +	v['CFLAGS_cxxshlib']=['-fPIC','-DPIC']
 +	v['cxxshlib_PATTERN']='lib%s.sl'
 +@conf
 +def gxx_modifier_openbsd(conf):
 +	conf.env.SONAME_ST=[]
++@conf
++def gcc_modifier_osf1V(conf):
++	v=conf.env
++	v['SHLIB_MARKER']=[]
++	v['STLIB_MARKER']=[]
++	v['SONAME_ST']=[]
 +@conf
 +def gxx_modifier_platform(conf):
 +	gxx_modifier_func=getattr(conf,'gxx_modifier_'+conf.env.DEST_OS,None)
@@ -8635,7 +8748,7 @@ Last-Update: 2014-11-28
 @@ -0,0 +1,22 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import os,sys
 +from waflib.Tools import ccroot,ar,gcc
@@ -8660,7 +8773,7 @@ Last-Update: 2014-11-28
 @@ -0,0 +1,22 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import os,sys
 +from waflib.Tools import ccroot,ar,gxx
@@ -8682,10 +8795,10 @@ Last-Update: 2014-11-28
 +	conf.link_add_flags()
 --- /dev/null
 +++ b/waflib/Tools/ifort.py
-@@ -0,0 +1,51 @@
+@@ -0,0 +1,48 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import re
 +from waflib import Utils
@@ -8719,10 +8832,7 @@ Last-Update: 2014-11-28
 +	else:
 +		cmd=fc+['-logo']
 +	out,err=fc_config.getoutput(conf,cmd,stdin=False)
-+	if out:
-+		match=version_re(out)
-+	else:
-+		match=version_re(err)
++	match=version_re(out)or version_re(err)
 +	if not match:
 +		conf.fatal('cannot determine ifort version.')
 +	k=match.groupdict()
@@ -8739,7 +8849,7 @@ Last-Update: 2014-11-28
 @@ -0,0 +1,97 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import os,re
 +from waflib import Configure,Context,TaskGen,Task,Utils,Runner,Options,Build,Logs
@@ -8839,7 +8949,7 @@ Last-Update: 2014-11-28
 @@ -0,0 +1,47 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import os
 +from waflib import Utils
@@ -8889,7 +8999,7 @@ Last-Update: 2014-11-28
 @@ -0,0 +1,307 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import os,re,tempfile,shutil
 +from waflib import TaskGen,Task,Utils,Options,Build,Errors,Node,Logs
@@ -9199,7 +9309,7 @@ Last-Update: 2014-11-28
 @@ -0,0 +1,48 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import os,sys,re
 +from waflib import Options,TaskGen,Task,Utils
@@ -9250,7 +9360,7 @@ Last-Update: 2014-11-28
 @@ -0,0 +1,37 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import sys
 +from waflib.Tools import ar,d
@@ -9290,7 +9400,7 @@ Last-Update: 2014-11-28
 @@ -0,0 +1,18 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +from waflib.TaskGen import extension
 +from waflib import Task,Utils
@@ -9311,7 +9421,7 @@ Last-Update: 2014-11-28
 @@ -0,0 +1,749 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import os,sys,re,tempfile
 +from waflib import Utils,Task,Logs,Options,Errors
@@ -9339,7 +9449,7 @@ Last-Update: 2014-11-28
 +version vfw32 wbemuuid  webpost wiaguid wininet winmm winscard winspool winstrm
 +wintrust wldap32 wmiutils wow32 ws2_32 wsnmp32 wsock32 wst wtsapi32 xaswitch xolehlp
 +'''.split()
-+all_msvc_platforms=[('x64','amd64'),('x86','x86'),('ia64','ia64'),('x86_amd64','amd64'),('x86_ia64','ia64'),('x86_arm','arm')]
++all_msvc_platforms=[('x64','amd64'),('x86','x86'),('ia64','ia64'),('x86_amd64','amd64'),('x86_ia64','ia64'),('x86_arm','arm'),('amd64_x86','x86'),('amd64_arm','arm')]
 +all_wince_platforms=[('armv4','arm'),('armv4i','arm'),('mipsii','mips'),('mipsii_fp','mips'),('mipsiv','mips'),('mipsiv_fp','mips'),('sh4','sh'),('x86','cex86')]
 +all_icl_platforms=[('intel64','amd64'),('em64t','amd64'),('ia32','x86'),('Itanium','ia64')]
 +def options(opt):
@@ -9383,7 +9493,7 @@ Last-Update: 2014-11-28
 +echo INCLUDE=%%INCLUDE%%
 +echo LIB=%%LIB%%;%%LIBPATH%%
 +"""%(vcvars,target))
-+	sout=conf.cmd_and_log(['cmd','/E:on','/V:on','/C',batfile.abspath()])
++	sout=conf.cmd_and_log(['cmd.exe','/E:on','/V:on','/C',batfile.abspath()])
 +	lines=sout.splitlines()
 +	if not lines[0]:
 +		lines.pop(0)
@@ -10063,7 +10173,7 @@ Last-Update: 2014-11-28
 @@ -0,0 +1,16 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import os
 +import waflib.Tools.asm
@@ -10079,10 +10189,10 @@ Last-Update: 2014-11-28
 +	conf.env.ASMPATH_ST='-I%s'+os.sep
 --- /dev/null
 +++ b/waflib/Tools/perl.py
-@@ -0,0 +1,84 @@
+@@ -0,0 +1,90 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import os
 +from waflib import Task,Options,Utils
@@ -10151,11 +10261,17 @@ Last-Update: 2014-11-28
 +		return self.cmd_and_log(cmd_perl_config(cfg))
 +	def cfg_lst(cfg):
 +		return Utils.to_list(cfg_str(cfg))
++	def find_xsubpp():
++		for var in('privlib','vendorlib'):
++			xsubpp=cfg_lst('$Config{%s}/ExtUtils/xsubpp$Config{exe_ext}'%var)
++			if xsubpp and os.path.isfile(xsubpp[0]):
++				return xsubpp
++		return self.find_program('xsubpp')
 +	env['LINKFLAGS_PERLEXT']=cfg_lst('$Config{lddlflags}')
 +	env['INCLUDES_PERLEXT']=cfg_lst('$Config{archlib}/CORE')
 +	env['CFLAGS_PERLEXT']=cfg_lst('$Config{ccflags} $Config{cccdlflags}')
-+	env['XSUBPP']=cfg_lst('$Config{privlib}/ExtUtils/xsubpp$Config{exe_ext}')
 +	env['EXTUTILS_TYPEMAP']=cfg_lst('$Config{privlib}/ExtUtils/typemap')
++	env['XSUBPP']=find_xsubpp()
 +	if not getattr(Options.options,'perlarchdir',None):
 +		env['ARCHDIR_PERL']=cfg_str('$Config{sitearch}')
 +	else:
@@ -10166,10 +10282,10 @@ Last-Update: 2014-11-28
 +	opt.add_option('--with-perl-archdir',type='string',dest='perlarchdir',help='Specify directory where to install arch specific files',default=None)
 --- /dev/null
 +++ b/waflib/Tools/python.py
-@@ -0,0 +1,348 @@
+@@ -0,0 +1,379 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import os,sys
 +from waflib import Utils,Options,Errors,Logs,Task,Node
@@ -10213,13 +10329,12 @@ Last-Update: 2014-11-28
 +		self.install_32=True
 +@extension('.py')
 +def process_py(self,node):
-+	assert(node.get_bld_sig())
 +	assert(getattr(self,'install_path')),'add features="py"'
 +	if self.install_path:
 +		if self.install_from:
 +			self.bld.install_files(self.install_path,[node],cwd=self.install_from,relative_trick=True)
 +		else:
-+			self.bld.install_files(self.install_path,[node])
++			self.bld.install_files(self.install_path,[node],relative_trick=True)
 +	lst=[]
 +	if self.env.PYC:
 +		lst.append('pyc')
@@ -10242,7 +10357,7 @@ Last-Update: 2014-11-28
 +		tsk=self.create_task(ext,node,pyobj)
 +		tsk.pyd=pyd
 +		if self.install_path:
-+			self.bld.install_files(self.install_path,pyobj,cwd=node.parent.get_bld(),relative_trick=True)
++			self.bld.install_files(os.path.dirname(pyd),pyobj,cwd=node.parent.get_bld(),relative_trick=True)
 +class pyc(Task.Task):
 +	color='PINK'
 +	def run(self):
@@ -10302,7 +10417,7 @@ Last-Update: 2014-11-28
 +		self.fatal('The distutils module is unusable: install "python-devel"?')
 +	self.to_log(out)
 +	return_values=[]
-+	for s in out.split('\n'):
++	for s in out.splitlines():
 +		s=s.strip()
 +		if not s:
 +			continue
@@ -10315,10 +10430,40 @@ Last-Update: 2014-11-28
 +		else:break
 +	return return_values
 +@conf
-+def check_python_headers(conf):
++def python_cross_compile(self,features='pyembed pyext'):
++	features=Utils.to_list(features)
++	if not('PYTHON_LDFLAGS'in self.environ or'PYTHON_PYEXT_LDFLAGS'in self.environ or'PYTHON_PYEMBED_LDFLAGS'in self.environ):
++		return False
++	for x in'PYTHON_VERSION PYTAG pyext_PATTERN'.split():
++		if not x in self.environ:
++			self.fatal('Please set %s in the os environment'%x)
++		else:
++			self.env[x]=self.environ[x]
++	xx=self.env.CXX_NAME and'cxx'or'c'
++	if'pyext'in features:
++		flags=self.environ.get('PYTHON_PYEXT_LDFLAGS',self.environ.get('PYTHON_LDFLAGS',None))
++		if flags is None:
++			self.fatal('No flags provided through PYTHON_PYEXT_LDFLAGS as required')
++		else:
++			self.parse_flags(flags,'PYEXT')
++		self.check(header_name='Python.h',define_name='HAVE_PYEXT',msg='Testing pyext configuration',features='%s %sshlib pyext'%(xx,xx),fragment=FRAG,errmsg='Could not build python extensions')
++	if'pyembed'in features:
++		flags=self.environ.get('PYTHON_PYEMBED_LDFLAGS',self.environ.get('PYTHON_LDFLAGS',None))
++		if flags is None:
++			self.fatal('No flags provided through PYTHON_PYEMBED_LDFLAGS as required')
++		else:
++			self.parse_flags(flags,'PYEMBED')
++		self.check(header_name='Python.h',define_name='HAVE_PYEMBED',msg='Testing pyembed configuration',fragment=FRAG,errmsg='Could not build a python embedded interpreter',features='%s %sprogram pyembed'%(xx,xx))
++	return True
++@conf
++def check_python_headers(conf,features='pyembed pyext'):
++	features=Utils.to_list(features)
++	assert('pyembed'in features)or('pyext'in features),"check_python_headers features must include 'pyembed' and/or 'pyext'"
 +	env=conf.env
 +	if not env['CC_NAME']and not env['CXX_NAME']:
 +		conf.fatal('load a compiler first (gcc, g++, ..)')
++	if conf.python_cross_compile(features):
++		return
 +	if not env['PYTHON_VERSION']:
 +		conf.check_python_version()
 +	pybin=env.PYTHON
@@ -10330,7 +10475,7 @@ Last-Update: 2014-11-28
 +	except RuntimeError:
 +		conf.fatal("Python development headers not found (-v for details).")
 +	vals=['%s = %r'%(x,y)for(x,y)in zip(v,lst)]
-+	conf.to_log("Configuration returned from %r:\n%r\n"%(pybin,'\n'.join(vals)))
++	conf.to_log("Configuration returned from %r:\n%s\n"%(pybin,'\n'.join(vals)))
 +	dct=dict(zip(v,lst))
 +	x='MACOSX_DEPLOYMENT_TARGET'
 +	if dct[x]:
@@ -10340,15 +10485,17 @@ Last-Update: 2014-11-28
 +	conf.find_program([''.join(pybin)+'-config','python%s-config'%num,'python-config-%s'%num,'python%sm-config'%num],var='PYTHON_CONFIG',msg="python-config",mandatory=False)
 +	if env.PYTHON_CONFIG:
 +		all_flags=[['--cflags','--libs','--ldflags']]
-+		if sys.hexversion<0x2060000:
++		if sys.hexversion<0x2070000:
 +			all_flags=[[k]for k in all_flags[0]]
 +		xx=env.CXX_NAME and'cxx'or'c'
-+		for flags in all_flags:
-+			conf.check_cfg(msg='Asking python-config for pyembed %r flags'%' '.join(flags),path=env.PYTHON_CONFIG,package='',uselib_store='PYEMBED',args=flags)
-+		conf.check(header_name='Python.h',define_name='HAVE_PYEMBED',msg='Getting pyembed flags from python-config',fragment=FRAG,errmsg='Could not build a python embedded interpreter',features='%s %sprogram pyembed'%(xx,xx))
-+		for flags in all_flags:
-+			conf.check_cfg(msg='Asking python-config for pyext %r flags'%' '.join(flags),path=env.PYTHON_CONFIG,package='',uselib_store='PYEXT',args=flags)
-+		conf.check(header_name='Python.h',define_name='HAVE_PYEXT',msg='Getting pyext flags from python-config',features='%s %sshlib pyext'%(xx,xx),fragment=FRAG,errmsg='Could not build python extensions')
++		if'pyembed'in features:
++			for flags in all_flags:
++				conf.check_cfg(msg='Asking python-config for pyembed %r flags'%' '.join(flags),path=env.PYTHON_CONFIG,package='',uselib_store='PYEMBED',args=flags)
++			conf.check(header_name='Python.h',define_name='HAVE_PYEMBED',msg='Getting pyembed flags from python-config',fragment=FRAG,errmsg='Could not build a python embedded interpreter',features='%s %sprogram pyembed'%(xx,xx))
++		if'pyext'in features:
++			for flags in all_flags:
++				conf.check_cfg(msg='Asking python-config for pyext %r flags'%' '.join(flags),path=env.PYTHON_CONFIG,package='',uselib_store='PYEXT',args=flags)
++			conf.check(header_name='Python.h',define_name='HAVE_PYEXT',msg='Getting pyext flags from python-config',features='%s %sshlib pyext'%(xx,xx),fragment=FRAG,errmsg='Could not build python extensions')
 +		conf.define('HAVE_PYTHON_H',1)
 +		return
 +	all_flags=dct['LDFLAGS']+' '+dct['CFLAGS']
@@ -10426,7 +10573,7 @@ Last-Update: 2014-11-28
 +				(python_LIBDEST,pydir)=conf.get_python_variables(["get_config_var('LIBDEST') or ''","get_python_lib(standard_lib=0) or ''"])
 +			else:
 +				python_LIBDEST=None
-+				(pydir,)=conf.get_python_variables(["get_python_lib(standard_lib=0) or ''"])
++				(pydir,)=conf.get_python_variables(["get_python_lib(standard_lib=0, prefix=%r) or ''"%conf.env.PREFIX])
 +			if python_LIBDEST is None:
 +				if conf.env['LIBDIR']:
 +					python_LIBDEST=os.path.join(conf.env['LIBDIR'],"python"+pyver)
@@ -10437,7 +10584,7 @@ Last-Update: 2014-11-28
 +		elif'PYTHONARCHDIR'in conf.environ:
 +			pyarchdir=conf.environ['PYTHONARCHDIR']
 +		else:
-+			(pyarchdir,)=conf.get_python_variables(["get_python_lib(plat_specific=1, standard_lib=0) or ''"])
++			(pyarchdir,)=conf.get_python_variables(["get_python_lib(plat_specific=1, standard_lib=0, prefix=%r) or ''"%conf.env.PREFIX])
 +			if not pyarchdir:
 +				pyarchdir=pydir
 +		if hasattr(conf,'define'):
@@ -10520,7 +10667,7 @@ Last-Update: 2014-11-28
 @@ -0,0 +1,441 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +try:
 +	from xml.sax import make_parser
@@ -10961,10 +11108,10 @@ Last-Update: 2014-11-28
 +	opt.add_option('--translate',action="store_true",help="collect translation strings",dest="trans_qt4",default=False)
 --- /dev/null
 +++ b/waflib/Tools/qt5.py
-@@ -0,0 +1,474 @@
+@@ -0,0 +1,488 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +try:
 +	from xml.sax import make_parser
@@ -11269,11 +11416,25 @@ Last-Update: 2014-11-28
 +					if new_ver>prev_ver:
 +						cand=qmake
 +						prev_ver=new_ver
++	if not cand:
++		try:
++			self.find_program('qtchooser')
++		except self.errors.ConfigurationError:
++			pass
++		else:
++			cmd=self.env.QTCHOOSER+['-qt=5','-run-tool=qmake']
++			try:
++				version=self.cmd_and_log(cmd+['-query','QT_VERSION'])
++			except self.errors.WafError:
++				pass
++			else:
++				cand=cmd
 +	if cand:
 +		self.env.QMAKE=cand
 +	else:
 +		self.fatal('Could not find qmake for qt5')
-+	qtbin=self.cmd_and_log(self.env.QMAKE+['-query','QT_INSTALL_BINS']).strip()+os.sep
++	self.env.QT_INSTALL_BINS=qtbin=self.cmd_and_log(self.env.QMAKE+['-query','QT_INSTALL_BINS']).strip()+os.sep
++	paths.insert(0,qtbin)
 +	def find_bin(lst,var):
 +		if var in env:
 +			return
@@ -11289,7 +11450,7 @@ Last-Update: 2014-11-28
 +	if not env.QT_UIC:
 +		self.fatal('cannot find the uic compiler for qt5')
 +	self.start_msg('Checking for uic version')
-+	uicver=self.cmd_and_log(env.QT_UIC+["-version"],output=Context.BOTH)
++	uicver=self.cmd_and_log(env.QT_UIC+['-version'],output=Context.BOTH)
 +	uicver=''.join(uicver).strip()
 +	uicver=uicver.replace('Qt User Interface Compiler ','').replace('User Interface Compiler for Qt','')
 +	self.end_msg(uicver)
@@ -11360,7 +11521,7 @@ Last-Update: 2014-11-28
 +					self.msg('Checking for %s'%i,False,'YELLOW')
 +				env.append_unique('LIBPATH_'+uselib,qtlibs)
 +				env.append_unique('INCLUDES_'+uselib,qtincludes)
-+				env.append_unique('INCLUDES_'+uselib,os.path.join(qtincludes,i))
++				env.append_unique('INCLUDES_'+uselib,os.path.join(qtincludes,i.replace('Qt5','Qt')))
 +				uselib=i.upper()+"_debug"
 +				for k in("lib%sd.a","lib%sd5.a","%sd.lib","%sd5.lib"):
 +					lib=os.path.join(qtlibs,k%i)
@@ -11372,7 +11533,7 @@ Last-Update: 2014-11-28
 +					self.msg('Checking for %s'%i,False,'YELLOW')
 +				env.append_unique('LIBPATH_'+uselib,qtlibs)
 +				env.append_unique('INCLUDES_'+uselib,qtincludes)
-+				env.append_unique('INCLUDES_'+uselib,os.path.join(qtincludes,i))
++				env.append_unique('INCLUDES_'+uselib,os.path.join(qtincludes,i.replace('Qt5','Qt')))
 +	else:
 +		for i in self.qt5_vars_debug+self.qt5_vars:
 +			self.check_cfg(package=i,args='--cflags --libs',mandatory=False)
@@ -11427,7 +11588,7 @@ Last-Update: 2014-11-28
 +	if sys.platform!='win32':
 +		return
 +	for x in self.qt5_vars:
-+		y=x[2:].upper()
++		y=x.replace('Qt5','Qt')[2:].upper()
 +		self.env.append_unique('DEFINES_%s'%x.upper(),'QT_%s_LIB'%y)
 +		self.env.append_unique('DEFINES_%s_DEBUG'%x.upper(),'QT_%s_LIB'%y)
 +def options(opt):
@@ -11441,7 +11602,7 @@ Last-Update: 2014-11-28
 @@ -0,0 +1,103 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import os
 +from waflib import Task,Options,Utils
@@ -11494,7 +11655,7 @@ Last-Update: 2014-11-28
 +	def read_out(cmd):
 +		return Utils.to_list(self.cmd_and_log(self.env.RUBY+['-rrbconfig','-e',cmd]))
 +	def read_config(key):
-+		return read_out('puts Config::CONFIG[%r]'%key)
++		return read_out('puts RbConfig::CONFIG[%r]'%key)
 +	ruby=self.env['RUBY']
 +	archdir=read_config('archdir')
 +	cpppath=archdir
@@ -11544,29 +11705,23 @@ Last-Update: 2014-11-28
 +	opt.add_option('--with-ruby-binary',type='string',dest='rubybinary',help='Specify alternate ruby binary')
 --- /dev/null
 +++ b/waflib/Tools/suncc.py
-@@ -0,0 +1,53 @@
+@@ -0,0 +1,47 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
-+import os
 +from waflib import Utils
 +from waflib.Tools import ccroot,ar
 +from waflib.Configure import conf
 +@conf
 +def find_scc(conf):
 +	v=conf.env
-+	cc=None
-+	if v['CC']:cc=v['CC']
-+	elif'CC'in conf.environ:cc=conf.environ['CC']
-+	if not cc:cc=conf.find_program('cc',var='CC')
-+	if not cc:conf.fatal('Could not find a Sun C compiler')
++	cc=conf.find_program('cc',var='CC')
 +	try:
 +		conf.cmd_and_log(cc+['-flags'])
 +	except Exception:
 +		conf.fatal('%r is not a Sun compiler'%cc)
-+	v['CC']=cc
-+	v['CC_NAME']='sun'
++	v.CC_NAME='sun'
 +	conf.get_suncc_version(cc)
 +@conf
 +def scc_common_flags(conf):
@@ -11600,30 +11755,23 @@ Last-Update: 2014-11-28
 +	conf.link_add_flags()
 --- /dev/null
 +++ b/waflib/Tools/suncxx.py
-@@ -0,0 +1,54 @@
+@@ -0,0 +1,47 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
-+import os
 +from waflib import Utils
 +from waflib.Tools import ccroot,ar
 +from waflib.Configure import conf
 +@conf
 +def find_sxx(conf):
 +	v=conf.env
-+	cc=None
-+	if v['CXX']:cc=v['CXX']
-+	elif'CXX'in conf.environ:cc=conf.environ['CXX']
-+	if not cc:cc=conf.find_program('CC',var='CXX')
-+	if not cc:cc=conf.find_program('c++',var='CXX')
-+	if not cc:conf.fatal('Could not find a Sun C++ compiler')
++	cc=conf.find_program(['CC','c++'],var='CXX')
 +	try:
 +		conf.cmd_and_log(cc+['-flags'])
 +	except Exception:
 +		conf.fatal('%r is not a Sun compiler'%cc)
-+	v['CXX']=cc
-+	v['CXX_NAME']='sun'
++	v.CXX_NAME='sun'
 +	conf.get_suncc_version(cc)
 +@conf
 +def sxx_common_flags(conf):
@@ -11660,7 +11808,7 @@ Last-Update: 2014-11-28
 @@ -0,0 +1,318 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import os,re
 +from waflib import Utils,Task,Errors,Logs,Node
@@ -11981,7 +12129,7 @@ Last-Update: 2014-11-28
 @@ -0,0 +1,201 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import os.path,shutil,re
 +from waflib import Context,Task,Utils,Logs,Options,Errors
@@ -12014,15 +12162,15 @@ Last-Update: 2014-11-28
 +		self.env.append_value('VALAFLAGS',flags)
 +	if self.profile:
 +		addflags('--profile=%s'%self.profile)
-+	if hasattr(self,'threading'):
++	if hasattr(self,'thread'):
 +		if self.profile=='gobject':
 +			if not'GTHREAD'in self.uselib:
 +				self.uselib.append('GTHREAD')
 +		else:
 +			Logs.warn("Profile %s means no threading support"%self.profile)
-+			self.threading=False
-+		if self.threading:
-+			addflags('--threading')
++			self.thread=False
++		if self.thread:
++			addflags('--thread')
 +	valatask=self.valatask
 +	self.is_lib='cprogram'not in self.features
 +	if self.is_lib:
@@ -12185,7 +12333,7 @@ Last-Update: 2014-11-28
 @@ -0,0 +1,101 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import os
 +from waflib.TaskGen import feature,after_method,taskgen_method
@@ -12289,7 +12437,7 @@ Last-Update: 2014-11-28
 @@ -0,0 +1,85 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import re,traceback
 +from waflib import Task,Logs,Utils
@@ -12374,10 +12522,10 @@ Last-Update: 2014-11-28
 +	v['WINRCFLAGS']=[]
 --- /dev/null
 +++ b/waflib/Tools/xlc.py
-@@ -0,0 +1,44 @@
+@@ -0,0 +1,43 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +from waflib.Tools import ccroot,ar
 +from waflib.Configure import conf
@@ -12386,7 +12534,6 @@ Last-Update: 2014-11-28
 +	cc=conf.find_program(['xlc_r','xlc'],var='CC')
 +	conf.get_xlc_version(cc)
 +	conf.env.CC_NAME='xlc'
-+	conf.env.CC=cc
 +@conf
 +def xlc_common_flags(conf):
 +	v=conf.env
@@ -12421,10 +12568,10 @@ Last-Update: 2014-11-28
 +	conf.link_add_flags()
 --- /dev/null
 +++ b/waflib/Tools/xlcxx.py
-@@ -0,0 +1,44 @@
+@@ -0,0 +1,43 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +from waflib.Tools import ccroot,ar
 +from waflib.Configure import conf
@@ -12433,7 +12580,6 @@ Last-Update: 2014-11-28
 +	cxx=conf.find_program(['xlc++_r','xlc++'],var='CXX')
 +	conf.get_xlc_version(cxx)
 +	conf.env.CXX_NAME='xlc++'
-+	conf.env.CXX=cxx
 +@conf
 +def xlcxx_common_flags(conf):
 +	v=conf.env
@@ -12468,12 +12614,12 @@ Last-Update: 2014-11-28
 +	conf.link_add_flags()
 --- /dev/null
 +++ b/waflib/Utils.py
-@@ -0,0 +1,435 @@
+@@ -0,0 +1,441 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
-+import os,sys,errno,traceback,inspect,re,shutil,datetime,gc
++import os,sys,errno,traceback,inspect,re,shutil,datetime,gc,platform
 +import subprocess
 +from collections import deque,defaultdict
 +try:
@@ -12551,7 +12697,7 @@ Last-Update: 2014-11-28
 +				yield x
 +		def keys(self):
 +			return self.lst
-+is_win32=sys.platform in('win32','cli','os2')
++is_win32=os.sep=='\\'or sys.platform=='win32'
 +def readf(fname,m='r',encoding='ISO8859-1'):
 +	if sys.hexversion>0x3000000 and not'b'in m:
 +		m+='b'
@@ -12813,7 +12959,7 @@ Last-Update: 2014-11-28
 +	return'elf'
 +def unversioned_sys_platform():
 +	s=sys.platform
-+	if s=='java':
++	if s.startswith('java'):
 +		from java.lang import System
 +		s=System.getProperty('os.name')
 +		if s=='Mac OS X':
@@ -12823,7 +12969,7 @@ Last-Update: 2014-11-28
 +		elif s=='OS/2':
 +			return'os2'
 +		elif s=='HP-UX':
-+			return'hpux'
++			return'hp-ux'
 +		elif s in('SunOS','Solaris'):
 +			return'sunos'
 +		else:s=s.lower()
@@ -12904,23 +13050,29 @@ Last-Update: 2014-11-28
 +	else:
 +		if os.path.isfile(result):
 +			return result
++def lib64():
++	if os.sep=='/':
++		if platform.architecture()[0]=='64bit':
++			if os.path.exists('/usr/lib64')and not os.path.exists('/usr/lib32'):
++				return'64'
++	return''
 --- /dev/null
 +++ b/waflib/__init__.py
 @@ -0,0 +1,4 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 --- /dev/null
 +++ b/waflib/ansiterm.py
 @@ -0,0 +1,238 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
-+import re,sys
-+from waflib.Utils import threading
-+wlock=threading.Lock()
++import os,re,sys
++from waflib import Utils
++wlock=Utils.threading.Lock()
 +try:
 +	from ctypes import Structure,windll,c_short,c_ushort,c_ulong,c_int,byref,c_wchar,POINTER,c_long
 +except ImportError:
@@ -13108,7 +13260,7 @@ Last-Update: 2014-11-28
 +			finally:
 +				wlock.release()
 +		def writeconsole(self,txt):
-+			chars_written=c_int()
++			chars_written=c_ulong()
 +			writeconsole=windll.kernel32.WriteConsoleA
 +			if isinstance(txt,_type):
 +				writeconsole=windll.kernel32.WriteConsoleW
@@ -13142,7 +13294,7 @@ Last-Update: 2014-11-28
 +except ImportError:
 +	pass
 +else:
-+	if sys.stdout.isatty()or sys.stderr.isatty():
++	if(sys.stdout.isatty()or sys.stderr.isatty())and os.environ.get('TERM','')not in('dumb','emacs'):
 +		FD=sys.stdout.isatty()and sys.stdout.fileno()or sys.stderr.fileno()
 +		def fun():
 +			return struct.unpack("HHHH",fcntl.ioctl(FD,termios.TIOCGWINSZ,struct.pack("HHHH",0,0,0,0)))[1]
@@ -13157,14 +13309,14 @@ Last-Update: 2014-11-28
 @@ -0,0 +1,4 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 --- /dev/null
 +++ b/waflib/extras/compat15.py
 @@ -0,0 +1,279 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import sys
 +from waflib import ConfigSet,Logs,Options,Scripting,Task,Build,Configure,Node,Runner,TaskGen,Utils,Errors,Context
@@ -13446,7 +13598,7 @@ Last-Update: 2014-11-28
 @@ -0,0 +1,53 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
-+# WARNING! Do not edit! http://waf.googlecode.com/git/docs/wafbook/single.html#_obtaining_the_waf_file
++# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import os
 +all_modifs={}
