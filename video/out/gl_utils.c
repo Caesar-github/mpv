@@ -28,6 +28,7 @@
 #include <stdarg.h>
 #include <assert.h>
 
+#include "stream/stream.h"
 #include "common/common.h"
 #include "gl_utils.h"
 
@@ -334,12 +335,12 @@ bool fbotex_change(struct fbotex *fbo, GL *gl, struct mp_log *log, int w, int h,
 
     int cw = w, ch = h;
 
-    if ((flags & FBOTEX_FUZZY_W) && cw < fbo->tex_w)
-        cw = fbo->tex_w;
-    if ((flags & FBOTEX_FUZZY_H) && ch < fbo->tex_h)
-        ch = fbo->tex_h;
+    if ((flags & FBOTEX_FUZZY_W) && cw < fbo->w)
+        cw = fbo->w;
+    if ((flags & FBOTEX_FUZZY_H) && ch < fbo->h)
+        ch = fbo->h;
 
-    if (fbo->tex_w == cw && fbo->tex_h == ch && fbo->iformat == iformat)
+    if (fbo->w == cw && fbo->h == ch && fbo->iformat == iformat)
         return true;
 
     if (flags & FBOTEX_FUZZY_W)
@@ -351,12 +352,12 @@ bool fbotex_change(struct fbotex *fbo, GL *gl, struct mp_log *log, int w, int h,
 
     *fbo = (struct fbotex) {
         .gl = gl,
-        .tex_w = w,
-        .tex_h = h,
+        .w = w,
+        .h = h,
         .iformat = iformat,
     };
 
-    mp_verbose(log, "Create FBO: %dx%d\n", fbo->tex_w, fbo->tex_h);
+    mp_verbose(log, "Create FBO: %dx%d\n", fbo->w, fbo->h);
 
     if (!(gl->mpgl_caps & MPGL_CAP_FB))
         return false;
@@ -364,7 +365,7 @@ bool fbotex_change(struct fbotex *fbo, GL *gl, struct mp_log *log, int w, int h,
     gl->GenFramebuffers(1, &fbo->fbo);
     gl->GenTextures(1, &fbo->texture);
     gl->BindTexture(GL_TEXTURE_2D, fbo->texture);
-    gl->TexImage2D(GL_TEXTURE_2D, 0, iformat, fbo->tex_w, fbo->tex_h, 0,
+    gl->TexImage2D(GL_TEXTURE_2D, 0, iformat, fbo->w, fbo->h, 0,
                    GL_RGBA, GL_UNSIGNED_BYTE, NULL);
     gl->TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     gl->TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
@@ -464,6 +465,7 @@ void gl_set_debug_logger(GL *gl, struct mp_log *log)
 
 #define SC_ENTRIES 16
 #define SC_UNIFORM_ENTRIES 20
+#define SC_FILE_ENTRIES 10
 
 enum uniform_type {
     UT_invalid,
@@ -484,6 +486,11 @@ struct sc_uniform {
     } v;
 };
 
+struct sc_file {
+    char *path;
+    char *body;
+};
+
 struct sc_entry {
     GLuint gl_shader;
     // the following fields define the shader's contents
@@ -494,9 +501,11 @@ struct sc_entry {
 struct gl_shader_cache {
     GL *gl;
     struct mp_log *log;
+    struct mpv_global *global;
 
     // this is modified during use (gl_sc_add() etc.)
     char *text;
+    char *header_text;
     struct gl_vao *vao;
 
     struct sc_entry entries[SC_ENTRIES];
@@ -504,15 +513,21 @@ struct gl_shader_cache {
 
     struct sc_uniform uniforms[SC_UNIFORM_ENTRIES];
     int num_uniforms;
+
+    struct sc_file files[SC_FILE_ENTRIES];
+    int num_files;
 };
 
-struct gl_shader_cache *gl_sc_create(GL *gl, struct mp_log *log)
+struct gl_shader_cache *gl_sc_create(GL *gl, struct mp_log *log,
+                                     struct mpv_global *global)
 {
     struct gl_shader_cache *sc = talloc_ptrtype(NULL, sc);
     *sc = (struct gl_shader_cache){
         .gl = gl,
         .log = log,
+        .global = global,
         .text = talloc_strdup(sc, ""),
+        .header_text = talloc_strdup(sc, ""),
     };
     return sc;
 }
@@ -520,6 +535,7 @@ struct gl_shader_cache *gl_sc_create(GL *gl, struct mp_log *log)
 void gl_sc_reset(struct gl_shader_cache *sc)
 {
     sc->text[0] = '\0';
+    sc->header_text[0] = '\0';
     for (int n = 0; n < sc->num_uniforms; n++)
         talloc_free(sc->uniforms[n].name);
     sc->num_uniforms = 0;
@@ -537,6 +553,8 @@ static void sc_flush_cache(struct gl_shader_cache *sc)
 
 void gl_sc_destroy(struct gl_shader_cache *sc)
 {
+    if (!sc)
+        return;
     gl_sc_reset(sc);
     sc_flush_cache(sc);
     talloc_free(sc);
@@ -553,6 +571,40 @@ void gl_sc_addf(struct gl_shader_cache *sc, const char *textf, ...)
     va_start(ap, textf);
     ta_xvasprintf_append(&sc->text, textf, ap);
     va_end(ap);
+}
+
+void gl_sc_hadd(struct gl_shader_cache *sc, const char *text)
+{
+    sc->header_text = talloc_strdup_append(sc->header_text, text);
+}
+
+const char *gl_sc_loadfile(struct gl_shader_cache *sc, const char *path)
+{
+    if (!path || !path[0] || !sc->global)
+        return NULL;
+    for (int n = 0; n < sc->num_files; n++) {
+        if (strcmp(sc->files[n].path, path) == 0)
+            return sc->files[n].body;
+    }
+    // not found -> load it
+    if (sc->num_files == SC_FILE_ENTRIES) {
+        // empty cache when it overflows
+        for (int n = 0; n < sc->num_files; n++) {
+            talloc_free(sc->files[n].path);
+            talloc_free(sc->files[n].body);
+        }
+        sc->num_files = 0;
+    }
+    struct bstr s = stream_read_file(path, sc, sc->global, 100000); // 100 kB
+    if (s.len) {
+        struct sc_file *new = &sc->files[sc->num_files++];
+        *new = (struct sc_file) {
+            .path = talloc_strdup(sc, path),
+            .body = s.start
+        };
+        return new->body;
+    }
+    return NULL;
 }
 
 static struct sc_uniform *find_uniform(struct gl_shader_cache *sc,
@@ -592,6 +644,15 @@ void gl_sc_uniform_f(struct gl_shader_cache *sc, char *name, GLfloat f)
     u->size = 1;
     u->glsl_type = "float";
     u->v.f[0] = f;
+}
+
+void gl_sc_uniform_i(struct gl_shader_cache *sc, char *name, GLint i)
+{
+    struct sc_uniform *u = find_uniform(sc, name);
+    u->type = UT_i;
+    u->size = 1;
+    u->glsl_type = "int";
+    u->v.i[0] = i;
 }
 
 void gl_sc_uniform_vec2(struct gl_shader_cache *sc, char *name, GLfloat f[2])
@@ -762,6 +823,11 @@ static GLuint create_program(struct gl_shader_cache *sc, const char *vertex,
 {
     GL *gl = sc->gl;
     MP_VERBOSE(sc, "recompiling a shader program:\n");
+    if (sc->header_text[0]) {
+        MP_VERBOSE(sc, "header:\n");
+        mp_log_source(sc->log, MSGL_V, sc->header_text);
+        MP_VERBOSE(sc, "body:\n");
+    }
     mp_log_source(sc->log, MSGL_V, sc->text);
     GLuint prog = gl->CreateProgram();
     compile_attach_shader(sc, prog, GL_VERTEX_SHADER, vertex);
@@ -837,6 +903,12 @@ void gl_sc_gen_shader_and_reset(struct gl_shader_cache *sc)
     for (int n = 0; n < sc->num_uniforms; n++) {
         struct sc_uniform *u = &sc->uniforms[n];
         ADD(frag, "uniform %s %s;\n", u->glsl_type, u->name);
+    }
+    // custom shader header
+    if (sc->header_text[0]) {
+        ADD(frag, "// header\n");
+        ADD(frag, "%s\n", sc->header_text);
+        ADD(frag, "// body\n");
     }
     ADD(frag, "void main() {\n");
     ADD(frag, "%s", sc->text);

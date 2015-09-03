@@ -39,6 +39,7 @@
 
 #define FRAME_DROP_POP      0 // drop the oldest frame in queue
 #define FRAME_DROP_CLEAR    1 // drop all frames in queue
+#define FRAME_DROP_BLOCK    2
 
 struct vo_priv {
     struct vo *vo;
@@ -57,14 +58,16 @@ struct mpv_opengl_cb_context {
     struct mp_client_api *client_api;
 
     pthread_mutex_t lock;
+    pthread_cond_t wakeup;
 
     // --- Protected by lock
     bool initialized;
     mpv_opengl_cb_update_fn update_cb;
     void *update_cb_ctx;
-    struct mp_image *waiting_frame;
-    struct mp_image **frame_queue;
+    struct vo_frame *waiting_frame;
+    struct vo_frame **frame_queue;
     int queued_frames;
+    struct vo_frame *cur_frame;
     struct mp_image_params img_params;
     bool reconfigured;
     int vp_w, vp_h;
@@ -78,6 +81,10 @@ struct mpv_opengl_cb_context {
     bool eq_changed;
     struct mp_csp_equalizer eq;
     int64_t recent_flip;
+    int64_t approx_vsync;
+    bool frozen; // libmpv user is not redrawing frames
+    struct vo *active;
+    int hwdec_api;
 
     // --- All of these can only be accessed from the thread where the host
     //     application's OpenGL context is current - i.e. only while the
@@ -86,34 +93,30 @@ struct mpv_opengl_cb_context {
     struct gl_video *renderer;
     struct gl_hwdec *hwdec;
     struct mp_hwdec_info hwdec_info; // it's also semi-immutable after init
-
-    // --- Immutable or semi-threadsafe.
-
-    const char *hwapi;
-
-    struct vo *active;
 };
 
 static void update(struct vo_priv *p);
 
 // all queue manipulation functions shold be called under locked state
 
-static struct mp_image *frame_queue_pop(struct mpv_opengl_cb_context *ctx)
+static struct vo_frame *frame_queue_pop(struct mpv_opengl_cb_context *ctx)
 {
     if (ctx->queued_frames == 0)
         return NULL;
-    struct mp_image *ret = ctx->frame_queue[0];
+    struct vo_frame *ret = ctx->frame_queue[0];
     MP_TARRAY_REMOVE_AT(ctx->frame_queue, ctx->queued_frames, 0);
+    pthread_cond_broadcast(&ctx->wakeup);
     return ret;
 }
 
 static void frame_queue_drop(struct mpv_opengl_cb_context *ctx)
 {
-    struct mp_image *mpi = frame_queue_pop(ctx);
-    if (mpi) {
-        talloc_free(mpi);
+    struct vo_frame *frame = frame_queue_pop(ctx);
+    if (frame) {
+        talloc_free(frame);
         if (ctx->active)
             vo_increment_drop_count(ctx->active, 1);
+        pthread_cond_broadcast(&ctx->wakeup);
     }
 }
 
@@ -124,6 +127,7 @@ static void frame_queue_clear(struct mpv_opengl_cb_context *ctx)
     talloc_free(ctx->frame_queue);
     ctx->frame_queue = NULL;
     ctx->queued_frames = 0;
+    pthread_cond_broadcast(&ctx->wakeup);
 }
 
 static void frame_queue_drop_all(struct mpv_opengl_cb_context *ctx)
@@ -132,23 +136,33 @@ static void frame_queue_drop_all(struct mpv_opengl_cb_context *ctx)
     frame_queue_clear(ctx);
     if (ctx->active && frames > 0)
         vo_increment_drop_count(ctx->active, frames);
+    pthread_cond_broadcast(&ctx->wakeup);
 }
 
-static void frame_queue_push(struct mpv_opengl_cb_context *ctx, struct mp_image *mpi)
+static void frame_queue_push(struct mpv_opengl_cb_context *ctx,
+                             struct vo_frame *frame)
 {
-    MP_TARRAY_APPEND(ctx, ctx->frame_queue, ctx->queued_frames, mpi);
+    MP_TARRAY_APPEND(ctx, ctx->frame_queue, ctx->queued_frames, frame);
+    pthread_cond_broadcast(&ctx->wakeup);
 }
 
 static void frame_queue_shrink(struct mpv_opengl_cb_context *ctx, int size)
 {
+    pthread_cond_broadcast(&ctx->wakeup);
     while (ctx->queued_frames > size)
         frame_queue_drop(ctx);
 }
 
-static void forget_frames(struct mpv_opengl_cb_context *ctx)
+static void forget_frames(struct mpv_opengl_cb_context *ctx, bool all)
 {
+    pthread_cond_broadcast(&ctx->wakeup);
     frame_queue_clear(ctx);
-    mp_image_unrefp(&ctx->waiting_frame);
+    talloc_free(ctx->waiting_frame);
+    ctx->waiting_frame = NULL;
+    if (all) {
+        talloc_free(ctx->cur_frame);
+        ctx->cur_frame = NULL;
+    }
 }
 
 static void free_ctx(void *ptr)
@@ -159,6 +173,7 @@ static void free_ctx(void *ptr)
     // mpv_opengl_cb_uninit_gl() properly.
     assert(!ctx->initialized);
 
+    pthread_cond_destroy(&ctx->wakeup);
     pthread_mutex_destroy(&ctx->lock);
 }
 
@@ -168,19 +183,16 @@ struct mpv_opengl_cb_context *mp_opengl_create(struct mpv_global *g,
     mpv_opengl_cb_context *ctx = talloc_zero(NULL, mpv_opengl_cb_context);
     talloc_set_destructor(ctx, free_ctx);
     pthread_mutex_init(&ctx->lock, NULL);
+    pthread_cond_init(&ctx->wakeup, NULL);
 
     ctx->gl = talloc_zero(ctx, GL);
 
     ctx->log = mp_log_new(ctx, g->log, "opengl-cb");
     ctx->client_api = client_api;
 
-    switch (g->opts->hwdec_api) {
-    case HWDEC_AUTO:    ctx->hwapi = "auto"; break;
-    case HWDEC_VDPAU:   ctx->hwapi = "vdpau"; break;
-    case HWDEC_VDA:     ctx->hwapi = "vda"; break;
-    case HWDEC_VAAPI:   ctx->hwapi = "vaapi"; break;
-    default:            ctx->hwapi = "";
-    }
+    ctx->hwdec_api = g->opts->vo.hwdec_preload_api;
+    if (ctx->hwdec_api == HWDEC_NONE)
+        ctx->hwdec_api = g->opts->hwdec_api;
 
     return ctx;
 }
@@ -219,11 +231,11 @@ int mpv_opengl_cb_init_gl(struct mpv_opengl_cb_context *ctx, const char *exts,
 
     mpgl_load_functions2(ctx->gl, get_proc_address, get_proc_address_ctx,
                          exts, ctx->log);
-    ctx->renderer = gl_video_init(ctx->gl, ctx->log);
+    ctx->renderer = gl_video_init(ctx->gl, ctx->log, NULL);
     if (!ctx->renderer)
         return MPV_ERROR_UNSUPPORTED;
 
-    ctx->hwdec = gl_hwdec_load_api(ctx->log, ctx->gl, ctx->hwapi);
+    ctx->hwdec = gl_hwdec_load_api_id(ctx->log, ctx->gl, ctx->hwdec_api);
     gl_video_set_hwdec(ctx->renderer, ctx->hwdec);
     if (ctx->hwdec)
         ctx->hwdec_info.hwctx = ctx->hwdec->hwctx;
@@ -247,7 +259,7 @@ int mpv_opengl_cb_uninit_gl(struct mpv_opengl_cb_context *ctx)
     // context. Setting initialized=false guarantees it can't come back.
 
     pthread_mutex_lock(&ctx->lock);
-    forget_frames(ctx);
+    forget_frames(ctx, true);
     ctx->initialized = false;
     pthread_mutex_unlock(&ctx->lock);
 
@@ -269,6 +281,16 @@ int mpv_opengl_cb_uninit_gl(struct mpv_opengl_cb_context *ctx)
     return 0;
 }
 
+// needs lock
+static int64_t prev_sync(mpv_opengl_cb_context *ctx, int64_t ts)
+{
+    int64_t diff = (int64_t)(ts - ctx->recent_flip);
+    int64_t offset = diff % ctx->approx_vsync;
+    if (offset < 0)
+        offset += ctx->approx_vsync;
+    return ts - offset;
+}
+
 int mpv_opengl_cb_draw(mpv_opengl_cb_context *ctx, int fbo, int vp_w, int vp_h)
 {
     assert(ctx->renderer);
@@ -280,6 +302,7 @@ int mpv_opengl_cb_draw(mpv_opengl_cb_context *ctx, int fbo, int vp_w, int vp_h)
     struct vo *vo = ctx->active;
 
     ctx->force_update |= ctx->reconfigured;
+    ctx->frozen = false;
 
     if (ctx->vp_w != vp_w || ctx->vp_h != vp_h)
         ctx->force_update = true;
@@ -306,7 +329,8 @@ int mpv_opengl_cb_draw(mpv_opengl_cb_context *ctx, int fbo, int vp_w, int vp_h)
         struct vo_priv *p = vo ? vo->priv : NULL;
         struct vo_priv *opts = ctx->new_opts ? ctx->new_opts : p;
         if (opts) {
-            gl_video_set_options(ctx->renderer, opts->renderer_opts, NULL);
+            gl_video_set_options(ctx->renderer, opts->renderer_opts);
+            gl_video_configure_queue(ctx->renderer, vo);
             ctx->gl->debug_context = opts->use_gl_debug;
             gl_video_set_debug(ctx->renderer, opts->use_gl_debug);
             frame_queue_shrink(ctx, opts->frame_queue_size);
@@ -323,16 +347,30 @@ int mpv_opengl_cb_draw(mpv_opengl_cb_context *ctx, int fbo, int vp_w, int vp_h)
     ctx->eq_changed = false;
     ctx->eq = *eq;
 
-    struct mp_image *mpi = frame_queue_pop(ctx);
+    struct vo_frame *frame = frame_queue_pop(ctx);
+    if (frame) {
+        talloc_free(ctx->cur_frame);
+        ctx->cur_frame = vo_frame_ref(frame);
+    } else {
+        frame = vo_frame_ref(ctx->cur_frame);
+    }
+    struct vo_frame dummy = {0};
+    if (!frame)
+        frame = &dummy;
+
+    if (ctx->approx_vsync > 0) {
+        frame->prev_vsync = prev_sync(ctx, mp_time_us());
+        frame->next_vsync = frame->prev_vsync + ctx->approx_vsync;
+    }
 
     pthread_mutex_unlock(&ctx->lock);
 
-    if (mpi)
-        gl_video_set_image(ctx->renderer, mpi);
-
-    gl_video_render_frame(ctx->renderer, fbo, NULL);
+    gl_video_render_frame(ctx->renderer, frame, fbo);
 
     gl_video_unset_gl_state(ctx->renderer);
+
+    if (frame != &dummy)
+        talloc_free(frame);
 
     pthread_mutex_lock(&ctx->lock);
     const int left = ctx->queued_frames;
@@ -346,20 +384,13 @@ int mpv_opengl_cb_draw(mpv_opengl_cb_context *ctx, int fbo, int vp_w, int vp_h)
 int mpv_opengl_cb_report_flip(mpv_opengl_cb_context *ctx, int64_t time)
 {
     pthread_mutex_lock(&ctx->lock);
-    ctx->recent_flip = time > 0 ? time : mp_time_us();
+    int64_t next = time > 0 ? time : mp_time_us();
+    if (ctx->recent_flip)
+        ctx->approx_vsync = next - ctx->recent_flip;
+    ctx->recent_flip = next;
     pthread_mutex_unlock(&ctx->lock);
 
     return 0;
-}
-
-static void draw_image(struct vo *vo, mp_image_t *mpi)
-{
-    struct vo_priv *p = vo->priv;
-
-    pthread_mutex_lock(&p->ctx->lock);
-    mp_image_setrefp(&p->ctx->waiting_frame, mpi);
-    talloc_free(mpi);
-    pthread_mutex_unlock(&p->ctx->lock);
 }
 
 // Called locked.
@@ -369,16 +400,39 @@ static void update(struct vo_priv *p)
         p->ctx->update_cb(p->ctx->update_cb_ctx);
 }
 
+static void draw_frame(struct vo *vo, struct vo_frame *frame)
+{
+    struct vo_priv *p = vo->priv;
+
+    pthread_mutex_lock(&p->ctx->lock);
+    talloc_free(p->ctx->waiting_frame);
+    p->ctx->waiting_frame = vo_frame_ref(frame);
+    pthread_mutex_unlock(&p->ctx->lock);
+}
+
 static void flip_page(struct vo *vo)
 {
     struct vo_priv *p = vo->priv;
 
     pthread_mutex_lock(&p->ctx->lock);
-    if (p->ctx->queued_frames >= p->frame_queue_size) {
-        if (p->frame_drop_mode == FRAME_DROP_CLEAR)
+    while (p->ctx->queued_frames >= p->frame_queue_size) {
+        switch (p->frame_drop_mode) {
+        case FRAME_DROP_CLEAR:
             frame_queue_drop_all(p->ctx);
-        else // FRAME_DROP_POP mode
+            break;
+        case FRAME_DROP_POP:
             frame_queue_shrink(p->ctx, p->frame_queue_size - 1);
+            break;
+        case FRAME_DROP_BLOCK: ;
+            struct timespec ts = mp_rel_time_to_timespec(0.2);
+            if (p->ctx->frozen ||
+                pthread_cond_timedwait(&p->ctx->wakeup, &p->ctx->lock, &ts))
+            {
+                frame_queue_drop_all(p->ctx);
+                p->ctx->frozen = true;
+            }
+            break;
+        }
     }
     frame_queue_push(p->ctx, p->ctx->waiting_frame);
     p->ctx->waiting_frame = NULL;
@@ -403,7 +457,7 @@ static int reconfig(struct vo *vo, struct mp_image_params *params, int flags)
     struct vo_priv *p = vo->priv;
 
     pthread_mutex_lock(&p->ctx->lock);
-    forget_frames(p->ctx);
+    forget_frames(p->ctx, true);
     p->ctx->img_params = *params;
     p->ctx->reconfigured = true;
     pthread_mutex_unlock(&p->ctx->lock);
@@ -418,7 +472,8 @@ static const struct m_option change_opts[] = {
     OPT_INTRANGE("frame-queue-size", frame_queue_size, 0, 1, 100, OPTDEF_INT(2)),
     OPT_CHOICE("frame-drop-mode", frame_drop_mode, 0,
                ({"pop", FRAME_DROP_POP},
-                {"clear", FRAME_DROP_CLEAR})),
+                {"clear", FRAME_DROP_CLEAR},
+                {"block", FRAME_DROP_BLOCK})),
     OPT_SUBSTRUCT("", renderer_opts, gl_video_conf, 0),
     {0}
 };
@@ -475,11 +530,6 @@ static int control(struct vo *vo, uint32_t request, void *data)
         pthread_mutex_unlock(&p->ctx->lock);
         return r ? VO_TRUE : VO_NOTIMPL;
     }
-    case VOCTRL_REDRAW_FRAME:
-        pthread_mutex_lock(&p->ctx->lock);
-        update(p);
-        pthread_mutex_unlock(&p->ctx->lock);
-        return VO_TRUE;
     case VOCTRL_SET_PANSCAN:
         pthread_mutex_lock(&p->ctx->lock);
         copy_vo_opts(vo);
@@ -516,7 +566,7 @@ static void uninit(struct vo *vo)
     struct vo_priv *p = vo->priv;
 
     pthread_mutex_lock(&p->ctx->lock);
-    forget_frames(p->ctx);
+    forget_frames(p->ctx, true);
     p->ctx->img_params = (struct mp_image_params){0};
     p->ctx->reconfigured = true;
     p->ctx->active = NULL;
@@ -555,7 +605,8 @@ static const struct m_option options[] = {
     OPT_INTRANGE("frame-queue-size", frame_queue_size, 0, 1, 100, OPTDEF_INT(2)),
     OPT_CHOICE("frame-drop-mode", frame_drop_mode, 0,
                ({"pop", FRAME_DROP_POP},
-                {"clear", FRAME_DROP_CLEAR})),
+                {"clear", FRAME_DROP_CLEAR},
+                {"block", FRAME_DROP_BLOCK}), OPTDEF_INT(FRAME_DROP_BLOCK)),
     OPT_SUBSTRUCT("", renderer_opts, gl_video_conf, 0),
     {0},
 };
@@ -568,7 +619,7 @@ const struct vo_driver video_out_opengl_cb = {
     .query_format = query_format,
     .reconfig = reconfig,
     .control = control,
-    .draw_image = draw_image,
+    .draw_frame = draw_frame,
     .flip_page = flip_page,
     .uninit = uninit,
     .priv_size = sizeof(struct vo_priv),

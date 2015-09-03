@@ -207,10 +207,7 @@ static void print_status(struct MPContext *mpctx)
 
     // A-V sync
     if (mpctx->d_audio && mpctx->d_video && mpctx->sync_audio_to_video) {
-        if (mpctx->last_av_difference != MP_NOPTS_VALUE)
-            saddf(&line, " A-V:%7.3f", mpctx->last_av_difference);
-        else
-            saddf(&line, " A-V: ???");
+        saddf(&line, " A-V:%7.3f", mpctx->last_av_difference);
         if (fabs(mpctx->total_avsync_change) > 0.05)
             saddf(&line, " ct:%7.3f", mpctx->total_avsync_change);
     }
@@ -228,6 +225,16 @@ static void print_status(struct MPContext *mpctx)
     {
         // VO stats
         if (mpctx->d_video) {
+            if (mpctx->display_sync_active) {
+                char *f =
+                    mp_property_expand_string(mpctx, "${audio-speed-correction}");
+                if (f)
+                    saddf(&line, " DS: %s", f);
+                talloc_free(f);
+                int64_t m = vo_get_missed_count(mpctx->video_out);
+                if (m > 0)
+                    saddf(&line, " Missed: %"PRId64, m);
+            }
             int64_t c = vo_get_drop_count(mpctx->video_out);
             if (c > 0 || mpctx->dropped_frames_total > 0) {
                 saddf(&line, " Dropped: %"PRId64, c);
@@ -251,7 +258,11 @@ static void print_status(struct MPContext *mpctx)
             } else {
                 saddf(&line, "%2ds", (int)s.ts_duration);
             }
-            saddf(&line, "+%lldKB", (long long)(fill / 1024));
+            if (fill >= 1024 * 1024) {
+                saddf(&line, "+%lldMB", (long long)(fill / 1024 / 1024));
+            } else {
+                saddf(&line, "+%lldKB", (long long)(fill / 1024));
+            }
         }
     }
 

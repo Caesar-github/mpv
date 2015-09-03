@@ -34,6 +34,7 @@
 #include "video/csputils.h"
 #include "video/mp_image.h"
 #include "video/img_format.h"
+#include "video/d3d.h"
 #include "common/msg.h"
 #include "common/common.h"
 #include "w32_common.h"
@@ -191,6 +192,10 @@ typedef struct d3d_priv {
     struct mp_csp_equalizer video_eq;
 
     struct osdpart *osd[MAX_OSD_PARTS];
+
+    struct mp_hwdec_info hwdec_info;
+    struct mp_hwdec_ctx hwdec_ctx;
+    struct mp_d3d_ctx hwdec_d3d;
 } d3d_priv;
 
 struct fmt_entry {
@@ -733,12 +738,16 @@ static bool change_d3d_backbuffer(d3d_priv *priv)
                                            D3DADAPTER_DEFAULT,
                                            DEVTYPE, vo_w32_hwnd(priv->vo),
                                            D3DCREATE_SOFTWARE_VERTEXPROCESSING
-                                           | D3DCREATE_FPU_PRESERVE,
+                                           | D3DCREATE_FPU_PRESERVE
+                                           | D3DCREATE_MULTITHREADED,
                                            &present_params, &priv->d3d_device)))
         {
             MP_VERBOSE(priv, "Creating Direct3D device failed.\n");
             return 0;
         }
+
+        // (race condition if this is called when recovering from a "lost" device)
+        priv->hwdec_d3d.d3d9_device = priv->d3d_device;
     } else {
         if (FAILED(IDirect3DDevice9_Reset(priv->d3d_device, &present_params))) {
             MP_ERR(priv, "Reseting Direct3D device failed.\n");
@@ -772,6 +781,8 @@ static bool change_d3d_backbuffer(d3d_priv *priv)
 
 static void destroy_d3d(d3d_priv *priv)
 {
+    priv->hwdec_d3d.d3d9_device = NULL;
+
     destroy_d3d_surfaces(priv);
 
     for (int n = 0; n < NUM_SHADERS; n++) {
@@ -887,15 +898,15 @@ static uint32_t d3d_draw_frame(d3d_priv *priv)
     if (!priv->have_image)
         goto render_osd;
 
+    RECT rm = priv->fs_movie_rect;
+    RECT rs = priv->fs_panscan_rect;
+
     if (priv->use_textures) {
 
         for (n = 0; n < priv->plane_count; n++) {
             IDirect3DDevice9_SetTexture(priv->d3d_device, n,
                 d3dtex_get_render_texture(priv, &priv->planes[n].texture));
         }
-
-        RECT rm = priv->fs_movie_rect;
-        RECT rs = priv->fs_panscan_rect;
 
         vertex_video vb[] = {
             { rm.left,  rm.top,    0.0f},
@@ -941,11 +952,15 @@ static uint32_t d3d_draw_frame(d3d_priv *priv)
         }
 
     } else {
+        rs.left &= ~(ULONG)1;
+        rs.top &= ~(ULONG)1;
+        rs.right &= ~(ULONG)1;
+        rs.bottom &= ~(ULONG)1;
         if (FAILED(IDirect3DDevice9_StretchRect(priv->d3d_device,
                                                 priv->d3d_surface,
-                                                &priv->fs_panscan_rect,
+                                                &rs,
                                                 priv->d3d_backbuf,
-                                                &priv->fs_movie_rect,
+                                                &rm,
                                                 D3DTEXF_LINEAR))) {
             MP_ERR(priv, "Copying frame to the backbuffer failed.\n");
             return VO_ERROR;
@@ -1212,6 +1227,9 @@ static int preinit(struct vo *vo)
     priv->vo = vo;
     priv->log = vo->log;
 
+    priv->hwdec_info.hwctx = &priv->hwdec_ctx;
+    priv->hwdec_ctx.d3d_ctx = &priv->hwdec_d3d;
+
     for (int n = 0; n < MAX_OSD_PARTS; n++) {
         struct osdpart *osd = talloc_ptrtype(priv, osd);
         *osd = (struct osdpart) {
@@ -1259,6 +1277,11 @@ static int control(struct vo *vo, uint32_t request, void *data)
     d3d_priv *priv = vo->priv;
 
     switch (request) {
+    case VOCTRL_GET_HWDEC_INFO: {
+        struct mp_hwdec_info **arg = data;
+        *arg = &priv->hwdec_info;
+        return true;
+    }
     case VOCTRL_REDRAW_FRAME:
         d3d_draw_frame(priv);
         return VO_TRUE;

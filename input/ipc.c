@@ -43,6 +43,10 @@
 #include "options/path.h"
 #include "player/client.h"
 
+#ifndef MSG_NOSIGNAL
+#define MSG_NOSIGNAL 0
+#endif
+
 struct mp_ipc_ctx {
     struct mp_log *log;
     struct mp_client_api *client_api;
@@ -240,6 +244,7 @@ static char *json_execute_command(struct client_arg *arg, void *ta_parent,
 
     mpv_node msg_node;
     mpv_node reply_node = {.format = MPV_FORMAT_NODE_MAP, .u.list = NULL};
+    mpv_node *reqid_node = NULL;
 
     rc = json_parse(ta_parent, &msg_node, &src, 3);
     if (rc < 0) {
@@ -252,6 +257,8 @@ static char *json_execute_command(struct client_arg *arg, void *ta_parent,
         rc = MPV_ERROR_INVALID_PARAMETER;
         goto error;
     }
+
+    reqid_node = mpv_node_map_get(&msg_node, "request_id");
 
     mpv_node *cmd_node = mpv_node_map_get(&msg_node, "command");
     if (!cmd_node ||
@@ -466,6 +473,14 @@ static char *json_execute_command(struct client_arg *arg, void *ta_parent,
     }
 
 error:
+    /* If the request contains a "request_id", copy it back into the response.
+     * This makes it easier on the requester to match up the IPC results with
+     * the original requests.
+     */
+    if (reqid_node) {
+        mpv_node_map_add(ta_parent, &reply_node, "request_id", reqid_node);
+    }
+
     mpv_node_map_add_string(ta_parent, &reply_node, "error", mpv_error_string(rc));
 
     char *output = talloc_strdup(ta_parent, "");
@@ -486,7 +501,7 @@ static int ipc_write_str(struct client_arg *client, const char *buf)
 {
     size_t count = strlen(buf);
     while (count > 0) {
-        ssize_t rc = write(client->client_fd, buf, count);
+        ssize_t rc = send(client->client_fd, buf, count, MSG_NOSIGNAL);
         if (rc <= 0) {
             if (rc == 0)
                 return -1;
@@ -529,7 +544,7 @@ static void *client_thread(void *p)
         goto done;
     }
 
-    MP_INFO(arg, "Client connected\n");
+    MP_VERBOSE(arg, "Client connected\n");
 
     struct pollfd fds[2] = {
         {.events = POLLIN, .fd = pipe_fd},
@@ -597,7 +612,7 @@ static void *client_thread(void *p)
                 }
 
                 if (bytes == 0) {
-                    MP_INFO(arg, "Client disconnected\n");
+                    MP_VERBOSE(arg, "Client disconnected\n");
                     goto done;
                 }
 
@@ -731,7 +746,7 @@ static void *ipc_thread(void *p)
 
     mpthread_set_name("ipc socket listener");
 
-    MP_INFO(arg, "Starting IPC master\n");
+    MP_VERBOSE(arg, "Starting IPC master\n");
 
     ipc_fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (ipc_fd < 0) {

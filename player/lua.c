@@ -277,16 +277,10 @@ static void set_path(lua_State *L)
     const char *path = lua_tostring(L, -1);
 
     char *newpath = talloc_strdup(tmp, path ? path : "");
-    char *dirs[] = {"scripts", "lua", NULL};
-    for (int s = 0; dirs[s]; s++) {
-        char **luadir = mp_find_all_config_files(tmp, get_mpctx(L)->global,
-                                                 dirs[s]);
-        for (int i = 0; luadir && luadir[i]; i++) {
-            // No need to display a warning for lua files in the deprecated
-            // 'lua' dirs since scripting.c already warned on them
-            newpath = talloc_asprintf_append(newpath, ";%s",
-                    mp_path_join(tmp, bstr0(luadir[i]), bstr0("?.lua")));
-        }
+    char **luadir = mp_find_all_config_files(tmp, get_mpctx(L)->global, "scripts");
+    for (int i = 0; luadir && luadir[i]; i++) {
+        newpath = talloc_asprintf_append(newpath, ";%s",
+                        mp_path_join(tmp, luadir[i], "?.lua"));
     }
 
     lua_pushstring(L, newpath);  // package path newpath
@@ -516,6 +510,27 @@ static int script_wait_event(lua_State *L)
             lua_settable(L, -3); // event args
         }
         lua_setfield(L, -2, "args"); // event
+        break;
+    }
+    case MPV_EVENT_END_FILE: {
+        mpv_event_end_file *eef = event->data;
+        const char *reason;
+        switch (eef->reason) {
+        case MPV_END_FILE_REASON_EOF: reason = "eof"; break;
+        case MPV_END_FILE_REASON_STOP: reason = "stop"; break;
+        case MPV_END_FILE_REASON_QUIT: reason = "quit"; break;
+        case MPV_END_FILE_REASON_ERROR: reason = "error"; break;
+        case MPV_END_FILE_REASON_REDIRECT: reason = "redirect"; break;
+        default:
+            reason = "unknown";
+        }
+        lua_pushstring(L, reason); // event reason
+        lua_setfield(L, -2, "reason"); // event
+
+        if (eef->reason == MPV_END_FILE_REASON_ERROR) {
+            lua_pushstring(L, mpv_error_string(eef->error)); // event error
+            lua_setfield(L, -2, "error"); // event
+        }
         break;
     }
     case MPV_EVENT_PROPERTY_CHANGE: {
@@ -1009,58 +1024,6 @@ static int script_get_time(lua_State *L)
     return 1;
 }
 
-static int script_input_define_section(lua_State *L)
-{
-    struct MPContext *mpctx = get_mpctx(L);
-    char *section = (char *)luaL_checkstring(L, 1);
-    char *contents = (char *)luaL_checkstring(L, 2);
-    char *flags = (char *)luaL_optstring(L, 3, "");
-    bool builtin = true;
-    if (strcmp(flags, "default") == 0) {
-        builtin = true;
-    } else if (strcmp(flags, "force") == 0) {
-        builtin = false;
-    } else if (strcmp(flags, "") == 0) {
-        //pass
-    } else {
-        luaL_error(L, "invalid flags: '%s'", flags);
-    }
-    mp_input_define_section(mpctx->input, section, "<script>", contents, builtin);
-    return 0;
-}
-
-static int script_input_enable_section(lua_State *L)
-{
-    struct MPContext *mpctx = get_mpctx(L);
-    char *section = (char *)luaL_checkstring(L, 1);
-    char *sflags = (char *)luaL_optstring(L, 2, "");
-    bstr bflags = bstr0(sflags);
-    int flags = 0;
-    while (bflags.len) {
-        bstr val;
-        bstr_split_tok(bflags, "|", &val, &bflags);
-        if (bstr_equals0(val, "allow-hide-cursor")) {
-            flags |= MP_INPUT_ALLOW_HIDE_CURSOR;
-        } else if (bstr_equals0(val, "allow-vo-dragging")) {
-            flags |= MP_INPUT_ALLOW_VO_DRAGGING;
-        } else if (bstr_equals0(val, "exclusive")) {
-            flags |= MP_INPUT_EXCLUSIVE;
-        } else {
-            luaL_error(L, "invalid flag");
-        }
-    }
-    mp_input_enable_section(mpctx->input, section, flags);
-    return 0;
-}
-
-static int script_input_disable_section(lua_State *L)
-{
-    struct MPContext *mpctx = get_mpctx(L);
-    char *section = (char *)luaL_checkstring(L, 1);
-    mp_input_disable_section(mpctx->input, section);
-    return 0;
-}
-
 static int script_input_set_section_mouse_area(lua_State *L)
 {
     struct MPContext *mpctx = get_mpctx(L);
@@ -1148,7 +1111,7 @@ static int script_join_path(lua_State *L)
 {
     const char *p1 = luaL_checkstring(L, 1);
     const char *p2 = luaL_checkstring(L, 2);
-    char *r = mp_path_join(NULL, bstr0(p1), bstr0(p2));
+    char *r = mp_path_join(NULL, p1, p2);
     lua_pushstring(L, r);
     talloc_free(r);
     return 1;
@@ -1228,6 +1191,8 @@ static int script_subprocess(lua_State *L)
     lua_setfield(L, -2, "status"); // res
     lua_pushlstring(L, cb_ctx.output.start, cb_ctx.output.len); // res d
     lua_setfield(L, -2, "stdout"); // res
+    lua_pushboolean(L, status == MP_SUBPROCESS_EKILLED_BY_US); // res b
+    lua_setfield(L, -2, "killed_by_us"); // res
     return 1;
 }
 
@@ -1304,9 +1269,6 @@ static const struct fn_entry main_fns[] = {
     FN_ENTRY(get_screen_margins),
     FN_ENTRY(get_mouse_pos),
     FN_ENTRY(get_time),
-    FN_ENTRY(input_define_section),
-    FN_ENTRY(input_enable_section),
-    FN_ENTRY(input_disable_section),
     FN_ENTRY(input_set_section_mouse_area),
     FN_ENTRY(format_time),
     FN_ENTRY(enable_messages),

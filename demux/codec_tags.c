@@ -22,53 +22,10 @@
 #include "stheader.h"
 #include "common/av_common.h"
 
-struct mp_codec_tag {
-    uint32_t tag;
-    const char *codec;
-};
-
-static const struct mp_codec_tag mp_codec_tags[] = {
-    // Made-up tags used by demux_mkv.c to map codecs.
-    // (This is a leftover from MPlayer's codecs.conf mechanism.)
-    {MKTAG('p', 'r', '0', '0'), "prores"},
-    {MKTAG('H', 'E', 'V', 'C'), "hevc"},
-    {MKTAG('R', 'V', '2', '0'), "rv20"},
-    {MKTAG('R', 'V', '3', '0'), "rv30"},
-    {MKTAG('R', 'V', '4', '0'), "rv40"},
-    {MKTAG('R', 'V', '1', '0'), "rv10"},
-    {MKTAG('R', 'V', '1', '3'), "rv10"},
-    {MKTAG('E', 'A', 'C', '3'), "eac3"},
-    {MKTAG('M', 'P', '4', 'A'), "aac"},     // also the QT tag
-    {MKTAG('v', 'r', 'b', 's'), "vorbis"},
-    {MKTAG('O', 'p', 'u', 's'), "opus"},
-    {MKTAG('W', 'V', 'P', 'K'), "wavpack"},
-    {MKTAG('T', 'R', 'H', 'D'), "truehd"},
-    {MKTAG('f', 'L', 'a', 'C'), "flac"},
-    {MKTAG('a', 'L', 'a', 'C'), "alac"},    // also the QT tag
-    {MKTAG('2', '8', '_', '8'), "ra_288"},
-    {MKTAG('a', 't', 'r', 'c'), "atrac3"},
-    {MKTAG('c', 'o', 'o', 'k'), "cook"},
-    {MKTAG('d', 'n', 'e', 't'), "ac3"},
-    {MKTAG('s', 'i', 'p', 'r'), "sipr"},
-    {MKTAG('T', 'T', 'A', '1'), "tta"},
-    // Fringe codecs, occur in the wild, but not mapped in FFmpeg.
-    {MKTAG('B', 'I', 'K', 'b'), "binkvideo"},
-    {MKTAG('B', 'I', 'K', 'f'), "binkvideo"},
-    {MKTAG('B', 'I', 'K', 'g'), "binkvideo"},
-    {MKTAG('B', 'I', 'K', 'h'), "binkvideo"},
-    {MKTAG('B', 'I', 'K', 'i'), "binkvideo"},
-    {0}
-};
-
 #define HAVE_QT_TAGS (LIBAVFORMAT_VERSION_MICRO >= 100)
 
 static const char *lookup_tag(int type, uint32_t tag)
 {
-    for (int n = 0; mp_codec_tags[n].codec; n++) {
-        if (mp_codec_tags[n].tag == tag)
-            return mp_codec_tags[n].codec;
-    }
-
     const struct AVCodecTag *av_tags[3] = {0};
     switch (type) {
     case STREAM_VIDEO: {
@@ -115,11 +72,11 @@ static const char *map_audio_pcm_tag(uint32_t tag, int bits)
 
 void mp_set_codec_from_tag(struct sh_stream *sh)
 {
-    sh->codec = lookup_tag(sh->type, sh->format);
+    sh->codec = lookup_tag(sh->type, sh->codec_tag);
 
     if (sh->audio && sh->audio->bits_per_coded_sample) {
         const char *codec =
-            map_audio_pcm_tag(sh->format, sh->audio->bits_per_coded_sample);
+            map_audio_pcm_tag(sh->codec_tag, sh->audio->bits_per_coded_sample);
         if (codec)
             sh->codec = codec;
     }
@@ -151,7 +108,7 @@ const char *mp_map_mimetype_to_video_codec(const char *mimetype)
 {
     if (mimetype) {
         for (int n = 0; mimetype_to_codec[n][0]; n++) {
-            if (strcmp(mimetype_to_codec[n][0], mimetype) == 0)
+            if (strcasecmp(mimetype_to_codec[n][0], mimetype) == 0)
                 return mimetype_to_codec[n][1];
         }
     }

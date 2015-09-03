@@ -191,14 +191,14 @@ static struct ao *ao_init(bool probing, struct mpv_global *global,
             snprintf(rdevice, sizeof(rdevice), "%s", ao->device ? ao->device : "");
             talloc_free(ao);
             return ao_init(probing, global, input_ctx, encode_lavc_ctx,
-                           samplerate, format, channels, rdevice, redirect, args);
+                           samplerate, format, channels, rdevice, redirect, NULL);
         }
         goto fail;
     }
 
-    ao->sstride = af_fmt2bps(ao->format);
+    ao->sstride = af_fmt_to_bytes(ao->format);
     ao->num_planes = 1;
-    if (AF_FORMAT_IS_PLANAR(ao->format)) {
+    if (af_fmt_is_planar(ao->format)) {
         ao->num_planes = ao->channels.num;
     } else {
         ao->sstride *= ao->channels.num;
@@ -307,7 +307,8 @@ done:
 // Uninitialize and destroy the AO. Remaining audio must be dropped.
 void ao_uninit(struct ao *ao)
 {
-    ao->api->uninit(ao);
+    if (ao)
+        ao->api->uninit(ao);
     talloc_free(ao);
 }
 
@@ -413,18 +414,14 @@ bool ao_chmap_sel_adjust(struct ao *ao, const struct mp_chmap_sel *s,
     if (mp_msg_test(ao->log, MSGL_DEBUG)) {
         for (int i = 0; i < s->num_chmaps; i++) {
             struct mp_chmap c = s->chmaps[i];
-            struct mp_chmap cr = c;
-            mp_chmap_reorder_norm(&cr);
             MP_DBG(ao, "chmap_sel #%d: %s (%s)\n", i, mp_chmap_to_str(&c),
-                   mp_chmap_to_str(&cr));
+                   mp_chmap_to_str_hr(&c));
         }
     }
     bool r = mp_chmap_sel_adjust(s, map);
     if (r) {
-        struct mp_chmap mapr = *map;
-        mp_chmap_reorder_norm(&mapr);
         MP_DBG(ao, "result: %s (%s)\n", mp_chmap_to_str(map),
-               mp_chmap_to_str(&mapr));
+               mp_chmap_to_str_hr(map));
     }
     return r;
 }

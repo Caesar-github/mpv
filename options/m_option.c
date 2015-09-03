@@ -743,12 +743,17 @@ static int apply_flag(const struct m_option *opt, int *val, bstr flag)
 
 static const char *find_next_flag(const struct m_option *opt, int *val)
 {
+    struct m_opt_choice_alternatives *best = NULL;
     struct m_opt_choice_alternatives *alt;
     for (alt = opt->priv; alt->name; alt++) {
         if (alt->value && (alt->value & (*val)) == alt->value) {
-            *val = *val & ~(unsigned)alt->value;
-            return alt->name;
+            if (!best || av_popcount64(alt->value) > av_popcount64(best->value))
+                best = alt;
         }
+    }
+    if (best) {
+        *val = *val & ~(unsigned)best->value;
+        return best->name;
     }
     *val = 0; // if there are still flags left, there's not much we can do
     return NULL;
@@ -1515,7 +1520,7 @@ const m_option_type_t m_option_type_string_append_list = {
     .set   = str_list_set,
 };
 
-static int read_subparam(struct mp_log *log, bstr optname,
+static int read_subparam(struct mp_log *log, bstr optname, char *termset,
                          bstr *str, bstr *out_subparam);
 
 static int parse_keyvalue_list(struct mp_log *log, const m_option_t *opt,
@@ -1527,7 +1532,7 @@ static int parse_keyvalue_list(struct mp_log *log, const m_option_t *opt,
 
     while (param.len) {
         bstr key, val;
-        r = read_subparam(log, name, &param, &key);
+        r = read_subparam(log, name, "=", &param, &key);
         if (r < 0)
             break;
         if (!bstr_eatstart0(&param, "=")) {
@@ -1535,7 +1540,7 @@ static int parse_keyvalue_list(struct mp_log *log, const m_option_t *opt,
             r = M_OPT_INVALID;
             break;
         }
-        r = read_subparam(log, name, &param, &val);
+        r = read_subparam(log, name, ",:", &param, &val);
         if (r < 0)
             break;
         if (dst) {
@@ -1717,9 +1722,10 @@ const m_option_type_t m_option_type_print_fn = {
 #define VAL(x) (*(char ***)(x))
 
 // Read s sub-option name, or a positional sub-opt value.
+// termset is a string containing the set of chars that terminate an option.
 // Return 0 on succes, M_OPT_ error code otherwise.
 // optname is for error reporting.
-static int read_subparam(struct mp_log *log, bstr optname,
+static int read_subparam(struct mp_log *log, bstr optname, char *termset,
                          bstr *str, bstr *out_subparam)
 {
     bstr p = *str;
@@ -1764,7 +1770,7 @@ static int read_subparam(struct mp_log *log, bstr optname,
     } else {
         // Skip until the next character that could possibly be a meta
         // character in option parsing.
-        int optlen = bstrcspn(p, ":=,\\%\"'[]");
+        int optlen = bstrcspn(p, termset);
         subparam = bstr_splice(p, 0, optlen);
         p = bstr_cut(p, optlen);
     }
@@ -1784,11 +1790,11 @@ static int split_subconf(struct mp_log *log, bstr optname, bstr *str,
     bstr p = *str;
     bstr subparam = {0};
     bstr subopt;
-    int r = read_subparam(log, optname, &p, &subopt);
+    int r = read_subparam(log, optname, ":=,\\%\"'[]", &p, &subopt);
     if (r < 0)
         return r;
     if (bstr_eatstart0(&p, "=")) {
-        r = read_subparam(log, subopt, &p, &subparam);
+        r = read_subparam(log, subopt, ":=,\\%\"'[]", &p, &subparam);
         if (r < 0)
             return r;
     }
@@ -2216,13 +2222,17 @@ static int parse_afmt(struct mp_log *log, const m_option_t *opt,
 
     if (!bstrcmp0(param, "help")) {
         mp_info(log, "Available formats:");
-        for (int i = 0; af_fmtstr_table[i].name; i++)
-            mp_info(log, " %s", af_fmtstr_table[i].name);
+        for (int i = 1; i < AF_FORMAT_COUNT; i++)
+            mp_info(log, " %s", af_fmt_to_str(i));
         mp_info(log, "\n");
         return M_OPT_EXIT - 1;
     }
 
-    int fmt = af_str2fmt_short(param);
+    int fmt = 0;
+    for (int i = 1; i < AF_FORMAT_COUNT; i++) {
+        if (bstr_equals0(param, af_fmt_to_str(i)))
+            fmt = i;
+    }
     if (!fmt) {
         mp_err(log, "Option %.*s: unknown format name: '%.*s'\n",
                BSTR_P(name), BSTR_P(param));
@@ -2742,8 +2752,8 @@ print_help: ;
             desc->print_help(log);
         m_config_print_option_list(config);
     } else {
-        mp_warn(log, "Option %.*s doesn't exist.\n",
-               BSTR_P(opt_name));
+        mp_warn(log, "Option %.*s: item %.*s doesn't exist.\n",
+               BSTR_P(opt_name), BSTR_P(name));
     }
     r = M_OPT_EXIT - 1;
 

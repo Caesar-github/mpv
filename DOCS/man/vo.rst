@@ -69,11 +69,11 @@ Available video output drivers are:
     ``no-colorkey``
         Disables color-keying.
 
-``x11`` (X11 only)
-    Shared memory video output driver without hardware acceleration that works
-    whenever X11 is present.
-
-    .. note:: This is a fallback only, and should not be normally used.
+    ``buffers=<number>``
+        Number of image buffers to use for the internal ringbuffer (default: 2).
+        Increasing this will use more memory, but might help with the X server
+        not responding quickly enough if video FPS is close to or higher than
+        the display refresh rate.
 
 ``vdpau`` (X11 only)
     Uses the VDPAU interface to display and optionally also decode video.
@@ -336,6 +336,9 @@ Available video output drivers are:
             exchange for adding some blur. This filter is good at temporal
             interpolation, and also known as "smoothmotion" (see ``tscale``).
 
+        ``custom``
+            A user-defined custom shader (see ``scale-shader``).
+
         There are some more filters, but most are not as useful. For a complete
         list, pass ``help`` as value, e.g.::
 
@@ -452,6 +455,11 @@ Available video output drivers are:
         Unfortunately, this can lead to flicker on LCD displays, since these
         have a high reaction time.
 
+    ``temporal-dither-period=<1-128>``
+        Determines how often the dithering pattern is updated when
+        ``temporal-dither`` is in use. 1 (the default) will update on every
+        video frame, 2 on every other frame, etc.
+
     ``debug``
         Check for OpenGL errors, i.e. call ``glGetError()``. Also request a
         debug OpenGL context (which does nothing with current graphics drivers
@@ -494,10 +502,15 @@ Available video output drivers are:
         for ``tscale`` are separable convolution filters (use ``tscale=help``
         to get a list). The default is ``oversample``.
 
-        Note that the maximum supported filter radius is currently 3, and that
-        using filters with larger radius may introduce issues when pausing or
-        framestepping, proportional to the radius used. It is recommended to
-        stick to a radius of 1 or 2.
+        Note that the maximum supported filter radius is currently 3, due to
+        limitations in the number of video textures that can be loaded
+        simultaneously.
+
+    ``tscale-clamp``
+        Clamp the ``tscale`` filter kernel's value range to [0-1]. This reduces
+        excessive ringing artifacts in the temporal domain (which typically
+        manifest themselves as short flashes or fringes of black, mostly
+        around moving edges) in exchange for potentially adding more blur.
 
     ``dscale-radius``, ``cscale-radius``, ``tscale-radius``, etc.
         Set filter parameters for ``dscale``, ``cscale`` and ``tscale``,
@@ -506,10 +519,8 @@ Available video output drivers are:
         See the corresponding options for ``scale``.
 
     ``linear-scaling``
-        Scale in linear light. This is automatically enabled if
-        ``target-prim``, ``target-trc``, ``icc-profile`` or
-        ``sigmoid-upscaling`` is set. It should only be used with a
-        ``fbo-format`` that has at least 16 bit precision.
+        Scale in linear light. It should only be used with a ``fbo-format``
+        that has at least 16 bit precision.
 
     ``fancy-downscaling``
         When using convolution based filters, extend the filter size
@@ -519,9 +530,73 @@ Available video output drivers are:
         feature doesn't work correctly with different scale factors in
         different directions.
 
+    ``source-shader=<file>``, ``scale-shader=<file>``, ``pre-shaders=<files>``, ``post-shaders=<files>``
+        Custom GLSL fragment shaders.
+
+        source-shader
+            This gets applied directly onto the source planes, before
+            any sort of upscaling or conversion whatsoever. For YCbCr content,
+            this means it gets applied on the luma and chroma planes
+            separately. In general, this shader shouldn't be making any
+            assumptions about the colorspace. It could be RGB, YCbCr, XYZ or
+            something else entirely. It's used purely for fixing numerical
+            quirks of the input, eg. debanding or deblocking.
+        pre-shaders (list)
+            These get applied after conversion to RGB and before linearization
+            and upscaling. Operates on non-linear RGB (same as input). This is
+            the best place to put things like sharpen filters.
+        scale-shader
+            This gets used instead of scale/cscale when those options are set
+            to ``custom``. The colorspace it operates on depends on the values
+            of ``linear-scaling`` and ``sigmoid-upscaling``, so no assumptions
+            should be made here.
+        post-shaders (list)
+            These get applied after upscaling and subtitle blending (when
+            ``blend-subtitles`` is enabled), but before color management.
+            Operates on linear RGB if ``linear-scaling`` is in effect,
+            otherwise non-linear RGB. This is the best place for colorspace
+            transformations (eg. saturation mapping).
+
+        These files must define a function with the following signature::
+
+            vec4 sample(sampler2D tex, vec2 pos, vec2 tex_size)
+
+        The meanings of the parameters are as follows:
+
+        sampler2D tex
+            The source texture for the shader.
+        vec2 pos
+            The position to be sampled, in coordinate space [0-1].
+        vec2 tex_size
+            The size of the texture, in pixels. This may differ from image_size,
+            eg. for subsampled content or for post-shaders.
+
+        In addition to these parameters, the following uniforms are also
+        globally available:
+
+        float random
+            A random number in the range [0-1], different per frame.
+        int frame
+            A simple count of frames rendered, increases by one per frame and
+            never resets (regardless of seeks).
+        vec2 image_size
+            The size in pixels of the input image.
+        float cmul (source-shader only)
+            The multiplier needed to pull colors up to the right bit depth. The
+            source-shader must multiply any sampled colors by this, in order
+            to normalize them to the full scale.
+
+        For example, a shader that inverts the colors could look like this::
+
+            vec4 sample(sampler2D tex, vec2 pos, vec2 tex_size)
+            {
+                vec4 color = texture(tex, pos);
+                return vec4(1.0 - color.rgb, color.a);
+            }
+
     ``sigmoid-upscaling``
         When upscaling, use a sigmoidal color transform to avoid emphasizing
-        ringing artifacts. This also enables ``linear-scaling``.
+        ringing artifacts. This also implies ``linear-scaling``.
 
     ``sigmoid-center``
         The center of the sigmoid curve used for ``sigmoid-upscaling``, must
@@ -530,10 +605,6 @@ Available video output drivers are:
     ``sigmoid-slope``
         The slope of the sigmoid curve used for ``sigmoid-upscaling``, must
         be a float between 1.0 and 20.0. Defaults to 6.5 if not specified.
-
-    ``no-npot``
-        Force use of power-of-2 texture sizes. For debugging only.
-        Borders will be distorted due to filtering.
 
     ``glfinish``
         Call ``glFinish()`` before and after swapping buffers (default: disabled).
@@ -555,7 +626,8 @@ Available video output drivers are:
         full screen).
         This may help getting more consistent frame intervals, especially with
         high-fps clips - which might also reduce dropped frames. Typically a
-        value of 1 should be enough since full screen may bypass the DWM.
+        value of ``windowed`` should be enough since full screen may bypass the
+        DWM.
 
         Windows only.
 
@@ -573,12 +645,15 @@ Available video output drivers are:
             Cocoa/OS X
         win
             Win32/WGL
-        x11, x11es
-            X11/GLX (the ``es`` variant forces GLES)
+        x11
+            X11/GLX
         wayland
             Wayland/EGL
-        x11egl, x11egles
-            X11/EGL (the ``es`` variant forces GLES)
+        x11egl
+            X11/EGL
+
+    ``es``
+        Force or prefer GLES2/3 over desktop OpenGL, if supported.
 
     ``fbo-format=<fmt>``
         Selects the internal format of textures used for FBOs. The format can
@@ -660,8 +735,7 @@ Available video output drivers are:
     ``icc-profile=<file>``
         Load an ICC profile and use it to transform linear RGB to screen output.
         Needs LittleCMS 2 support compiled in. This option overrides the
-        ``target-prim`` and ``target-trc`` options. It also enables
-        ``linear-scaling``.
+        ``target-prim``, ``target-trc`` and ``icc-profile-auto`` options.
 
     ``icc-profile-auto``
         Automatically select the ICC display profile currently specified by
@@ -669,11 +743,14 @@ Available video output drivers are:
 
         NOTE: Only implemented on OS X and X11
 
-    ``icc-cache=<file>``
-        Store and load the 3D LUT created from the ICC profile in this file.
+    ``icc-cache-dir=<dirname>``
+        Store and load the 3D LUTs created from the ICC profile in this directory.
         This can be used to speed up loading, since LittleCMS 2 can take a while
-        to create the 3D LUT. Note that this file contains an uncompressed LUT.
-        Its size depends on the ``3dlut-size``, and can be very big.
+        to create a 3D LUT. Note that these files contain uncompressed LUTs.
+        Their size depends on the ``3dlut-size``, and can be very big.
+
+        NOTE: This is not cleaned automatically, so old, unused cache files
+        may stick around indefinitely.
 
     ``icc-intent=<value>``
         Specifies the ICC intent used for the color transformation (when using
@@ -697,8 +774,8 @@ Available video output drivers are:
         Blend subtitles directly onto upscaled video frames, before
         interpolation and/or color management (default: no). Enabling this
         causes subtitles to be affected by ``icc-profile``, ``target-prim``,
-        ``target-trc``, ``interpolation``, ``gamma`` and ``linear-scaling``.
-        It also increases subtitle performance when using ``interpolation``.
+        ``target-trc``, ``interpolation``, ``gamma`` and ``post-shader``. It
+        also increases subtitle performance when using ``interpolation``.
 
         The downside of enabling this is that it restricts subtitles to the
         visible portion of the video, so you can't have subtitles exist in the
@@ -744,7 +821,7 @@ Available video output drivers are:
 
     This is equivalent to::
 
-        --vo=opengl:scale=spline36:cscale=spline36:dscale=mitchell:dither-depth=auto:fancy-downscaling:sigmoid-upscaling
+        --vo=opengl:scale=spline36:cscale=spline36:dscale=mitchell:dither-depth=auto:fancy-downscaling:sigmoid-upscaling:pbo
 
     Note that some cheaper LCDs do dithering that gravely interferes with
     ``opengl``'s dithering. Disabling dithering with ``dither-depth=no`` helps.
@@ -815,6 +892,12 @@ Available video output drivers are:
 
 ``null``
     Produces no video output. Useful for benchmarking.
+
+    Usually, it's better to disable video with ``--no-video`` instead.
+
+    ``fps=<value>``
+        Simulate display FPS. This artificially limits how many frames the
+        VO accepts per second.
 
 ``caca``
     Color ASCII art video output driver that works on a text console.
@@ -895,13 +978,15 @@ Available video output drivers are:
     ``frame-queue-size=<1..100>``
         The maximum count of frames which the frame queue can hold (default: 1)
 
-    ``frame-drop-mode=<pop|clear>``
+    ``frame-drop-mode=<pop|clear|block>``
         Select the behavior when the frame queue is full.
 
         pop
-            Drop the oldest frame in the frame queue. (default)
+            Drop the oldest frame in the frame queue.
         clear
             Drop all frames in the frame queue.
+        block
+            Wait for a short time, behave like ``clear`` on timeout. (default)
 
     This also supports many of the suboptions the ``opengl`` VO has. Run
     ``mpv --vo=opengl-cb:help`` for a list.
@@ -921,6 +1006,11 @@ Available video output drivers are:
         selected layer, to handle the window background and OSD. Actual video
         rendering will happen on the layer above the selected layer.
 
+    ``background=<yes|no>``
+        Whether to render a black background behind the video (default: no).
+        Normally it's better to kill the console framebuffer instead, which
+        gives better performance.
+
 ``drm`` (Direct Rendering Manager)
     Video output driver using Kernel Mode Setting / Direct Rendering Manager.
     Does not support hardware acceleration. Should be used when one doesn't
@@ -933,3 +1023,7 @@ Available video output drivers are:
     ``devpath=<filename>``
         Path to graphic card device.
         (default: /dev/dri/card0)
+
+    ``mode=<number>``
+        Mode ID to use (resolution, bit depth and frame rate).
+        (default: 0)

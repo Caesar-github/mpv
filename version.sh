@@ -2,21 +2,33 @@
 
 export LC_ALL=C
 
+version_h="version.h"
+print=yes
+
 for ac_option do
+  ac_arg=$(echo $ac_option | cut -d '=' -f 2-)
   case "$ac_option" in
   --extra=*)
-    extra="-$option"
+    extra="-$ac_arg"
     ;;
-  --print)
-    print=yes
+  --versionh=*)
+    version_h="$(pwd)/$ac_arg"
+    print=no
+    ;;
+  --cwd=*)
+    cwd="$ac_arg"
     ;;
   *)
-    echo "Unknown parameter: $option" >&2
+    echo "Unknown parameter: $ac_option" >&2
     exit 1
     ;;
 
   esac
 done
+
+if test "$cwd" ; then
+  cd "$cwd"
+fi
 
 # Extract revision number from file used by daily tarball snapshots
 # or from "git describe" output
@@ -42,12 +54,12 @@ if test "$print" = yes ; then
 fi
 
 NEW_REVISION="#define VERSION \"${VERSION}\""
-OLD_REVISION=$(head -n 1 version.h 2> /dev/null)
+OLD_REVISION=$(head -n 1 "$version_h" 2> /dev/null)
 BUILDDATE="#define BUILDDATE \"$(date)\""
 
 # Update version.h only on revision changes to avoid spurious rebuilds
 if test "$NEW_REVISION" != "$OLD_REVISION"; then
-    cat <<EOF > version.h
+    cat <<EOF > "$version_h"
 $NEW_REVISION
 $BUILDDATE
 EOF

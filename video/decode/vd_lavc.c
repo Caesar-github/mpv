@@ -98,7 +98,7 @@ const struct m_sub_options vd_lavc_conf = {
         OPT_DISCARD("skipidct", skip_idct, 0),
         OPT_DISCARD("skipframe", skip_frame, 0),
         OPT_DISCARD("framedrop", framedrop, 0),
-        OPT_INTRANGE("threads", threads, 0, 0, 16),
+        OPT_INT("threads", threads, M_OPT_MIN, .min = 0),
         OPT_FLAG("bitexact", bitexact, 0),
         OPT_FLAG("check-hw-profile", check_hw_profile, 0),
         OPT_KEYVALUELIST("o", avopts, 0),
@@ -117,6 +117,7 @@ const struct m_sub_options vd_lavc_conf = {
 
 const struct vd_lavc_hwdec mp_vd_lavc_vdpau;
 const struct vd_lavc_hwdec mp_vd_lavc_vda;
+const struct vd_lavc_hwdec mp_vd_lavc_videotoolbox;
 const struct vd_lavc_hwdec mp_vd_lavc_vaapi;
 const struct vd_lavc_hwdec mp_vd_lavc_vaapi_copy;
 const struct vd_lavc_hwdec mp_vd_lavc_dxva2_copy;
@@ -129,12 +130,15 @@ static const struct vd_lavc_hwdec *const hwdec_list[] = {
 #if HAVE_VDPAU_HWACCEL
     &mp_vd_lavc_vdpau,
 #endif
+#if HAVE_VIDEOTOOLBOX_HWACCEL
+    &mp_vd_lavc_videotoolbox,
+#endif
 #if HAVE_VDA_HWACCEL
     &mp_vd_lavc_vda,
 #endif
 #if HAVE_VAAPI_HWACCEL
-    &mp_vd_lavc_vaapi_copy,
     &mp_vd_lavc_vaapi,
+    &mp_vd_lavc_vaapi_copy,
 #endif
 #if HAVE_DXVA2_HWACCEL
     &mp_vd_lavc_dxva2_copy,
@@ -214,7 +218,10 @@ bool hwdec_check_codec_support(const char *decoder,
 
 int hwdec_get_max_refs(struct lavc_ctx *ctx)
 {
-    return ctx->avctx->codec_id == AV_CODEC_ID_H264 ? 16 : 2;
+    if (ctx->avctx->codec_id == AV_CODEC_ID_H264 ||
+        ctx->avctx->codec_id == AV_CODEC_ID_HEVC)
+        return 16;
+    return 2;
 }
 
 void hwdec_request_api(struct mp_hwdec_info *info, const char *api_name)
@@ -236,6 +243,7 @@ static struct vd_lavc_hwdec *probe_hwdec(struct dec_video *vd, bool autoprobe,
                                          enum hwdec_type api,
                                          const char *decoder)
 {
+    MP_VERBOSE(vd, "Probing '%s'...\n", m_opt_choice_str(mp_hwdec_names, api));
     struct vd_lavc_hwdec *hwdec = find_hwcodec(api);
     if (!hwdec) {
         MP_VERBOSE(vd, "Requested hardware decoder not compiled.\n");
@@ -252,10 +260,11 @@ static struct vd_lavc_hwdec *probe_hwdec(struct dec_video *vd, bool autoprobe,
     if (r >= 0) {
         return hwdec;
     } else if (r == HWDEC_ERR_NO_CODEC) {
-        MP_VERBOSE(vd, "Hardware decoder '%s' not found in "
-                   "libavcodec.\n", decoder);
+        MP_VERBOSE(vd, "Hardware decoder '%s' not found in libavcodec.\n",
+                   decoder);
     } else if (r == HWDEC_ERR_NO_CTX && !autoprobe) {
-        MP_WARN(vd, "VO does not support requested hardware decoder.\n");
+        MP_WARN(vd, "VO does not support requested hardware decoder, or "
+                "loading it failed.\n");
     }
     return NULL;
 }
@@ -266,14 +275,27 @@ static void uninit(struct dec_video *vd)
     talloc_free(vd->priv);
 }
 
+static bool force_fallback(struct dec_video *vd)
+{
+    vd_ffmpeg_ctx *ctx = vd->priv;
+    if (!ctx->software_fallback_decoder)
+        return false;
+
+    uninit_avctx(vd);
+    int lev = ctx->hwdec_notified ? MSGL_WARN : MSGL_V;
+    mp_msg(vd->log, lev, "Falling back to software decoding.\n");
+    const char *decoder = ctx->software_fallback_decoder;
+    ctx->software_fallback_decoder = NULL;
+    init_avctx(vd, decoder, NULL);
+    return true;
+}
+
 static int init(struct dec_video *vd, const char *decoder)
 {
     vd_ffmpeg_ctx *ctx;
     ctx = vd->priv = talloc_zero(NULL, vd_ffmpeg_ctx);
     ctx->log = vd->log;
     ctx->opts = vd->opts;
-
-    ctx->selected_hwdec = vd->opts->hwdec_api;
 
     if (bstr_endswith0(bstr0(decoder), "_vdpau")) {
         MP_WARN(vd, "VDPAU decoder '%s' was requested. "
@@ -308,20 +330,14 @@ static int init(struct dec_video *vd, const char *decoder)
         ctx->software_fallback_decoder = talloc_strdup(ctx, decoder);
         if (hwdec->get_codec)
             decoder = hwdec->get_codec(ctx);
-        MP_INFO(vd, "Using hardware decoding.\n");
-    } else if (vd->opts->hwdec_api != HWDEC_NONE) {
-        MP_INFO(vd, "Using software decoding.\n");
+        MP_VERBOSE(vd, "Trying hardware decoding.\n");
+    } else {
+        MP_VERBOSE(vd, "Using software decoding.\n");
     }
 
     init_avctx(vd, decoder, hwdec);
     if (!ctx->avctx) {
-        if (ctx->software_fallback_decoder) {
-            MP_ERR(vd, "Error initializing hardware decoding, "
-                   "falling back to software decoding.\n");
-            decoder = ctx->software_fallback_decoder;
-            ctx->software_fallback_decoder = NULL;
-            init_avctx(vd, decoder, NULL);
-        }
+        force_fallback(vd);
         if (!ctx->avctx) {
             uninit(vd);
             return 0;
@@ -400,19 +416,19 @@ static void init_avctx(struct dec_video *vd, const char *decoder,
     // Do this after the above avopt handling in case it changes values
     ctx->skip_frame = avctx->skip_frame;
 
-    avctx->codec_tag = sh->format;
+    avctx->codec_tag = sh->codec_tag;
     avctx->coded_width  = sh->video->disp_w;
     avctx->coded_height = sh->video->disp_h;
     avctx->bits_per_coded_sample = sh->video->bits_per_coded_sample;
 
-    mp_lavc_set_extradata(avctx, sh->video->extradata, sh->video->extradata_len);
+    mp_lavc_set_extradata(avctx, sh->extradata, sh->extradata_size);
 
     if (mp_rawvideo) {
-        avctx->pix_fmt = imgfmt2pixfmt(sh->format);
+        avctx->pix_fmt = imgfmt2pixfmt(sh->codec_tag);
         avctx->codec_tag = 0;
-        if (avctx->pix_fmt == AV_PIX_FMT_NONE && sh->format)
+        if (avctx->pix_fmt == AV_PIX_FMT_NONE && sh->codec_tag)
             MP_ERR(vd, "Image format %s not supported by lavc.\n",
-                   mp_imgfmt_to_name(sh->format));
+                   mp_imgfmt_to_name(sh->codec_tag));
     }
 
     if (sh->lav_headers)
@@ -448,6 +464,8 @@ static void uninit_avctx(struct dec_video *vd)
     av_freep(&ctx->avctx);
 
     av_frame_free(&ctx->pic);
+
+    ctx->hwdec_failed = false;
 }
 
 static void update_image_params(struct dec_video *vd, AVFrame *frame,
@@ -468,15 +486,12 @@ static void update_image_params(struct dec_video *vd, AVFrame *frame,
                    av_get_pix_fmt_name(pix_fmt));
     }
 
-    int d_w, d_h;
-    vf_set_dar(&d_w, &d_h, width, height, aspect);
-
     *out_params = (struct mp_image_params) {
         .imgfmt = ctx->best_csp,
         .w = width,
         .h = height,
-        .d_w = d_w,
-        .d_h = d_h,
+        .d_w = 0,
+        .d_h = 0,
         .colorspace = avcol_spc_to_mp_csp(ctx->avctx->colorspace),
         .colorlevels = avcol_range_to_mp_csp_levels(ctx->avctx->color_range),
         .primaries = avcol_pri_to_mp_csp_prim(ctx->avctx->color_primaries),
@@ -486,6 +501,9 @@ static void update_image_params(struct dec_video *vd, AVFrame *frame,
         .rotate = vd->header->video->rotate,
         .stereo_in = vd->header->video->stereo_mode,
     };
+
+    if (aspect > 0)
+        vf_set_dar(&out_params->d_w, &out_params->d_h, width, height, aspect);
 
     if (opts->video_rotate < 0) {
         out_params->rotate = 0;
@@ -514,17 +532,18 @@ static enum AVPixelFormat get_format_hwdec(struct AVCodecContext *avctx,
                 // There could be more reasons for a change, and it's possible
                 // that we miss some. (Might also depend on the hwaccel type.)
                 bool change =
-                    ctx->hwdec_w != avctx->width ||
-                    ctx->hwdec_h != avctx->height ||
+                    ctx->hwdec_w != avctx->coded_width ||
+                    ctx->hwdec_h != avctx->coded_height ||
                     ctx->hwdec_fmt != ctx->hwdec->image_format ||
-                    ctx->hwdec_profile != avctx->profile;
-                ctx->hwdec_w = avctx->width;
-                ctx->hwdec_h = avctx->height;
+                    ctx->hwdec_profile != avctx->profile ||
+                    ctx->hwdec_request_reinit;
+                ctx->hwdec_w = avctx->coded_width;
+                ctx->hwdec_h = avctx->coded_height;
                 ctx->hwdec_fmt = ctx->hwdec->image_format;
                 ctx->hwdec_profile = avctx->profile;
-                if (ctx->hwdec->init_decoder && change) {
-                    if (ctx->hwdec->init_decoder(ctx, ctx->hwdec_fmt,
-                                                 ctx->hwdec_w, ctx->hwdec_h) < 0)
+                ctx->hwdec_request_reinit = false;
+                if (change) {
+                    if (ctx->hwdec->init_decoder(ctx, ctx->hwdec_w, ctx->hwdec_h) < 0)
                     {
                         ctx->hwdec_fmt = 0;
                         break;
@@ -535,12 +554,22 @@ static enum AVPixelFormat get_format_hwdec(struct AVCodecContext *avctx,
         }
     }
 
+    ctx->hwdec_failed = true;
+    for (int i = 0; fmt[i] != AV_PIX_FMT_NONE; i++) {
+        const AVPixFmtDescriptor *d = av_pix_fmt_desc_get(fmt[i]);
+        if (d && !(d->flags & AV_PIX_FMT_FLAG_HWACCEL))
+            return fmt[i];
+    }
     return AV_PIX_FMT_NONE;
 }
 
-static struct mp_image *get_surface_hwdec(struct dec_video *vd, AVFrame *pic)
+static int get_buffer2_hwdec(AVCodecContext *avctx, AVFrame *pic, int flags)
 {
+    struct dec_video *vd = avctx->opaque;
     vd_ffmpeg_ctx *ctx = vd->priv;
+
+    if (ctx->hwdec_failed)
+        return avcodec_default_get_buffer2(avctx, pic, flags);
 
     /* Decoders using ffmpeg's hwaccel architecture (everything except vdpau)
      * can fall back to software decoding automatically. However, we don't
@@ -555,45 +584,27 @@ static struct mp_image *get_surface_hwdec(struct dec_video *vd, AVFrame *pic)
      */
     int imgfmt = pixfmt2imgfmt(pic->format);
     if (!IMGFMT_IS_HWACCEL(imgfmt) || !ctx->hwdec)
-        return NULL;
+        return -1;
 
-    // Using frame->width/height is bad. For non-mod 16 video (which would
-    // require alignment of frame sizes) we want the decoded size, not the
-    // aligned size. At least vdpau needs this: the video mixer is created
-    // with decoded size, and the video surfaces must have matching size.
-    int w = ctx->avctx->width;
-    int h = ctx->avctx->height;
+    // We expect it to use the exact size used to create the hw decoder in
+    // get_format_hwdec(). For cropped video, this is expected to be the
+    // uncropped size (usually coded_width/coded_height).
+    int w = pic->width;
+    int h = pic->height;
 
-    if (ctx->hwdec->init_decoder) {
-        if (imgfmt != ctx->hwdec_fmt && w != ctx->hwdec_w && h != ctx->hwdec_h)
-            return NULL;
-    }
+    if (imgfmt != ctx->hwdec_fmt && w != ctx->hwdec_w && h != ctx->hwdec_h)
+        return -1;
 
-    struct mp_image *mpi = ctx->hwdec->allocate_image(ctx, imgfmt, w, h);
-
-    if (mpi) {
-        for (int i = 0; i < 4; i++)
-            pic->data[i] = mpi->planes[i];
-    }
-
-    return mpi;
-}
-
-static void free_mpi(void *opaque, uint8_t *data)
-{
-    struct mp_image *mpi = opaque;
-    talloc_free(mpi);
-}
-
-static int get_buffer2_hwdec(AVCodecContext *avctx, AVFrame *pic, int flags)
-{
-    struct dec_video *vd = avctx->opaque;
-
-    struct mp_image *mpi = get_surface_hwdec(vd, pic);
+    struct mp_image *mpi = ctx->hwdec->allocate_image(ctx, w, h);
     if (!mpi)
         return -1;
 
-    pic->buf[0] = av_buffer_create(NULL, 0, free_mpi, mpi, 0);
+    for (int i = 0; i < 4; i++) {
+        pic->data[i] = mpi->planes[i];
+        pic->buf[i] = mpi->bufs[i];
+        mpi->bufs[i] = NULL;
+    }
+    talloc_free(mpi);
 
     return 0;
 }
@@ -621,10 +632,15 @@ static int decode(struct dec_video *vd, struct demux_packet *packet,
     hwdec_lock(ctx);
     ret = avcodec_decode_video2(avctx, ctx->pic, &got_picture, &pkt);
     hwdec_unlock(ctx);
-    if (ret < 0) {
-        MP_WARN(vd, "Error while decoding frame!\n");
+
+    if (ctx->hwdec_failed || ret < 0) {
+        if (ret < 0)
+            MP_WARN(vd, "Error while decoding frame!\n");
         return -1;
     }
+
+    if (ctx->hwdec_request_reinit)
+        avcodec_flush_buffers(avctx);
 
     // Skipped frame, or delayed output due to multithreaded decoding.
     if (!got_picture)
@@ -649,21 +665,6 @@ static int decode(struct dec_video *vd, struct demux_packet *packet,
     return 1;
 }
 
-static int force_fallback(struct dec_video *vd)
-{
-    vd_ffmpeg_ctx *ctx = vd->priv;
-    if (ctx->software_fallback_decoder) {
-        uninit_avctx(vd);
-        MP_ERR(vd, "Error using hardware "
-                "decoding, falling back to software decoding.\n");
-        const char *decoder = ctx->software_fallback_decoder;
-        ctx->software_fallback_decoder = NULL;
-        init_avctx(vd, decoder, NULL);
-        return ctx->avctx ? CONTROL_OK : CONTROL_ERROR;
-    }
-    return CONTROL_FALSE;
-}
-
 static struct mp_image *decode_with_fallback(struct dec_video *vd,
                                 struct demux_packet *packet, int flags)
 {
@@ -675,8 +676,18 @@ static struct mp_image *decode_with_fallback(struct dec_video *vd,
     int res = decode(vd, packet, flags, &mpi);
     if (res < 0) {
         // Failed hardware decoding? Try again in software.
-        if (force_fallback(vd) == CONTROL_OK)
+        if (force_fallback(vd) && ctx->avctx)
             decode(vd, packet, flags, &mpi);
+    }
+
+    if (mpi && !ctx->hwdec_notified && vd->opts->hwdec_api != HWDEC_NONE) {
+        if (ctx->hwdec) {
+            MP_INFO(vd, "Using hardware decoding (%s).\n",
+                    m_opt_choice_str(mp_hwdec_names, ctx->hwdec->type));
+        } else {
+            MP_INFO(vd, "Using software decoding.\n");
+        }
+        ctx->hwdec_notified = true;
     }
 
     return mpi;
@@ -698,14 +709,16 @@ static int control(struct dec_video *vd, int cmd, void *arg)
         *(int *)arg = delay;
         return CONTROL_TRUE;
     case VDCTRL_GET_HWDEC: {
-        int hwdec = ctx->selected_hwdec;
+        int hwdec = ctx->hwdec ? ctx->hwdec->type : 0;
         if (!ctx->software_fallback_decoder)
             hwdec = 0;
         *(int *)arg = hwdec;
         return CONTROL_TRUE;
     }
     case VDCTRL_FORCE_HWDEC_FALLBACK:
-        return force_fallback(vd);
+        if (force_fallback(vd))
+            return ctx->avctx ? CONTROL_OK : CONTROL_ERROR;
+        return CONTROL_FALSE;
     }
     return CONTROL_UNKNOWN;
 }

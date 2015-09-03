@@ -30,17 +30,27 @@
 #include "demux/demux.h"
 
 struct priv {
+    float vol;                  // User-specified non-linear volume
     float level;                // User-specified gain level for each channel
     float rgain;                // Replaygain level
     int rgain_track;            // Enable/disable track based replaygain
     int rgain_album;            // Enable/disable album based replaygain
     float rgain_preamp;         // Set replaygain pre-amplification
     int rgain_clip;             // Enable/disable clipping prevention
+    float replaygain_fallback;
     int soft;                   // Enable/disable soft clipping
     int fast;                   // Use fix-point volume control
     int detach;                 // Detach if gain volume is neutral
     float cfg_volume;
 };
+
+// Convert to gain value from dB. input <= -200dB will become 0 gain.
+static float from_dB(float in, float k, float mi, float ma)
+{
+    if (in <= -200)
+        return 0.0;
+    return pow(10.0, MPCLAMP(in, mi, ma) / k);
+}
 
 static int control(struct af_instance *af, int cmd, void *arg)
 {
@@ -58,7 +68,7 @@ static int control(struct af_instance *af, int cmd, void *arg)
         } else {
             mp_audio_set_format(af->data, AF_FORMAT_FLOAT);
         }
-        if (AF_FORMAT_IS_PLANAR(in->format))
+        if (af_fmt_is_planar(in->format))
             mp_audio_set_format(af->data, af_fmt_to_planar(af->data->format));
         s->rgain = 1.0;
         if ((s->rgain_track || s->rgain_album) && af->replaygain_data) {
@@ -73,7 +83,7 @@ static int control(struct af_instance *af, int cmd, void *arg)
             }
 
             gain += s->rgain_preamp;
-            af_from_dB(1, &gain, &s->rgain, 20.0, -200.0, 60.0);
+            s->rgain = from_dB(gain, 20.0, -200.0, 60.0);
 
             MP_VERBOSE(af, "Applying replay-gain: %f\n", s->rgain);
 
@@ -81,16 +91,21 @@ static int control(struct af_instance *af, int cmd, void *arg)
                 s->rgain = MPMIN(s->rgain, 1.0 / peak);
                 MP_VERBOSE(af, "...with clipping prevention: %f\n", s->rgain);
             }
+        } else if (s->replaygain_fallback) {
+            s->rgain = from_dB(s->replaygain_fallback, 20.0, -200.0, 60.0);
+            MP_VERBOSE(af, "Applying fallback gain: %f\n", s->rgain);
         }
         if (s->detach && fabs(s->level * s->rgain - 1.0) < 0.00001)
             return AF_DETACH;
         return af_test_output(af, in);
     }
     case AF_CONTROL_SET_VOLUME:
-        s->level = *(float *)arg;
+        s->vol = *(float *)arg;
+        s->level = pow(s->vol, 3);
+        MP_VERBOSE(af, "volume gain: %f\n", s->level);
         return AF_OK;
     case AF_CONTROL_GET_VOLUME:
-        *(float *)arg = s->level;
+        *(float *)arg = s->vol;
         return AF_OK;
     }
     return AF_UNKNOWN;
@@ -143,7 +158,7 @@ static int af_open(struct af_instance *af)
     struct priv *s = af->priv;
     af->control = control;
     af->filter_frame = filter;
-    af_from_dB(1, &s->cfg_volume, &s->level, 20.0, -200.0, 60.0);
+    s->level = from_dB(s->cfg_volume, 20.0, -200.0, 60.0);
     return AF_OK;
 }
 
@@ -162,6 +177,7 @@ const struct af_info af_info_volume = {
         OPT_FLAG("replaygain-album", rgain_album, 0),
         OPT_FLOATRANGE("replaygain-preamp", rgain_preamp, 0, -15, 15),
         OPT_FLAG("replaygain-clip", rgain_clip, 0),
+        OPT_FLOATRANGE("replaygain-fallback", replaygain_fallback, 0, -200, 60),
         OPT_FLAG("softclip", soft, 0),
         OPT_FLAG("s16", fast, 0),
         OPT_FLAG("detach", detach, 0),

@@ -4,6 +4,13 @@
 # Cleanups all over the place (c) 2001 pl
 # Rewritten for mpv in 2014.
 #
+#
+# Warning: this is not officially supported. Use on your own risk. Might require
+#          modifications when used on systems other than Linux. Contributors
+#          are not expected to update these files when making changes to the
+#          normal/preferred waf build system.
+#
+#
 # This configure script is *not* autoconf-based and has different semantics.
 # It attempts to autodetect all settings and options where possible. It is
 # possible to override autodetection with the --enable-option/--disable-option
@@ -176,6 +183,7 @@ options_state_machine() {
     opt_yes_no _dvdread     "libdvdread"
     opt_yes_no _dvdnav      "libdvdnav"
     opt_yes_no _enca        "ENCA charset oracle library"
+    opt_yes_no _uchardet    "uchardet charset detection library"
     opt_yes_no _libass      "subtitle rendering with libass"
     opt_yes_no _libavdevice "libavdevice demuxers"
     opt_yes_no _libavfilter "libavfilter"
@@ -208,6 +216,7 @@ options_state_machine() {
     opt_yes_no _lua         "Lua scripting"
     opt_yes_no _vapoursynth "VapourSynth filter bridge (Python)"
     opt_yes_no _vapoursynth_lazy "VapourSynth filter bridge (Lua)"
+    opt_yes_no _libarchive  "libarchive"
     opt_yes_no _encoding    "encoding functionality" yes
     opt_yes_no _build_man   "building manpage"
 }
@@ -376,7 +385,7 @@ addcflags() { cflag_check "$@" && OURCFLAGS="$OURCFLAGS $@" ; }
 OURCFLAGS="-std=c99 -Wall $_opt"
 
 addcflags -g -g3 -ggdb
-addcflags -Wundef -Wmissing-prototypes -Wshadow -Wno-switch -Wparentheses -Wpointer-arith -Wredundant-decls -Wno-pointer-sign -Werror=implicit-function-declaration -Wno-error=deprecated-declarations -Wno-error=unused-function
+addcflags -Wundef -Wmissing-prototypes -Wshadow -Wno-switch -Wparentheses -Wpointer-arith -Wno-redundant-decls -Wno-pointer-sign -Werror=implicit-function-declaration -Wno-error=deprecated-declarations -Wno-error=unused-function
 # clang
 addcflags -Wno-logical-op-parentheses -fcolor-diagnostics -Wno-tautological-compare -Wno-tautological-constant-out-of-range-compare
 # extra
@@ -506,9 +515,12 @@ check_statement_libs "compiler support for __sync built-ins" $_sync SYNC_BUILTIN
     stdint.h 'int64_t test = 0; test = __sync_add_and_fetch(&test, 1)'
 _sync=$(defretval)
 
+_any_atomic=yes
 if test "$_atomic" = no && test "$_sync" = no && test "$_stdatomic" = no ; then
   echo "your compiler must support either stdatomic.h, or __atomic, or __sync built-ins."
+  _any_atomic=no
 fi
+define_yes_no $_any_atomic HAVE_ATOMICS
 
 check_compile "iconv" $_iconv ICONV waftools/fragments/iconv.c " " "-liconv" "-liconv $_ld_dl"
 _iconv=$(defretval)
@@ -732,6 +744,7 @@ echo "LIBASS_OSD = $_libass" >> $CONFIG_MAK
 echo "DUMMY_OSD = $_dummy_osd" >> $CONFIG_MAK
 
 check_pkg_config "ENCA" $_enca ENCA 'enca'
+check_pkg_config "uchardet" $_uchardet UCHARDET 'uchardet'
 
 check_pkg_config "zlib" auto ZLIB 'zlib'
 test $(defretval) = no && die "Unable to find development files for zlib."
@@ -786,6 +799,12 @@ api_statement_check \
     libavutil/frame.h \
     'enum AVFrameSideDataType type = AV_FRAME_DATA_SKIP_SAMPLES'
 
+api_statement_check \
+    "libavutil av_version_info()" \
+    HAVE_AV_VERSION_INFO \
+    libavutil/avutil.h \
+    'const char *x = av_version_info()'
+
 check_pkg_config "libavfilter" $_libavfilter LIBAVFILTER 'libavfilter >= 5.0.0'
 
 check_pkg_config "libavdevice" $_libavdevice LIBAVDEVICE 'libavdevice >= 55.0.0'
@@ -817,9 +836,9 @@ test_lua "lua >= 5.1.0 lua < 5.2.0"
 test_lua "lua5.1 >= 5.1.0" # debian
 test_lua "lua51 >= 5.1.0" # OpenBSD
 test_lua "luajit >= 2.0.0"
-test_lua "lua >= 5.2.0"
 test_lua "lua5.2 >= 5.2.0" # debian
 test_lua "lua52 >= 5.2.0" # OpenBSD
+test_lua "lua >= 5.2.0"
 
 test "$_lua" != yes && check_yes_no no LUA
 
@@ -841,6 +860,8 @@ if test "$_vapoursynth" = no && test "$_vapoursynth_lazy" = no ; then
 fi
 check_trivial "VapourSynth core" $_vapoursynth_core VAPOURSYNTH_CORE
 
+check_pkg_config "libarchive support" $_libarchive LIBARCHIVE 'libarchive >= 3.0.0'
+
 check_trivial "encoding" $_encoding ENCODING
 
 # needs dlopen on unix
@@ -858,7 +879,7 @@ CFLAGS="$CFLAGS -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -D_LARGEFILE64_SOURCE
 # in-tree builds.
 
 if test ! -f Makefile ; then
-    ln -s old-makefile Makefile
+    ln -s TOOLS/old-makefile Makefile
 fi
 
 cat > old_build/config.mak << EOF
@@ -905,7 +926,7 @@ cat > $TMPC << EOF
 /* we didn't bother to add actual config checks for this, or they are
    for platforms not supported by this configure script */
 #define HAVE_BSD_FSTATFS 0
-#define HAVE_LINUX_FSTATFS 0
+#define HAVE_LINUX_FSTATFS 1
 #define HAVE_VDA_AV_VDA_ALLOC_CONTEXT 0
 #define HAVE_VDA_HWACCEL 0
 #define HAVE_VDA_LIBAVCODEC_REFCOUNTING 0
@@ -936,6 +957,9 @@ cat > $TMPC << EOF
 #define HAVE_RPI_GLES 0
 #define HAVE_AV_PIX_FMT_MMAL 0
 #define HAVE_DRM 0
+#define HAVE_VIDEOTOOLBOX_HWACCEL 0
+#define HAVE_VIDEOTOOLBOX_GL 0
+#define HAVE_VIDEOTOOLBOX_VDA_GL 0
 
 #ifdef __OpenBSD__
 #define DEFAULT_CDROM_DEVICE "/dev/rcd0c"

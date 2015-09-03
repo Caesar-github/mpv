@@ -19,6 +19,7 @@
 #include <assert.h>
 #include <string.h>
 #include <math.h>
+#include <limits.h>
 
 #include <libavutil/common.h>
 #include <ass/ass.h>
@@ -39,6 +40,7 @@ struct sd_ass_priv {
     bool is_converted;
     struct sub_bitmap *parts;
     bool flush_on_seek;
+    int extend_event;
     char last_text[500];
     struct mp_image_params video_params;
     struct mp_image_params last_params;
@@ -59,13 +61,16 @@ static bool supports_format(const char *format)
 static int init(struct sd *sd)
 {
     struct MPOpts *opts = sd->opts;
-    if (!sd->ass_library || !sd->ass_renderer || !sd->codec)
+    if (!sd->ass_library || !sd->ass_renderer || !sd->ass_lock || !sd->codec)
         return -1;
 
     struct sd_ass_priv *ctx = talloc_zero(NULL, struct sd_ass_priv);
     sd->priv = ctx;
 
+    ctx->extend_event = -1;
     ctx->is_converted = sd->converted_from != NULL;
+
+    pthread_mutex_lock(sd->ass_lock);
 
     ctx->ass_track = ass_new_track(sd->ass_library);
     if (!ctx->is_converted)
@@ -77,6 +82,8 @@ static int init(struct sd *sd)
     }
 
     mp_ass_add_default_styles(ctx->ass_track, opts);
+
+    pthread_mutex_unlock(sd->ass_lock);
 
     return 0;
 }
@@ -96,16 +103,19 @@ static void decode(struct sd *sd, struct demux_packet *packet)
         ass_process_data(track, packet->buffer, packet->len);
         return;
     }
+
     // plaintext subs
     if (packet->pts == MP_NOPTS_VALUE) {
         MP_WARN(sd, "Subtitle without pts, ignored\n");
         return;
     }
-    if (packet->duration <= 0) {
-        MP_WARN(sd, "Subtitle without duration or "
-                "duration set to 0 at pts %f, ignored\n", packet->pts);
-        return;
+    if (ctx->extend_event >= 0 && ctx->extend_event < track->n_events) {
+        ASS_Event *event = &track->events[ctx->extend_event];
+        if (event->Start <= ipts)
+            event->Duration = ipts - event->Start;
+        ctx->extend_event = -1;
     }
+
     unsigned char *text = packet->buffer;
     if (!sd->no_remove_duplicates) {
         for (int i = 0; i < track->n_events; i++) {
@@ -117,6 +127,20 @@ static void decode(struct sd *sd, struct demux_packet *packet)
     }
     int eid = ass_alloc_event(track);
     ASS_Event *event = track->events + eid;
+
+    if (packet->duration == 0) {
+        MP_WARN(sd, "Subtitle without duration or "
+                "duration set to 0 at pts %f.\n", packet->pts);
+    }
+    if (packet->duration < 0) {
+        // Assume unknown duration. The FFmpeg API is very unclear about this.
+        MP_WARN(sd, "Assuming subtitle without duration at pts %f\n", packet->pts);
+        // _If_ there's a next subtitle, the duration will be adjusted again.
+        // If not, show it forever.
+        iduration = INT_MAX;
+        ctx->extend_event = eid;
+    }
+
     event->Start = ipts;
     event->Duration = iduration;
     event->Style = track->default_style;
@@ -197,6 +221,8 @@ static void get_bitmaps(struct sd *sd, struct mp_osd_res dim, double pts,
     if (pts == MP_NOPTS_VALUE || !sd->ass_renderer)
         return;
 
+    pthread_mutex_lock(sd->ass_lock);
+
     ASS_Renderer *renderer = sd->ass_renderer;
     double scale = dim.display_par;
     if (!ctx->is_converted && (!opts->ass_style_override ||
@@ -224,6 +250,8 @@ static void get_bitmaps(struct sd *sd, struct mp_osd_res dim, double pts,
 
     if (!ctx->is_converted)
         mangle_colors(sd, res);
+
+    pthread_mutex_unlock(sd->ass_lock);
 }
 
 struct buf {
@@ -341,8 +369,10 @@ static void fix_events(struct sd *sd)
 static void reset(struct sd *sd)
 {
     struct sd_ass_priv *ctx = sd->priv;
-    if (ctx->flush_on_seek || sd->opts->sub_clear_on_seek)
+    if (ctx->flush_on_seek || sd->opts->sub_clear_on_seek) {
         ass_flush_events(ctx->ass_track);
+        ctx->extend_event = -1;
+    }
     ctx->flush_on_seek = false;
 }
 

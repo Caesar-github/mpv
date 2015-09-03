@@ -40,20 +40,14 @@
  * The VAAPI decoder can work only with surfaces passed to the decoder at
  * creation time. This means all surfaces have to be created in advance.
  * So, additionally to the maximum number of reference frames, we need
- * surfaces for:
- * - 1 decode frame
- * - decoding 2 frames ahead (done by generic playback code)
- * - keeping the reference to the previous frame (done by vo_vaapi.c)
- * - keeping the reference to a dropped frame (done by vo.c)
+ * surfaces for all kinds of buffering between decoder and VO.
  * Note that redundant additional surfaces also might allow for some
  * buffering (i.e. not trying to reuse a surface while it's busy).
  */
-#define ADDTIONAL_SURFACES 5
+#define ADDTIONAL_SURFACES 6
 
-// Magic number taken from original MPlayer vaapi patch.
-#define MAX_DECODER_SURFACES 21
-
-#define MAX_SURFACES (MAX_DECODER_SURFACES + ADDTIONAL_SURFACES)
+// Some upper bound.
+#define MAX_SURFACES 25
 
 struct priv {
     struct mp_log *log;
@@ -70,6 +64,8 @@ struct priv {
 
     struct mp_image_pool *sw_pool;
 };
+
+#define HAS_HEVC VA_CHECK_VERSION(0, 38, 0)
 
 #define PE(av_codec_id, ff_profile, vdp_profile)                \
     {AV_CODEC_ID_ ## av_codec_id, FF_PROFILE_ ## ff_profile,    \
@@ -90,6 +86,10 @@ static const struct hwdec_profile_entry profiles[] = {
     PE(WMV3,        VC1_ADVANCED,       VC1Advanced),
     PE(WMV3,        VC1_MAIN,           VC1Main),
     PE(WMV3,        VC1_SIMPLE,         VC1Simple),
+#if HAS_HEVC
+    PE(HEVC,        HEVC_MAIN,          HEVCMain),
+    PE(HEVC,        HEVC_MAIN_10,       HEVCMain10),
+#endif
     {0}
 };
 
@@ -109,6 +109,10 @@ static const char *str_va_profile(VAProfile profile)
         PROFILE(VC1Simple);
         PROFILE(VC1Main);
         PROFILE(VC1Advanced);
+#if HAS_HEVC
+        PROFILE(HEVCMain);
+        PROFILE(HEVCMain10);
+#endif
 #undef PROFILE
     }
     return "<unknown>";
@@ -127,35 +131,6 @@ static int find_entrypoint(int format, VAEntrypoint *ep, int num_ep)
     return -1;
 }
 
-static int is_direct_mapping(VADisplay display)
-{
-    VADisplayAttribute attr = {0};
-    VAStatus status;
-
-#if VA_CHECK_VERSION(0,34,0)
-    attr.type  = VADisplayAttribRenderMode;
-    attr.flags = VA_DISPLAY_ATTRIB_GETTABLE;
-
-    status = vaGetDisplayAttributes(display, &attr, 1);
-    if (status == VA_STATUS_SUCCESS)
-        return !(attr.value & (VA_RENDER_MODE_LOCAL_OVERLAY|
-                               VA_RENDER_MODE_EXTERNAL_OVERLAY));
-#else
-    /* If the driver doesn't make a copy of the VA surface for
-       display, then we have to retain it until it's no longer the
-       visible surface. In other words, if the driver is using
-       DirectSurface mode, we don't want to decode the new surface
-       into the previous one that was used for display. */
-    attr.type  = VADisplayAttribDirectSurface;
-    attr.flags = VA_DISPLAY_ATTRIB_GETTABLE;
-
-    status = vaGetDisplayAttributes(display, &attr, 1);
-    if (status == VA_STATUS_SUCCESS)
-        return !attr.value;
-#endif
-    return 0;
-}
-
 // We must allocate only surfaces that were passed to the decoder on creation.
 // We achieve this by reserving surfaces in the pool as needed.
 // Releasing surfaces is necessary after filling the surface id list so
@@ -164,9 +139,11 @@ static bool preallocate_surfaces(struct lavc_ctx *ctx, int num, int w, int h,
                                  VASurfaceID out_surfaces[MAX_SURFACES])
 {
     struct priv *p = ctx->hwdec_priv;
-    assert(num <= MAX_SURFACES);
     struct mp_image *reserve[MAX_SURFACES] = {0};
     bool res = true;
+
+    if (num > MAX_SURFACES)
+        return false;
 
     for (int n = 0; n < num; n++) {
         reserve[n] = mp_image_pool_get(p->pool, IMGFMT_VAAPI, w, h);
@@ -212,7 +189,7 @@ static bool has_profile(VAProfile *va_profiles, int num_profiles, VAProfile p)
     return false;
 }
 
-static int init_decoder(struct lavc_ctx *ctx, int fmt, int w, int h)
+static int init_decoder(struct lavc_ctx *ctx, int w, int h)
 {
     void *tmp = talloc_new(NULL);
 
@@ -248,14 +225,7 @@ static int init_decoder(struct lavc_ctx *ctx, int fmt, int w, int h)
 
     MP_VERBOSE(p, "Using profile '%s'.\n", str_va_profile(va_profile));
 
-    int num_surfaces = hwdec_get_max_refs(ctx);
-    if (!is_direct_mapping(p->display)) {
-        MP_VERBOSE(p, "No direct mapping.\n");
-        // Note: not sure why it has to be *=2 rather than +=1.
-        num_surfaces *= 2;
-    }
-    num_surfaces = MPMIN(num_surfaces, MAX_DECODER_SURFACES) + ADDTIONAL_SURFACES;
-
+    int num_surfaces = hwdec_get_max_refs(ctx) + ADDTIONAL_SURFACES;
     if (num_surfaces > MAX_SURFACES) {
         MP_ERR(p, "Internal error: too many surfaces.\n");
         goto error;
@@ -310,15 +280,13 @@ error:
     return res;
 }
 
-static struct mp_image *allocate_image(struct lavc_ctx *ctx, int format,
-                                       int w, int h)
+static struct mp_image *allocate_image(struct lavc_ctx *ctx, int w, int h)
 {
     struct priv *p = ctx->hwdec_priv;
 
-    struct mp_image *img =
-        mp_image_pool_get_no_alloc(p->pool, IMGFMT_VAAPI, w, h);
+    struct mp_image *img = mp_image_pool_get(p->pool, IMGFMT_VAAPI, w, h);
     if (!img)
-        MP_ERR(p, "Insufficient number of surfaces.\n");
+        MP_ERR(p, "Failed to allocate additional VAAPI surface.\n");
     return img;
 }
 
@@ -343,7 +311,7 @@ static bool create_va_dummy_ctx(struct priv *p)
     VADisplay *display = vaGetDisplay(p->x11_display);
     if (!display)
         goto destroy_ctx;
-    p->ctx = va_initialize(display, p->log);
+    p->ctx = va_initialize(display, p->log, true);
     if (!p->ctx) {
         vaTerminate(display);
         goto destroy_ctx;

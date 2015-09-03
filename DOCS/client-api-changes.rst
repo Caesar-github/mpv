@@ -4,9 +4,7 @@ Introduction
 This file lists all changes that can cause compatibility issues when using
 mpv through the client API (libmpv and ``client.h``). Since the client API
 interfaces to input handling (commands, properties) as well as command line
-options, this list is interesting for other uses of mpv, such as the Lua
-scripting interface, key bindings in ``input.rst``, or plain command line
-usage.
+options, you should also look at ``interface-changes.rst``.
 
 Normally, changes to the C API that are incompatible to previous iterations
 receive a major version bump (i.e. the first version number is increased),
@@ -20,15 +18,31 @@ The version number is the same as used for MPV_CLIENT_API_VERSION (see
 
 Also, read the section ``Compatibility`` in ``client.h``.
 
+Options, commands, properties
+=============================
+
+Changes to these are not listed here, but in ``interface-changes.rst``. (Before
+client API version 1.17, they were listed here partially.)
+
+This listing includes changes to the bare C API and behavior only, not what
+you can access with them.
+
 API changes
 ===========
 
 ::
 
+ ...    - add "GL_MP_D3D_interfaces" pseudo extension to make it possible to
+          use DXVA2 in OpenGL fullscreen mode in some situations
+ 1.19   - mpv_request_log_messages() now accepts "terminal-default" as parameter
+ 1.18   - add MPV_END_FILE_REASON_REDIRECT, and change behavior of
+          MPV_EVENT_END_FILE accordingly
+        - a bunch of interface-changes.rst changes
+ 1.17   - mpv_initialize() now blocks SIGPIPE (details see client.h)
  --- mpv 0.9.0 is released ---
- 1.17   - add MPV_FORMAT_BYTE_ARRAY
  1.16   - add mpv_opengl_cb_report_flip()
         - introduce mpv_opengl_cb_draw() and deprecate mpv_opengl_cb_render()
+        - add MPV_FORMAT_BYTE_ARRAY
  1.15   - mpv_initialize() will now load config files. This requires setting
           the "config" and "config-dir" options. In particular, it will load
           mpv.conf.

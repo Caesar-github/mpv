@@ -44,260 +44,9 @@
 #include "osdep/atomics.h"
 #include "options/m_option.h"
 #include "common/msg.h"
+#include "audio/out/ao_coreaudio_chmap.h"
 #include "audio/out/ao_coreaudio_properties.h"
 #include "audio/out/ao_coreaudio_utils.h"
-
-static bool ca_format_is_compressed(AudioStreamBasicDescription asbd)
-{
-    switch (asbd.mFormatID)
-    case 'IAC3':
-    case 'iac3':
-    case  kAudioFormat60958AC3:
-    case  kAudioFormatAC3:
-        return true;
-    return false;
-}
-
-static bool ca_stream_supports_compressed(struct ao *ao, AudioStreamID stream)
-{
-    AudioStreamRangedDescription *formats = NULL;
-    size_t n_formats;
-
-    OSStatus err =
-        CA_GET_ARY(stream, kAudioStreamPropertyAvailablePhysicalFormats,
-                   &formats, &n_formats);
-
-    CHECK_CA_ERROR("Could not get number of stream formats.");
-
-    for (int i = 0; i < n_formats; i++) {
-        AudioStreamBasicDescription asbd = formats[i].mFormat;
-        ca_print_asbd(ao, "supported format:", &(asbd));
-        if (ca_format_is_compressed(asbd)) {
-            talloc_free(formats);
-            return true;
-        }
-    }
-
-    talloc_free(formats);
-coreaudio_error:
-    return false;
-}
-
-static bool ca_device_supports_compressed(struct ao *ao, AudioDeviceID device)
-{
-    AudioStreamID *streams = NULL;
-    size_t n_streams;
-
-    /* Retrieve all the output streams. */
-    OSStatus err =
-        CA_GET_ARY_O(device, kAudioDevicePropertyStreams, &streams, &n_streams);
-
-    CHECK_CA_ERROR("could not get number of streams.");
-
-    for (int i = 0; i < n_streams; i++) {
-        if (ca_stream_supports_compressed(ao, streams[i])) {
-            talloc_free(streams);
-            return true;
-        }
-    }
-
-    talloc_free(streams);
-
-coreaudio_error:
-    return false;
-}
-
-static OSStatus ca_property_listener(
-    AudioObjectPropertySelector selector,
-    AudioObjectID object, uint32_t n_addresses,
-    const AudioObjectPropertyAddress addresses[],
-    void *data)
-{
-    for (int i = 0; i < n_addresses; i++) {
-        if (addresses[i].mSelector == selector) {
-            if (data)
-                atomic_store((atomic_bool *)data, true);
-            break;
-        }
-    }
-    return noErr;
-}
-
-static OSStatus ca_stream_listener(
-    AudioObjectID object, uint32_t n_addresses,
-    const AudioObjectPropertyAddress addresses[],
-    void *data)
-{
-    return ca_property_listener(kAudioStreamPropertyPhysicalFormat,
-                                object, n_addresses, addresses, data);
-}
-
-static OSStatus ca_device_listener(
-    AudioObjectID object, uint32_t n_addresses,
-    const AudioObjectPropertyAddress addresses[],
-    void *data)
-{
-    return ca_property_listener(kAudioDevicePropertyDeviceHasChanged,
-                                object, n_addresses, addresses, data);
-}
-
-static OSStatus ca_lock_device(AudioDeviceID device, pid_t *pid) {
-    *pid = getpid();
-    OSStatus err = CA_SET(device, kAudioDevicePropertyHogMode, pid);
-    if (err != noErr)
-        *pid = -1;
-
-    return err;
-}
-
-static OSStatus ca_unlock_device(AudioDeviceID device, pid_t *pid) {
-    if (*pid == getpid()) {
-        *pid = -1;
-        return CA_SET(device, kAudioDevicePropertyHogMode, &pid);
-    }
-    return noErr;
-}
-
-static OSStatus ca_change_mixing(struct ao *ao, AudioDeviceID device,
-                                 uint32_t val, bool *changed) {
-    *changed = false;
-
-    AudioObjectPropertyAddress p_addr = (AudioObjectPropertyAddress) {
-        .mSelector = kAudioDevicePropertySupportsMixing,
-        .mScope    = kAudioObjectPropertyScopeGlobal,
-        .mElement  = kAudioObjectPropertyElementMaster,
-    };
-
-    if (AudioObjectHasProperty(device, &p_addr)) {
-        OSStatus err;
-        Boolean writeable = 0;
-        err = CA_SETTABLE(device, kAudioDevicePropertySupportsMixing,
-                          &writeable);
-
-        if (!CHECK_CA_WARN("can't tell if mixing property is settable")) {
-            return err;
-        }
-
-        if (!writeable)
-            return noErr;
-
-        err = CA_SET(device, kAudioDevicePropertySupportsMixing, &val);
-        if (err != noErr)
-            return err;
-
-        if (!CHECK_CA_WARN("can't set mix mode")) {
-            return err;
-        }
-
-        *changed = true;
-    }
-
-    return noErr;
-}
-
-static OSStatus ca_disable_mixing(struct ao *ao,
-                                  AudioDeviceID device, bool *changed) {
-    return ca_change_mixing(ao, device, 0, changed);
-}
-
-static OSStatus ca_enable_mixing(struct ao *ao,
-                                 AudioDeviceID device, bool changed) {
-    if (changed) {
-        bool dont_care = false;
-        return ca_change_mixing(ao, device, 1, &dont_care);
-    }
-
-    return noErr;
-}
-
-static OSStatus ca_change_device_listening(AudioDeviceID device,
-                                           void *flag, bool enabled)
-{
-    AudioObjectPropertyAddress p_addr = (AudioObjectPropertyAddress) {
-        .mSelector = kAudioDevicePropertyDeviceHasChanged,
-        .mScope    = kAudioObjectPropertyScopeGlobal,
-        .mElement  = kAudioObjectPropertyElementMaster,
-    };
-
-    if (enabled) {
-        return AudioObjectAddPropertyListener(
-            device, &p_addr, ca_device_listener, flag);
-    } else {
-        return AudioObjectRemovePropertyListener(
-            device, &p_addr, ca_device_listener, flag);
-    }
-}
-
-static OSStatus ca_enable_device_listener(AudioDeviceID device, void *flag) {
-    return ca_change_device_listening(device, flag, true);
-}
-
-static OSStatus ca_disable_device_listener(AudioDeviceID device, void *flag) {
-    return ca_change_device_listening(device, flag, false);
-}
-
-static bool ca_change_format(struct ao *ao, AudioStreamID stream,
-                             AudioStreamBasicDescription change_format)
-{
-    OSStatus err = noErr;
-    AudioObjectPropertyAddress p_addr;
-    atomic_bool stream_format_changed = ATOMIC_VAR_INIT(false);
-
-    ca_print_asbd(ao, "setting stream format:", &change_format);
-
-    /* Install the callback. */
-    p_addr = (AudioObjectPropertyAddress) {
-        .mSelector = kAudioStreamPropertyPhysicalFormat,
-        .mScope    = kAudioObjectPropertyScopeGlobal,
-        .mElement  = kAudioObjectPropertyElementMaster,
-    };
-
-    err = AudioObjectAddPropertyListener(stream, &p_addr, ca_stream_listener,
-                                         &stream_format_changed);
-    if (!CHECK_CA_WARN("can't add property listener during format change")) {
-        return false;
-    }
-
-    /* Change the format. */
-    err = CA_SET(stream, kAudioStreamPropertyPhysicalFormat, &change_format);
-    if (!CHECK_CA_WARN("error changing physical format")) {
-        return false;
-    }
-
-    /* The AudioStreamSetProperty is not only asynchronous,
-     * it is also not Atomic, in its behaviour.
-     * Therefore we check 5 times before we really give up. */
-    bool format_set = false;
-    AudioStreamBasicDescription actual_format = {0};
-    for (int i = 0; i < 5; i++) {
-        err = CA_GET(stream, kAudioStreamPropertyPhysicalFormat, &actual_format);
-        if (!CHECK_CA_WARN("could not retrieve physical format"))
-            break;
-
-        format_set = ca_asbd_equals(&change_format, &actual_format);
-        if (format_set)
-            break;
-
-        for (int j = 0; !atomic_load(&stream_format_changed) && j < 50; j++)
-            mp_sleep_us(10000);
-
-        bool old = true;
-        if (!atomic_compare_exchange_strong(&stream_format_changed, &old, false))
-            MP_VERBOSE(ao, "reached timeout\n");
-    }
-
-    ca_print_asbd(ao, "actual format in use:", &actual_format);
-
-    err = AudioObjectRemovePropertyListener(stream, &p_addr, ca_stream_listener,
-                                            &stream_format_changed);
-
-    if (!CHECK_CA_WARN("can't remove property listener")) {
-        return false;
-    }
-
-    return format_set;
-}
-
 
 struct priv {
     AudioDeviceID device;   // selected device
@@ -321,11 +70,69 @@ struct priv {
     AudioStreamBasicDescription original_asbd;
 
     bool changed_mixing;
-    atomic_bool stream_asbd_changed;
-    bool reload_requested;
+
+    atomic_bool reload_requested;
 
     uint32_t hw_latency_us;
 };
+
+static OSStatus property_listener_cb(
+    AudioObjectID object, uint32_t n_addresses,
+    const AudioObjectPropertyAddress addresses[],
+    void *data)
+{
+    struct ao *ao = data;
+    struct priv *p = ao->priv;
+
+    // Check whether we need to reset the compressed output stream.
+    AudioStreamBasicDescription f;
+    OSErr err = CA_GET(p->stream, kAudioStreamPropertyVirtualFormat, &f);
+    CHECK_CA_WARN("could not get stream format");
+    if (err != noErr || !ca_asbd_equals(&p->stream_asbd, &f)) {
+        if (atomic_compare_exchange_strong(&p->reload_requested,
+                                           &(bool){false}, true))
+        {
+            ao_request_reload(ao);
+            MP_INFO(ao, "Stream format changed! Reloading.\n");
+        }
+    }
+
+    return noErr;
+}
+
+static OSStatus enable_property_listener(struct ao *ao, bool enabled)
+{
+    struct priv *p = ao->priv;
+
+    uint32_t selectors[] = {kAudioDevicePropertyDeviceHasChanged,
+                            kAudioHardwarePropertyDevices};
+    AudioDeviceID devs[] = {p->device,
+                            kAudioObjectSystemObject};
+    assert(MP_ARRAY_SIZE(selectors) == MP_ARRAY_SIZE(devs));
+
+    OSStatus status = noErr;
+    for (int n = 0; n < MP_ARRAY_SIZE(devs); n++) {
+        AudioObjectPropertyAddress addr = {
+            .mScope    = kAudioObjectPropertyScopeGlobal,
+            .mElement  = kAudioObjectPropertyElementMaster,
+            .mSelector = selectors[n],
+        };
+        AudioDeviceID device = devs[n];
+
+        OSStatus status2;
+        if (enabled) {
+            status2 = AudioObjectAddPropertyListener(
+                device, &addr, property_listener_cb, ao);
+        } else {
+            status2 = AudioObjectRemovePropertyListener(
+                device, &addr, property_listener_cb, ao);
+        }
+        if (status == noErr)
+            status = status2;
+    }
+
+    return status;
+}
 
 static OSStatus render_cb_compressed(
         AudioDeviceID device, const AudioTimeStamp *ts,
@@ -351,22 +158,96 @@ static OSStatus render_cb_compressed(
 
     ao_read_data(ao, &buf.mData, pseudo_frames, end);
 
-    // Check whether we need to reset the compressed output stream.
-    if (atomic_load(&p->stream_asbd_changed)) {
-        AudioStreamBasicDescription f;
-        OSErr err = CA_GET(p->stream, kAudioStreamPropertyPhysicalFormat, &f);
-        CHECK_CA_WARN("could not get stream format");
-        if (err == noErr && ca_asbd_equals(&p->stream_asbd, &f))
-            atomic_store(&p->stream_asbd_changed, false);
-    }
-
-    if (atomic_load(&p->stream_asbd_changed) && !p->reload_requested) {
-        p->reload_requested = true;
-        ao_request_reload(ao);
-        MP_INFO(ao, "Stream format changed! Reloading.\n");
-    }
-
     return noErr;
+}
+
+// Apparently, audio devices can have multiple sub-streams. It's not clear to
+// me what devices with multiple streams actually do. So only select the first
+// one that fulfills some minimum requirements.
+// If this is not sufficient, we could duplicate the device list entries for
+// each sub-stream, and make it explicit.
+static int select_stream(struct ao *ao)
+{
+    struct priv *p = ao->priv;
+
+    AudioStreamID *streams;
+    size_t n_streams;
+    OSStatus err;
+
+    /* Get a list of all the streams on this device. */
+    err = CA_GET_ARY_O(p->device, kAudioDevicePropertyStreams,
+                       &streams, &n_streams);
+    CHECK_CA_ERROR("could not get number of streams");
+    for (int i = 0; i < n_streams; i++) {
+        uint32_t direction;
+        err = CA_GET(streams[i], kAudioStreamPropertyDirection, &direction);
+        CHECK_CA_WARN("could not get stream direction");
+        if (err == noErr && direction != 0) {
+            MP_VERBOSE(ao, "Substream %d is not an output stream.\n", i);
+            continue;
+        }
+
+        if (af_fmt_is_pcm(ao->format) || ca_stream_supports_compressed(ao,
+                                                                   streams[i]))
+        {
+            MP_VERBOSE(ao, "Using substream %d/%zd.\n", i, n_streams);
+            p->stream = streams[i];
+            p->stream_idx = i;
+            break;
+        }
+    }
+
+    talloc_free(streams);
+
+    if (p->stream_idx < 0) {
+        MP_ERR(ao, "No useable substream found.\n");
+        goto coreaudio_error;
+    }
+
+    return 0;
+
+coreaudio_error:
+    return -1;
+}
+
+static int find_best_format(struct ao *ao, AudioStreamBasicDescription *out_fmt)
+{
+    struct priv *p = ao->priv;
+
+    // Build ASBD for the input format
+    AudioStreamBasicDescription asbd;
+    ca_fill_asbd(ao, &asbd);
+    ca_print_asbd(ao, "our format:", &asbd);
+
+    *out_fmt = (AudioStreamBasicDescription){0};
+
+    AudioStreamRangedDescription *formats;
+    size_t n_formats;
+    OSStatus err;
+
+    err = CA_GET_ARY(p->stream, kAudioStreamPropertyAvailablePhysicalFormats,
+                     &formats, &n_formats);
+    CHECK_CA_ERROR("could not get number of stream formats");
+
+    for (int j = 0; j < n_formats; j++) {
+        AudioStreamBasicDescription *stream_asbd = &formats[j].mFormat;
+
+        ca_print_asbd(ao, "- ", stream_asbd);
+
+        if (!out_fmt->mFormatID || ca_asbd_is_better(&asbd, out_fmt, stream_asbd))
+            *out_fmt = *stream_asbd;
+    }
+
+    talloc_free(formats);
+
+    if (!out_fmt->mFormatID) {
+        MP_ERR(ao, "no format found\n");
+        return -1;
+    }
+
+    return 0;
+coreaudio_error:
+    return -1;
 }
 
 static int init(struct ao *ao)
@@ -378,19 +259,10 @@ static int init(struct ao *ao)
 
     ao->format = af_fmt_from_planar(ao->format);
 
-    if (!AF_FORMAT_IS_IEC61937(ao->format)) {
-        MP_ERR(ao, "Only compressed formats are supported.\n");
+    if (!af_fmt_is_pcm(ao->format) && !af_fmt_is_spdif(ao->format)) {
+        MP_ERR(ao, "Unsupported format.\n");
         goto coreaudio_error_nounlock;
     }
-
-    if (!ca_device_supports_compressed(ao, p->device)) {
-        MP_ERR(ao, "selected device doesn't support compressed formats\n");
-        goto coreaudio_error_nounlock;
-    }
-
-    // Build ASBD for the input format
-    AudioStreamBasicDescription asbd;
-    ca_fill_asbd(ao, &asbd);
 
     uint32_t is_alive = 1;
     err = CA_GET(p->device, kAudioDevicePropertyDeviceIsAlive, &is_alive);
@@ -405,100 +277,54 @@ static int init(struct ao *ao)
     err = ca_disable_mixing(ao, p->device, &p->changed_mixing);
     CHECK_CA_WARN("failed to disable mixing");
 
-    AudioStreamID *streams;
-    size_t n_streams;
-
-    /* Get a list of all the streams on this device. */
-    err = CA_GET_ARY_O(p->device, kAudioDevicePropertyStreams,
-                       &streams, &n_streams);
-
-    CHECK_CA_ERROR("could not get number of streams");
-
-    for (int i = 0; i < n_streams && p->stream_idx < 0; i++) {
-        bool compressed = ca_stream_supports_compressed(ao, streams[i]);
-
-        if (compressed) {
-            AudioStreamRangedDescription *formats;
-            size_t n_formats;
-
-            err = CA_GET_ARY(streams[i],
-                             kAudioStreamPropertyAvailablePhysicalFormats,
-                             &formats, &n_formats);
-
-            if (!CHECK_CA_WARN("could not get number of stream formats"))
-                continue; // try next one
-
-            int req_rate_format = -1;
-            int max_rate_format = -1;
-
-            p->stream = streams[i];
-            p->stream_idx = i;
-
-            for (int j = 0; j < n_formats; j++)
-                if (ca_format_is_compressed(formats[j].mFormat)) {
-                    // select the compressed format that has exactly the same
-                    // samplerate. If an exact match cannot be found, select
-                    // the format with highest samplerate as backup.
-                    if (formats[j].mFormat.mSampleRate == asbd.mSampleRate) {
-                        req_rate_format = j;
-                        break;
-                    } else if (max_rate_format < 0 ||
-                        formats[j].mFormat.mSampleRate >
-                        formats[max_rate_format].mFormat.mSampleRate)
-                        max_rate_format = j;
-                }
-
-            if (req_rate_format >= 0)
-                p->stream_asbd = formats[req_rate_format].mFormat;
-            else
-                p->stream_asbd = formats[max_rate_format].mFormat;
-
-            talloc_free(formats);
-        }
-    }
-
-    talloc_free(streams);
-
-    if (p->stream_idx < 0) {
-        MP_WARN(ao , "can't find any compressed output stream format\n");
+    if (select_stream(ao) < 0)
         goto coreaudio_error;
-    }
+
+    AudioStreamBasicDescription hwfmt;
+    if (find_best_format(ao, &hwfmt) < 0)
+        goto coreaudio_error;
 
     err = CA_GET(p->stream, kAudioStreamPropertyPhysicalFormat,
                  &p->original_asbd);
     CHECK_CA_ERROR("could not get stream's original physical format");
 
-    if (!ca_change_format(ao, p->stream, p->stream_asbd))
+    // Even if changing the physical format fails, we can try using the current
+    // virtual format.
+    ca_change_physical_format_sync(ao, p->stream, hwfmt);
+
+    if (!ca_init_chmap(ao, p->device))
         goto coreaudio_error;
 
-    void *changed = &p->stream_asbd_changed;
-    err = ca_enable_device_listener(p->device, changed);
-    CHECK_CA_ERROR("cannot install format change listener during init");
+    err = CA_GET(p->stream, kAudioStreamPropertyVirtualFormat, &p->stream_asbd);
+    CHECK_CA_ERROR("could not get stream's virtual format");
 
-    if (p->stream_asbd.mFormatFlags & kAudioFormatFlagIsBigEndian)
-        MP_WARN(ao, "stream has non-native byte order, output may fail\n");
+    ca_print_asbd(ao, "virtual format", &p->stream_asbd);
 
-    ao->samplerate = p->stream_asbd.mSampleRate;
-    ao->bps = ao->samplerate *
-                  (p->stream_asbd.mBytesPerPacket /
-                   p->stream_asbd.mFramesPerPacket);
+    int new_format = ca_asbd_to_mp_format(&p->stream_asbd);
 
-    uint32_t latency_frames = 0;
-    uint32_t latency_properties[] = {
-        kAudioDevicePropertyLatency,
-        kAudioDevicePropertyBufferFrameSize,
-        kAudioDevicePropertySafetyOffset,
-    };
-    for (int n = 0; n < MP_ARRAY_SIZE(latency_properties); n++) {
-        uint32_t temp;
-        err = CA_GET_O(p->device, latency_properties[n], &temp);
-        CHECK_CA_WARN("cannot get device latency");
-        if (err == noErr)
-            latency_frames += temp;
+    // If both old and new formats are spdif, avoid changing it due to the
+    // imperfect mapping between mp and CA formats.
+    if (!(af_fmt_is_spdif(ao->format) && af_fmt_is_spdif(new_format)))
+        ao->format = new_format;
+
+    if (!ao->format || af_fmt_is_planar(ao->format)) {
+        MP_ERR(ao, "hardware format not supported\n");
+        goto coreaudio_error;
     }
 
-    p->hw_latency_us = ca_frames_to_us(ao, latency_frames);
+    ao->samplerate = p->stream_asbd.mSampleRate;
+
+    if (ao->channels.num != p->stream_asbd.mChannelsPerFrame) {
+        // We really expect that ca_init_chmap() fixes the layout to the HW's.
+        MP_ERR(ao, "number of channels changed, and unknown channel layout!\n");
+        goto coreaudio_error;
+    }
+
+    p->hw_latency_us = ca_get_device_latency_us(ao, p->device);
     MP_VERBOSE(ao, "base latency: %d microseconds\n", (int)p->hw_latency_us);
+
+    err = enable_property_listener(ao, true);
+    CHECK_CA_ERROR("cannot install format change listener during init");
 
     err = AudioDeviceCreateIOProcID(p->device,
                                     (AudioDeviceIOProc)render_cb_compressed,
@@ -509,6 +335,8 @@ static int init(struct ao *ao)
     return CONTROL_TRUE;
 
 coreaudio_error:
+    err = enable_property_listener(ao, false);
+    CHECK_CA_WARN("can't remove format change listener");
     err = ca_unlock_device(p->device, &p->hog_pid);
     CHECK_CA_WARN("can't release hog mode");
 coreaudio_error_nounlock:
@@ -520,8 +348,7 @@ static void uninit(struct ao *ao)
     struct priv *p = ao->priv;
     OSStatus err = noErr;
 
-    void *changed = &p->stream_asbd_changed;
-    err = ca_disable_device_listener(p->device, changed);
+    err = enable_property_listener(ao, false);
     CHECK_CA_WARN("can't remove device listener, this may cause a crash");
 
     err = AudioDeviceStop(p->device, p->render_cb);
@@ -530,7 +357,7 @@ static void uninit(struct ao *ao)
     err = AudioDeviceDestroyIOProcID(p->device, p->render_cb);
     CHECK_CA_WARN("failed to remove device render callback");
 
-    if (!ca_change_format(ao, p->stream, p->original_asbd))
+    if (!ca_change_physical_format_sync(ao, p->stream, p->original_asbd))
         MP_WARN(ao, "can't revert to original device format");
 
     err = ca_enable_mixing(ao, p->device, p->changed_mixing);
@@ -568,7 +395,6 @@ const struct ao_driver audio_out_coreaudio_exclusive = {
     .list_devs = ca_get_device_list,
     .priv_size = sizeof(struct priv),
     .priv_defaults = &(const struct priv){
-        .stream_asbd_changed = ATOMIC_VAR_INIT(false),
         .hog_pid = -1,
         .stream = 0,
         .stream_idx = -1,

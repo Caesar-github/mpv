@@ -263,13 +263,6 @@ Available filters are:
     used to do conversion itself, unlike this one which lets the filter system
     handle the conversion.
 
-``convert24``
-    Filter for internal use only. Converts between 24-bit and 32-bit sample
-    formats.
-
-``convertsign``
-    Filter for internal use only. Converts between signed/unsigned formats.
-
 ``volume[=<volumedb>[:...]]``
     Implements software volume control. Use this filter with caution since it
     can reduce the signal to noise ratio of the sound. In most cases it is
@@ -294,6 +287,10 @@ Available filters are:
     ``replaygain-clip=yes|no``
         Prevent clipping caused by replaygain by automatically lowering the
         gain (default). Use ``replaygain-clip=no`` to disable this.
+    ``replaygain-fallback``
+        Gain in dB to apply if the file has no replay gain tags. This option
+        is always applied if the replaygain logic is somehow inactive. If this
+        is applied, no other replaygain options are applied.
     ``softclip``
         Turns soft clipping on. Soft-clipping can make the
         sound more smooth if very high volume levels are used. Enable this

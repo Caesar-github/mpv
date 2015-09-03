@@ -199,7 +199,7 @@ void playlist_add_base_path(struct playlist *pl, bstr base_path)
         return;
     for (struct playlist_entry *e = pl->first; e; e = e->next) {
         if (!mp_is_url(bstr0(e->filename))) {
-            char *new_file = mp_path_join(e, base_path, bstr0(e->filename));
+            char *new_file = mp_path_join_bstr(e, base_path, bstr0(e->filename));
             talloc_free(e->filename);
             e->filename = new_file;
         }
@@ -281,6 +281,10 @@ struct playlist *playlist_parse_file(const char *file, struct mpv_global *global
     if (d && d->playlist) {
         ret = talloc_zero(NULL, struct playlist);
         playlist_transfer_entries(ret, d->playlist);
+        if (d->filetype && strcmp(d->filetype, "hls") == 0) {
+            mp_warn(log, "This might be a HLS stream. For correct operation, "
+                         "pass it to the player\ndirectly. Don't use --playlist.\n");
+        }
     }
     free_demuxer_and_stream(d);
 

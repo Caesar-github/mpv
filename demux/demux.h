@@ -30,11 +30,6 @@
 #include "packet.h"
 #include "stheader.h"
 
-// Maximum total size of packets queued - if larger, no new packets are read,
-// and the demuxer pretends EOF was reached.
-#define MAX_PACKS 16000
-#define MAX_PACK_BYTES (400 * 1024 * 1024)
-
 // DEMUXER control commands/answers
 #define DEMUXER_CTRL_NOTIMPL -1
 #define DEMUXER_CTRL_DONTKNOW 0
@@ -47,7 +42,6 @@ enum demux_ctrl {
     DEMUXER_CTRL_IDENTIFY_PROGRAM,
     DEMUXER_CTRL_STREAM_CTRL,
     DEMUXER_CTRL_GET_READER_STATE,
-    DEMUXER_CTRL_GET_NAV_EVENT,
     DEMUXER_CTRL_GET_BITRATE_STATS, // double[STREAM_TYPE_COUNT]
 };
 
@@ -119,7 +113,6 @@ typedef struct demux_chapter
 {
     int original_index;
     double pts;
-    char *name;
     struct mp_tags *metadata;
     uint64_t demuxer_id; // for mapping to internal demuxer data structures
 } demux_chapter_t;
@@ -170,7 +163,12 @@ struct demuxer_params {
     int matroska_wanted_segment;
     bool *matroska_was_valid;
     bool expect_subtitle;
-    bool disable_cache; // demux_open_url() only
+    // -- demux_open_url() only
+    int stream_flags;
+    bool allow_capture;
+    bool disable_cache;
+    // result
+    bool demuxer_failed;
 };
 
 typedef struct demuxer {
@@ -284,9 +282,9 @@ void demux_set_stream_autoselect(struct demuxer *demuxer, bool autoselect);
 
 void demuxer_help(struct mp_log *log);
 
-int demuxer_add_attachment(struct demuxer *demuxer, struct bstr name,
-                           struct bstr type, struct bstr data);
-int demuxer_add_chapter(demuxer_t *demuxer, struct bstr name,
+int demuxer_add_attachment(struct demuxer *demuxer, char *name,
+                           char *type, void *data, size_t data_size);
+int demuxer_add_chapter(demuxer_t *demuxer, char *name,
                         double pts, uint64_t demuxer_id);
 
 double demuxer_get_time_length(struct demuxer *demuxer);

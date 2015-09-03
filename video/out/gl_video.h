@@ -39,6 +39,7 @@ struct scaler_config {
     struct scaler_fun window;
     float radius;
     float antiring;
+    int clamp;
 };
 
 struct gl_video_opts {
@@ -53,12 +54,12 @@ struct gl_video_opts {
     float sigmoid_center;
     float sigmoid_slope;
     int scaler_resizes_only;
-    int npot;
     int pbo;
     int dither_depth;
     int dither_algo;
     int dither_size;
     int temporal_dither;
+    int temporal_dither_period;
     int fbo_format;
     int alpha_mode;
     int chroma_location;
@@ -66,6 +67,10 @@ struct gl_video_opts {
     struct m_color background;
     int interpolation;
     int blend_subs;
+    char *source_shader;
+    char *scale_shader;
+    char **pre_shaders;
+    char **post_shaders;
 };
 
 extern const struct m_sub_options gl_video_conf;
@@ -73,18 +78,17 @@ extern const struct gl_video_opts gl_video_opts_hq_def;
 extern const struct gl_video_opts gl_video_opts_def;
 
 struct gl_video;
+struct vo_frame;
 
-struct gl_video *gl_video_init(GL *gl, struct mp_log *log);
+struct gl_video *gl_video_init(GL *gl, struct mp_log *log, struct mpv_global *g);
 void gl_video_uninit(struct gl_video *p);
 void gl_video_set_osd_source(struct gl_video *p, struct osd_state *osd);
-void gl_video_set_options(struct gl_video *p, struct gl_video_opts *opts,
-                          int *queue_size);
+void gl_video_set_options(struct gl_video *p, struct gl_video_opts *opts);
 bool gl_video_check_format(struct gl_video *p, int mp_format);
 void gl_video_config(struct gl_video *p, struct mp_image_params *params);
 void gl_video_set_output_depth(struct gl_video *p, int r, int g, int b);
 void gl_video_set_lut3d(struct gl_video *p, struct lut3d *lut3d);
-void gl_video_set_image(struct gl_video *p, struct mp_image *img);
-void gl_video_render_frame(struct gl_video *p, int fbo, struct frame_timing *t);
+void gl_video_render_frame(struct gl_video *p, struct vo_frame *frame, int fbo);
 void gl_video_resize(struct gl_video *p, int vp_w, int vp_h,
                      struct mp_rect *src, struct mp_rect *dst,
                      struct mp_osd_res *osd);
@@ -93,7 +97,6 @@ struct mp_csp_equalizer *gl_video_eq_ptr(struct gl_video *p);
 void gl_video_eq_update(struct gl_video *p);
 
 void gl_video_set_debug(struct gl_video *p, bool enable);
-void gl_video_resize_redraw(struct gl_video *p, int w, int h);
 
 float gl_video_scale_ambient_lux(float lmin, float lmax,
                                  float rmin, float rmax, float lux);
@@ -106,5 +109,8 @@ bool gl_video_showing_interpolated_frame(struct gl_video *p);
 
 struct gl_hwdec;
 void gl_video_set_hwdec(struct gl_video *p, struct gl_hwdec *hwdec);
+
+struct vo;
+void gl_video_configure_queue(struct gl_video *p, struct vo *vo);
 
 #endif

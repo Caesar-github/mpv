@@ -1,3 +1,288 @@
+Release 0.10.0
+==============
+
+
+Features
+--------
+
+New
+~~~
+
+- uchardet support
+- Matroska: reading cue sheets embedded in tags
+- Support for VideoToolbox hardware decoding
+- Display sync mode (--display-sync)
+- --force-window=immediate mode
+- fd:// protocol
+- libarchive wrapper for reading compressed archives
+- TOOLS/lua: zones.lua
+- Support for the "new" libavcodec VDPAU API
+- vf_vdpaurb, Add a new filter for reading back VDPAU decoded frames
+- DXVA2: HEVC support
+- Enabled HEVC profiles with VA API
+- HEVC added to whitelist of hwdec codecs
+- vo_null: framerate emulation
+- vo_opengl: support for custom shaders
+- vo_opengl: temporal-dither-period option
+- vo_opengl: tscale-clamp option
+- vo_opengl: option to attach target-prim/target-csp to window screenshots
+- vo_opengl_cb: "block" framedrop mode (now default)
+- vo_opengl_cb: support for interpolation
+- vo_vdpau: rotation support
+- ytdl_hook: support for 'multi_video' results
+
+
+Removed
+~~~~~~~
+
+- af_convert24 (af_lavrresample does this now)
+- af_dummy
+- audio: S8, U16, U24, U32 formats
+- DVD and BD menu support
+- TOOLS: youtube-starttime.lua
+- VA API: compatibility crap (< 0.34.0) and vo_vaapi deinterlacer
+- vo_x11
+
+
+Deprecated
+~~~~~~~~~~
+
+- vf_dlopen
+
+
+Behavior
+--------
+
+- audio: softvol scale is now cubic
+- cache: readahead size is limited to half the cache size at the beginning
+- charset_conv: "auto" encoding detection now prefers uchardet
+- demux_playlist: skip hidden directories
+- input.conf: O toggles between 2 states only
+- input.conf: Ctrl+s key binding for window screenshots
+- input.conf: mouse volume control (horizontal scrolling) inverted
+- input.conf: L to toggle infinite looping
+- input.conf: remap d/D keys (dropped framedrop cycle, replaced with deinterlacing toggle)
+- player: disabled seeking on unseekable streams even if the cache is enabled
+- player: parses and exposes m3u playlist titles
+- player: --term-playing-msg is now in a separate log category
+- player: removed automatic DVB channel advancement on no data
+- player: now restores video-aspect on playback resume
+- player: now uses exit code 0 by default for quit, 4 for signals, etc.
+- player: warns against using HLS URLs with --playlist
+- screenshots: changed the default directory in pseudo-gui mode to desktop
+- screenshots: screenshot directory is now created automatically
+- screenshots: default template is now prefixed with "mpv-"
+- TOOLS/lua/autoload: adds all files on start
+- vo: vo_wayland moved up in autoprobe list
+- vo_opengl: enabled pbo by default with opengl-hq
+- vo_opengl: cache dir for ICC profiles is now created automatically
+- w32: shift drag and drop appends
+- x11: shift drag and drop appends
+
+
+Options and Commands
+--------------------
+
+Added
+~~~~~
+
+- af_volume: replaygain-fallback option
+- ao_coreaudio: change-physical-format option
+- ao_coreaudio: exclusive option
+- ao_null: channel-layouts option for testing channel layout selection
+- audio: --audio-spdif as new method for enabling passthrough
+- cache: --cache-backbuffer to configure cache backbuffer size
+- command: define-section command for defining input bindings
+- command: audio-params and audio-out-params properties
+- command: keypress, keydown, and keyup commands
+- command: playlist_shuffle command
+- command: option-info/N/set-locally property indicating per-file options
+- command: protocol-list property
+- command: track-list/N/audio-channels property
+- demux: --demuxer-max-packets and --demuxer-max-bytes options to control maximum queue size
+- input: relative percentage seek
+- osc: time display configuration options
+- player: --playlist-pos option
+- screenshots: --screenshot-jpeg-source-chroma option to disable JPEG 4:4:4 output
+- screenshots: --screenshot-high-bit-depth option to allow or disallow 16 bit output
+- screenshots: --screenshot-directory option
+- sub: --stretch-image-subs-to-screen option for stretching image subtitles to screen
+- TOOLS/stats-conv: allow passing regex via command line
+- video: --video-aspect-method option to configure container vs. bitstream aspect ratio
+- vo_drm: mode suboption to set the mode ID to use
+- vo_opengl_cb, vo_opengl: --hwdec-preload option for preloading hwdec context
+- vo_rpi: background disabled by default
+- vo_xv: buffers suboption to configure number of buffers
+- win32: portable config mode
+
+
+Changed
+~~~~~~~
+
+- audio: changed the range of the volume option/property (0 is still silence, and 100 now always means unchanged volume)
+- command: allow changing deinterlace property any time
+- command: allow changing track properties while no file is loaded
+- command: always make video-aspect property accessible
+- command: better choice when to allow playback-related commands
+- command: change OSD symbol for absolute perc. seek
+- command: change the default action for rescan_external_files
+- command: change the hwdec properties
+- command: define-section with empty contents removes a section
+- command: export stereo 3D tags
+- command: make auto-deinterlacing output at field rate
+- command: make deinterlace property use interlaced-only yadif mode
+- command: make property event mask matching more restrictive
+- command: make the playback-time property writable
+- input: allow - as separator between commands, instead of _
+- options: --loop without argument means looping forever
+- options: make keyvalue list parsing less strict
+- player: extend --hls-bitrate option
+- vf_yadif: expose interlaced frame mode
+- video: --video-stereo-mode=no to disable automatic stereo conversion
+- vo_opengl_cb, vo_opengl: --hwdec-preload for preloading hwdec context
+- vo_opengl: replace icc-cache with icc-cache-dir
+- vo_opengl: icc-profile overrides icc-profile-auto
+
+
+Renamed
+~~~~~~~
+
+- command: rename audio-format property to audio-codec-name
+- options: rename --media-title option to --force-media-title
+- vo_opengl: rename use_full_range to use_normalized_range
+
+
+Deprecated
+~~~~~~~~~~
+
+- --ad-spdif-dtshd (use --audio-spdif=dts-hd)
+- audio-samplerate property
+- length property
+
+
+Removed
+~~~~~~~
+
+- get_property command
+- --demuxer-readahead-packets and --demuxer-readahead-bytes
+- image_writer: don't use jpeg baseline, and remove useless jpeg-optimize and jpeg-baseline options
+- --leak-report
+- --slave-broken
+- vo_opengl: npot suboption
+
+
+Fixes and Minor Enhancements
+----------------------------
+
+- ad_spdif: use DTS-HD passthrough only if the audio is really DTS-HD
+- af: fix behavior with filter chains that require a large number of auto-inserted conversion filters
+- af_lavcac3enc: fix A/V sync
+- ao_alsa: accept 7.1 over HDMI
+- ao_alsa: refuse to use spdif if AES flags can't be set
+- ao_wasapi: fix crash on hotplug init error
+- audio: avoid wasting CPU due to continuous wakeup
+- audio: do not exit when loading small files in paused mode
+- audio: fix channel map fallback selection
+- audio: fix crash on uninit
+- audio: fix --end handling
+- audio: fix EOF state with --keep-open
+- audio: fix restoring volume
+- charset_conv: fix switched parameters
+- charset_conv: use our own UTF-8 check with ENCA only
+- cocoa: don't load hardcoded icon if running from bundle
+- cocoa: hide cursor using a blank image instead of a system-wide API
+- command: do not exit playback if the B point of A-B loop is past EOF
+- command: fix audio-out-detected-device property
+- command: fix track property when no file is loaded
+- command: fix video-aspect property update notification
+- command: let track properties return option value in idle mode
+- demux: don't get stuck on some cases of timestamp resets
+- demux: handle Matroska-style replaygain tags as well
+- demux_lavf: do a better job at guessing the vobsub .sub filename
+- demux_mkv: disable ordered chapters if ChapterTimeEnd is missing
+- demux_mkv: discard broken index
+- demux_mkv: fix mpeg2 mapping
+- demux_mkv: ignore deprecated FrameRate, do not assume PAL
+- demux_mkv: improve video duration detection heuristic
+- demux_mkv: parse FLAC channel layouts
+- demux_playlist: make mime type comparison case-insensitive
+- dxva2: fix handling of cropped video
+- idet.sh: Support larger files
+- mp_image: fix vf_vdpaupp references
+- options: fix conversion of flags to strings
+- options: move program name to end of window title
+- options: remove the period at the end of "No file."
+- osc: completely disable if no VO window exists
+- osc: exit tick immediately if disabled
+- osc: reinit on playlist changes
+- osx: add NULL check for input context in a missing case
+- player: fix crashes when adding external tracks before loading main file
+- player: increase tick event update frequency
+- player: make decoding cover art more robust
+- player: raise maximum idle time
+- player: return better guess for playback time during seeks
+- player: show larger cache sizes in MB on status line
+- player: slim down A/V desync warning
+- sd_ass: assume negative durations are unknown durations, and handle them
+- terminal: disable terminal foreground state polling
+- terminal-unix: set terminal mode on init
+- timer: fix a corner case on clock changes
+- TOOLS: make autodeint detect telecine in parallel
+- TOOLS/zsh.pl: die loudly if mpv fails to run
+- vaapi: prefer direct display over copy-back
+- vaapi: fix some videos only showing up green
+- vaapi: treat cropped decoder output slightly more correctly
+- vda: add support for nv12 image formats
+- vd_lavc: fix a hw decoding fallback case
+- vf_stereo3d: drop internal implementation
+- vf_vavpp: don't attempt to deinterlace progressive frames
+- vf_vavpp: fix bob deinterlacing for bottom field first videos
+- vf_vdpaupp: Don't crash when evaluating interlacing of NULL mpi
+- video: always re-probe auto deint filter on filter reconfig
+- video: better heuristic for timestamp resets
+- video: fix panscan in vertical case
+- video: fix VideoToolbox/VDA autodetection
+- video: unbreak EOF with video-only files that have timestamp resets
+- vo_direct3d: fix broken pseudo GUI drag and drop hint
+- vo_drm: fix centering with regard to stride
+- vo_drm: fix crashes with --profile=pseudo-gui
+- vo_drm: fix resolution not restored after exiting
+- vo_drm: fix stride problem for certain devices
+- vo_drm: make VT switching non mandatory
+- vo: free frames before killing VO
+- vo_opengl: avoid broken shader if hwdec fails to provide textures
+- vo_opengl_cb: drop frames eagerly if frames are not rendered
+- vo_opengl: CMS no longer implies linear scaling
+- vo_opengl: fix alpha video in one case
+- vo_opengl: fix dangling pointers with vo_cmdline
+- vo_opengl: fix framestepping/pausing + interpolation
+- vo_opengl: fix "freezes" after seeking with interpolation on
+- vo_opengl: fix scale=oversample's threshold calculations
+- vo_opengl: framebuffers work under GLES 2
+- vo_opengl: improve robustness against PBO failure
+- vo_opengl: reimplement tscale=oversample
+- vo_opengl: reject future images in different formats
+- vo_opengl: X11: don't leak when GL init fails
+- vo: restore frame-drop logic for high-fps clips
+- vo_rpi: fix blackscreen before the first subtitle/OSD is rendered
+- vo_rpi, vo_opengl: do not globally terminate EGL on VO uninit
+- vo_sdl: fix glaring memory leak
+- vo_vdpau: check maximum video size
+- vo_vdpau: limit output surfaces to allowed maximum dimensions
+- win32: fix window resize logic
+- win32: fix crashes when changing system time
+- x11: Handle external fullscreen toggles
+- ytdl: catch bogus extractor info
+- ytdl: do not use deprecated media-title option
+- ytdl: don't print failure warning when youtube-dl was killed by us
+- ytdl: get start_time
+
+This listing is not complete. Check DOCS/client-api-changes.rst for a history
+of changes to the client API. A complete changelog can be seen by running
+`git log v0.9.2..v0.10.0` in the git repository or by visiting
+https://github.com/mpv-player/mpv/compare/v0.9.2...v0.10.0.
+
+
 Release 0.9.2
 =============
 
@@ -39,8 +324,8 @@ Bug fixes
   `libmpv` from creating the singleton.
 
 This listing is not complete. A complete changelog can be seen by running
-`git log v0.9.1..` in the git repository or by visiting
-https://github.com/mpv-player/mpv/compare/v0.9.1...release/0.9.
+`git log v0.9.1..v0.9.2` in the git repository or by visiting
+https://github.com/mpv-player/mpv/compare/v0.9.1...v0.9.2.
 
 Release 0.9.1
 =============

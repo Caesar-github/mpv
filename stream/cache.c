@@ -215,6 +215,13 @@ static bool cache_fill(struct priv *s)
     // number of buffer bytes which should be preserved in backwards direction
     int64_t back = MPCLAMP(read - s->min_filepos, 0, s->back_size);
 
+    // limit maximum readahead so that the backbuffer space is reserved, even
+    // if the backbuffer is not used. limit it to ensure that we don't stall the
+    // network when starting a file, or we wouldn't download new data until we
+    // get new free space again. (unless everything fits in the cache.)
+    if (s->stream_size > s->buffer_size)
+        back = MPMAX(back, s->back_size);
+
     // number of buffer bytes that are valid and can be read
     int64_t newb = FFMAX(s->max_filepos - read, 0);
 
@@ -276,11 +283,15 @@ done:
 }
 
 // This is called both during init and at runtime.
+// The size argument is the readahead half only; s->back_size is the backbuffer.
 static int resize_cache(struct priv *s, int64_t size)
 {
-    int64_t min_size = FILL_LIMIT * 4;
-    int64_t max_size = ((size_t)-1) / 4;
+    int64_t min_size = FILL_LIMIT * 2;
+    int64_t max_size = ((size_t)-1) / 8;
+
     int64_t buffer_size = MPCLAMP(size, min_size, max_size);
+    s->back_size = MPCLAMP(s->back_size, min_size, max_size);
+    buffer_size += s->back_size;
 
     unsigned char *buffer = malloc(buffer_size);
     if (!buffer) {
@@ -317,7 +328,6 @@ static int resize_cache(struct priv *s, int64_t size)
     free(s->buffer);
 
     s->buffer_size = buffer_size;
-    s->back_size = buffer_size / 2;
     s->buffer = buffer;
     s->idle = false;
     s->eof = false;
@@ -326,6 +336,8 @@ static int resize_cache(struct priv *s, int64_t size)
     //more data than it is allowed to fill
     if (s->seek_limit > s->buffer_size - FILL_LIMIT)
         s->seek_limit = s->buffer_size - FILL_LIMIT;
+
+    assert(s->back_size < s->buffer_size);
 
     return STREAM_OK;
 }
@@ -343,7 +355,8 @@ static void update_cached_controls(struct priv *s)
         s->stream_metadata = talloc_steal(s, tags);
     }
     s->stream_size = s->eof_pos;
-    if (stream_control(s->stream, STREAM_CTRL_GET_SIZE, &i64) == STREAM_OK)
+    i64 = stream_get_size(s->stream);
+    if (i64 >= 0)
         s->stream_size = i64;
     s->has_avseek = stream_control(s->stream, STREAM_CTRL_HAS_AVSEEK, NULL) > 0;
 }
@@ -609,11 +622,11 @@ int stream_cache_init(stream_t *cache, stream_t *stream,
     cache_drop_contents(s);
 
     s->seek_limit = opts->seek_min * 1024ULL;
+    s->back_size = opts->back_buffer * 1024ULL;
 
     int64_t cache_size = opts->size * 1024ULL;
 
-    int64_t file_size = -1;
-    stream_control(stream, STREAM_CTRL_GET_SIZE, &file_size);
+    int64_t file_size = stream_get_size(stream);
     if (file_size >= 0)
         cache_size = MPMIN(cache_size, file_size);
 
@@ -623,8 +636,9 @@ int stream_cache_init(stream_t *cache, stream_t *stream,
         return -1;
     }
 
-    MP_VERBOSE(cache, "Cache size set to %" PRId64 " KiB\n",
-               s->buffer_size / 1024);
+    MP_VERBOSE(cache, "Cache size set to %lld KiB (%lld KiB backbuffer)\n",
+               (long long)(s->buffer_size / 1024),
+               (long long)(s->back_size / 1024));
 
     pthread_mutex_init(&s->mutex, NULL);
     pthread_cond_init(&s->wakeup, NULL);
