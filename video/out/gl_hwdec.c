@@ -31,7 +31,9 @@
 
 extern const struct gl_hwdec_driver gl_hwdec_vaglx;
 extern const struct gl_hwdec_driver gl_hwdec_vda;
+extern const struct gl_hwdec_driver gl_hwdec_videotoolbox;
 extern const struct gl_hwdec_driver gl_hwdec_vdpau;
+extern const struct gl_hwdec_driver gl_hwdec_dxva2;
 
 static const struct gl_hwdec_driver *const mpgl_hwdec_drivers[] = {
 #if HAVE_VAAPI_GLX
@@ -40,8 +42,11 @@ static const struct gl_hwdec_driver *const mpgl_hwdec_drivers[] = {
 #if HAVE_VDPAU_GL_X11
     &gl_hwdec_vdpau,
 #endif
-#if HAVE_VDA_GL
-    &gl_hwdec_vda,
+#if HAVE_VIDEOTOOLBOX_VDA_GL
+    &gl_hwdec_videotoolbox,
+#endif
+#if HAVE_DXVA2_HWACCEL
+    &gl_hwdec_dxva2,
 #endif
     NULL
 };
@@ -58,9 +63,10 @@ static struct gl_hwdec *load_hwdec_driver(struct mp_log *log, GL *gl,
         .gl_texture_target = GL_TEXTURE_2D,
         .reject_emulated = is_auto,
     };
+    mp_verbose(log, "Loading hwdec driver '%s'\n", drv->api_name);
     if (hwdec->driver->create(hwdec) < 0) {
         talloc_free(hwdec);
-        mp_err(log, "Couldn't load hwdec driver '%s'\n", drv->api_name);
+        mp_verbose(log, "Loading failed.\n");
         return NULL;
     }
     return hwdec;
@@ -79,6 +85,12 @@ struct gl_hwdec *gl_hwdec_load_api(struct mp_log *log, GL *gl,
         }
     }
     return NULL;
+}
+
+// Like gl_hwdec_load_api(), but use HWDEC_... identifiers.
+struct gl_hwdec *gl_hwdec_load_api_id(struct mp_log *log, GL *gl, int id)
+{
+    return gl_hwdec_load_api(log, gl, m_opt_choice_str(mp_hwdec_names, id));
 }
 
 void gl_hwdec_uninit(struct gl_hwdec *hwdec)

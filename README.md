@@ -57,9 +57,6 @@ To build the software you can use `./waf build`: the result of the compilation
 will be located in `build/mpv`. You can use `./waf install` to install mpv
 to the *prefix* after it is compiled.
 
-NOTE: Using the old build system (with `./old-configure`) should still work,
-but will be removed in a future version of mpv.
-
 Essential dependencies (incomplete list):
 
 - gcc or clang
@@ -174,11 +171,9 @@ list of changes is located [here][mplayer-changes].
 Most activity happens on the IRC channel and the github issue tracker. The
 mailing lists are mostly unused.
 
- - **Github issue tracker**: [issue tracker][issue-tracker] (report bugs here)
+ - **GitHub issue tracker**: [issue tracker][issue-tracker] (report bugs here)
  - **User IRC Channel**: `#mpv` on `irc.freenode.net`
  - **Developer IRC Channel**: `#mpv-devel` on `irc.freenode.net`
- - **Users Mailing List**: `mpv-users@googlegroups.com` ([Archive / Subscribe][mpv-users]).
- - **Devel Mailing List**: `mpv-devel@googlegroups.com` ([Archive / Subscribe][mpv-devel])
 
 To contact the `mpv` team in private write to `mpv-team@googlegroups.com`. Use
 only if discretion is required.
@@ -187,8 +182,6 @@ only if discretion is required.
 [mpv-build]: https://github.com/mpv-player/mpv-build
 [homebrew-mpv]: https://github.com/mpv-player/homebrew-mpv
 [issue-tracker]:  https://github.com/mpv-player/mpv/issues
-[mpv-users]: https://groups.google.com/forum/?hl=en#!forum/mpv-users
-[mpv-devel]: https://groups.google.com/forum/?hl=en#!forum/mpv-devel
 [ffmpeg_vs_libav]: https://github.com/mpv-player/mpv/wiki/FFmpeg-versus-Libav
 [release-policy]: https://github.com/mpv-player/mpv/blob/master/DOCS/release-policy.md
 [windows_compilation]: https://github.com/mpv-player/mpv/blob/master/DOCS/compile-windows.md

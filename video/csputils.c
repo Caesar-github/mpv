@@ -104,6 +104,7 @@ const struct m_opt_choice_alternatives mp_chroma_names[] = {
 // The numeric index matches the Matroska StereoMode value. If you add entries
 // that don't match Matroska, make sure demux_mkv.c rejects them properly.
 const struct m_opt_choice_alternatives mp_stereo3d_names[] = {
+    {"no",     -1}, // disable/invalid
     {"mono",    0},
     {"sbs2l",   1}, // "side_by_side_left"
     {"ab2r",    2}, // "top_bottom_right"
@@ -687,14 +688,6 @@ void mp_get_yuv2rgb_coeffs(struct mp_csp_params *params, struct mp_cmat *m)
         m->c[i] = rgblev.min - m->m[i][0] * yuvlev.ymin
                   - (m->m[i][1] + m->m[i][2]) * yuvlev.cmid
                   + params->brightness;
-    }
-
-    // Brightness adds a constant to output R,G,B.
-    // Contrast scales Y around 1/2 (not 0 in this implementation).
-    for (int i = 0; i < 3; i++) {
-        m->c[i] += params->brightness;
-        m->m[i][0] *= params->contrast;
-        m->c[i] += (rgblev.max-rgblev.min) * (1 - params->contrast)/2;
     }
 
     int in_bits = FFMAX(params->int_bits_in, 1);

@@ -47,7 +47,7 @@ enum mp_speaker_id {
     MP_SPEAKER_ID_TBL,          // TOP_BACK_LEFT
     MP_SPEAKER_ID_TBC,          // TOP_BACK_CENTER
     MP_SPEAKER_ID_TBR,          // TOP_BACK_RIGHT
-     // Inofficial/libav* extensions
+     // Unofficial/libav* extensions
     MP_SPEAKER_ID_DL = 29,      // STEREO_LEFT (stereo downmix special speakers)
     MP_SPEAKER_ID_DR,           // STEREO_RIGHT
     MP_SPEAKER_ID_WL,           // WIDE_LEFT
@@ -127,6 +127,9 @@ int mp_chmap_diffn(const struct mp_chmap *a, const struct mp_chmap *b);
 
 char *mp_chmap_to_str_buf(char *buf, size_t buf_size, const struct mp_chmap *src);
 #define mp_chmap_to_str(m) mp_chmap_to_str_buf((char[64]){0}, 64, (m))
+
+char *mp_chmap_to_str_hr_buf(char *buf, size_t buf_size, const struct mp_chmap *src);
+#define mp_chmap_to_str_hr(m) mp_chmap_to_str_hr_buf((char[128]){0}, 128, (m))
 
 bool mp_chmap_from_str(struct mp_chmap *dst, bstr src);
 

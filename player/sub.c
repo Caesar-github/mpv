@@ -109,6 +109,9 @@ static void init_sub_renderer(struct MPContext *mpctx)
         ass_set_style_overrides(mpctx->ass_library, opts->ass_force_style_list);
 
     mpctx->ass_renderer = ass_renderer_init(mpctx->ass_library);
+
+    mp_ass_configure_fonts(mpctx->ass_renderer, opts->sub_text_style,
+                           mpctx->global, mpctx->ass_log);
 }
 
 void uninit_sub_renderer(struct MPContext *mpctx)
@@ -125,9 +128,6 @@ void uninit_sub_renderer(struct MPContext *mpctx)
 
 static void init_sub_renderer(struct MPContext *mpctx) {}
 void uninit_sub_renderer(struct MPContext *mpctx) {}
-
-static void mp_ass_configure_fonts(struct ass_renderer *a, struct osd_style_opts *b,
-                                   struct mpv_global *c, struct mp_log *d) {}
 
 #endif
 
@@ -306,13 +306,9 @@ static void reinit_subdec(struct MPContext *mpctx, struct track *track,
 
     sub_set_video_res(dec_sub, w, h);
     sub_set_video_fps(dec_sub, fps);
-    sub_set_ass_renderer(dec_sub, mpctx->ass_library, mpctx->ass_renderer);
+    sub_set_ass_renderer(dec_sub, mpctx->ass_library, mpctx->ass_renderer,
+                         &mpctx->ass_lock);
     sub_init_from_sh(dec_sub, track->stream);
-
-    if (mpctx->ass_renderer) {
-        mp_ass_configure_fonts(mpctx->ass_renderer, opts->sub_text_style,
-                               mpctx->global, mpctx->ass_log);
-    }
 
     // Don't do this if the file has video/audio streams. Don't do it even
     // if it has only sub streams, because reading packets will change the

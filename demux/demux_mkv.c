@@ -96,7 +96,6 @@ typedef struct mkv_track {
     struct sh_stream *stream;
 
     char *codec_id;
-    int ms_compat;
     char *language;
 
     int type;
@@ -107,7 +106,6 @@ typedef struct mkv_track {
     uint32_t colorspace;
     int stereo_mode;
 
-    uint32_t a_formattag;
     uint32_t a_channels, a_bps;
     float a_sfreq;
     float a_osfreq;
@@ -116,6 +114,7 @@ typedef struct mkv_track {
     double codec_delay;
 
     int default_track;
+    int forced_track;
 
     unsigned char *private_data;
     unsigned int private_size;
@@ -199,14 +198,15 @@ const struct m_sub_options demux_mkv_conf = {
         OPT_FLAG("subtitle-preroll", subtitle_preroll, 0),
         OPT_DOUBLE("subtitle-preroll-secs", subtitle_preroll_secs,
                    M_OPT_MIN, .min = 0),
-        OPT_FLAG("probe-video-duration", probe_duration, 0),
+        OPT_CHOICE("probe-video-duration", probe_duration, 0,
+                   ({"no", 0}, {"yes", 1}, {"full", 2})),
         OPT_FLAG("fix-timestamps", fix_timestamps, 0),
         {0}
     },
     .size = sizeof(struct demux_mkv_opts),
     .defaults = &(const struct demux_mkv_opts){
         .subtitle_preroll_secs = 1.0,
-        .fix_timestamps = 1,
+        .fix_timestamps = 0,
     },
 };
 
@@ -375,8 +375,8 @@ static int demux_mkv_read_info(demuxer_t *demuxer)
         MP_VERBOSE(demuxer, "| + duration: %.3fs\n",
                mkv_d->duration);
     }
-    if (info.n_title) {
-        mp_tags_set_bstr(demuxer->metadata, bstr0("TITLE"), info.title);
+    if (info.title) {
+        mp_tags_set_str(demuxer->metadata, "TITLE", info.title);
     }
     if (info.n_segment_uid) {
         int len = info.segment_uid.len;
@@ -509,10 +509,7 @@ static void parse_trackvideo(struct demuxer *demuxer, struct mkv_track *track,
                              struct ebml_video *video)
 {
     if (video->n_frame_rate) {
-        track->v_frate = video->frame_rate;
-        MP_VERBOSE(demuxer, "|   + Frame rate: %f\n", track->v_frate);
-        if (track->v_frate > 0)
-            track->default_duration = 1 / track->v_frate;
+        MP_VERBOSE(demuxer, "|   + Frame rate: %f (ignored)\n", video->frame_rate);
     }
     if (video->n_display_width) {
         track->v_dwidth = video->display_width;
@@ -574,9 +571,8 @@ static void parse_trackentry(struct demuxer *demuxer,
         MP_ERR(demuxer, "Missing track number!\n");
     }
 
-    if (entry->n_name) {
-        track->name = talloc_strndup(track, entry->name.start,
-                                     entry->name.len);
+    if (entry->name) {
+        track->name = talloc_strdup(track, entry->name);
         MP_VERBOSE(demuxer, "|  + Name: %s\n", track->name);
     }
 
@@ -607,12 +603,8 @@ static void parse_trackentry(struct demuxer *demuxer,
         parse_trackvideo(demuxer, track, &entry->video);
     }
 
-    if (entry->n_codec_id) {
-        track->codec_id = talloc_strndup(track, entry->codec_id.start,
-                                         entry->codec_id.len);
-        if (!strcmp(track->codec_id, MKV_V_MSCOMP)
-            || !strcmp(track->codec_id, MKV_A_ACM))
-            track->ms_compat = 1;
+    if (entry->codec_id) {
+        track->codec_id = talloc_strdup(track, entry->codec_id);
         MP_VERBOSE(demuxer, "|  + Codec ID: %s\n", track->codec_id);
     } else {
         MP_ERR(demuxer, "Missing codec ID!\n");
@@ -627,9 +619,8 @@ static void parse_trackentry(struct demuxer *demuxer,
         MP_VERBOSE(demuxer, "|  + CodecPrivate, length %u\n", track->private_size);
     }
 
-    if (entry->n_language) {
-        track->language = talloc_strndup(track, entry->language.start,
-                                         entry->language.len);
+    if (entry->language) {
+        track->language = talloc_strdup(track, entry->language);
         MP_VERBOSE(demuxer, "|  + Language: %s\n", track->language);
     } else {
         track->language = talloc_strdup(track, "eng");
@@ -642,13 +633,17 @@ static void parse_trackentry(struct demuxer *demuxer,
         track->default_track = 1;
     }
 
+    if (entry->n_flag_forced) {
+        track->forced_track = entry->flag_forced;
+        MP_VERBOSE(demuxer, "|  + Forced flag: %u\n", track->forced_track);
+    }
+
     if (entry->n_default_duration) {
         track->default_duration = entry->default_duration / 1e9;
         if (entry->default_duration == 0) {
             MP_VERBOSE(demuxer, "|  + Default duration: 0");
         } else {
-            if (!track->v_frate)
-                track->v_frate = 1e9 / entry->default_duration;
+            track->v_frate = 1e9 / entry->default_duration;
             MP_VERBOSE(demuxer, "|  + Default duration: %.3fms ( = %.3f fps)\n",
                        entry->default_duration / 1000000.0, track->v_frate);
         }
@@ -729,26 +724,36 @@ static int demux_mkv_read_cues(demuxer_t *demuxer)
     mkv_demuxer_t *mkv_d = (mkv_demuxer_t *) demuxer->priv;
     stream_t *s = demuxer->stream;
 
-    if (opts->index_mode != 1) {
+    if (opts->index_mode != 1 || mkv_d->index_complete) {
         ebml_read_skip(demuxer->log, -1, s);
         return 0;
     }
 
-    MP_VERBOSE(demuxer, "/---- [ parsing cues ] -----------\n");
+    MP_VERBOSE(demuxer, "Parsing cues...\n");
     struct ebml_cues cues = {0};
     struct ebml_parse_ctx parse_ctx = {demuxer->log};
     if (ebml_read_element(s, &parse_ctx, &cues, &ebml_cues_desc) < 0)
         return -1;
 
+    for (int i = 0; i < cues.n_cue_point; i++) {
+        struct ebml_cue_point *cuepoint = &cues.cue_point[i];
+        if (cuepoint->n_cue_time != 1 || !cuepoint->n_cue_track_positions) {
+            MP_WARN(demuxer, "Malformed CuePoint element\n");
+            goto done;
+        }
+        if (cuepoint->cue_time / 1e9 > mkv_d->duration / mkv_d->tc_scale * 10 &&
+            mkv_d->duration != 0)
+            goto done;
+    }
+    if (cues.n_cue_point <= 3) // probably too sparse and will just break seeking
+        goto done;
+
+    // Discard incremental index.
     mkv_d->num_indexes = 0;
     mkv_d->index_has_durations = false;
 
     for (int i = 0; i < cues.n_cue_point; i++) {
         struct ebml_cue_point *cuepoint = &cues.cue_point[i];
-        if (cuepoint->n_cue_time != 1 || !cuepoint->n_cue_track_positions) {
-            MP_WARN(demuxer, "Malformed CuePoint element\n");
-            continue;
-        }
         uint64_t time = cuepoint->cue_time;
         for (int c = 0; c < cuepoint->n_cue_track_positions; c++) {
             struct ebml_cue_track_positions *trackpos =
@@ -768,7 +773,9 @@ static int demux_mkv_read_cues(demuxer_t *demuxer)
     // Do not attempt to create index on the fly.
     mkv_d->index_complete = true;
 
-    MP_VERBOSE(demuxer, "\\---- [ parsing cues ] -----------\n");
+done:
+    if (!mkv_d->index_complete)
+        MP_WARN(demuxer, "Discarding potentially broken or useless index.\n");
     talloc_free(parse_ctx.talloc_ctx);
     return 0;
 }
@@ -785,7 +792,7 @@ static int demux_mkv_read_chapters(struct demuxer *demuxer)
     if (wanted_edition_uid)
         wanted_edition = -1;
 
-    MP_VERBOSE(demuxer, "/---- [ parsing chapters ] ---------\n");
+    MP_VERBOSE(demuxer, "Parsing chapters...\n");
     struct ebml_chapters file_chapters = {0};
     struct ebml_parse_ctx parse_ctx = {demuxer->log};
     if (ebml_read_element(s, &parse_ctx, &file_chapters,
@@ -851,18 +858,27 @@ static int demux_mkv_read_chapters(struct demuxer *demuxer)
         for (int i = 0; i < chapter_count; i++) {
             struct ebml_chapter_atom *ca = editions[idx].chapter_atom + i;
             struct matroska_chapter chapter = {0};
-            struct bstr name = { "(unnamed)", 9 };
+            char *name = "(unnamed)";
+
+            chapter.start = ca->chapter_time_start;
+            chapter.end = ca->chapter_time_end;
 
             if (!ca->n_chapter_time_start)
                 MP_MSG(demuxer, warn_level, "Chapter lacks start time\n");
-            chapter.start = ca->chapter_time_start;
-            chapter.end = ca->chapter_time_end;
+            if (!ca->n_chapter_time_start || !ca->n_chapter_time_end) {
+                if (demuxer->matroska_data.ordered_chapters) {
+                    MP_MSG(demuxer, warn_level, "Chapter lacks start or end "
+                           "time, disabling ordered chapters.\n");
+                    demuxer->matroska_data.ordered_chapters = NULL;
+                    demuxer->matroska_data.num_ordered_chapters = 0;
+                }
+            }
 
             if (ca->n_chapter_display) {
                 if (ca->n_chapter_display > 1)
                     MP_MSG(demuxer, warn_level, "Multiple chapter "
                            "names not supported, picking first\n");
-                if (!ca->chapter_display[0].n_chap_string)
+                if (!ca->chapter_display[0].chap_string)
                     MP_MSG(demuxer, warn_level, "Malformed chapter name entry\n");
                 else
                     name = ca->chapter_display[0].chap_string;
@@ -890,7 +906,7 @@ static int demux_mkv_read_chapters(struct demuxer *demuxer)
             }
 
             MP_VERBOSE(demuxer, "Chapter %u from %02d:%02d:%02d.%03d "
-                   "to %02d:%02d:%02d.%03d, %.*s\n", i,
+                   "to %02d:%02d:%02d.%03d, %s\n", i,
                    (int) (chapter.start / 60 / 60 / 1000000000),
                    (int) ((chapter.start / 60 / 1000000000) % 60),
                    (int) ((chapter.start / 1000000000) % 60),
@@ -899,14 +915,14 @@ static int demux_mkv_read_chapters(struct demuxer *demuxer)
                    (int) ((chapter.end / 60 / 1000000000) % 60),
                    (int) ((chapter.end / 1000000000) % 60),
                    (int) (chapter.end % 1000000000),
-                   BSTR_P(name));
+                   name);
 
             if (idx == selected_edition) {
                 demuxer_add_chapter(demuxer, name, chapter.start / 1e9,
                                     ca->chapter_uid);
             }
             if (m_chapters) {
-                chapter.name = talloc_strndup(m_chapters, name.start, name.len);
+                chapter.name = talloc_strdup(m_chapters, name);
                 m_chapters[i] = chapter;
             }
         }
@@ -916,7 +932,6 @@ static int demux_mkv_read_chapters(struct demuxer *demuxer)
     demuxer->edition = selected_edition;
 
     talloc_free(parse_ctx.talloc_ctx);
-    MP_VERBOSE(demuxer, "\\---- [ parsing chapters ] ---------\n");
     return 0;
 }
 
@@ -974,8 +989,10 @@ static void process_tags(demuxer_t *demuxer)
 
         if (dst) {
             for (int j = 0; j < tag.n_simple_tag; j++) {
-                mp_tags_set_bstr(dst, tag.simple_tag[j].tag_name,
-                                      tag.simple_tag[j].tag_string);
+                if (tag.simple_tag[j].tag_name && tag.simple_tag[j].tag_string) {
+                    mp_tags_set_str(dst, tag.simple_tag[j].tag_name,
+                                         tag.simple_tag[j].tag_string);
+                }
             }
         }
     }
@@ -985,7 +1002,7 @@ static int demux_mkv_read_attachments(demuxer_t *demuxer)
 {
     stream_t *s = demuxer->stream;
 
-    MP_VERBOSE(demuxer, "/---- [ parsing attachments ] ---------\n");
+    MP_VERBOSE(demuxer, "Parsing attachments...\n");
 
     struct ebml_attachments attachments = {0};
     struct ebml_parse_ctx parse_ctx = {demuxer->log};
@@ -995,20 +1012,20 @@ static int demux_mkv_read_attachments(demuxer_t *demuxer)
 
     for (int i = 0; i < attachments.n_attached_file; i++) {
         struct ebml_attached_file *attachment = &attachments.attached_file[i];
-        if (!attachment->n_file_name || !attachment->n_file_mime_type
+        if (!attachment->file_name || !attachment->file_mime_type
             || !attachment->n_file_data) {
             MP_WARN(demuxer, "Malformed attachment\n");
             continue;
         }
-        struct bstr name = attachment->file_name;
-        struct bstr mime = attachment->file_mime_type;
-        demuxer_add_attachment(demuxer, name, mime, attachment->file_data);
-        MP_VERBOSE(demuxer, "Attachment: %.*s, %.*s, %zu bytes\n",
-                   BSTR_P(name), BSTR_P(mime), attachment->file_data.len);
+        char *name = attachment->file_name;
+        char *mime = attachment->file_mime_type;
+        demuxer_add_attachment(demuxer, name, mime, attachment->file_data.start,
+                               attachment->file_data.len);
+        MP_VERBOSE(demuxer, "Attachment: %s, %s, %zu bytes\n",
+                   name, mime, attachment->file_data.len);
     }
 
     talloc_free(parse_ctx.talloc_ctx);
-    MP_VERBOSE(demuxer, "\\---- [ parsing attachments ] ---------\n");
     return 0;
 }
 
@@ -1060,7 +1077,7 @@ static int demux_mkv_read_seekhead(demuxer_t *demuxer)
     struct ebml_seek_head seekhead = {0};
     struct ebml_parse_ctx parse_ctx = {demuxer->log};
 
-    MP_VERBOSE(demuxer, "/---- [ parsing seek head ] ---------\n");
+    MP_VERBOSE(demuxer, "Parsing seek head...\n");
     if (ebml_read_element(s, &parse_ctx, &seekhead, &ebml_seek_head_desc) < 0) {
         res = -1;
         goto out;
@@ -1077,7 +1094,6 @@ static int demux_mkv_read_seekhead(demuxer_t *demuxer)
         get_header_element(demuxer, seek->seek_id, pos);
     }
  out:
-    MP_VERBOSE(demuxer, "\\---- [ parsing seek head ] ---------\n");
     talloc_free(parse_ctx.talloc_ctx);
     return res;
 }
@@ -1173,6 +1189,20 @@ static void add_coverart(struct demuxer *demuxer)
     }
 }
 
+static void init_track(demuxer_t *demuxer, mkv_track_t *track,
+                       struct sh_stream *sh)
+{
+    track->stream = sh;
+
+    if (track->language && (strcmp(track->language, "und") != 0))
+        sh->lang = track->language;
+
+    sh->demuxer_id = track->tnum;
+    sh->title = track->name;
+    sh->default_track = track->default_track;
+    sh->forced_track = track->forced_track;
+}
+
 static int demux_mkv_open_video(demuxer_t *demuxer, mkv_track_t *track);
 static int demux_mkv_open_audio(demuxer_t *demuxer, mkv_track_t *track);
 static int demux_mkv_open_sub(demuxer_t *demuxer, mkv_track_t *track);
@@ -1196,26 +1226,20 @@ static void display_create_tracks(demuxer_t *demuxer)
     }
 }
 
-typedef struct {
-    char *id;
-    int fourcc;
-    int extradata;
-} videocodec_info_t;
-
-static const videocodec_info_t vinfo[] = {
-    {MKV_V_MJPEG,     MP_FOURCC('m', 'j', 'p', 'g'), 1},
-    {MKV_V_MPEG1,     MP_FOURCC('m', 'p', 'g', '1'), 0},
-    {MKV_V_MPEG2,     MP_FOURCC('m', 'p', 'g', '2'), 0},
-    {MKV_V_MPEG4_SP,  MP_FOURCC('m', 'p', '4', 'v'), 1},
-    {MKV_V_MPEG4_ASP, MP_FOURCC('m', 'p', '4', 'v'), 1},
-    {MKV_V_MPEG4_AP,  MP_FOURCC('m', 'p', '4', 'v'), 1},
-    {MKV_V_MPEG4_AVC, MP_FOURCC('a', 'v', 'c', '1'), 1},
-    {MKV_V_THEORA,    MP_FOURCC('t', 'h', 'e', 'o'), 1},
-    {MKV_V_VP8,       MP_FOURCC('V', 'P', '8', '0'), 0},
-    {MKV_V_VP9,       MP_FOURCC('V', 'P', '9', '0'), 0},
-    {MKV_V_DIRAC,     MP_FOURCC('d', 'r', 'a', 'c'), 0},
-    {MKV_V_PRORES,    MP_FOURCC('p', 'r', '0', '0'), 0},
-    {MKV_V_HEVC,      MP_FOURCC('H', 'E', 'V', 'C'), 1},
+static const char *const mkv_video_tags[][2] = {
+    {"V_MJPEG",             "mjpeg"},
+    {"V_MPEG1",             "mpeg1video"},
+    {"V_MPEG2",             "mpeg2video"},
+    {"V_MPEG4/ISO/SP",      "mpeg4"},
+    {"V_MPEG4/ISO/ASP",     "mpeg4"},
+    {"V_MPEG4/ISO/AP",      "mpeg4"},
+    {"V_MPEG4/ISO/AVC",     "h264"},
+    {"V_THEORA",            "theora"},
+    {"V_VP8",               "vp8"},
+    {"V_VP9",               "vp9"},
+    {"V_DIRAC",             "dirac"},
+    {"V_PRORES",            "prores"},
+    {"V_MPEGH/ISO/HEVC",    "hevc"},
     {0}
 };
 
@@ -1226,12 +1250,12 @@ static int demux_mkv_open_video(demuxer_t *demuxer, mkv_track_t *track)
     struct sh_stream *sh = new_sh_stream(demuxer, STREAM_VIDEO);
     if (!sh)
         return 1;
-    track->stream = sh;
+    init_track(demuxer, track, sh);
     sh_video_t *sh_v = sh->video;
-    sh->demuxer_id = track->tnum;
-    sh->title = talloc_strdup(sh_v, track->name);
 
-    if (track->ms_compat) {     /* MS compatibility mode */
+    sh_v->bits_per_coded_sample = 24;
+
+    if (!strcmp(track->codec_id, "V_MS/VFW/FOURCC")) { /* AVI compatibility mode */
         // The private_data contains a BITMAPINFOHEADER struct
         if (track->private_data == NULL || track->private_size < 40)
             return 1;
@@ -1242,73 +1266,72 @@ static int demux_mkv_open_video(demuxer_t *demuxer, mkv_track_t *track)
         if (track->v_height == 0)
             track->v_height = AV_RL32(h + 8);       // biHeight
         sh_v->bits_per_coded_sample = AV_RL16(h + 14); // biBitCount
-        sh->format = AV_RL32(h + 16);               // biCompression
+        sh->codec_tag = AV_RL32(h + 16);            // biCompression
 
         extradata = track->private_data + 40;
         extradata_size = track->private_size - 40;
         mp_set_codec_from_tag(sh);
+        sh_v->avi_dts = true;
+    } else if (track->private_size >= RVPROPERTIES_SIZE
+               && (!strcmp(track->codec_id, "V_REAL/RV10")
+                || !strcmp(track->codec_id, "V_REAL/RV20")
+                || !strcmp(track->codec_id, "V_REAL/RV30")
+                || !strcmp(track->codec_id, "V_REAL/RV40")))
+    {
+        unsigned char *src;
+        unsigned int cnt;
+
+        src = (uint8_t *) track->private_data + RVPROPERTIES_SIZE;
+
+        cnt = track->private_size - RVPROPERTIES_SIZE;
+        uint32_t t2 = AV_RB32(src - 4);
+        switch (t2 == 0x10003000 || t2 == 0x10003001 ? '1' : track->codec_id[9]) {
+        case '1': sh->codec = "rv10"; break;
+        case '2': sh->codec = "rv20"; break;
+        case '3': sh->codec = "rv30"; break;
+        case '4': sh->codec = "rv40"; break;
+        }
+        // copy type1 and type2 info from rv properties
+        extradata_size = cnt + 8;
+        extradata = src - 8;
+        track->parse = true;
+        track->parse_timebase = 1e3;
+    } else if (strcmp(track->codec_id, "V_UNCOMPRESSED") == 0) {
+        // raw video, "like AVI" - this is a FourCC
+        sh->codec_tag = track->colorspace;
+        sh->codec = "rawvideo";
+    } else if (strcmp(track->codec_id, "V_QUICKTIME") == 0) {
+        uint32_t fourcc1 = 0, fourcc2 = 0;
+        if (track->private_size >= 8) {
+            fourcc1 = AV_RL32(track->private_data + 0);
+            fourcc2 = AV_RL32(track->private_data + 4);
+        }
+        if (fourcc1 == MP_FOURCC('S', 'V', 'Q', '3') ||
+            fourcc2 == MP_FOURCC('S', 'V', 'Q', '3'))
+        {
+            sh->codec = "svq3";
+            extradata = track->private_data;
+            extradata_size = track->private_size;
+        }
     } else {
-        sh_v->bits_per_coded_sample = 24;
-
-        if (track->private_size >= RVPROPERTIES_SIZE
-            && (!strcmp(track->codec_id, MKV_V_REALV10)
-                || !strcmp(track->codec_id, MKV_V_REALV20)
-                || !strcmp(track->codec_id, MKV_V_REALV30)
-                || !strcmp(track->codec_id, MKV_V_REALV40))) {
-            unsigned char *src;
-            uint32_t type2;
-            unsigned int cnt;
-
-            src = (uint8_t *) track->private_data + RVPROPERTIES_SIZE;
-
-            cnt = track->private_size - RVPROPERTIES_SIZE;
-            type2 = AV_RB32(src - 4);
-            if (type2 == 0x10003000 || type2 == 0x10003001)
-                sh->format = MP_FOURCC('R', 'V', '1', '3');
-            else
-                sh->format = MP_FOURCC('R', 'V', track->codec_id[9], '0');
-            // copy type1 and type2 info from rv properties
-            extradata_size = cnt + 8;
-            extradata = src - 8;
-            track->parse = true;
-            track->parse_timebase = 1e3;
-            mp_set_codec_from_tag(sh);
-        } else if (strcmp(track->codec_id, MKV_V_UNCOMPRESSED) == 0) {
-            // raw video, "like AVI" - this is a FourCC
-            sh->format = track->colorspace;
-            sh->codec = "rawvideo";
-        } else if (strcmp(track->codec_id, MKV_V_QUICKTIME) == 0) {
-            uint32_t fourcc1 = 0, fourcc2 = 0;
-            if (track->private_size >= 8) {
-                fourcc1 = AV_RL32(track->private_data + 0);
-                fourcc2 = AV_RL32(track->private_data + 4);
+        for (int i = 0; mkv_video_tags[i][0]; i++) {
+            if (!strcmp(mkv_video_tags[i][0], track->codec_id)) {
+                sh->codec = mkv_video_tags[i][1];
+                break;
             }
-            if (fourcc1 == MP_FOURCC('S', 'V', 'Q', '3') ||
-                fourcc2 == MP_FOURCC('S', 'V', 'Q', '3'))
-            {
-                sh->codec = "svq3";
-                extradata = track->private_data;
-                extradata_size = track->private_size;
-            }
-        } else {
-            const videocodec_info_t *vi = vinfo;
-            while (vi->id && strcmp(vi->id, track->codec_id))
-                vi++;
-            if (vi->id) {
-                sh->format = vi->fourcc;
-                mp_set_codec_from_tag(sh);
-            }
-            if (vi->extradata && track->private_data && track->private_size > 0)
-            {
-                extradata = track->private_data;
-                extradata_size = track->private_size;
-            }
+        }
+        if (track->private_data && track->private_size > 0) {
+            extradata = track->private_data;
+            extradata_size = track->private_size;
         }
     }
 
-    if (sh->format == MP_FOURCC('V', 'P', '9', '0')) {
+    const char *codec = sh->codec ? sh->codec : "";
+    if (!strcmp(codec, "vp9")) {
         track->parse = true;
         track->parse_timebase = 1e9;
+    } else if (!strcmp(codec, "mjpeg")) {
+        sh->codec_tag = MP_FOURCC('m', 'j', 'p', 'g');
     }
 
     if (extradata_size > 0x1000000) {
@@ -1316,15 +1339,13 @@ static int demux_mkv_open_video(demuxer_t *demuxer, mkv_track_t *track)
         return 1;
     }
 
-    sh_v->extradata = talloc_memdup(sh_v, extradata, extradata_size);
-    sh_v->extradata_len = extradata_size;
+    sh->extradata = talloc_memdup(sh_v, extradata, extradata_size);
+    sh->extradata_size = extradata_size;
     if (!sh->codec) {
         MP_WARN(demuxer, "Unknown/unsupported CodecID (%s) or missing/bad "
                 "CodecPrivate data (track %u).\n",
                 track->codec_id, track->tnum);
     }
-    if (track->v_frate == 0.0)
-        track->v_frate = 25.0;
     sh_v->fps = track->v_frate;
     sh_v->disp_w = track->v_width;
     sh_v->disp_h = track->v_height;
@@ -1332,46 +1353,94 @@ static int demux_mkv_open_video(demuxer_t *demuxer, mkv_track_t *track)
     uint32_t dh = track->v_dheight_set ? track->v_dheight : track->v_height;
     sh_v->aspect = (dw && dh) ? (double) dw / dh : 0;
     MP_VERBOSE(demuxer, "Aspect: %f\n", sh_v->aspect);
-    sh_v->avi_dts = track->ms_compat;
     sh_v->stereo_mode = track->stereo_mode;
 
     return 0;
 }
 
-static const struct mkv_audio_tag {
-    char *id;   bool prefix;   uint32_t formattag;
-} mkv_audio_tags[] = {
-    { MKV_A_MP2,       0, 0x0055 },
-    { MKV_A_MP3,       0, 0x0055 },
-    { MKV_A_AC3,       1, 0x2000 },
-    { MKV_A_EAC3,      1, MP_FOURCC('E', 'A', 'C', '3') },
-    { MKV_A_DTS,       0, 0x2001 },
-    { MKV_A_PCM,       0, 0x0001 },
-    { MKV_A_PCM_BE,    0, 0x0001 },
-    { MKV_A_PCM_FLT,   0, 0x0003 },
-    { MKV_A_AAC_2MAIN, 0, MP_FOURCC('M', 'P', '4', 'A') },
-    { MKV_A_AAC_2LC,   1, MP_FOURCC('M', 'P', '4', 'A') },
-    { MKV_A_AAC_2SSR,  0, MP_FOURCC('M', 'P', '4', 'A') },
-    { MKV_A_AAC_4MAIN, 0, MP_FOURCC('M', 'P', '4', 'A') },
-    { MKV_A_AAC_4LC,   1, MP_FOURCC('M', 'P', '4', 'A') },
-    { MKV_A_AAC_4SSR,  0, MP_FOURCC('M', 'P', '4', 'A') },
-    { MKV_A_AAC_4LTP,  0, MP_FOURCC('M', 'P', '4', 'A') },
-    { MKV_A_AAC,       0, MP_FOURCC('M', 'P', '4', 'A') },
-    { MKV_A_VORBIS,    0, MP_FOURCC('v', 'r', 'b', 's') },
-    { MKV_A_OPUS,      0, MP_FOURCC('O', 'p', 'u', 's') },
-    { MKV_A_OPUS_EXP,  0, MP_FOURCC('O', 'p', 'u', 's') },
-    { MKV_A_QDMC,      0, MP_FOURCC('Q', 'D', 'M', 'C') },
-    { MKV_A_QDMC2,     0, MP_FOURCC('Q', 'D', 'M', '2') },
-    { MKV_A_WAVPACK,   0, MP_FOURCC('W', 'V', 'P', 'K') },
-    { MKV_A_TRUEHD,    0, MP_FOURCC('T', 'R', 'H', 'D') },
-    { MKV_A_FLAC,      0, MP_FOURCC('f', 'L', 'a', 'C') },
-    { MKV_A_ALAC,      0, MP_FOURCC('a', 'L', 'a', 'C') },
-    { MKV_A_REAL28,    0, MP_FOURCC('2', '8', '_', '8') },
-    { MKV_A_REALATRC,  0, MP_FOURCC('a', 't', 'r', 'c') },
-    { MKV_A_REALCOOK,  0, MP_FOURCC('c', 'o', 'o', 'k') },
-    { MKV_A_REALDNET,  0, MP_FOURCC('d', 'n', 'e', 't') },
-    { MKV_A_REALSIPR,  0, MP_FOURCC('s', 'i', 'p', 'r') },
-    { MKV_A_TTA1,      0, MP_FOURCC('T', 'T', 'A', '1') },
+// Parse VorbisComment and look for WAVEFORMATEXTENSIBLE_CHANNEL_MASK.
+// Do not change *channels if nothing found or an error happens.
+static void parse_vorbis_chmap(struct mp_chmap *channels, unsigned char *data,
+                               int size)
+{
+    // Skip the useless vendor string.
+    if (size < 4)
+        return;
+    uint32_t vendor_length = AV_RL32(data);
+    if (vendor_length + 4 > size) // also check for the next AV_RB32 below
+        return;
+    size -= vendor_length + 4;
+    data += vendor_length + 4;
+    uint32_t num_headers = AV_RL32(data);
+    size -= 4;
+    data += 4;
+    for (int n = 0; n < num_headers; n++) {
+        if (size < 4)
+            return;
+        uint32_t len = AV_RL32(data);
+        size -= 4;
+        data += 4;
+        if (len > size)
+            return;
+        if (len > 34 && !memcmp(data, "WAVEFORMATEXTENSIBLE_CHANNEL_MASK=", 34)) {
+            char smask[80];
+            snprintf(smask, sizeof(smask), "%.*s", (int)(len - 34), data + 34);
+            char *end = NULL;
+            uint32_t mask = strtol(smask, &end, 0);
+            if (!end || end[0])
+                mask = 0;
+            struct mp_chmap chmask = {0};
+            mp_chmap_from_waveext(&chmask, mask);
+            if (mp_chmap_is_valid(&chmask))
+                *channels = chmask;
+        }
+        size -= len;
+        data += len;
+    }
+}
+
+// Parse VorbisComment-in-FLAC and look for WAVEFORMATEXTENSIBLE_CHANNEL_MASK.
+// Do not change *channels if nothing found or an error happens.
+static void parse_flac_chmap(struct mp_chmap *channels, unsigned char *data,
+                             int size)
+{
+    // Skip FLAC header.
+    if (size < 4)
+        return;
+    data += 4;
+    size -= 4;
+    // Parse FLAC blocks...
+    while (size >= 4) {
+        unsigned btype = data[0] & 0x7F;
+        unsigned bsize = AV_RB24(data + 1);
+        data += 4;
+        size -= 4;
+        if (bsize > size)
+            return;
+        if (btype == 4) // VORBIS_COMMENT
+            parse_vorbis_chmap(channels, data, bsize);
+        data += bsize;
+        size -= bsize;
+    }
+}
+
+static const char *const mkv_audio_tags[][2] = {
+    { "A_MPEG/L2",              "mp3" },
+    { "A_MPEG/L3",              "mp3" },
+    { "A_AC3",                  "ac3" },
+    { "A_EAC3",                 "eac3" },
+    { "A_DTS",                  "dts" },
+    { "A_AAC",                  "aac" },
+    { "A_VORBIS",               "vorbis" },
+    { "A_OPUS",                 "opus" },
+    { "A_OPUS/EXPERIMENTAL",    "opus" },
+    { "A_QUICKTIME/QDMC",       "qdmc" },
+    { "A_QUICKTIME/QDM2",       "qdm2" },
+    { "A_WAVPACK4",             "wavpack" },
+    { "A_TRUEHD",               "truehd" },
+    { "A_FLAC",                 "flac" },
+    { "A_ALAC",                 "alac" },
+    { "A_TTA1",                 "tta" },
     { NULL },
 };
 
@@ -1380,7 +1449,7 @@ static int demux_mkv_open_audio(demuxer_t *demuxer, mkv_track_t *track)
     struct sh_stream *sh = new_sh_stream(demuxer, STREAM_AUDIO);
     if (!sh)
         return 1;
-    track->stream = sh;
+    init_track(demuxer, track, sh);
     sh_audio_t *sh_a = sh->audio;
 
     if (track->private_size > 0x1000000)
@@ -1389,119 +1458,50 @@ static int demux_mkv_open_audio(demuxer_t *demuxer, mkv_track_t *track)
     unsigned char *extradata = track->private_data;
     unsigned int extradata_len = track->private_size;
 
-    if (track->language && (strcmp(track->language, "und") != 0))
-        sh->lang = talloc_strdup(sh_a, track->language);
-    sh->demuxer_id = track->tnum;
-    sh->title = talloc_strdup(sh_a, track->name);
-    sh->default_track = track->default_track;
     if (!track->a_osfreq)
         track->a_osfreq = track->a_sfreq;
+    sh_a->bits_per_coded_sample = track->a_bps ? track->a_bps : 16;
+    sh_a->samplerate = (uint32_t) track->a_osfreq;
 
-    if (track->ms_compat) {
+    for (int i = 0; mkv_audio_tags[i][0]; i++) {
+        if (!strcmp(mkv_audio_tags[i][0], track->codec_id)) {
+            sh->codec = mkv_audio_tags[i][1];
+            break;
+        }
+    }
+
+    if (!strcmp(track->codec_id, "A_MS/ACM")) { /* AVI compatibility mode */
         // The private_data contains a WAVEFORMATEX struct
         if (track->private_size < 18)
             goto error;
         MP_VERBOSE(demuxer, "track with MS compat audio.\n");
         unsigned char *h = track->private_data;
-        track->a_formattag = AV_RL16(h + 0);    // wFormatTag
+        sh->codec_tag = AV_RL16(h + 0);         // wFormatTag
         if (track->a_channels == 0)
             track->a_channels = AV_RL16(h + 2); // nChannels
-        if (track->a_osfreq == 0.0)
-            track->a_osfreq = AV_RL32(h + 4);   // nSamplesPerSec
+        if (sh_a->samplerate == 0)
+            sh_a->samplerate = AV_RL32(h + 4);  // nSamplesPerSec
         sh_a->bitrate = AV_RL32(h + 8) * 8;     // nAvgBytesPerSec
         sh_a->block_align = AV_RL16(h + 12);    // nBlockAlign
         if (track->a_bps == 0)
             track->a_bps = AV_RL16(h + 14);     // wBitsPerSample
         extradata = track->private_data + 18;
         extradata_len = track->private_size - 18;
-    } else {
-        for (int i = 0; ; i++) {
-            const struct mkv_audio_tag *t = mkv_audio_tags + i;
-            if (t->id == NULL)
-                goto error;
-            if (t->prefix) {
-                if (!bstr_startswith0(bstr0(track->codec_id), t->id))
-                    continue;
-            } else {
-                if (strcmp(track->codec_id, t->id))
-                    continue;
-            }
-            track->a_formattag = t->formattag;
-            break;
-        }
-    }
-
-    sh->format = track->a_formattag;
-    mp_chmap_set_unknown(&sh_a->channels, track->a_channels);
-    sh_a->samplerate = (uint32_t) track->a_osfreq;
-    sh_a->bits_per_coded_sample = track->a_bps ? track->a_bps : 16;
-    if (track->a_formattag == 0x0055) { /* MP3 || MP2 */
-        sh_a->bitrate = 16000 * 8;
-        sh_a->block_align = 1152;
-        track->parse = true;
-    } else if ((track->a_formattag == 0x2000)           /* AC3 */
-               || track->a_formattag == MP_FOURCC('E', 'A', 'C', '3')
-               || (track->a_formattag == 0x2001)) {        /* DTS */
-        sh_a->bits_per_coded_sample = 0;
-        sh_a->bitrate = 0;
-        sh_a->block_align = 0;
-    } else if (track->a_formattag == 0x0001) {  /* PCM || PCM_BE */
-        if (!strcmp(track->codec_id, MKV_A_PCM_BE))
-            sh->format = MP_FOURCC('t', 'w', 'o', 's');
-    } else if (track->a_formattag == 0x0003) {  /* PCM_FLT */
-        /* ok */
-    } else if (!strcmp(track->codec_id, MKV_A_QDMC)
-               || !strcmp(track->codec_id, MKV_A_QDMC2)) {
-        sh_a->bitrate = 16000 * 8;
-        sh_a->block_align = 1486;
-    } else if (track->a_formattag == MP_FOURCC('M', 'P', '4', 'A')) {
-        sh_a->bitrate = 16000 * 8;
-        sh_a->block_align = 1024;
-
-        if (strcmp(track->codec_id, MKV_A_AAC)) {
-            /* Recreate the 'private data' */
-            int srate_idx = aac_get_sample_rate_index(track->a_sfreq);
-            const char *tail = "";
-            if (strlen(track->codec_id) >= 12)
-                tail = &track->codec_id[12];
-            int profile = 3;
-            if (!strncmp(tail, "MAIN", 4))
-                profile = 0;
-            else if (!strncmp(tail, "LC", 2))
-                profile = 1;
-            else if (!strncmp(tail, "SSR", 3))
-                profile = 2;
-            sh_a->codecdata = talloc_size(sh_a, 5);
-            sh_a->codecdata[0] = ((profile + 1) << 3) | ((srate_idx & 0xE) >> 1);
-            sh_a->codecdata[1] =
-                ((srate_idx & 0x1) << 7) | (track->a_channels << 3);
-
-            if (strstr(track->codec_id, "SBR") != NULL) {
-                /* HE-AAC (aka SBR AAC) */
-                sh_a->codecdata_len = 5;
-
-                srate_idx = aac_get_sample_rate_index(sh_a->samplerate);
-                sh_a->codecdata[2] = AAC_SYNC_EXTENSION_TYPE >> 3;
-                sh_a->codecdata[3] = ((AAC_SYNC_EXTENSION_TYPE & 0x07) << 5) | 5;
-                sh_a->codecdata[4] = (1 << 7) | (srate_idx << 3);
-                track->default_duration = 1024.0 / (sh_a->samplerate / 2);
-            } else {
-                sh_a->codecdata_len = 2;
-                track->default_duration = 1024.0 / sh_a->samplerate;
-            }
-        }
-    } else if (track->a_formattag == MP_FOURCC('v', 'r', 'b', 's')) {
-        /* VORBIS */
-    } else if (!strcmp(track->codec_id, MKV_A_OPUS)
-               || !strcmp(track->codec_id, MKV_A_OPUS_EXP)) {
-        sh->format = MP_FOURCC('O', 'p', 'u', 's');
-    } else if (!strncmp(track->codec_id, MKV_A_REALATRC, 7)) {
+        sh_a->bits_per_coded_sample = track->a_bps;
+        mp_set_codec_from_tag(sh);
+    } else if (!strcmp(track->codec_id, "A_PCM/INT/LIT")) {
+        bool sign = sh_a->bits_per_coded_sample > 8;
+        mp_set_pcm_codec(sh, sign, false, sh_a->bits_per_coded_sample, false);
+    } else if (!strcmp(track->codec_id, "A_PCM/INT/BIG")) {
+        bool sign = sh_a->bits_per_coded_sample > 8;
+        mp_set_pcm_codec(sh, sign, false, sh_a->bits_per_coded_sample, true);
+    } else if (!strcmp(track->codec_id, "A_PCM/FLOAT/IEEE")) {
+        sh->codec = sh_a->bits_per_coded_sample == 64 ? "pcm_f64le" : "pcm_f32le";
+    } else if (!strncmp(track->codec_id, "A_REAL/", 7)) {
         if (track->private_size < RAPROPERTIES4_SIZE)
             goto error;
         /* Common initialization for all RealAudio codecs */
         unsigned char *src = track->private_data;
-
-        sh_a->bitrate = 0;  /* FIXME !? */
 
         int version = AV_RB16(src + 4);
         unsigned int flavor = AV_RB16(src + 22);
@@ -1509,12 +1509,14 @@ static int demux_mkv_open_audio(demuxer_t *demuxer, mkv_track_t *track)
         track->sub_packet_h = AV_RB16(src + 40);
         sh_a->block_align = track->audiopk_size = AV_RB16(src + 42);
         track->sub_packet_size = AV_RB16(src + 44);
+        int offset = 0;
         if (version == 4) {
-            src += RAPROPERTIES4_SIZE;
-            src += src[0] + 1;
-            src += src[0] + 1;
+            offset += RAPROPERTIES4_SIZE;
+            if (offset + 1 > track->private_size)
+                goto error;
+            offset += (src[offset] + 1) * 2 + 3;
         } else {
-            src += RAPROPERTIES5_SIZE;
+            offset += RAPROPERTIES5_SIZE + 3 + (version == 5 ? 1 : 0);
         }
 
         if (track->audiopk_size == 0 || track->sub_packet_size == 0 ||
@@ -1523,86 +1525,120 @@ static int demux_mkv_open_audio(demuxer_t *demuxer, mkv_track_t *track)
         if (track->coded_framesize > 0x40000000)
             goto error;
 
-        src += 3;
-        if (version == 5)
-            src++;
-        uint32_t codecdata_length = AV_RB32(src);
-        if (codecdata_length > 0x1000000)
+        if (offset + 4 > track->private_size)
             goto error;
-        src += 4;
+        uint32_t codecdata_length = AV_RB32(src + offset);
+        offset += 4;
+        if (offset > track->private_size ||
+            codecdata_length > track->private_size - offset)
+            goto error;
         extradata_len = codecdata_length;
-        extradata = src;
+        extradata = src + offset;
 
-        switch (track->a_formattag) {
-        case MP_FOURCC('a', 't', 'r', 'c'):
+        if (!strcmp(track->codec_id, "A_REAL/ATRC")) {
+            sh->codec = "atrac3";
             if (flavor >= MP_ARRAY_SIZE(atrc_fl2bps))
                 goto error;
             sh_a->bitrate = atrc_fl2bps[flavor] * 8;
             sh_a->block_align = track->sub_packet_size;
-            break;
-        case MP_FOURCC('c', 'o', 'o', 'k'):
+        } else if (!strcmp(track->codec_id, "A_REAL/COOK")) {
+            sh->codec = "cook";
             if (flavor >= MP_ARRAY_SIZE(cook_fl2bps))
                 goto error;
             sh_a->bitrate = cook_fl2bps[flavor] * 8;
             sh_a->block_align = track->sub_packet_size;
-            break;
-        case MP_FOURCC('s', 'i', 'p', 'r'):
+        } else if (!strcmp(track->codec_id, "A_REAL/SIPR")) {
+            sh->codec = "sipr";
             if (flavor >= MP_ARRAY_SIZE(sipr_fl2bps))
                 goto error;
             sh_a->bitrate = sipr_fl2bps[flavor] * 8;
             sh_a->block_align = track->coded_framesize;
-            break;
-        case MP_FOURCC('2', '8', '_', '8'):
+        } else if (!strcmp(track->codec_id, "A_REAL/28_8")) {
+            sh->codec = "ra_288";
             sh_a->bitrate = 3600 * 8;
             sh_a->block_align = track->coded_framesize;
-            break;
+        } else if (!strcmp(track->codec_id, "A_REAL/DNET")) {
+            sh->codec = "ac3";
+        } else {
+            goto error;
         }
 
         track->audio_buf =
             talloc_array_size(track, track->sub_packet_h, track->audiopk_size);
         track->audio_timestamp =
             talloc_array(track, double, track->sub_packet_h);
+    } else if (!strncmp(track->codec_id, "A_AAC/", 6)) {
+        sh->codec = "aac";
 
-    } else if (!strcmp(track->codec_id, MKV_A_FLAC)
-               || (track->a_formattag == 0xf1ac)) {
-        sh_a->bits_per_coded_sample = 0;
-        sh_a->bitrate = 0;
-        sh_a->block_align = 0;
+        /* Recreate the 'private data' (not needed for plain A_AAC) */
+        int srate_idx = aac_get_sample_rate_index(track->a_sfreq);
+        const char *tail = "";
+        if (strlen(track->codec_id) >= 12)
+            tail = &track->codec_id[12];
+        int profile = 3;
+        if (!strncmp(tail, "MAIN", 4))
+            profile = 0;
+        else if (!strncmp(tail, "LC", 2))
+            profile = 1;
+        else if (!strncmp(tail, "SSR", 3))
+            profile = 2;
+        extradata = talloc_size(sh_a, 5);
+        extradata[0] = ((profile + 1) << 3) | ((srate_idx & 0xE) >> 1);
+        extradata[1] = ((srate_idx & 0x1) << 7) | (track->a_channels << 3);
 
-        if (track->ms_compat)
-            sh->format = MP_FOURCC('f', 'L', 'a', 'C');
+        if (strstr(track->codec_id, "SBR") != NULL) {
+            /* HE-AAC (aka SBR AAC) */
+            extradata_len = 5;
+
+            srate_idx = aac_get_sample_rate_index(sh_a->samplerate);
+            extradata[2] = AAC_SYNC_EXTENSION_TYPE >> 3;
+            extradata[3] = ((AAC_SYNC_EXTENSION_TYPE & 0x07) << 5) | 5;
+            extradata[4] = (1 << 7) | (srate_idx << 3);
+            track->default_duration = 1024.0 / (sh_a->samplerate / 2);
+        } else {
+            extradata_len = 2;
+            track->default_duration = 1024.0 / sh_a->samplerate;
+        }
+    } else if (!strncmp(track->codec_id, "A_AC3/", 6)) {
+        sh->codec = "ac3";
+    } else if (!strncmp(track->codec_id, "A_EAC3/", 7)) {
+        sh->codec = "eac3";
+    }
+
+    if (!sh->codec)
+        goto error;
+
+    mp_chmap_set_unknown(&sh_a->channels, track->a_channels);
+
+    const char *codec = sh->codec;
+    if (!strcmp(codec, "mp3") || !strcmp(codec, "truehd")) {
+        track->parse = true;
+    } else if (!strcmp(codec, "flac")) {
         unsigned char *ptr = extradata;
         unsigned int size = extradata_len;
         if (size < 4 || ptr[0] != 'f' || ptr[1] != 'L' || ptr[2] != 'a'
             || ptr[3] != 'C') {
-            sh_a->codecdata = talloc_size(sh_a, 4);
-            sh_a->codecdata_len = 4;
-            memcpy(sh_a->codecdata, "fLaC", 4);
-        } else {
-            sh_a->codecdata = talloc_size(sh_a, size);
-            sh_a->codecdata_len = size;
-            memcpy(sh_a->codecdata, ptr, size);
+            extradata = talloc_size(sh_a, 4);
+            extradata_len = 4;
+            memcpy(extradata, "fLaC", 4);
         }
-    } else if (!strcmp(track->codec_id, MKV_A_ALAC)) {
+        parse_flac_chmap(&sh_a->channels, extradata, extradata_len);
+    } else if (!strcmp(codec, "alac")) {
         if (track->private_size) {
-            sh_a->codecdata_len = track->private_size + 12;
-            sh_a->codecdata = talloc_size(sh_a, sh_a->codecdata_len);
-            char *data = sh_a->codecdata;
-            AV_WB32(data + 0, sh_a->codecdata_len);
+            extradata_len = track->private_size + 12;
+            extradata = talloc_size(sh_a, extradata_len);
+            char *data = extradata;
+            AV_WB32(data + 0, extradata_len);
             memcpy(data + 4, "alac", 4);
             AV_WB32(data + 8, 0);
             memcpy(data + 12, track->private_data, track->private_size);
         }
-    } else if (track->a_formattag == MP_FOURCC('W', 'V', 'P', 'K')) {
-        /* ok */
-    } else if (track->a_formattag == MP_FOURCC('T', 'R', 'H', 'D')) {
-        track->parse = true;
-    } else if (track->a_formattag == MP_FOURCC('T', 'T', 'A', '1')) {
-        sh_a->codecdata_len = 30;
-        sh_a->codecdata = talloc_zero_size(sh_a, sh_a->codecdata_len);
-        if (!sh_a->codecdata)
+    } else if (!strcmp(codec, "tta")) {
+        extradata_len = 30;
+        extradata = talloc_zero_size(sh_a, extradata_len);
+        if (!extradata)
             goto error;
-        char *data = sh_a->codecdata;
+        char *data = extradata;
         memcpy(data + 0, "TTA1", 4);
         AV_WL16(data + 4, 1);
         AV_WL16(data + 6, sh_a->channels.num);
@@ -1610,22 +1646,16 @@ static int demux_mkv_open_audio(demuxer_t *demuxer, mkv_track_t *track)
         AV_WL32(data + 10, track->a_osfreq);
         // Bogus: last frame won't be played.
         AV_WL32(data + 14, 0);
-    } else if (!track->ms_compat) {
-        goto error;
     }
 
     // Some files have broken default DefaultDuration set, which will lead to
     // audio packets with incorrect timestamps. This follows FFmpeg commit
     // 6158a3b, sample see FFmpeg ticket 2508.
-    if (sh_a->samplerate == 8000 && strcmp(track->codec_id, MKV_A_AC3) == 0)
+    if (sh_a->samplerate == 8000 && strcmp(codec, "ac3") == 0)
         track->default_duration = 0;
 
-    mp_set_codec_from_tag(sh);
-
-    if (!sh_a->codecdata && extradata_len) {
-        sh_a->codecdata = talloc_memdup(sh_a, extradata, extradata_len);
-        sh_a->codecdata_len = extradata_len;
-    }
+    sh->extradata = extradata;
+    sh->extradata_size = extradata_len;
 
     return 0;
 
@@ -1637,17 +1667,17 @@ static int demux_mkv_open_audio(demuxer_t *demuxer, mkv_track_t *track)
 }
 
 static const char *const mkv_sub_tag[][2] = {
-    { MKV_S_VOBSUB,     "dvd_subtitle" },
-    { MKV_S_TEXTSSA,    "ass"},
-    { MKV_S_TEXTASS,    "ass"},
-    { MKV_S_SSA,        "ass"},
-    { MKV_S_ASS,        "ass"},
-    { MKV_S_TEXTASCII,  "subrip"},
-    { MKV_S_TEXTUTF8,   "subrip"},
-    { MKV_S_PGS,        "hdmv_pgs_subtitle"},
-    { MKV_S_WEBVTT_S,   "webvtt-webm"},
-    { MKV_S_WEBVTT_C,   "webvtt-webm"},
-    { MKV_S_DVB,        "dvb_subtitle"},
+    { "S_VOBSUB",           "dvd_subtitle" },
+    { "S_TEXT/SSA",         "ass"},
+    { "S_TEXT/ASS",         "ass"},
+    { "S_SSA",              "ass"},
+    { "S_ASS",              "ass"},
+    { "S_TEXT/ASCII",       "subrip"},
+    { "S_TEXT/UTF8",        "subrip"},
+    { "S_HDMV/PGS",         "hdmv_pgs_subtitle"},
+    { "D_WEBVTT/SUBTITLES", "webvtt-webm"},
+    { "D_WEBVTT/CAPTIONS",  "webvtt-webm"},
+    { "S_DVBSUB",           "dvb_subtitle"},
     {0}
 };
 
@@ -1667,9 +1697,8 @@ static int demux_mkv_open_sub(demuxer_t *demuxer, mkv_track_t *track)
     struct sh_stream *sh = new_sh_stream(demuxer, STREAM_SUB);
     if (!sh)
         return 1;
-    track->stream = sh;
-    sh_sub_t *sh_s = sh->sub;
-    sh->demuxer_id = track->tnum;
+    init_track(demuxer, track, sh);
+
     sh->codec = subtitle_type;
     bstr in = (bstr){track->private_data, track->private_size};
     bstr buffer = demux_mkv_decode(demuxer->log, track, in, 2);
@@ -1679,13 +1708,8 @@ static int demux_mkv_open_sub(demuxer_t *demuxer, mkv_track_t *track)
         track->private_data = buffer.start;
         track->private_size = buffer.len;
     }
-    sh_s->extradata = talloc_size(sh, track->private_size);
-    memcpy(sh_s->extradata, track->private_data, track->private_size);
-    sh_s->extradata_len = track->private_size;
-    if (track->language && (strcmp(track->language, "und") != 0))
-        sh->lang = talloc_strdup(sh, track->language);
-    sh->title = talloc_strdup(sh, track->name);
-    sh->default_track = track->default_track;
+    sh->extradata = track->private_data;
+    sh->extradata_size = track->private_size;
 
     if (!subtitle_type)
         MP_ERR(demuxer, "Subtitle type '%s' is not supported.\n", track->codec_id);
@@ -1699,15 +1723,15 @@ static int read_ebml_header(demuxer_t *demuxer)
 
     if (ebml_read_id(s) != EBML_ID_EBML)
         return 0;
-    struct ebml_ebml ebml_master = {{0}};
+    struct ebml_ebml ebml_master = {0};
     struct ebml_parse_ctx parse_ctx = { demuxer->log, .no_error_messages = true };
     if (ebml_read_element(s, &parse_ctx, &ebml_master, &ebml_ebml_desc) < 0)
         return 0;
-    if (ebml_master.doc_type.start == NULL) {
+    if (!ebml_master.doc_type) {
         MP_VERBOSE(demuxer, "File has EBML header but no doctype."
                    " Assuming \"matroska\".\n");
-    } else if (bstrcmp(ebml_master.doc_type, bstr0("matroska")) != 0
-        && bstrcmp(ebml_master.doc_type, bstr0("webm")) != 0) {
+    } else if (strcmp(ebml_master.doc_type, "matroska") != 0
+        && strcmp(ebml_master.doc_type, "webm") != 0) {
         MP_DBG(demuxer, "no head found\n");
         talloc_free(parse_ctx.talloc_ctx);
         return 0;
@@ -1757,9 +1781,7 @@ static int read_mkv_segment_header(demuxer_t *demuxer, int64_t *segment_end)
         MP_VERBOSE(demuxer, "  (skipping)\n");
         if (*segment_end <= 0)
             break;
-        int64_t end = 0;
-        stream_control(s, STREAM_CTRL_GET_SIZE, &end);
-        if (*segment_end >= end)
+        if (*segment_end >= stream_get_size(s))
             return 0;
         if (!stream_seek(s, *segment_end)) {
             MP_WARN(demuxer, "Failed to seek in file\n");
@@ -1823,8 +1845,7 @@ static int demux_mkv_open(demuxer_t *demuxer, enum demux_check check)
             return -1;
     }
 
-    int64_t end = 0;
-    stream_control(s, STREAM_CTRL_GET_SIZE, &end);
+    int64_t end = stream_get_size(s);
 
     // Read headers that come after the first cluster (i.e. require seeking).
     // Note: reading might increase ->num_headers.
@@ -1972,11 +1993,11 @@ static bool handle_realaudio(demuxer_t *demuxer, mkv_track_t *track,
     // track->audio_buf allocation size
     size_t audiobuf_size = sph * w;
 
-    if (!track->audio_buf || !track->audio_timestamp)
+    if (!track->audio_buf || !track->audio_timestamp || !track->stream)
         return false;
 
-    switch (track->a_formattag) {
-    case MP_FOURCC('2', '8', '_', '8'):
+    const char *codec = track->stream->codec ? track->stream->codec : "";
+    if (!strcmp(codec, "ra_288")) {
         for (int x = 0; x < sph / 2; x++) {
             uint64_t dst_offset = x * 2 * w + spc * (uint64_t)cfs;
             if (dst_offset + cfs > audiobuf_size)
@@ -1986,9 +2007,7 @@ static bool handle_realaudio(demuxer_t *demuxer, mkv_track_t *track,
                 goto error;
             memcpy(track->audio_buf + dst_offset, buffer + src_offset, cfs);
         }
-        break;
-    case MP_FOURCC('c', 'o', 'o', 'k'):
-    case MP_FOURCC('a', 't', 'r', 'c'):
+    } else if (!strcmp(codec, "cook") || !strcmp(codec, "atrac3")) {
         for (int x = 0; x < w / sps; x++) {
             uint32_t dst_offset =
                 sps * (sph * x + ((sph + 1) / 2) * (spc & 1) + (spc >> 1));
@@ -1999,8 +2018,7 @@ static bool handle_realaudio(demuxer_t *demuxer, mkv_track_t *track,
                 goto error;
             memcpy(track->audio_buf + dst_offset, buffer + src_offset, sps);
         }
-        break;
-    case MP_FOURCC('s', 'i', 'p', 'r'):
+    } else if (!strcmp(codec, "sipr")) {
         if (spc * w + w > audiobuf_size || w > size)
             goto error;
         memcpy(track->audio_buf + spc * w, buffer, w);
@@ -2026,8 +2044,7 @@ static bool handle_realaudio(demuxer_t *demuxer, mkv_track_t *track,
                 }
             }
         }
-        break;
-    default:
+    } else {
         // Not a codec that requires reordering
         return false;
     }
@@ -2172,7 +2189,7 @@ static void mkv_parse_and_add_packet(demuxer_t *demuxer, mkv_track_t *track,
     if (stream->type == STREAM_AUDIO && handle_realaudio(demuxer, track, dp))
         return;
 
-    if (track->a_formattag == MP_FOURCC('W', 'V', 'P', 'K')) {
+    if (stream->codec && strcmp(stream->codec, "wavpack") == 0) {
         int size = dp->len;
         uint8_t *parsed;
         if (libav_parse_wavpack(track, dp->buffer, &parsed, &size) >= 0) {
@@ -2186,7 +2203,7 @@ static void mkv_parse_and_add_packet(demuxer_t *demuxer, mkv_track_t *track,
         }
     }
 
-    if (track->codec_id && strcmp(track->codec_id, MKV_V_PRORES) == 0) {
+    if (stream->codec && strcmp(stream->codec, "prores") == 0) {
         size_t newlen = dp->len + 8;
         struct demux_packet *new = new_demux_packet(newlen);
         if (new) {
@@ -2416,7 +2433,7 @@ static int handle_block(demuxer_t *demuxer, struct block_info *block_info)
              * packets resulting from parsing. */
             if (i == 0 || track->default_duration)
                 dp->pts = mkv_d->last_pts + i * track->default_duration;
-            if (track->ms_compat)
+            if (stream->video && stream->video->avi_dts)
                 MPSWAP(double, dp->pts, dp->dts);
             if (i == 0)
                 dp->duration = block_duration / 1e9;
@@ -2793,9 +2810,7 @@ static void demux_mkv_seek(demuxer_t *demuxer, double rel_seek_secs, int flags)
 
         read_deferred_cues(demuxer);
 
-        int64_t size = 0;
-        stream_control(s, STREAM_CTRL_GET_SIZE, &size);
-
+        int64_t size = stream_get_size(s);
         int64_t target_filepos = size * MPCLAMP(rel_seek_secs, 0, 1);
 
         mkv_index_t *index = NULL;
@@ -2817,7 +2832,7 @@ static void demux_mkv_seek(demuxer_t *demuxer, double rel_seek_secs, int flags)
             stream_seek(s, index->filepos);
             mkv_d->skip_to_timecode = index->timecode * mkv_d->tc_scale;
         } else {
-            stream_seek(s, target_filepos);
+            stream_seek(s, MPMAX(target_filepos, 0));
             if (ebml_resync_cluster(mp_null_log, s) < 0) {
                 // Assume EOF
                 mkv_d->cluster_end = size;
@@ -2851,23 +2866,31 @@ static void probe_last_timestamp(struct demuxer *demuxer)
     if (v_tnum < 0)
         return;
 
-    read_deferred_cues(demuxer);
+    // In full mode, we start reading data from the current file position,
+    // which works because this function is called after headers are parsed.
+    if (demuxer->opts->demux_mkv->probe_duration != 2) {
+        read_deferred_cues(demuxer);
+        if (mkv_d->index_complete) {
+            // Find last cluster that still has video packets
+            int64_t target = 0;
+            for (size_t i = 0; i < mkv_d->num_indexes; i++) {
+                struct mkv_index *cur = &mkv_d->indexes[i];
+                if (cur->tnum == v_tnum)
+                    target = MPMAX(target, cur->filepos);
+            }
+            if (!target)
+                return;
 
-    if (!mkv_d->index_complete)
-        return;
-
-    // Find last cluster that still has video packets
-    int64_t target = 0;
-    for (size_t i = 0; i < mkv_d->num_indexes; i++) {
-        struct mkv_index *cur = &mkv_d->indexes[i];
-        if (cur->tnum == v_tnum)
-            target = MPMAX(target, cur->filepos);
+            if (!stream_seek(demuxer->stream, target))
+                return;
+        } else {
+            // No index -> just try to find a random cluster towards file end.
+            int64_t size = stream_get_size(demuxer->stream);
+            stream_seek(demuxer->stream, MPMAX(size - 10 * 1024 * 1024, 0));
+            if (ebml_resync_cluster(mp_null_log, demuxer->stream) < 0)
+                stream_seek(demuxer->stream, old_pos); // full scan otherwise
+        }
     }
-    if (!target)
-        return;
-
-    if (!stream_seek(demuxer->stream, target))
-        return;
 
     int64_t last_ts[STREAM_TYPE_COUNT] = {0};
     while (1) {
@@ -2885,6 +2908,9 @@ static void probe_last_timestamp(struct demuxer *demuxer)
             free_block(&block);
         }
     }
+
+    if (!last_ts[STREAM_VIDEO])
+        last_ts[STREAM_VIDEO] = mkv_d->cluster_tc;
 
     if (last_ts[STREAM_VIDEO])
         mkv_d->duration = last_ts[STREAM_VIDEO] / 1e9;

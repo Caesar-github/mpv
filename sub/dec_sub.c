@@ -156,11 +156,13 @@ void sub_set_extradata(struct dec_sub *sub, void *data, int data_len)
 }
 
 void sub_set_ass_renderer(struct dec_sub *sub, struct ass_library *ass_library,
-                          struct ass_renderer *ass_renderer)
+                          struct ass_renderer *ass_renderer,
+                          pthread_mutex_t *ass_lock)
 {
     pthread_mutex_lock(&sub->lock);
     sub->init_sd.ass_library = ass_library;
     sub->init_sd.ass_renderer = ass_renderer;
+    sub->init_sd.ass_lock = ass_lock;
     pthread_mutex_unlock(&sub->lock);
 }
 
@@ -202,8 +204,8 @@ void sub_init_from_sh(struct dec_sub *sub, struct sh_stream *sh)
 
     pthread_mutex_lock(&sub->lock);
 
-    if (sh->sub->extradata && !sub->init_sd.extradata)
-        sub_set_extradata(sub, sh->sub->extradata, sh->sub->extradata_len);
+    if (sh->extradata && !sub->init_sd.extradata)
+        sub_set_extradata(sub, sh->extradata, sh->extradata_size);
     struct sd init_sd = sub->init_sd;
     init_sd.codec = sh->codec;
 
@@ -230,6 +232,7 @@ void sub_init_from_sh(struct dec_sub *sub, struct sh_stream *sh)
             .extradata_len = sd->output_extradata_len,
             .ass_library = sub->init_sd.ass_library,
             .ass_renderer = sub->init_sd.ass_renderer,
+            .ass_lock = sub->init_sd.ass_lock,
         };
     }
 
@@ -300,8 +303,8 @@ void sub_decode(struct dec_sub *sub, struct demux_packet *packet)
     pthread_mutex_unlock(&sub->lock);
 }
 
-static const char *guess_sub_cp(struct mp_log *log, struct packet_list *subs,
-                                const char *usercp)
+static const char *guess_sub_cp(struct mp_log *log, void *talloc_ctx,
+                                struct packet_list *subs, const char *usercp)
 {
     if (!mp_charset_requires_guess(usercp))
         return usercp;
@@ -327,7 +330,7 @@ static const char *guess_sub_cp(struct mp_log *log, struct packet_list *subs,
         memcpy(text.start + text.len + pkt->len, sep, sep_len);
         text.len += pkt->len + sep_len;
     }
-    const char *guess = mp_charset_guess(log, text, usercp, 0);
+    const char *guess = mp_charset_guess(talloc_ctx, log, text, usercp, 0);
     talloc_free(text.start);
     return guess;
 }
@@ -452,7 +455,7 @@ bool sub_read_all_packets(struct dec_sub *sub, struct sh_stream *sh)
     }
 
     if (opts->sub_cp && !sh->sub->is_utf8)
-        sub->charset = guess_sub_cp(sub->log, subs, opts->sub_cp);
+        sub->charset = guess_sub_cp(sub->log, sub, subs, opts->sub_cp);
 
     if (sub->charset && sub->charset[0] && !mp_charset_is_utf8(sub->charset))
         MP_INFO(sub, "Using subtitle charset: %s\n", sub->charset);

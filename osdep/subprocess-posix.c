@@ -30,8 +30,6 @@
 #include "common/common.h"
 #include "stream/stream.h"
 
-// Normally, this must be declared manually, but glibc is retarded
-// resulting in a warning.
 extern char **environ;
 
 // A silly helper: automatically skips entries with negative FDs
@@ -66,6 +64,8 @@ int mp_subprocess(char **args, struct mp_cancel *cancel, void *ctx,
     int p_stderr[2] = {-1, -1};
     int devnull = -1;
     pid_t pid = -1;
+    bool spawned = false;
+    bool killed_by_us = false;
 
     if (on_stdout && mp_make_cloexec_pipe(p_stdout) < 0)
         goto done;
@@ -91,6 +91,7 @@ int mp_subprocess(char **args, struct mp_cancel *cancel, void *ctx,
         pid = -1;
         goto done;
     }
+    spawned = true;
 
     close(p_stdout[1]);
     p_stdout[1] = -1;
@@ -126,6 +127,7 @@ int mp_subprocess(char **args, struct mp_cancel *cancel, void *ctx,
         }
         if (fds[2].revents) {
             kill(pid, SIGKILL);
+            killed_by_us = true;
             break;
         }
     }
@@ -145,12 +147,15 @@ done:
     close(p_stderr[1]);
     close(devnull);
 
-    if (WIFEXITED(status) && WEXITSTATUS(status) != 127) {
+    if (!spawned || (WIFEXITED(status) && WEXITSTATUS(status) == 127)) {
+        *error = "init";
+        status = -1;
+    } else if (WIFEXITED(status)) {
         *error = NULL;
         status = WEXITSTATUS(status);
     } else {
-        *error = WEXITSTATUS(status) == 127 ? "init" : "killed";
-        status = -1;
+        *error = "killed";
+        status = killed_by_us ? MP_SUBPROCESS_EKILLED_BY_US : -1;
     }
 
     return status;

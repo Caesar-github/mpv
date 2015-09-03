@@ -113,7 +113,7 @@ static void preemption_callback(VdpDevice device, void *context)
     pthread_mutex_unlock(&ctx->preempt_lock);
 }
 
-static int win_x11_init_vdpau_procs(struct mp_vdpau_ctx *ctx)
+static int win_x11_init_vdpau_procs(struct mp_vdpau_ctx *ctx, bool probing)
 {
     Display *x11 = ctx->x11;
     VdpStatus vdp_st;
@@ -142,11 +142,14 @@ static int win_x11_init_vdpau_procs(struct mp_vdpau_ctx *ctx)
     vdp_st = vdp_device_create_x11(x11, DefaultScreen(x11), &ctx->vdp_device,
                                    &get_proc_address);
     if (vdp_st != VDP_STATUS_OK) {
-        if (ctx->is_preempted)
+        if (ctx->is_preempted) {
             MP_DBG(ctx, "Error calling vdp_device_create_x11 while preempted: %d\n",
                    vdp_st);
-        else
-            MP_ERR(ctx, "Error when calling vdp_device_create_x11: %d\n", vdp_st);
+        } else {
+            int lev = probing ? MSGL_V : MSGL_ERR;
+            mp_msg(ctx->log, lev, "Error when calling vdp_device_create_x11: %d\n",
+                   vdp_st);
+        }
         return -1;
     }
 
@@ -182,7 +185,7 @@ static int handle_preemption(struct mp_vdpau_ctx *ctx)
     if (ctx->last_preemption_retry_fail &&
         mp_time_sec() - ctx->last_preemption_retry_fail < 1.0)
         return -1;
-    if (win_x11_init_vdpau_procs(ctx) < 0) {
+    if (win_x11_init_vdpau_procs(ctx, false) < 0) {
         ctx->last_preemption_retry_fail = mp_time_sec();
         return -1;
     }
@@ -197,6 +200,7 @@ static int handle_preemption(struct mp_vdpau_ctx *ctx)
 // Check whether vdpau display preemption happened. The caller provides a
 // preemption counter, which contains the logical timestamp of the last
 // preemption handled by the caller. The counter can be 0 for init.
+// If counter is NULL, only ever return -1 or 1.
 // Return values:
 //  -1: the display is currently preempted, and vdpau can't be used
 //   0: a preemption event happened, and the caller must recover
@@ -208,13 +212,13 @@ int mp_vdpau_handle_preemption(struct mp_vdpau_ctx *ctx, uint64_t *counter)
     pthread_mutex_lock(&ctx->preempt_lock);
 
     // First time init
-    if (!*counter)
+    if (counter && !*counter)
         *counter = ctx->preemption_counter;
 
     if (handle_preemption(ctx) < 0)
         r = -1;
 
-    if (r > 0 && *counter < ctx->preemption_counter) {
+    if (counter && r > 0 && *counter < ctx->preemption_counter) {
         *counter = ctx->preemption_counter;
         r = 0; // signal recovery after preemption
     }
@@ -329,16 +333,22 @@ static struct mp_image *mp_vdpau_get_surface(struct mp_vdpau_ctx *ctx,
             e->rgb = rgb;
             e->w = w;
             e->h = h;
-            if (rgb) {
-                vdp_st = vdp->output_surface_create(ctx->vdp_device, rgb_format,
-                                                    w, h, &e->osurface);
-                e->allocated = e->osurface != VDP_INVALID_HANDLE;
+            if (mp_vdpau_handle_preemption(ctx, NULL) >= 0) {
+                if (rgb) {
+                    vdp_st = vdp->output_surface_create(ctx->vdp_device, rgb_format,
+                                                        w, h, &e->osurface);
+                    e->allocated = e->osurface != VDP_INVALID_HANDLE;
+                } else {
+                    vdp_st = vdp->video_surface_create(ctx->vdp_device, chroma,
+                                                    w, h, &e->surface);
+                    e->allocated = e->surface != VDP_INVALID_HANDLE;
+                }
+                CHECK_VDP_WARNING(ctx, "Error when allocating surface");
             } else {
-                vdp_st = vdp->video_surface_create(ctx->vdp_device, chroma,
-                                                   w, h, &e->surface);
-                e->allocated = e->surface != VDP_INVALID_HANDLE;
+                e->allocated = false;
+                e->osurface = VDP_INVALID_HANDLE;
+                e->surface = VDP_INVALID_HANDLE;
             }
-            CHECK_VDP_WARNING(ctx, "Error when allocating surface");
             surface_index = n;
             goto done;
         }
@@ -362,7 +372,8 @@ struct mp_image *mp_vdpau_get_video_surface(struct mp_vdpau_ctx *ctx,
     return mp_vdpau_get_surface(ctx, chroma, 0, false, w, h);
 }
 
-struct mp_vdpau_ctx *mp_vdpau_create_device_x11(struct mp_log *log, Display *x11)
+struct mp_vdpau_ctx *mp_vdpau_create_device_x11(struct mp_log *log, Display *x11,
+                                                bool probing)
 {
     struct mp_vdpau_ctx *ctx = talloc_ptrtype(NULL, ctx);
     *ctx = (struct mp_vdpau_ctx) {
@@ -382,7 +393,7 @@ struct mp_vdpau_ctx *mp_vdpau_create_device_x11(struct mp_log *log, Display *x11
 
     mark_vdpau_objects_uninitialized(ctx);
 
-    if (win_x11_init_vdpau_procs(ctx) < 0) {
+    if (win_x11_init_vdpau_procs(ctx, probing) < 0) {
         mp_vdpau_destroy(ctx);
         return NULL;
     }

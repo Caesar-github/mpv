@@ -24,6 +24,24 @@ function mp.get_opt(key, def)
     return val
 end
 
+function mp.input_define_section(section, contents, flags)
+    if flags == nil or flags == "" then
+        flags = "default"
+    end
+    mp.commandv("define-section", section, contents, flags)
+end
+
+function mp.input_enable_section(section, flags)
+    if flags == nil then
+        flags = ""
+    end
+    mp.commandv("enable-section", section, flags)
+end
+
+function mp.input_disable_section(section)
+    mp.commandv("disable-section", section)
+end
+
 -- For dispatching script_binding. This is sent as:
 --      script_message_to $script_name $binding_name $keystate
 -- The array is indexed by $binding_name, and has functions like this as value:
@@ -89,7 +107,7 @@ function mp.set_key_bindings(list, section, flags)
                     cb()
                 end
             end
-            cfg = cfg .. key .. " script_binding " ..
+            cfg = cfg .. key .. " script-binding " ..
                   mp.script_name .. "/" .. mangle .. "\n"
         else
             cfg = cfg .. key .. " " .. cb .. "\n"
@@ -133,7 +151,7 @@ local function update_key_bindings()
         end
         mp.input_define_section(section, cfg, flags)
         -- TODO: remove the section if the script is stopped
-        mp.input_enable_section(section, "allow-hide-cursor|allow-vo-dragging")
+        mp.input_enable_section(section, "allow-hide-cursor+allow-vo-dragging")
     end
 end
 
@@ -187,7 +205,7 @@ local function add_binding(attrs, key, name, fn, rp)
         end
         msg_cb = fn
     end
-    attrs.bind = bind .. " script_binding " .. mp.script_name .. "/" .. name
+    attrs.bind = bind .. " script-binding " .. mp.script_name .. "/" .. name
     attrs.name = name
     key_bindings[name] = attrs
     update_key_bindings()
@@ -464,7 +482,7 @@ function mp.osd_message(text, duration)
     else
         duration = tostring(math.floor(duration * 1000))
     end
-    mp.commandv("show_text", text, duration)
+    mp.commandv("show-text", text, duration)
 end
 
 local hook_table = {}
@@ -475,7 +493,7 @@ local function hook_run(id, cont)
     if fn then
         fn()
     end
-    mp.commandv("hook_ack", cont)
+    mp.commandv("hook-ack", cont)
 end
 
 function mp.add_hook(name, pri, cb)
@@ -485,7 +503,7 @@ function mp.add_hook(name, pri, cb)
     end
     local id = #hook_table + 1
     hook_table[id] = cb
-    mp.commandv("hook_add", name, id, pri)
+    mp.commandv("hook-add", name, id, pri)
 end
 
 local mp_utils = package.loaded["mp.utils"]

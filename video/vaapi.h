@@ -1,3 +1,20 @@
+/*
+ * This file is part of mpv.
+ *
+ * mpv is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * mpv is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with mpv.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
 #ifndef MPV_VAAPI_H
 #define MPV_VAAPI_H
 
@@ -7,57 +24,6 @@
 #include <va/va.h>
 #include <va/va_x11.h>
 
-/* Compatibility glue with VA-API >= 0.31 */
-#if defined VA_CHECK_VERSION
-#if VA_CHECK_VERSION(0,31,0)
-#define vaPutImage2             vaPutImage
-#define vaAssociateSubpicture2  vaAssociateSubpicture
-#endif
-#endif
-
-/* Compatibility glue with VA-API >= 0.34 */
-#if VA_CHECK_VERSION(0,34,0)
-#include <va/va_compat.h>
-#endif
-
-/* Compatibility glue with upstream libva */
-#ifndef VA_SDS_VERSION
-#define VA_SDS_VERSION          0
-#endif
-
-/* Compatibility glue with VA-API >= 0.30 */
-#ifndef VA_INVALID_ID
-#define VA_INVALID_ID           0xffffffff
-#endif
-#ifndef VA_FOURCC
-#define VA_FOURCC(ch0, ch1, ch2, ch3)           \
-    ((uint32_t)(uint8_t)(ch0) |                 \
-     ((uint32_t)(uint8_t)(ch1) << 8) |          \
-     ((uint32_t)(uint8_t)(ch2) << 16) |         \
-     ((uint32_t)(uint8_t)(ch3) << 24 ))
-#endif
-#if defined VA_SRC_BT601 && defined VA_SRC_BT709
-# define USE_VAAPI_COLORSPACE 1
-#else
-# define USE_VAAPI_COLORSPACE 0
-#endif
-
-/* Compatibility glue with VA-API >= 0.31.1 */
-#ifndef VA_SRC_SMPTE_240
-#define VA_SRC_SMPTE_240        0x00000040
-#endif
-#if defined VA_FILTER_SCALING_MASK
-# define USE_VAAPI_SCALING 1
-#else
-# define USE_VAAPI_SCALING 0
-#endif
-
-#ifndef VA_FOURCC_YV12
-#define VA_FOURCC_YV12 0x32315659
-#endif
-#ifndef VA_FOURCC_IYUV
-#define VA_FOURCC_IYUV 0x56555949
-#endif
 #ifndef VA_FOURCC_I420
 #define VA_FOURCC_I420 VA_FOURCC('I', '4', '2', '0')
 #endif
@@ -94,7 +60,7 @@ bool check_va_status(struct mp_log *log, VAStatus status, const char *msg);
 
 int                      va_get_colorspace_flag(enum mp_csp csp);
 
-struct mp_vaapi_ctx     *va_initialize(VADisplay *display, struct mp_log *log);
+struct mp_vaapi_ctx *    va_initialize(VADisplay *display, struct mp_log *plog, bool probing);
 void                     va_destroy(struct mp_vaapi_ctx *ctx);
 
 enum mp_imgfmt           va_fourcc_to_imgfmt(uint32_t fourcc);

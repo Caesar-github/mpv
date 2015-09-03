@@ -49,11 +49,16 @@ static void aspect_calc_panscan(struct mp_log *log, struct mp_vo_opts *opts,
            fwidth, fheight, d_w, d_h);
 
     int vo_panscan_area = window_h - fheight;
-    if (!vo_panscan_area)
+    double f_w = fwidth / (double)fheight;
+    double f_h = 1;
+    if (!vo_panscan_area) {
         vo_panscan_area = window_w - fwidth;
+        f_w = 1;
+        f_h = fheight / (double)fwidth;
+    }
 
-    *out_w = fwidth + vo_panscan_area * opts->panscan * fwidth / fheight;
-    *out_h = fheight + vo_panscan_area * opts->panscan;
+    *out_w = fwidth + vo_panscan_area * opts->panscan * f_w;
+    *out_h = fheight + vo_panscan_area * opts->panscan * f_h;
 }
 
 // Clamp [start, end) to range [0, size) with various fallbacks.
@@ -66,10 +71,6 @@ static void clamp_size(int size, int *start, int *end)
         *end = 1;
     }
 }
-
-// Round source to a multiple of 2, this is at least needed for vo_direct3d
-// and ATI cards.
-#define VID_SRC_ROUND_UP(x) (((x) + 1) & ~1)
 
 static void src_dst_split_scaling(int src_size, int dst_size,
                                   int scaled_src_size, bool unscaled,
@@ -100,12 +101,12 @@ static void src_dst_split_scaling(int src_size, int dst_size,
     int s_dst = *dst_end - *dst_start;
     if (*dst_start < 0) {
         int border = -(*dst_start) * s_src / s_dst;
-        *src_start += VID_SRC_ROUND_UP(border);
+        *src_start += border;
         *dst_start = 0;
     }
     if (*dst_end > dst_size) {
         int border = (*dst_end - dst_size) * s_src / s_dst;
-        *src_end -= VID_SRC_ROUND_UP(border);
+        *src_end -= border;
         *dst_end = dst_size;
     }
 

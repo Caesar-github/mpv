@@ -75,6 +75,7 @@ extern const stream_info_t stream_info_bluray;
 extern const stream_info_t stream_info_bdnav;
 extern const stream_info_t stream_info_rar;
 extern const stream_info_t stream_info_edl;
+extern const stream_info_t stream_info_libarchive;
 
 static const stream_info_t *const stream_list[] = {
 #if HAVE_CDDA
@@ -107,6 +108,9 @@ static const stream_info_t *const stream_list[] = {
     &stream_info_bdmv_dir,
     &stream_info_bluray,
     &stream_info_bdnav,
+#endif
+#if HAVE_LIBARCHIVE
+    &stream_info_libarchive,
 #endif
 
     &stream_info_memory,
@@ -464,8 +468,7 @@ static int stream_read_unbuffered(stream_t *s, void *buf, int len)
         // just in case this is an error e.g. due to network
         // timeout reset and retry
         // do not retry if this looks like proper eof
-        int64_t size = -1;
-        stream_control(s, STREAM_CTRL_GET_SIZE, &size);
+        int64_t size = stream_get_size(s);
         if (!s->eof && s->pos != size && stream_reconnect(s)) {
             s->eof = 1; // make sure EOF is set to ensure no endless recursion
             return stream_read_unbuffered(s, buf, orig_len);
@@ -698,6 +701,15 @@ int stream_control(stream_t *s, int cmd, void *arg)
     return s->control ? s->control(s, cmd, arg) : STREAM_UNSUPPORTED;
 }
 
+// Return the current size of the stream, or a negative value if unknown.
+int64_t stream_get_size(stream_t *s)
+{
+    int64_t size = -1;
+    if (stream_control(s, STREAM_CTRL_GET_SIZE, &size) != STREAM_OK)
+        size = -1;
+    return size;
+}
+
 void free_stream(stream_t *s)
 {
     if (!s)
@@ -904,8 +916,7 @@ struct bstr stream_read_complete(struct stream *s, void *talloc_ctx,
     int total_read = 0;
     int padding = 1;
     char *buf = NULL;
-    int64_t size = 0;
-    stream_control(s, STREAM_CTRL_GET_SIZE, &size);
+    int64_t size = stream_get_size(s);
     if (size > max_size)
         return (struct bstr){NULL, 0};
     if (size > 0)
@@ -927,6 +938,20 @@ struct bstr stream_read_complete(struct stream *s, void *talloc_ctx,
     buf = talloc_realloc_size(talloc_ctx, buf, total_read + padding);
     memset(&buf[total_read], 0, padding);
     return (struct bstr){buf, total_read};
+}
+
+struct bstr stream_read_file(const char *filename, void *talloc_ctx,
+                             struct mpv_global *global, int max_size)
+{
+    struct bstr res = {0};
+    char *fname = mp_get_user_path(NULL, global, filename);
+    stream_t *s = stream_open(fname, global);
+    if (s) {
+        res = stream_read_complete(s, talloc_ctx, max_size);
+        free_stream(s);
+    }
+    talloc_free(fname);
+    return res;
 }
 
 struct mp_cancel {
@@ -1024,11 +1049,10 @@ int mp_cancel_get_fd(struct mp_cancel *c)
     return c->wakeup_pipe[0];
 }
 
-void stream_print_proto_list(struct mp_log *log)
+char **stream_get_proto_list(void)
 {
-    int count = 0;
-
-    mp_info(log, "Protocols:\n\n");
+    char **list = NULL;
+    int num = 0;
     for (int i = 0; stream_list[i]; i++) {
         const stream_info_t *stream_info = stream_list[i];
 
@@ -1039,9 +1063,25 @@ void stream_print_proto_list(struct mp_log *log)
             if (*stream_info->protocols[j] == '\0')
                continue;
 
-            mp_info(log, " %s://\n", stream_info->protocols[j]);
-            count++;
+            MP_TARRAY_APPEND(NULL, list, num,
+                                talloc_strdup(NULL, stream_info->protocols[j]));
         }
     }
+    MP_TARRAY_APPEND(NULL, list, num, NULL);
+    return list;
+}
+
+void stream_print_proto_list(struct mp_log *log)
+{
+    int count = 0;
+
+    mp_info(log, "Protocols:\n\n");
+    char **list = stream_get_proto_list();
+    for (int i = 0; list[i]; i++) {
+        mp_info(log, " %s://\n", list[i]);
+        count++;
+        talloc_free(list[i]);
+    }
+    talloc_free(list);
     mp_info(log, "\nTotal: %d protocols\n", count);
 }

@@ -288,7 +288,7 @@ static int InitDirectSound(struct ao *ao)
     /* Set DirectSound Cooperative level, ie what control we want over Windows
      * sound device. In our case, DSSCL_EXCLUSIVE means that we can modify the
      * settings of the primary buffer, but also that only the sound of our
-     * application will be hearable when it will have the focus.
+     * application will be audible when it will have the focus.
      * !!! (this is not really working as intended yet because to set the
      * cooperative level you need the window handle of your application, and
      * I don't know of any easy way to get it. Especially since we might play
@@ -444,7 +444,7 @@ static int init(struct ao *ao)
     int format = af_fmt_from_planar(ao->format);
     int rate = ao->samplerate;
 
-    if (!AF_FORMAT_IS_IEC61937(format)) {
+    if (!af_fmt_is_spdif(format)) {
         struct mp_chmap_sel sel = {0};
         mp_chmap_sel_add_waveext(&sel);
         if (!ao_chmap_sel_adjust(ao, &sel, &ao->channels))
@@ -456,7 +456,7 @@ static int init(struct ao *ao)
     case AF_FORMAT_U8:
         break;
     default:
-        if (AF_FORMAT_IS_IEC61937(format))
+        if (af_fmt_is_spdif(format))
             break;
         MP_VERBOSE(ao, "format %s not supported defaulting to Signed 16-bit Little-Endian\n",
                    af_fmt_to_str(format));
@@ -465,7 +465,7 @@ static int init(struct ao *ao)
     //set our audio parameters
     ao->samplerate = rate;
     ao->format = format;
-    ao->bps = ao->channels.num * rate * af_fmt2bps(format);
+    ao->bps = ao->channels.num * rate * af_fmt_to_bytes(format);
     int buffersize = ao->bps * p->cfg_buffersize / 1000;
     MP_VERBOSE(ao, "Samplerate:%iHz Channels:%i Format:%s\n", rate,
                ao->channels.num, af_fmt_to_str(format));
@@ -478,7 +478,7 @@ static int init(struct ao *ao)
                     ? sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX) : 0;
     wformat.Format.nChannels = ao->channels.num;
     wformat.Format.nSamplesPerSec = rate;
-    if (AF_FORMAT_IS_IEC61937(format)) {
+    if (af_fmt_is_spdif(format)) {
         // Whether it also works with e.g. DTS is unknown, but probably does.
         wformat.Format.wFormatTag = WAVE_FORMAT_DOLBY_AC3_SPDIF;
         wformat.Format.wBitsPerSample = 16;
@@ -486,7 +486,7 @@ static int init(struct ao *ao)
     } else {
         wformat.Format.wFormatTag = (ao->channels.num > 2)
                                     ? WAVE_FORMAT_EXTENSIBLE : WAVE_FORMAT_PCM;
-        int bps = af_fmt2bps(format);
+        int bps = af_fmt_to_bytes(format);
         wformat.Format.wBitsPerSample = bps * 8;
         wformat.Format.nBlockAlign = wformat.Format.nChannels * bps;
     }
@@ -616,9 +616,9 @@ static int check_free_buffer_size(struct ao *ao)
     space = p->buffer_size - (p->write_offset - play_offset);
     // |              | <-- const --> |                |                 |
     // buffer start   play_cursor     write_cursor     p->write_offset   buffer end
-    // play_cursor is the actual postion of the play cursor
+    // play_cursor is the actual position of the play cursor
     // write_cursor is the position after which it is assumed to be save to write data
-    // p->write_offset is the postion where we actually write the data to
+    // p->write_offset is the position where we actually write the data to
     if (space > p->buffer_size)
         space -= p->buffer_size;                        // p->write_offset < play_offset
     // Check for buffer underruns. An underrun happens if DirectSound

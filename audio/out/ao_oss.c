@@ -94,20 +94,8 @@ static const struct mp_chmap oss_layouts[MP_NUM_CHANNELS + 1] = {
 #define AFMT_S16_NE MP_SELECT_LE_BE(AFMT_S16_LE, AFMT_S16_BE)
 #endif
 
-#if !defined(AFMT_U16_NE) && defined(AFMT_U16_LE) && defined(AFMT_U16_BE)
-#define AFMT_U16_NE MP_SELECT_LE_BE(AFMT_U16_LE, AFMT_U16_BE)
-#endif
-
-#if !defined(AFMT_U24_NE) && defined(AFMT_U24_LE) && defined(AFMT_U24_BE)
-#define AFMT_U24_NE MP_SELECT_LE_BE(AFMT_U24_LE, AFMT_U24_BE)
-#endif
-
 #if !defined(AFMT_S24_NE) && defined(AFMT_S24_LE) && defined(AFMT_S24_BE)
 #define AFMT_S24_NE MP_SELECT_LE_BE(AFMT_S24_LE, AFMT_S24_BE)
-#endif
-
-#if !defined(AFMT_U32_NE) && defined(AFMT_U32_LE) && defined(AFMT_U32_BE)
-#define AFMT_U32_NE AFMT_U32MP_SELECT_LE_BE(AFMT_U32_LE, AFMT_U32_BE)
 #endif
 
 #if !defined(AFMT_S32_NE) && defined(AFMT_S32_LE) && defined(AFMT_S32_BE)
@@ -116,17 +104,9 @@ static const struct mp_chmap oss_layouts[MP_NUM_CHANNELS + 1] = {
 
 static const int format_table[][2] = {
     {AFMT_U8,           AF_FORMAT_U8},
-    {AFMT_S8,           AF_FORMAT_S8},
-    {AFMT_U16_NE,       AF_FORMAT_U16},
     {AFMT_S16_NE,       AF_FORMAT_S16},
-#ifdef AFMT_U24_NE
-    {AFMT_U24_NE,       AF_FORMAT_U24},
-#endif
 #ifdef AFMT_S24_NE
     {AFMT_S24_NE,       AF_FORMAT_S24},
-#endif
-#ifdef AFMT_U32_NE
-    {AFMT_U32_NE,       AF_FORMAT_U32},
 #endif
 #ifdef AFMT_S32_NE
     {AFMT_S32_NE,       AF_FORMAT_S32},
@@ -204,7 +184,7 @@ static int control(struct ao *ao, enum aocontrol cmd, void *arg)
             return CONTROL_OK;
 #endif
 
-        if (AF_FORMAT_IS_SPECIAL(ao->format))
+        if (!af_fmt_is_pcm(ao->format))
             return CONTROL_TRUE;
 
         if ((fd = open(p->oss_mixer_device, O_RDONLY)) != -1) {
@@ -267,7 +247,7 @@ static bool try_format(struct ao *ao, int *format)
     struct priv *p = ao->priv;
 
     int oss_format = format2oss(*format);
-    if (oss_format == -1 && AF_FORMAT_IS_IEC61937(*format))
+    if (oss_format == -1 && af_fmt_is_spdif(*format))
         oss_format = AFMT_AC3;
 
     if (oss_format == -1) {
@@ -323,7 +303,7 @@ static int reopen_device(struct ao *ao, bool allow_format_changes)
     fcntl(p->audio_fd, F_SETFD, FD_CLOEXEC);
 #endif
 
-    if (AF_FORMAT_IS_IEC61937(format)) {
+    if (af_fmt_is_spdif(format)) {
         if (ioctl(p->audio_fd, SNDCTL_DSP_SPEED, &samplerate) == -1)
             goto fail;
         // Probably could be fixed by setting number of channels; needs testing.
@@ -347,7 +327,7 @@ static int reopen_device(struct ao *ao, bool allow_format_changes)
 
     MP_VERBOSE(ao, "sample format: %s\n", af_fmt_to_str(format));
 
-    if (!AF_FORMAT_IS_IEC61937(format)) {
+    if (!af_fmt_is_spdif(format)) {
         struct mp_chmap_sel sel = {0};
         for (int n = 0; n < MP_NUM_CHANNELS + 1; n++)
             mp_chmap_sel_add_map(&sel, &oss_layouts[n]);
@@ -412,7 +392,7 @@ static int reopen_device(struct ao *ao, bool allow_format_changes)
         }
     }
 
-    p->outburst -= p->outburst % (channels.num * af_fmt2bps(format)); // round down
+    p->outburst -= p->outburst % (channels.num * af_fmt_to_bytes(format)); // round down
 
     return 0;
 

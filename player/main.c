@@ -22,6 +22,7 @@
 #include <assert.h>
 #include <string.h>
 #include <pthread.h>
+#include <signal.h>
 
 #include "config.h"
 #include "talloc.h"
@@ -99,7 +100,37 @@ static const char def_config[] =
     "[pseudo-gui]\n"
     "terminal=no\n"
     "force-window=yes\n"
-    "idle=once\n";
+    "idle=once\n"
+    "screenshot-directory=~~desktop/\n"
+    "\n"
+    "[libmpv]\n"
+    "config=no\n"
+    "idle=yes\n"
+    "terminal=no\n"
+    "input-terminal=no\n"
+    "osc=no\n"
+    "ytdl=no\n"
+    "input-default-bindings=no\n"
+    "input-vo-keyboard=no\n"
+    "input-lirc=no\n"
+    "input-appleremote=no\n"
+    "input-media-keys=no\n"
+    "input-app-events=no\n"
+    "stop-playback-on-init-failure=yes\n"
+#if HAVE_ENCODING
+    "\n"
+    "[encoding]\n"
+    "vo=lavc\n"
+    "ao=lavc\n"
+    "keep-open=no\n"
+    "force-window=no\n"
+    "gapless-audio=yes\n"
+    "resume-playback=no\n"
+    "load-scripts=no\n"
+    "osc=no\n"
+    "framedrop=no\n"
+#endif
+;
 
 static pthread_mutex_t terminal_owner_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct MPContext *terminal_owner;
@@ -191,6 +222,7 @@ void mp_destroy(struct MPContext *mpctx)
         pthread_detach(pthread_self());
 
     mp_msg_uninit(mpctx->global);
+    pthread_mutex_destroy(&mpctx->ass_lock);
     talloc_free(mpctx);
 }
 
@@ -247,6 +279,10 @@ static bool handle_help_options(struct MPContext *mpctx)
         talloc_free(list);
         opt_exit = 1;
     }
+    if (opts->audio_spdif && strcmp(opts->audio_spdif, "help") == 0) {
+        MP_INFO(mpctx, "Choices: ac3,dts-hd,dts (and possibly more)\n");
+        opt_exit = 1;
+    }
     if (opts->video_decoders && strcmp(opts->video_decoders, "help") == 0) {
         struct mp_decoder_list *list = video_decoder_list();
         mp_print_decoders(log, MSGL_INFO, "Video decoders:", list);
@@ -271,16 +307,6 @@ static bool handle_help_options(struct MPContext *mpctx)
     return opt_exit;
 }
 
-static void osdep_preinit(int argc, char **argv)
-{
-    char *enable_talloc = getenv("MPV_LEAK_REPORT");
-    if (argc > 1 && (strcmp(argv[1], "-leak-report") == 0 ||
-                     strcmp(argv[1], "--leak-report") == 0))
-        enable_talloc = "1";
-    if (enable_talloc && strcmp(enable_talloc, "1") == 0)
-        talloc_enable_leak_report();
-}
-
 static int cfg_include(void *ctx, char *filename, int flags)
 {
     struct MPContext *mpctx = ctx;
@@ -303,6 +329,8 @@ struct MPContext *mp_create(void)
         .dispatch = mp_dispatch_create(mpctx),
         .playback_abort = mp_cancel_new(mpctx),
     };
+
+    pthread_mutex_init(&mpctx->ass_lock, NULL);
 
     mpctx->global = talloc_zero(mpctx, struct mpv_global);
 
@@ -333,6 +361,10 @@ struct MPContext *mp_create(void)
     command_init(mpctx);
     init_libav(mpctx->global);
     mp_clients_init(mpctx);
+
+#if HAVE_COCOA
+    cocoa_set_input_context(mpctx->input);
+#endif
 
     return mpctx;
 }
@@ -389,12 +421,6 @@ int mp_initialize(struct MPContext *mpctx, char **options)
     }
     MP_STATS(mpctx, "start init");
 
-    if (opts->slave_mode) {
-        MP_WARN(mpctx, "--slave-broken is deprecated (see manpage).\n");
-        opts->consolecontrols = 0;
-        m_config_set_option0(mpctx->mconfig, "input-file", "/dev/stdin");
-    }
-
     if (!mpctx->playlist->first && !opts->player_idle_mode)
         return -3;
 
@@ -408,18 +434,10 @@ int mp_initialize(struct MPContext *mpctx, char **options)
         mpctx->encode_lavc_ctx = encode_lavc_init(opts->encode_opts,
                                                   mpctx->global);
         if(!mpctx->encode_lavc_ctx) {
-            MP_INFO(mpctx, "Encoding initialization failed.");
+            MP_INFO(mpctx, "Encoding initialization failed.\n");
             return -1;
         }
-        m_config_set_option0(mpctx->mconfig, "vo", "lavc");
-        m_config_set_option0(mpctx->mconfig, "ao", "lavc");
-        m_config_set_option0(mpctx->mconfig, "keep-open", "no");
-        m_config_set_option0(mpctx->mconfig, "force-window", "no");
-        m_config_set_option0(mpctx->mconfig, "gapless-audio", "yes");
-        m_config_set_option0(mpctx->mconfig, "resume-playback", "no");
-        m_config_set_option0(mpctx->mconfig, "load-scripts", "no");
-        m_config_set_option0(mpctx->mconfig, "osc", "no");
-        m_config_set_option0(mpctx->mconfig, "framedrop", "no");
+        m_config_set_profile(mpctx->mconfig, "encoding", 0);
         // never use auto
         if (!opts->audio_output_channels.num) {
             m_config_set_option_ext(mpctx->mconfig, bstr0("audio-channels"),
@@ -441,12 +459,12 @@ int mp_initialize(struct MPContext *mpctx, char **options)
 
     mp_get_resume_defaults(mpctx);
 
+    // Lua user scripts (etc.) can call arbitrary functions. Load them at a point
+    // where this is safe.
+    mp_load_scripts(mpctx);
+
     if (opts->consolecontrols && cas_terminal_owner(mpctx, mpctx))
         terminal_setup_getch(mpctx->input);
-
-#if HAVE_COCOA
-    cocoa_set_input_context(mpctx->input);
-#endif
 
     if (opts->force_vo) {
         struct vo_extra ex = {
@@ -460,12 +478,10 @@ int mp_initialize(struct MPContext *mpctx, char **options)
                     "the selected video_out (-vo) device.\n");
             return -1;
         }
+        if (opts->force_vo == 2)
+            handle_force_window(mpctx, false);
         mpctx->mouse_cursor_visible = true;
     }
-
-    // Lua user scripts (etc.) can call arbitrary functions. Load them at a point
-    // where this is safe.
-    mp_load_scripts(mpctx);
 
 #if !defined(__MINGW32__)
     mpctx->ipc_ctx = mp_init_ipc(mpctx->clients, mpctx->global);
@@ -474,6 +490,12 @@ int mp_initialize(struct MPContext *mpctx, char **options)
 #ifdef _WIN32
     if (opts->w32_priority > 0)
         SetPriorityClass(GetCurrentProcess(), opts->w32_priority);
+#endif
+#ifndef _WIN32
+    // Deal with OpenSSL and GnuTLS not using MSG_NOSIGNAL.
+    struct sigaction sa = { .sa_handler = SIG_IGN, .sa_flags = SA_RESTART };
+    sigfillset(&sa.sa_mask);
+    sigaction(SIGPIPE, &sa, NULL);
 #endif
 
     prepare_playlist(mpctx, mpctx->playlist);
@@ -485,7 +507,9 @@ int mp_initialize(struct MPContext *mpctx, char **options)
 
 int mpv_main(int argc, char *argv[])
 {
-    osdep_preinit(argc, argv);
+    char *enable_talloc = getenv("MPV_LEAK_REPORT");
+    if (enable_talloc && strcmp(enable_talloc, "1") == 0)
+        talloc_enable_leak_report();
 
     struct MPContext *mpctx = mp_create();
     struct MPOpts *opts = mpctx->opts;

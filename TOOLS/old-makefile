@@ -80,7 +80,8 @@ SOURCES-$(RSOUND)               += audio/out/ao_rsound.c
 SOURCES-$(SNDIO)                += audio/out/ao_sndio.c
 SOURCES-$(VDPAU)                += video/vdpau.c video/vdpau_mixer.c \
                                    video/out/vo_vdpau.c video/decode/vdpau.c \
-                                   video/filter/vf_vdpaupp.c
+                                   video/filter/vf_vdpaupp.c \
+                                   video/filter/vf_vdpaurb.c
 SOURCES-$(VDPAU_GL_X11)         += video/out/gl_hwdec_vdpau.c
 SOURCES-$(VAAPI)                += video/out/vo_vaapi.c \
                                    video/decode/vaapi.c \
@@ -88,8 +89,7 @@ SOURCES-$(VAAPI)                += video/out/vo_vaapi.c \
 SOURCES-$(VAAPI_VPP)            += video/filter/vf_vavpp.c
 SOURCES-$(VAAPI_GLX)            += video/out/gl_hwdec_vaglx.c
 
-SOURCES-$(X11)                  += video/out/vo_x11.c video/out/x11_common.c
-SOURCES-$(XV)                   += video/out/vo_xv.c
+SOURCES-$(XV)                   += video/out/x11_common.c video/out/vo_xv.c
 SOURCES-$(WAYLAND)              += video/out/vo_wayland.c \
                                    video/out/wayland_common.c \
                                    video/out/wayland/buffer.c \
@@ -108,6 +108,8 @@ SOURCES-$(LIBAVFILTER)          += video/filter/vf_lavfi.c \
 
 SOURCES-$(LUA)                  += player/lua.c
 SOURCES-$(VAPOURSYNTH_CORE)     += video/filter/vf_vapoursynth.c
+SOURCES-$(LIBARCHIVE)           += demux/demux_libarchive.c \
+                                   stream/stream_libarchive.c
 SOURCES-$(DLOPEN)               += video/filter/vf_dlopen.c
 
 SOURCES = audio/audio.c \
@@ -123,10 +125,7 @@ SOURCES = audio/audio.c \
           audio/filter/af.c \
           audio/filter/af_center.c \
           audio/filter/af_channels.c \
-          audio/filter/af_convert24.c \
-          audio/filter/af_convertsignendian.c \
           audio/filter/af_delay.c \
-          audio/filter/af_dummy.c \
           audio/filter/af_equalizer.c \
           audio/filter/af_export.c \
           audio/filter/af_extrastereo.c \
@@ -160,6 +159,7 @@ SOURCES = audio/audio.c \
           common/tags.c \
           common/version.c \
           demux/codec_tags.c \
+          demux/cue.c \
           demux/demux.c \
           demux/demux_edl.c \
           demux/demux_cue.c \
@@ -207,7 +207,6 @@ SOURCES = audio/audio.c \
           player/client.c \
           player/configfiles.c \
           player/command.c \
-          player/discnav.c \
           player/loadfile.c \
           player/main.c \
           player/misc.c \
@@ -382,8 +381,8 @@ config.mak: configure
 	@echo "####### Please run ./configure again - it's changed! #######"
 	@echo "############################################################"
 
-version.h .version: version.sh
-	./$<
+old_build/version.h .version: version.sh
+	./version.sh --versionh=old_build/version.h
 
 # Force version.sh to run to potentially regenerate version.h
 -include .version
@@ -394,7 +393,7 @@ version.h .version: version.sh
 
 ###### dependency declarations / specific CFLAGS ######
 
-common/version.c: version.h
+common/version.c: old_build/version.h
 
 DOCS/man/mpv.1: DOCS/man/af.rst \
                    DOCS/man/ao.rst \
@@ -465,7 +464,7 @@ clean:
 	-$(RM) $(call ADD_ALL_DIRS,/*.o /*.a /*.ho /*~)
 	-$(RM) mpv
 	-$(RM) DOCS/man/*/mpv.1
-	-$(RM) version.h
+	-$(RM) old_build/version.h version.h
 	-$(RM) input/input_conf.h
 	-$(RM) video/out/vdpau_template.c
 	-$(RM) demux/ebml_types.h demux/ebml_defs.c

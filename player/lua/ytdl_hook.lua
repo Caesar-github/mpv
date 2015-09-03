@@ -9,7 +9,7 @@ local ytdl = {
 
 local function exec(args)
     local ret = utils.subprocess({args = args})
-    return ret.status, ret.stdout
+    return ret.status, ret.stdout, ret
 end
 
 -- return if it was explicitly set on the command line
@@ -96,12 +96,9 @@ mp.add_hook("on_load", 10, function ()
         local format = mp.get_property("options/ytdl-format")
         local raw_options = mp.get_property_native("options/ytdl-raw-options")
 
-        -- subformat workaround
-        local subformat = "ass/srt/best"
-
         local command = {
             ytdl.path, "--no-warnings", "-J", "--flat-playlist", "--all-subs",
-            "--sub-format", subformat, "--no-playlist"
+            "--sub-format", "ass/srt/best", "--no-playlist"
         }
 
         -- Checks if video option is "no", change options accordingly
@@ -123,10 +120,13 @@ mp.add_hook("on_load", 10, function ()
         end
         table.insert(command, "--")
         table.insert(command, url)
-        local es, json = exec(command)
+        msg.debug("Running: " .. table.concat(command,' '))
+        local es, json, result = exec(command)
 
         if (es < 0) or (json == nil) or (json == "") then
-            msg.warn("youtube-dl failed, trying to play URL directly ...")
+            if not result.killed_by_us then
+                msg.warn("youtube-dl failed, trying to play URL directly ...")
+            end
             return
         end
 
@@ -144,7 +144,8 @@ mp.add_hook("on_load", 10, function ()
             -- direct URL, nothing to do
             msg.verbose("Got direct URL")
             return
-        elseif not (json["_type"] == nil) and (json["_type"] == "playlist") then
+        elseif not (json["_type"] == nil)
+            and ((json["_type"] == "playlist") or (json["_type"] == "multi_video")) then
             -- a playlist
 
             if (#json.entries == 0) then
@@ -176,7 +177,7 @@ mp.add_hook("on_load", 10, function ()
 
                 mp.set_property("stream-open-filename", playlist)
                 if not (json.title == nil) then
-                    mp.set_property("file-local-options/media-title", json.title)
+                    mp.set_property("file-local-options/force-media-title", json.title)
                 end
 
             else
@@ -234,26 +235,34 @@ mp.add_hook("on_load", 10, function ()
 
             mp.set_property("stream-open-filename", streamurl)
 
-            mp.set_property("file-local-options/media-title", json.title)
+            mp.set_property("file-local-options/force-media-title", json.title)
 
             -- add subtitles
             if not (json.requested_subtitles == nil) then
                 for lang, sub_info in pairs(json.requested_subtitles) do
                     msg.verbose("adding subtitle ["..lang.."]")
 
-                    local slang = lang
-                    if (lang:len() > 3) then
-                        slang = lang:sub(1,2)
-                    end
+                    local sub = nil
 
                     if not (sub_info.data == nil) then
                         sub = "memory://"..sub_info.data
-                    else
+                    elseif not (sub_info.url == nil) then
                         sub = sub_info.url
                     end
-                    mp.commandv("sub_add", sub,
-                        "auto", lang.." "..sub_info.ext, slang)
+
+                    if not (sub == nil) then
+                        mp.commandv("sub_add", sub,
+                            "auto", sub_info.ext, lang)
+                    else
+                        msg.verbose("No subtitle data/url for ["..lang.."]")
+                    end
                 end
+            end
+
+            -- set start and end time
+            if not (json.start_time == nil) then
+                msg.debug("setting start to: " .. json.start_time .. " secs")
+                mp.set_property("file-local-options/start",json.start_time)
             end
 
             -- for rtmp

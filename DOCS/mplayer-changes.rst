@@ -52,6 +52,7 @@ Input
   Also see: http://github.com/mpv-player/mpv/wiki/IR-remotes
 * Joystick support was removed. It was considered useless and was the cause
   of some problems (e.g. a laptop's accelerator being recognized as joystick).
+* Support for relative seeking by percentage.
 
 Audio
 ~~~~~
@@ -93,6 +94,8 @@ Video
 
 * Image subtitles (DVDs etc.) are rendered in color and use more correct
   positioning (color for image subs can be disabled with ``--sub-gray``).
+* Support for the X11 video output is removed, since it was considered
+  deprecated. SDL video output can still be used as a fallback.
 
 OSD and terminal
 ~~~~~~~~~~~~~~~~
@@ -276,7 +279,7 @@ Command Line Switches
     ``-xineramascreen``         ``--screen`` (different values)
     ``-xy W``                   ``--autofit=W``
     ``-zoom``                   Inverse available as ``--video-unscaled``
-    ``dvdnav://``               ``dvdnav://menu``
+    ``dvdnav://``               Removed.
     ``dvd://1``                 ``dvd://0`` (0-based offset)
     =========================== ========================================
 
@@ -396,7 +399,8 @@ Slave mode
 
   Assuming the system supports ``/dev/stdin``.
 
-  (The option was readded in 0.5.1 and sets exactly these options.)
+  (The option was added back in 0.5.1 and sets exactly these options. It was
+  removed in 0.10.x again.)
 
 * A JSON RPC protocol giving access to the client API is also supported. See
   `JSON IPC`_ for more information.

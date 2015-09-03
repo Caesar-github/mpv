@@ -37,8 +37,7 @@
 #include "stream/stream.h"
 #include "demux.h"
 #include "stheader.h"
-
-#include "audio/format.h"
+#include "cue.h"
 
 // Demuxer list
 extern const struct demuxer_desc demuxer_desc_edl;
@@ -54,6 +53,7 @@ extern const demuxer_desc_t demuxer_desc_subreader;
 extern const demuxer_desc_t demuxer_desc_playlist;
 extern const demuxer_desc_t demuxer_desc_disc;
 extern const demuxer_desc_t demuxer_desc_rar;
+extern const demuxer_desc_t demuxer_desc_libarchive;
 
 /* Please do not add any new demuxers here. If you want to implement a new
  * demuxer, add it to libavformat, except for wrappers around external
@@ -72,6 +72,9 @@ const demuxer_desc_t *const demuxer_list[] = {
     &demuxer_desc_libass,
 #endif
     &demuxer_desc_matroska,
+#if HAVE_LIBARCHIVE
+    &demuxer_desc_libarchive,
+#endif
     &demuxer_desc_rar,
     &demuxer_desc_lavf,
     &demuxer_desc_mf,
@@ -113,8 +116,8 @@ struct demux_internal {
     bool idle;
     bool autoselect;
     double min_secs;
-    int min_packs;
-    int min_bytes;
+    int max_packs;
+    int max_bytes;
 
     bool tracks_switched;       // thread needs to inform demuxer of this
 
@@ -128,7 +131,6 @@ struct demux_internal {
     // Cached state.
     bool force_cache_update;
     double time_length;
-    struct mp_nav_event *nav_event;
     struct mp_tags *stream_metadata;
     int64_t stream_size;
     int64_t stream_cache_size;
@@ -244,7 +246,6 @@ void free_demuxer(demuxer_t *demuxer)
         ds_flush(demuxer->streams[n]->ds);
     pthread_mutex_destroy(&in->lock);
     pthread_cond_destroy(&in->wakeup);
-    talloc_free(in->nav_event);
     talloc_free(demuxer);
 }
 
@@ -390,12 +391,13 @@ static bool read_packet(struct demux_internal *in)
         read_more |= ds->active && !ds->head;
         packs += ds->packs;
         bytes += ds->bytes;
-        if (ds->active && ds->last_ts != MP_NOPTS_VALUE && in->min_secs > 0)
+        if (ds->active && ds->last_ts != MP_NOPTS_VALUE && in->min_secs > 0 &&
+            ds->last_ts >= ds->base_ts)
             read_more |= ds->last_ts - ds->base_ts < in->min_secs;
     }
     MP_DBG(in, "packets=%zd, bytes=%zd, active=%d, more=%d\n",
            packs, bytes, active, read_more);
-    if (packs >= MAX_PACKS || bytes >= MAX_PACK_BYTES) {
+    if (packs >= in->max_packs || bytes >= in->max_bytes) {
         if (!in->warned_queue_overflow) {
             in->warned_queue_overflow = true;
             MP_ERR(in, "Too many packets in the demuxer packet queues:\n");
@@ -414,8 +416,6 @@ static bool read_packet(struct demux_internal *in)
         pthread_cond_signal(&in->wakeup);
         return false;
     }
-    if (packs < in->min_packs && bytes < in->min_bytes)
-        read_more |= active;
 
     if (!read_more)
         return false;
@@ -527,8 +527,12 @@ static void execute_seek(struct demux_internal *in)
 
     pthread_mutex_unlock(&in->lock);
 
+    MP_VERBOSE(in, "execute seek (to %f flags %d)\n", pts, flags);
+
     if (in->d_thread->desc->seek)
         in->d_thread->desc->seek(in->d_thread, pts, flags);
+
+    MP_VERBOSE(in, "seek done\n");
 
     pthread_mutex_lock(&in->lock);
 }
@@ -785,27 +789,37 @@ static int decode_peak(demuxer_t *demuxer, const char *tag, float *out)
     return 0;
 }
 
+static void apply_replaygain(demuxer_t *demuxer, struct replaygain_data *rg)
+{
+    for (int n = 0; n < demuxer->num_streams; n++) {
+        struct sh_stream *sh = demuxer->streams[n];
+        if (sh->audio && !sh->audio->replaygain_data) {
+            MP_VERBOSE(demuxer, "Replaygain: Track=%f/%f Album=%f/%f\n",
+                       rg->track_gain, rg->track_peak,
+                       rg->album_gain, rg->album_peak);
+            sh->audio->replaygain_data = talloc_memdup(demuxer, rg, sizeof(*rg));
+        }
+    }
+}
+
 static void demux_export_replaygain(demuxer_t *demuxer)
 {
-    float tg, tp, ag, ap;
+    struct replaygain_data rg = {0};
 
-    if (!decode_gain(demuxer, "REPLAYGAIN_TRACK_GAIN", &tg) &&
-        !decode_peak(demuxer, "REPLAYGAIN_TRACK_PEAK", &tp) &&
-        !decode_gain(demuxer, "REPLAYGAIN_ALBUM_GAIN", &ag) &&
-        !decode_peak(demuxer, "REPLAYGAIN_ALBUM_PEAK", &ap))
+    if (!decode_gain(demuxer, "REPLAYGAIN_TRACK_GAIN", &rg.track_gain) &&
+        !decode_peak(demuxer, "REPLAYGAIN_TRACK_PEAK", &rg.track_peak) &&
+        !decode_gain(demuxer, "REPLAYGAIN_ALBUM_GAIN", &rg.album_gain) &&
+        !decode_peak(demuxer, "REPLAYGAIN_ALBUM_PEAK", &rg.album_peak))
     {
-        struct replaygain_data *rgain = talloc_ptrtype(demuxer, rgain);
+        apply_replaygain(demuxer, &rg);
+    }
 
-        rgain->track_gain = tg;
-        rgain->track_peak = tp;
-        rgain->album_gain = ag;
-        rgain->album_peak = ap;
-
-        for (int n = 0; n < demuxer->num_streams; n++) {
-            struct sh_stream *sh = demuxer->streams[n];
-            if (sh->audio && !sh->audio->replaygain_data)
-                sh->audio->replaygain_data = rgain;
-        }
+    if (!decode_gain(demuxer, "REPLAYGAIN_GAIN", &rg.track_gain) &&
+        !decode_peak(demuxer, "REPLAYGAIN_PEAK", &rg.track_peak))
+    {
+        rg.album_gain = rg.track_gain;
+        rg.album_peak = rg.track_peak;
+        apply_replaygain(demuxer, &rg);
     }
 }
 
@@ -902,6 +916,21 @@ static void demux_init_cache(struct demuxer *demuxer)
     in->stream_base_filename = talloc_steal(demuxer, base);
 }
 
+static void demux_init_cuesheet(struct demuxer *demuxer)
+{
+    char *cue = mp_tags_get_str(demuxer->metadata, "cuesheet");
+    if (cue && !demuxer->num_chapters) {
+        struct cue_file *f = mp_parse_cue(bstr0(cue));
+        if (f) {
+            for (int n = 0; n < f->num_tracks; n++) {
+                struct cue_track *t = &f->tracks[n];
+                demuxer_add_chapter(demuxer, t->title, t->start, -1);
+            }
+        }
+        talloc_free(f);
+    }
+}
+
 static struct demuxer *open_given_type(struct mpv_global *global,
                                        struct mp_log *log,
                                        const struct demuxer_desc *desc,
@@ -934,8 +963,8 @@ static struct demuxer *open_given_type(struct mpv_global *global,
         .d_buffer = talloc(demuxer, struct demuxer),
         .d_user = demuxer,
         .min_secs = demuxer->opts->demuxer_min_secs,
-        .min_packs = demuxer->opts->demuxer_min_packs,
-        .min_bytes = demuxer->opts->demuxer_min_bytes,
+        .max_packs = demuxer->opts->demuxer_max_packs,
+        .max_bytes = demuxer->opts->demuxer_max_bytes,
     };
     pthread_mutex_init(&in->lock, NULL);
     pthread_cond_init(&in->wakeup, NULL);
@@ -971,12 +1000,12 @@ static struct demuxer *open_given_type(struct mpv_global *global,
             mp_verbose(log, "Detected file format: %s\n", desc->desc);
         if (!in->d_thread->seekable)
             mp_verbose(log, "Stream is not seekable.\n");
-        // Pretend we can seek if we can't seek, but there's a cache.
-        if (!in->d_thread->seekable && stream->uncached_stream) {
-            mp_verbose(log, "Enabling seeking because stream cache is active.\n");
+        if (!in->d_thread->seekable && demuxer->opts->force_seekable) {
+            mp_warn(log, "Not seekable, but enabling seeking on user request.\n");
             in->d_thread->seekable = true;
             in->d_thread->partially_seekable = true;
         }
+        demux_init_cuesheet(in->d_thread);
         demux_init_cache(demuxer);
         demux_changed(in->d_thread, DEMUX_EVENT_ALL);
         demux_update(demuxer);
@@ -1050,14 +1079,22 @@ struct demuxer *demux_open_url(const char *url,
                                 struct mpv_global *global)
 {
     struct MPOpts *opts = global->opts;
-    struct stream *s = stream_create(url, STREAM_READ, cancel, global);
+    struct demuxer_params dummy = {0};
+    if (!params)
+        params = &dummy;
+    struct stream *s = stream_create(url, STREAM_READ | params->stream_flags,
+                                     cancel, global);
     if (!s)
         return NULL;
-    if (!(params && params->disable_cache))
+    if (params->allow_capture)
+        stream_set_capture_file(s, opts->stream_capture);
+    if (!params->disable_cache)
         stream_enable_cache(&s, &opts->stream_cache);
     struct demuxer *d = demux_open(s, params, global);
-    if (!d)
+    if (!d) {
+        params->demuxer_failed = true;
         free_stream(s);
+    }
     return d;
 }
 
@@ -1107,6 +1144,9 @@ int demux_seek(demuxer_t *demuxer, double rel_seek_secs, int flags)
     }
 
     pthread_mutex_lock(&in->lock);
+
+    MP_VERBOSE(in, "queuing seek to %f%s\n", rel_seek_secs,
+               in->seeking ? " (cascade)" : "");
 
     flush_locked(demuxer);
     in->seeking = true;
@@ -1194,21 +1234,19 @@ bool demux_stream_is_selected(struct sh_stream *stream)
     return r;
 }
 
-int demuxer_add_attachment(demuxer_t *demuxer, struct bstr name,
-                           struct bstr type, struct bstr data)
+int demuxer_add_attachment(demuxer_t *demuxer, char *name, char *type,
+                           void *data, size_t data_size)
 {
     if (!(demuxer->num_attachments % 32))
         demuxer->attachments = talloc_realloc(demuxer, demuxer->attachments,
                                               struct demux_attachment,
                                               demuxer->num_attachments + 32);
 
-    struct demux_attachment *att =
-        demuxer->attachments + demuxer->num_attachments;
-    att->name = talloc_strndup(demuxer->attachments, name.start, name.len);
-    att->type = talloc_strndup(demuxer->attachments, type.start, type.len);
-    att->data = talloc_size(demuxer->attachments, data.len);
-    memcpy(att->data, data.start, data.len);
-    att->data_size = data.len;
+    struct demux_attachment *att = &demuxer->attachments[demuxer->num_attachments];
+    att->name = talloc_strdup(demuxer->attachments, name);
+    att->type = talloc_strdup(demuxer->attachments, type);
+    att->data = talloc_memdup(demuxer->attachments, data, data_size);
+    att->data_size = data_size;
 
     return demuxer->num_attachments++;
 }
@@ -1231,17 +1269,16 @@ static void demuxer_sort_chapters(demuxer_t *demuxer)
           sizeof(struct demux_chapter), chapter_compare);
 }
 
-int demuxer_add_chapter(demuxer_t *demuxer, struct bstr name,
+int demuxer_add_chapter(demuxer_t *demuxer, char *name,
                         double pts, uint64_t demuxer_id)
 {
     struct demux_chapter new = {
         .original_index = demuxer->num_chapters,
         .pts = pts,
-        .name = name.len ? bstrdup0(demuxer, name) : NULL,
         .metadata = talloc_zero(demuxer, struct mp_tags),
         .demuxer_id = demuxer_id,
     };
-    mp_tags_set_bstr(new.metadata, bstr0("TITLE"), name);
+    mp_tags_set_str(new.metadata, "TITLE", name);
     MP_TARRAY_APPEND(demuxer, demuxer->chapters, demuxer->num_chapters, new);
     return demuxer->num_chapters - 1;
 }
@@ -1263,25 +1300,17 @@ static void update_cache(struct demux_internal *in)
     // Don't lock while querying the stream.
     double time_length = -1;
     struct mp_tags *stream_metadata = NULL;
-    int64_t stream_size = -1;
     int64_t stream_cache_size = -1;
     int64_t stream_cache_fill = -1;
     int stream_cache_idle = -1;
-    struct mp_nav_event *nav_event = NULL;
-
-    pthread_mutex_lock(&in->lock);
-    bool need_nav_event = !in->nav_event;;
-    pthread_mutex_unlock(&in->lock);
 
     if (demuxer->desc->control) {
         demuxer->desc->control(demuxer, DEMUXER_CTRL_GET_TIME_LENGTH,
                                &time_length);
-        if (need_nav_event)
-            demuxer->desc->control(demuxer, DEMUXER_CTRL_GET_NAV_EVENT, &nav_event);
     }
 
+    int64_t stream_size = stream_get_size(stream);
     stream_control(stream, STREAM_CTRL_GET_METADATA, &stream_metadata);
-    stream_control(stream, STREAM_CTRL_GET_SIZE, &stream_size);
     stream_control(stream, STREAM_CTRL_GET_CACHE_SIZE, &stream_cache_size);
     stream_control(stream, STREAM_CTRL_GET_CACHE_FILL, &stream_cache_fill);
     stream_control(stream, STREAM_CTRL_GET_CACHE_IDLE, &stream_cache_idle);
@@ -1297,7 +1326,6 @@ static void update_cache(struct demux_internal *in)
         in->stream_metadata = talloc_steal(in, stream_metadata);
         in->d_buffer->events |= DEMUX_EVENT_METADATA;
     }
-    in->nav_event = nav_event ? nav_event : in->nav_event;
     pthread_mutex_unlock(&in->lock);
 }
 
@@ -1396,13 +1424,6 @@ static int cached_demux_control(struct demux_internal *in, int cmd, void *arg)
             r->ts_duration = 0;
         return DEMUXER_CTRL_OK;
     }
-    case DEMUXER_CTRL_GET_NAV_EVENT:
-        if (!in->nav_event)
-            return DEMUXER_CTRL_NOTIMPL;
-        *(struct mp_nav_event **)arg = in->nav_event;
-        in->nav_event = NULL;
-        return DEMUXER_CTRL_OK;
-
     }
     return DEMUXER_CTRL_DONTKNOW;
 }
@@ -1492,9 +1513,7 @@ struct demux_chapter *demux_copy_chapter_data(struct demux_chapter *c, int num)
     struct demux_chapter *new = talloc_array(NULL, struct demux_chapter, num);
     for (int n = 0; n < num; n++) {
         new[n] = c[n];
-        new[n].name = talloc_strdup(new, new[n].name);
-        if (new[n].metadata)
-            new[n].metadata = mp_tags_dup(new, new[n].metadata);
+        new[n].metadata = mp_tags_dup(new, new[n].metadata);
     }
     return new;
 }

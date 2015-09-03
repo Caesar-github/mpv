@@ -190,25 +190,40 @@ static int mp_seek(MPContext *mpctx, struct seek_params seek,
     if (hr_seek_very_exact)
         hr_seek_offset = MPMAX(hr_seek_offset, 0.5); // arbitrary
 
+    double target_time = MP_NOPTS_VALUE;
+    int direction = 0;
+
+    switch (seek.type) {
+    case MPSEEK_ABSOLUTE:
+        target_time = seek.amount;
+        break;
+    case MPSEEK_RELATIVE:
+        direction = seek.amount > 0 ? 1 : -1;
+        target_time = seek.amount + get_current_time(mpctx);
+        break;
+    case MPSEEK_FACTOR: ;
+        double len = get_time_length(mpctx);
+        if (len >= 0)
+            target_time = seek.amount * len + get_start_time(mpctx);
+        break;
+    }
+
     bool hr_seek = opts->correct_pts && seek.exact != MPSEEK_KEYFRAME;
     hr_seek &= (opts->hr_seek == 0 && seek.type == MPSEEK_ABSOLUTE) ||
                opts->hr_seek > 0 || seek.exact >= MPSEEK_EXACT;
     if (seek.type == MPSEEK_FACTOR || seek.amount < 0 ||
         (seek.type == MPSEEK_ABSOLUTE && seek.amount < mpctx->last_chapter_pts))
         mpctx->last_chapter_seek = -2;
-    if (seek.type == MPSEEK_FACTOR && !mpctx->demuxer->ts_resets_possible) {
-        double len = get_time_length(mpctx);
-        if (len >= 0) {
-            seek.amount = seek.amount * len + get_start_time(mpctx);
-            seek.type = MPSEEK_ABSOLUTE;
-        }
-    }
-    int direction = 0;
-    if (seek.type == MPSEEK_RELATIVE && (!mpctx->demuxer->rel_seeks || hr_seek)) {
+
+    // Prefer doing absolute seeks, unless not possible.
+    if ((seek.type == MPSEEK_FACTOR && !mpctx->demuxer->ts_resets_possible &&
+         target_time != MP_NOPTS_VALUE) ||
+        (seek.type == MPSEEK_RELATIVE && (!mpctx->demuxer->rel_seeks || hr_seek)))
+    {
         seek.type = MPSEEK_ABSOLUTE;
-        direction = seek.amount > 0 ? 1 : -1;
-        seek.amount += get_current_time(mpctx);
+        seek.amount = target_time;
     }
+
     hr_seek &= seek.type == MPSEEK_ABSOLUTE; // otherwise, no target PTS known
 
     double demuxer_amount = seek.amount;
@@ -273,8 +288,7 @@ static int mp_seek(MPContext *mpctx, struct seek_params seek,
 
     /* Use the target time as "current position" for further relative
      * seeks etc until a new video frame has been decoded */
-    if (seek.type == MPSEEK_ABSOLUTE)
-        mpctx->last_seek_pts = seek.amount;
+    mpctx->last_seek_pts = target_time;
 
     // The hr_seek==false case is for skipping frames with PTS before the
     // current timeline chapter start. It's not really known where the demuxer
@@ -287,6 +301,9 @@ static int mp_seek(MPContext *mpctx, struct seek_params seek,
         mpctx->hrseek_framedrop = !hr_seek_very_exact;
         mpctx->hrseek_pts = hr_seek ? seek.amount
                                  : mpctx->timeline[mpctx->timeline_part].start;
+
+        MP_VERBOSE(mpctx, "hr-seek, skipping to %f%s\n", mpctx->hrseek_pts,
+                   mpctx->hrseek_framedrop ? "" : " (no framedrop)");
     }
 
     mpctx->start_timestamp = mp_time_sec();
@@ -303,6 +320,10 @@ void queue_seek(struct MPContext *mpctx, enum seek_type type, double amount,
                 enum seek_precision exact, bool immediate)
 {
     struct seek_params *seek = &mpctx->seek;
+
+    if (mpctx->stop_play == AT_END_OF_FILE)
+        mpctx->stop_play = KEEP_PLAYING;
+
     switch (type) {
     case MPSEEK_RELATIVE:
         seek->immediate |= immediate;
@@ -467,7 +488,6 @@ char *chapter_display_name(struct MPContext *mpctx, int chapter)
             dname = talloc_asprintf(NULL, "(%d) of %d", chapter + 1,
                                     chapter_count);
     }
-    talloc_free(name);
     return dname;
 }
 
@@ -476,10 +496,10 @@ char *chapter_name(struct MPContext *mpctx, int chapter)
 {
     if (chapter < 0 || chapter >= mpctx->num_chapters)
         return NULL;
-    return talloc_strdup(NULL, mpctx->chapters[chapter].name);
+    return mp_tags_get_str(mpctx->chapters[chapter].metadata, "title");
 }
 
-// returns the start of the chapter in seconds (-1 if unavailable)
+// returns the start of the chapter in seconds (NOPTS if unavailable)
 double chapter_start_time(struct MPContext *mpctx, int chapter)
 {
     if (chapter == -1)
@@ -492,27 +512,6 @@ double chapter_start_time(struct MPContext *mpctx, int chapter)
 int get_chapter_count(struct MPContext *mpctx)
 {
     return mpctx->num_chapters;
-}
-
-// Seek to a given chapter. Queues the seek.
-bool mp_seek_chapter(struct MPContext *mpctx, int chapter)
-{
-    int num = get_chapter_count(mpctx);
-    if (num == 0)
-        return false;
-    if (chapter < -1 || chapter >= num)
-        return false;
-
-    mpctx->last_chapter_seek = -2;
-
-    double pts = chapter_start_time(mpctx, chapter);
-    if (pts == MP_NOPTS_VALUE)
-        return false;
-
-    queue_seek(mpctx, MPSEEK_ABSOLUTE, pts, MPSEEK_DEFAULT, true);
-    mpctx->last_chapter_seek = chapter;
-    mpctx->last_chapter_pts = pts;
-    return true;
 }
 
 static void handle_osd_redraw(struct MPContext *mpctx)
@@ -691,6 +690,27 @@ void add_frame_pts(struct MPContext *mpctx, double pts)
     mpctx->vo_pts_history_pts[0] = pts;
 }
 
+// Return the last (at most num) frame duration in fd[]. Return the number of
+// entries written to fd[] (range [0, num]). fd[0] is the most recent frame.
+int get_past_frame_durations(struct MPContext *mpctx, double *fd, int num)
+{
+    double next_pts = mpctx->vo_pts_history_pts[0];
+    if (mpctx->vo_pts_history_seek[0] != mpctx->vo_pts_history_seek_ts ||
+        next_pts == MP_NOPTS_VALUE)
+        return 0;
+    int num_ret = 0;
+    for (int n = 1; n < MAX_NUM_VO_PTS && num_ret < num; n++) {
+        double frame_pts = mpctx->vo_pts_history_pts[n];
+        // Discontinuity -> refuse to return a value.
+        if (mpctx->vo_pts_history_seek[n] != mpctx->vo_pts_history_seek_ts ||
+            next_pts <= frame_pts || frame_pts == MP_NOPTS_VALUE)
+            break;
+        fd[num_ret++] = next_pts - frame_pts;
+        next_pts = frame_pts;
+    }
+    return num_ret;
+}
+
 static double find_previous_pts(struct MPContext *mpctx, double pts)
 {
     for (int n = 0; n < MAX_NUM_VO_PTS - 1; n++) {
@@ -770,7 +790,7 @@ static void handle_sstep(struct MPContext *mpctx)
     }
 
     if (mpctx->video_status >= STATUS_EOF) {
-        if (mpctx->max_frames >= 0)
+        if (mpctx->max_frames >= 0 && !mpctx->stop_play)
             mpctx->stop_play = AT_END_OF_FILE; // force EOF even if audio left
         if (mpctx->step_frames > 0 && !mpctx->paused)
             pause_player(mpctx);
@@ -890,7 +910,7 @@ void handle_force_window(struct MPContext *mpctx, bool reconfig)
 static void handle_dummy_ticks(struct MPContext *mpctx)
 {
     if (mpctx->video_status == STATUS_EOF || mpctx->paused) {
-        if (mp_time_sec() - mpctx->last_idle_tick > 0.5) {
+        if (mp_time_sec() - mpctx->last_idle_tick > 0.050) {
             mpctx->last_idle_tick = mp_time_sec();
             mp_notify(mpctx, MPV_EVENT_TICK, NULL);
         }
@@ -924,7 +944,9 @@ static void handle_playback_restart(struct MPContext *mpctx, double endpts)
             if (opts->playing_msg && opts->playing_msg[0]) {
                 char *msg =
                     mp_property_expand_escaped_string(mpctx, opts->playing_msg);
-                MP_INFO(mpctx, "%s\n", msg);
+                struct mp_log *log = mp_log_new(NULL, mpctx->log, "!term-msg");
+                mp_info(log, "%s\n", msg);
+                talloc_free(log);
                 talloc_free(msg);
             }
             if (opts->osd_playing_msg && opts->osd_playing_msg[0]) {
@@ -935,6 +957,7 @@ static void handle_playback_restart(struct MPContext *mpctx, double endpts)
             }
         }
         mpctx->playing_msg_shown = true;
+        MP_VERBOSE(mpctx, "playback restart complete\n");
     }
 }
 
@@ -962,7 +985,8 @@ static void handle_segment_switch(struct MPContext *mpctx, bool end_is_new_segme
                            .amount = mpctx->timeline[new_part].start
                            }, true);
         } else {
-            mpctx->stop_play = AT_END_OF_FILE;
+            if (!mpctx->stop_play)
+                mpctx->stop_play = AT_END_OF_FILE;
         }
     }
 }
@@ -1014,9 +1038,9 @@ void run_playloop(struct MPContext *mpctx)
 
     handle_segment_switch(mpctx, end_is_new_segment);
 
-    mp_handle_nav(mpctx);
-
     handle_loop_file(mpctx);
+
+    handle_ab_loop(mpctx);
 
     handle_keep_open(mpctx);
 
@@ -1028,7 +1052,7 @@ void run_playloop(struct MPContext *mpctx)
     handle_osd_redraw(mpctx);
 
     mp_wait_events(mpctx, mpctx->sleeptime);
-    mpctx->sleeptime = 100.0; // infinite for all practical purposes
+    mpctx->sleeptime = 1e9; // infinite for all practical purposes
 
     handle_pause_on_low_cache(mpctx);
 
@@ -1065,10 +1089,10 @@ void idle_loop(struct MPContext *mpctx)
            && mpctx->stop_play != PT_QUIT)
     {
         if (need_reinit) {
-            mp_notify(mpctx, MPV_EVENT_IDLE, NULL);
             uninit_audio_out(mpctx);
             handle_force_window(mpctx, true);
             mpctx->sleeptime = 0;
+            mp_notify(mpctx, MPV_EVENT_IDLE, NULL);
             need_reinit = false;
         }
         mp_idle(mpctx);

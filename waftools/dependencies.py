@@ -2,7 +2,7 @@ from waflib.Errors import ConfigurationError, WafError
 from waflib.Configure import conf
 from waflib.Build import BuildContext
 from waflib.Logs import pprint
-from inflectors import DependencyInflector
+import inflector
 
 class DependencyError(Exception):
     pass
@@ -43,8 +43,7 @@ class Dependency(object):
             # No check was run, since the prerequisites of the dependency are
             # not satisfied. Make sure the define is 'undefined' so that we
             # get a `#define YYY 0` in `config.h`.
-            def_key = DependencyInflector(self.identifier).define_key()
-            self.ctx.undefine(def_key)
+            self.ctx.undefine(inflector.define_key(self.identifier))
             self.fatal_if_needed()
             return
 
@@ -96,6 +95,7 @@ the autodetection check failed.".format(self.identifier)
             self.success(self.identifier)
         else:
             self.fail()
+            self.ctx.undefine(inflector.define_key(self.identifier))
             self.fatal_if_needed()
 
     def enabled_option(self, identifier=None):
@@ -220,8 +220,7 @@ def env_fetch(tx):
     return fn
 
 def dependencies_use(ctx):
-    return [DependencyInflector(dep).storage_key() for \
-                dep in ctx.env.satisfied_deps]
+    return [inflector.storage_key(dep) for dep in ctx.env.satisfied_deps]
 
 BuildContext.filtered_sources = filtered_sources
 BuildContext.dependencies_use = dependencies_use

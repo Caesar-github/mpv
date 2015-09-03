@@ -48,7 +48,6 @@ struct af_info {
     const char *name;
     const int flags;
     int (*open)(struct af_instance *vf);
-    bool (*test_conversion)(int src_format, int dst_format);
     int priv_size;
     const void *priv_defaults;
     const struct m_option *options;
@@ -158,8 +157,9 @@ double af_calc_delay(struct af_stream *s);
 
 int af_test_output(struct af_instance *af, struct mp_audio *out);
 
-int af_from_dB(int n, float *in, float *out, float k, float mi, float ma);
 int af_from_ms(int n, float *in, int *out, int rate, float mi, float ma);
 float af_softclip(float a);
+
+bool af_lavrresample_test_conversion(int src_format, int dst_format);
 
 #endif /* MPLAYER_AF_H */

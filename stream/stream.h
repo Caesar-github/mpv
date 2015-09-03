@@ -103,8 +103,6 @@ enum stream_ctrl {
     // Optical discs
     STREAM_CTRL_GET_TIME_LENGTH,
     STREAM_CTRL_GET_DVD_INFO,
-    STREAM_CTRL_GET_NAV_EVENT,          // struct mp_nav_event**
-    STREAM_CTRL_NAV_CMD,                // struct mp_nav_cmd*
     STREAM_CTRL_GET_DISC_NAME,
     STREAM_CTRL_GET_NUM_CHAPTERS,
     STREAM_CTRL_GET_CURRENT_TIME,
@@ -253,11 +251,14 @@ int stream_read(stream_t *s, char *mem, int total);
 int stream_read_partial(stream_t *s, char *buf, int buf_size);
 struct bstr stream_peek(stream_t *s, int len);
 void stream_drop_buffers(stream_t *s);
+int64_t stream_get_size(stream_t *s);
 
 struct mpv_global;
 
 struct bstr stream_read_complete(struct stream *s, void *talloc_ctx,
                                  int max_size);
+struct bstr stream_read_file(const char *filename, void *talloc_ctx,
+                             struct mpv_global *global, int max_size);
 int stream_control(stream_t *s, int cmd, void *arg);
 void free_stream(stream_t *s);
 struct stream *stream_create(const char *url, int flags,
@@ -289,5 +290,6 @@ void mp_setup_av_network_options(struct AVDictionary **dict,
                                  struct MPOpts *opts);
 
 void stream_print_proto_list(struct mp_log *log);
+char **stream_get_proto_list(void);
 
 #endif /* MPLAYER_STREAM_H */

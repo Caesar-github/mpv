@@ -165,15 +165,17 @@ static char *create_fname(struct MPContext *mpctx, char *template,
         }
         case 'f':
         case 'F': {
-            if (!mpctx->filename)
-                goto error_exit;
-            char *video_file = mp_basename(mpctx->filename);
-            if (video_file) {
-                char *name = video_file;
-                if (fmt == 'F')
-                    name = stripext(res, video_file);
-                append_filename(&res, name);
-            }
+            char *video_file = NULL;
+            if (mpctx->filename)
+                video_file = mp_basename(mpctx->filename);
+
+            if (!video_file)
+                video_file = "NO_FILE";
+
+            char *name = video_file;
+            if (fmt == 'F')
+                name = stripext(res, video_file);
+            append_filename(&res, name);
             break;
         }
         case 'x':
@@ -278,6 +280,16 @@ static char *gen_fname(screenshot_ctx *ctx, const char *file_ext)
                            "template! Fix or remove the --screenshot-template "
                            "option.");
             return NULL;
+        }
+
+        char *dir = ctx->mpctx->opts->screenshot_directory;
+        if (dir && dir[0]) {
+            void *t = fname;
+            dir = mp_get_user_path(t, ctx->mpctx->global, dir);
+            fname = mp_path_join(NULL, dir, fname);
+            talloc_free(t);
+
+            mp_mkdirp(dir);
         }
 
         if (!mp_path_exists(fname))

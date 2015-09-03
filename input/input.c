@@ -319,7 +319,7 @@ static mp_cmd_t *handle_test(struct input_ctx *ictx, int code)
         msg = talloc_asprintf_append(msg, "(nothing)");
 
     MP_INFO(ictx, "%s\n", msg);
-    const char *args[] = {"show_text", msg, NULL};
+    const char *args[] = {"show-text", msg, NULL};
     mp_cmd_t *res = mp_input_parse_cmd_strv(ictx->log, args);
     talloc_free(msg);
     return res;
@@ -453,7 +453,7 @@ static mp_cmd_t *get_cmd_from_keys(struct input_ctx *ictx, char *force_section,
         if (MP_KEY_IS_MOUSE_MOVE(code))
             msgl = MSGL_DEBUG;
         char *key_buf = mp_input_get_key_combo_name(&code, 1);
-        MP_MSG(ictx, msgl, "No bind found for key '%s'.\n", key_buf);
+        MP_MSG(ictx, msgl, "No key binding found for key '%s'.\n", key_buf);
         talloc_free(key_buf);
         return NULL;
     }
@@ -469,7 +469,7 @@ static mp_cmd_t *get_cmd_from_keys(struct input_ctx *ictx, char *force_section,
         ret->is_mouse_button = code & MP_KEY_EMIT_ON_UP;
     } else {
         char *key_buf = mp_input_get_key_combo_name(&code, 1);
-        MP_ERR(ictx, "Invalid command for bound key '%s': '%s'\n",
+        MP_ERR(ictx, "Invalid command for key binding '%s': '%s'\n",
                key_buf, cmd->cmd);
         talloc_free(key_buf);
     }
@@ -1016,7 +1016,7 @@ void mp_input_define_section(struct input_ctx *ictx, char *name, char *location,
     // Delete:
     struct cmd_bind_section *bs = get_bind_section(ictx, bstr0(name));
     remove_binds(bs, builtin);
-    if (contents) {
+    if (contents && contents[0]) {
         // Redefine:
         parse_config(ictx, builtin, bstr0(contents), location, name);
     } else {
@@ -1331,7 +1331,6 @@ void mp_input_run_cmd(struct input_ctx *ictx, const char **cmd)
 struct mp_input_src_internal {
     pthread_t thread;
     bool thread_running;
-    int wakeup[2];
     bool init_done;
 
     char *cmd_buffer;
@@ -1339,7 +1338,7 @@ struct mp_input_src_internal {
     bool drop;
 };
 
-struct mp_input_src *mp_input_add_src(struct input_ctx *ictx)
+static struct mp_input_src *mp_input_add_src(struct input_ctx *ictx)
 {
     input_lock(ictx);
     if (ictx->num_sources == MP_MAX_SOURCES) {
@@ -1354,10 +1353,7 @@ struct mp_input_src *mp_input_add_src(struct input_ctx *ictx)
         .global = ictx->global,
         .log = mp_log_new(src, ictx->log, name),
         .input_ctx = ictx,
-        .in = talloc(src, struct mp_input_src_internal),
-    };
-    *src->in = (struct mp_input_src_internal){
-        .wakeup = {-1, -1},
+        .in = talloc_zero(src, struct mp_input_src_internal),
     };
 
     ictx->sources[ictx->num_sources++] = src;
@@ -1365,6 +1361,8 @@ struct mp_input_src *mp_input_add_src(struct input_ctx *ictx)
     input_unlock(ictx);
     return src;
 }
+
+static void mp_input_src_kill(struct mp_input_src *src);
 
 static void close_input_sources(struct input_ctx *ictx)
 {
@@ -1380,7 +1378,7 @@ static void close_input_sources(struct input_ctx *ictx)
     }
 }
 
-void mp_input_src_kill(struct mp_input_src *src)
+static void mp_input_src_kill(struct mp_input_src *src)
 {
     if (!src)
         return;
@@ -1390,7 +1388,6 @@ void mp_input_src_kill(struct mp_input_src *src)
         if (ictx->sources[n] == src) {
             MP_TARRAY_REMOVE_AT(ictx->sources, ictx->num_sources, n);
             input_unlock(ictx);
-            write(src->in->wakeup[1], &(char){0}, 1);
             if (src->cancel)
                 src->cancel(src);
             if (src->in->thread_running)
@@ -1439,14 +1436,6 @@ int mp_input_add_thread_src(struct input_ctx *ictx, void *ctx,
     if (!src)
         return -1;
 
-#ifndef __MINGW32__
-    // Always create for convenience.
-    if (mp_make_wakeup_pipe(src->in->wakeup) < 0) {
-        mp_input_src_kill(src);
-        return -1;
-    }
-#endif
-
     void *args[] = {src, loop_fn, ctx};
     if (pthread_create(&src->in->thread, NULL, input_src_thread, args)) {
         mp_input_src_kill(src);
@@ -1457,11 +1446,6 @@ int mp_input_add_thread_src(struct input_ctx *ictx, void *ctx,
         return -1;
     }
     return 0;
-}
-
-int mp_input_src_get_wakeup_fd(struct mp_input_src *src)
-{
-    return src->in->wakeup[0];
 }
 
 #define CMD_BUFFER (4 * 4096)

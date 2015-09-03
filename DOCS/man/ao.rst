@@ -55,7 +55,7 @@ Available audio output drivers are:
         Allow output of non-interleaved formats (if the audio decoder uses
         this format). Currently disabled by default, because some popular
         ALSA plugins are utterly broken with non-interleaved formats.
-    ``ingore-chmap``
+    ``ignore-chmap``
         Don't read or set the channel map of the ALSA device - only request the
         required number of channels, and then pass the audio as-is to it. This
         option most likely should not be used. It can be useful for debugging,
@@ -162,11 +162,22 @@ Available audio output drivers are:
     Automatically redirects to ``coreaudio_exclusive`` when playing compressed
     formats.
 
+    ``change-physical-format=<yes|no>``
+        Change the physical format to one similar to the requested audio format
+        (default: no). This has the advantage that multichannel audio output
+        will actually work. The disadvantage is that it will change the
+        system-wide audio settings. This is equivalent to changing the ``Format``
+        setting in the ``Audio Devices`` dialog in the ``Audio MIDI Setup``
+        utility. Note that this does not effect the selected speaker setup.
+
+    ``exclusive``
+        Use exclusive mode access. This merely redirects to
+        ``coreaudio_exclusive``, but should be preferred over using that AO
+        directly.
+
 ``coreaudio_exclusive`` (Mac OS X only)
     Native Mac OS X audio output driver using direct device access and
     exclusive mode (bypasses the sound server).
-
-    Supports only compressed formats (AC3 and DTS).
 
 ``openal``
     Experimental OpenAL audio output driver
@@ -259,6 +270,10 @@ Available audio output drivers are:
 
     ``broken-delay``
         Simulate broken audio drivers, which don't report latency correctly.
+
+    ``channel-layouts``
+        If not empty, this is a ``,`` separated list of channel layouts the
+        AO allows. This can be used to test channel layout selection.
 
 ``pcm``
     Raw PCM/WAVE file writer audio output

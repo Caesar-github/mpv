@@ -386,20 +386,19 @@ static void *terminal_thread(void *ptr)
     mpthread_set_name("terminal");
     bool stdin_ok = read_terminal; // if false, we still wait for SIGTERM
     while (1) {
+        getch2_poll();
         struct pollfd fds[2] = {
             {.events = POLLIN, .fd = death_pipe[0]},
             {.events = POLLIN, .fd = STDIN_FILENO},
         };
-        // Wait with some timeout, so we can call getch2_poll() frequently.
-        poll(fds, stdin_ok ? 2 : 1, 1000);
+        poll(fds, stdin_ok ? 2 : 1, -1);
         if (fds[0].revents)
             break;
         if (fds[1].revents)
             stdin_ok = getch2(input_ctx);
-        getch2_poll();
     }
     // Important if we received SIGTERM, rather than regular quit.
-    struct mp_cmd *cmd = mp_input_parse_cmd(input_ctx, bstr0("quit"), "");
+    struct mp_cmd *cmd = mp_input_parse_cmd(input_ctx, bstr0("quit 4"), "");
     if (cmd)
         mp_input_queue_cmd(input_ctx, cmd);
     return NULL;
@@ -487,9 +486,6 @@ int terminal_init(void)
     setsigaction(SIGTSTP, stop_sighandler, SA_RESETHAND, false);
     setsigaction(SIGTTIN, SIG_IGN, 0, true);
     setsigaction(SIGTTOU, SIG_IGN, 0, true);
-
-    // get sane behavior, instead of hysteric UNIX-nonsense
-    setsigaction(SIGPIPE, SIG_IGN, 0, true);
 
     getch2_poll();
 

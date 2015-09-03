@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "m_option.h"
+#include "common/common.h"
 
 typedef struct mp_vo_opts {
     struct m_obj_settings *video_driver_list, *vo_defs;
@@ -41,7 +42,10 @@ typedef struct mp_vo_opts {
     float monitor_pixel_aspect;
     int force_window_position;
 
+    // vo_wayland, vo_drm
     struct sws_opts *sws_opts;
+    // vo_opengl, vo_opengl_cb
+    int hwdec_preload_api;
 } mp_vo_opts;
 
 struct mp_cache_opts {
@@ -49,6 +53,7 @@ struct mp_cache_opts {
     int def_size;
     int initial;
     int seek_min;
+    int back_buffer;
     char *file;
     int file_max;
 };
@@ -108,6 +113,7 @@ typedef struct MPOpts {
 
     char *audio_decoders;
     char *video_decoders;
+    char *audio_spdif;
 
     int osd_level;
     int osd_duration;
@@ -138,6 +144,9 @@ typedef struct MPOpts {
     int correct_pts;
     int user_pts_assoc_mode;
     int initial_audio_sync;
+    int video_sync;
+    double sync_max_video_change;
+    double sync_max_audio_change;
     int hr_seek;
     float hr_seek_demuxer_offset;
     int hr_seek_framedrop;
@@ -158,6 +167,7 @@ typedef struct MPOpts {
     float heartbeat_interval;
     int player_idle_mode;
     int consolecontrols;
+    int playlist_pos;
     struct m_rel_time play_start;
     struct m_rel_time play_end;
     struct m_rel_time play_length;
@@ -170,15 +180,9 @@ typedef struct MPOpts {
     int ignore_path_in_watch_later_config;
     int pause;
     int keep_open;
-    int audio_id;
-    int video_id;
-    int sub_id;
-    int sub2_id;
-    int audio_id_ff;
-    int video_id_ff;
-    int sub_id_ff;
-    char **audio_lang;
-    char **sub_lang;
+    int stream_id[2][STREAM_TYPE_COUNT];
+    int stream_id_ff[STREAM_TYPE_COUNT];
+    char **stream_lang[STREAM_TYPE_COUNT];
     int audio_display;
     char **display_tags;
     int sub_visibility;
@@ -188,24 +192,27 @@ typedef struct MPOpts {
     float sub_speed;
     int forced_subs_only;
     int stretch_dvd_subs;
+    int stretch_image_subs;
 
     int sub_fix_timing;
     char *sub_cp;
 
     char **audio_files;
     char *demuxer_name;
+    int demuxer_max_packs;
+    int demuxer_max_bytes;
     int demuxer_thread;
-    int demuxer_min_packs;
-    int demuxer_min_bytes;
     double demuxer_min_secs;
     char *audio_demuxer_name;
     char *sub_demuxer_name;
+    int force_seekable;
 
     double demuxer_min_secs_cache;
     int cache_pausing;
 
     struct image_writer_opts *screenshot_image_opts;
     char *screenshot_template;
+    char *screenshot_directory;
 
     double force_fps;
     int index_mode;
@@ -220,6 +227,7 @@ typedef struct MPOpts {
     struct m_obj_settings *af_settings, *af_defs;
     int deinterlace;
     float movie_aspect;
+    int aspect_method;
     int field_dominance;
     char **sub_name;
     char **sub_paths;
@@ -260,8 +268,6 @@ typedef struct MPOpts {
     char *hwdec_codecs;
 
     int w32_priority;
-
-    int slave_mode;
 
     int network_cookies_enabled;
     char *network_cookies_file;
