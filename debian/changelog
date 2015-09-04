@@ -1,8 +1,13 @@
-mpv (0.10.0-1) UNRELEASED; urgency=medium
+mpv (0.10.0-1) unstable; urgency=medium
 
   * New upstream release
+  * Bump versioned Build-Depends for ffmpeg
+  * Update waf to v1.8.12
+  * Refresh patches
+  * Disable PIE to avoid build failure
+  * Enable rubberband support (Closes: #797734)
 
- -- Alessandro Ghedini <ghedo@debian.org>  Thu, 03 Sep 2015 21:22:58 +0200
+ -- Alessandro Ghedini <ghedo@debian.org>  Fri, 04 Sep 2015 10:52:31 +0200
 
 mpv (0.9.2-1) unstable; urgency=medium
 
