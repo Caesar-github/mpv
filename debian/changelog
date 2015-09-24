@@ -1,8 +1,12 @@
-mpv (0.11.0-1) UNRELEASED; urgency=medium
+mpv (0.11.0-1) unstable; urgency=medium
 
   * New upstream release
+  * Drop ladspa-sdk and libbs2b-dev from Build-Depends
+  * Enable sndio audio output (Closes: #798985)
+  * Re-enable PIE.
+    Thanks to Simon Ruderich for the patch (Closes: #799738)
 
- -- Alessandro Ghedini <ghedo@debian.org>  Wed, 23 Sep 2015 11:29:28 +0200
+ -- Alessandro Ghedini <ghedo@debian.org>  Thu, 24 Sep 2015 21:04:07 +0200
 
 mpv (0.10.0-1) unstable; urgency=medium
 
