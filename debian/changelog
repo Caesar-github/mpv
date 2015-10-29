@@ -1,9 +1,9 @@
-mpv (0.12.0-1) UNRELEASED; urgency=medium
+mpv (0.12.0-1) unstable; urgency=medium
 
   * New upstream release
     - Restore x11 video output (Closes: #800109)
 
- -- Alessandro Ghedini <ghedo@debian.org>  Thu, 29 Oct 2015 11:11:34 +0100
+ -- Alessandro Ghedini <ghedo@debian.org>  Thu, 29 Oct 2015 11:19:56 +0100
 
 mpv (0.11.0-1) unstable; urgency=medium
 
