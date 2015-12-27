@@ -62,6 +62,7 @@ struct scaler {
     GLenum gl_target;
     struct fbotex sep_fbo;
     bool insufficient;
+    int lut_size;
 
     // kernel points here
     struct filter_kernel kernel_storage;
@@ -70,12 +71,13 @@ struct scaler {
 struct gl_video_opts {
     int dumb_mode;
     struct scaler_config scaler[4];
+    int scaler_lut_size;
     float gamma;
     int gamma_auto;
     int target_prim;
     int target_trc;
     int linear_scaling;
-    int fancy_downscaling;
+    int correct_downscaling;
     int sigmoid_upscaling;
     float sigmoid_center;
     float sigmoid_slope;
@@ -98,6 +100,11 @@ struct gl_video_opts {
     int deband;
     struct deband_opts *deband_opts;
     float unsharp;
+    int prescale;
+    int prescale_passes;
+    float prescale_downscaling_threshold;
+    struct superxbr_opts *superxbr_opts;
+    struct nnedi3_opts *nnedi3_opts;
 };
 
 extern const struct m_sub_options gl_video_conf;

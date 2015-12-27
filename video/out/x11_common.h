@@ -52,6 +52,7 @@ struct vo_x11_state {
     int ws_width;
     int ws_height;
     struct mp_rect screenrc;
+    char *window_title;
 
     struct xrandr_display displays[MAX_DISPLAYS];
     int num_displays;
@@ -129,5 +130,7 @@ bool vo_x11_create_vo_window(struct vo *vo, XVisualInfo *vis,
                              const char *classname);
 void vo_x11_config_vo_window(struct vo *vo);
 int vo_x11_control(struct vo *vo, int *events, int request, void *arg);
+
+void vo_x11_silence_xlib(int dir);
 
 #endif /* MPLAYER_X11_COMMON_H */
