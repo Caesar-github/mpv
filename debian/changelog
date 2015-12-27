@@ -1,8 +1,9 @@
-mpv (0.14.0-1) UNRELEASED; urgency=medium
+mpv (0.14.0-1) unstable; urgency=medium
 
   * New upstream release (Closes: #806183)
+  * Fix spelling-error-in-binary
 
- -- Alessandro Ghedini <ghedo@debian.org>  Sun, 27 Dec 2015 16:20:42 +0100
+ -- Alessandro Ghedini <ghedo@debian.org>  Sun, 27 Dec 2015 19:27:18 +0100
 
 mpv (0.12.0-1) unstable; urgency=medium
 
