@@ -69,7 +69,8 @@ Playback Control
 
     The general format for absolute times is ``[[hh:]mm:]ss[.ms]``. If the time
     is given with a prefix of ``+`` or ``-``, the seek is relative from the start
-    or end of the file.
+    or end of the file. (Since mpv 0.14, the start of the file is always
+    considered 0.)
 
     ``pp%`` seeks to percent position pp (0-100).
 
@@ -100,6 +101,14 @@ Playback Control
 ``--length=<relative time>``
     Stop after a given time relative to the start time.
     See ``--start`` for valid option values and examples.
+
+``--rebase-start-time=<yes|no>``
+    Whether to move the file start time to ``00:00:00`` (default: yes). This
+    is less awkward for files which start at a random timestamp, such as
+    transport streams. On the other hand, if there are timestamp resets, the
+    resulting behavior can be rather weird. For this reason, and in case you
+    are actually interested in the real timestamps, this behavior can be
+    disabled with ``no``.
 
 ``--speed=<0.01-100>``
     Slow down or speed up playback by the factor given as parameter.
@@ -548,11 +557,10 @@ Video
         differences to other VOs are possible.
 
 ``--display-fps=<fps>``
-    Set the maximum assumed display FPS used with ``--framedrop``. By default
-    a detected value is used (X11 only, not correct on multi-monitor systems),
-    or infinite display FPS if that fails. Infinite FPS means only frames too
-    late are dropped. If a correct FPS is provided, frames that are predicted
-    to be too late are dropped too.
+    Set the display FPS used with the ``--video-sync=display-*`` modes. By
+    default a detected value is used (X11 only, not correct on multi-monitor
+    systems). Keep in mind that setting an incorrect value (even if slightly
+    incorrect) can ruin video playback.
 
 ``--hwdec=<api>``
     Specify the hardware video decoding API that should be used if possible.
@@ -608,6 +616,14 @@ Video
     allows enabling hardware decoding at runtime at all, without having to
     to temporarily set the ``hwdec`` option just during OpenGL context
     initialization with ``mpv_opengl_cb_init_gl()``.
+
+``--videotoolbox-format=<name>``
+    Set the internal pixel format used by ``--hwdec=videotoolbox`` on OSX. The
+    choice of the format can influence performance considerably. On the other
+    hand, there doesn't appear to be a good way to detect the best format for
+    the given hardware. ``nv12``, the default, works better on modern hardware,
+    while ``uyvy422`` appears to be better for old hardware. ``rgb0`` also
+    works.
 
 ``--panscan=<0.0-1.0>``
     Enables pan-and-scan functionality (cropping the sides of e.g. a 16:9
@@ -747,7 +763,7 @@ Video
     if supported.
 
     This behaves exactly like the ``deinterlace`` input property (usually
-    mapped to ``Shift+D``).
+    mapped to ``d``).
 
     ``auto`` is a technicality. Strictly speaking, the default for this option
     is deinterlacing disabled, but the ``auto`` case is needed if ``yadif`` was
@@ -804,9 +820,9 @@ Video
     You can get the list of allowed codecs with ``mpv --vd=help``. Remove the
     prefix, e.g. instead of ``lavc:h264`` use ``h264``.
 
-    By default this is set to ``h264,vc1,wmv3,hevc``. Note that the hardware
-    acceleration special codecs like ``h264_vdpau`` are not relevant anymore,
-    and in fact have been removed from Libav in this form.
+    By default this is set to ``h264,vc1,wmv3,hevc,mpeg2video``. Note that the
+    hardware acceleration special codecs like ``h264_vdpau`` are not relevant
+    anymore, and in fact have been removed from Libav in this form.
 
     This is usually only needed with broken GPUs, where a codec is reported
     as supported, but decoding causes more problems than it solves.
@@ -823,9 +839,10 @@ Video
     The result is most likely broken decoding, but may also help if the
     detected or reported profiles are somehow incorrect.
 
-``--vd-lavc-software-fallback=<yes|no>``
+``--vd-lavc-software-fallback=<yes|no|N>``
     Fallback to software decoding if the hardware-accelerated decoder fails
-    (default: yes).
+    (default: 3). If this is a number, then fallback will be triggered if
+    N frames fail to decode in a row. 1 is equivalent to ``yes``.
 
 ``--vd-lavc-bitexact``
     Only use bit-exact algorithms in all decoding steps (for codec testing).
@@ -847,7 +864,7 @@ Video
 
     .. admonition:: Example
 
-        ``--vd--lavc-o=debug=pict``
+        ``--vd-lavc-o=debug=pict``
 
 ``--vd-lavc-show-all=<yes|no>``
     Show even broken/corrupt frames (default: no). If this option is set to
@@ -1317,8 +1334,8 @@ Subtitles
 
 ``--sub-speed=<0.1-10.0>``
     Multiply the subtitle event timestamps with the given value. Can be used
-    to fix the playback speed for frame-based subtitle formats. Works for
-    external text subtitles only.
+    to fix the playback speed for frame-based subtitle formats. Affects text
+    subtitles only.
 
     .. admonition:: Example
 
@@ -1566,17 +1583,17 @@ Subtitles
     This mode doesn't take language or fallback codepage.
 
 ``--sub-fix-timing``, ``--no-sub-fix-timing``
-    By default, external text subtitles are preprocessed to remove minor gaps
-    or overlaps between subtitles (if the difference is smaller than 200 ms,
-    the gap or overlap is removed). This does not affect image subtitles,
-    subtitles muxed with audio/video, or subtitles in the ASS format.
+    By default, subtitle timing is adjusted to remove minor gaps or overlaps
+    between subtitles (if the difference is smaller than 210 ms, the gap or
+    overlap is removed).
 
 ``--sub-forced-only``
     Display only forced subtitles for the DVD subtitle stream selected by e.g.
     ``--slang``.
 
 ``--sub-fps=<rate>``
-    Specify the framerate of the subtitle file (default: video fps).
+    Specify the framerate of the subtitle file (default: video fps). Affects
+    text subtitles only.
 
     .. note::
 
@@ -1735,6 +1752,10 @@ Window
 
 ``--ontop``
     Makes the player window stay on top of other windows.
+
+    On Windows, if combined with fullscreen mode, this causes mpv to be
+    treated as exclusive fullscreen window that bypasses the Desktop Window
+    Manager.
 
 ``--border``, ``--no-border``
     Play video with window border and decorations. Since this is on by
@@ -2014,6 +2035,10 @@ Window
 
     This option might be removed in the future.
 
+``--x11-bypass-compositor=<yes|no>``
+    If set to ``yes`` (default), then ask the compositor to unredirect the
+    mpv window. This uses the ``_NET_WM_BYPASS_COMPOSITOR`` hint.
+
 
 Disc Devices
 ------------
@@ -2243,18 +2268,6 @@ Demuxer
     from the end of the file. The ``full`` mode actually traverses the entire
     file and can make a reliable estimate even without an index present (such
     as partial files).
-
-``--demuxer-mkv-fix-timestamps=<yes|no>``
-    Fix rounded Matroska timestamps (disabled by default). Matroska usually
-    stores timestamps rounded to milliseconds. This means timestamps jitter
-    by some amount around the intended timestamp. mpv can correct the timestamps
-    based on the framerate value stored in the file: the timestamp is rounded
-    to the next frame (according to the framerate), unless the new timestamp
-    would deviate more than 1ms from the old one. This should undo the rounding
-    done by the muxer.
-
-    (The allowed deviation can be less than 1ms if the file uses a non-standard
-    timecode scale.)
 
 ``--demuxer-rawaudio-channels=<value>``
     Number of channels (or channel layout) if ``--demuxer=rawaudio`` is used
@@ -3340,65 +3353,6 @@ DVB
 
     Default: ``no``
 
-PVR
----
-
-``--pvr-...``
-    These options tune various encoding properties of the PVR capture module.
-    It has to be used with any hardware MPEG encoder based card supported by
-    the V4L2 driver. The Hauppauge WinTV PVR-150/250/350/500 and all IVTV
-    based cards are known as PVR capture cards. Be aware that only Linux
-    2.6.18 kernel and above is able to handle MPEG stream through V4L2 layer.
-    For hardware capture of an MPEG stream and watching it with mpv, use
-    ``pvr://`` as media URL.
-
-
-``--pvr-aspect=<0-3>``
-    Specify input aspect ratio:
-
-    :0: 1:1
-    :1: 4:3 (default)
-    :2: 16:9
-    :3: 2.21:1
-
-``--pvr-arate=<32000-48000>``
-    Specify encoding audio rate (default: 48000 Hz, available: 32000,
-    44100 and 48000 Hz).
-
-``--pvr-alayer=<1-3>``
-    Specify MPEG audio layer encoding (default: 2).
-
-``--pvr-abitrate=<32-448>``
-    Specify audio encoding bitrate in kbps (default: 384).
-
-``--pvr-amode=<value>``
-    Specify audio encoding mode. Available preset values are 'stereo',
-    'joint_stereo', 'dual' and 'mono' (default: stereo).
-
-``--pvr-vbitrate=<value>``
-    Specify average video bitrate encoding in Mbps (default: 6).
-
-``--pvr-vmode=<value>``
-    Specify video encoding mode:
-
-    :vbr: Variable Bit Rate (default)
-    :cbr: Constant Bit Rate
-
-``--pvr-vpeak=<value>``
-    Specify peak video bitrate encoding in Mbps (only useful for VBR
-    encoding, default: 9.6).
-
-``--pvr-fmt=<value>``
-    Choose an MPEG format for encoding:
-
-    :ps:    MPEG-2 Program Stream (default)
-    :ts:    MPEG-2 Transport Stream
-    :mpeg1: MPEG-1 System Stream
-    :vcd:   Video CD compatible stream
-    :svcd:  Super Video CD compatible stream
-    :dvd:   DVD compatible stream
-
-
 Miscellaneous
 -------------
 
@@ -3536,6 +3490,10 @@ Miscellaneous
     in verbose mode, i.e. ``--v``. In general we can't print errors, because
     other options such as e.g. user agent are not available with all protocols,
     and printing errors for unknown options would end up being too noisy.)
+
+``--vo-mmcss-profile=<name>``
+    (Windows only.)
+    Set the MMCSS profile for the video renderer thread (default: ``Playback``).
 
 ``--priority=<prio>``
     (Windows only.)

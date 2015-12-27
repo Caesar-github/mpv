@@ -37,6 +37,7 @@
 
 #include "vo.h"
 #include "win_state.h"
+#include "osdep/atomics.h"
 #include "osdep/timer.h"
 #include "osdep/subprocess.h"
 
@@ -125,6 +126,7 @@ static const char x11_icon[] =
 ;
 
 static struct mp_log *x11_error_output;
+static atomic_int x11_error_silence;
 
 static void vo_x11_update_geometry(struct vo *vo);
 static void vo_x11_fullscreen(struct vo *vo);
@@ -263,17 +265,21 @@ static int x11_errorhandler(Display *display, XErrorEvent *event)
 {
     struct mp_log *log = x11_error_output;
     char msg[60];
-
     XGetErrorText(display, event->error_code, (char *) &msg, sizeof(msg));
 
-    mp_err(log, "X11 error: %s\n", msg);
-
-    mp_verbose(log, "Type: %x, display: %p, resourceid: %lx, serial: %lx\n",
+    int lev = atomic_load(&x11_error_silence) ? MSGL_V : MSGL_ERR;
+    mp_msg(log, lev, "X11 error: %s\n", msg);
+    mp_msg(log, lev, "Type: %x, display: %p, resourceid: %lx, serial: %lx\n",
                event->type, event->display, event->resourceid, event->serial);
-    mp_verbose(log, "Error code: %x, request code: %x, minor code: %x\n",
-               event->error_code, event->request_code, event->minor_code);
+    mp_msg(log, lev, "Error code: %x, request code: %x, minor code: %x\n",
+           event->error_code, event->request_code, event->minor_code);
 
     return 0;
+}
+
+void vo_x11_silence_xlib(int dir)
+{
+    atomic_fetch_add(&x11_error_silence, dir);
 }
 
 static int net_wm_support_state_test(struct vo_x11_state *x11, Atom atom)
@@ -1188,14 +1194,13 @@ static void vo_x11_update_window_title(struct vo *vo)
 {
     struct vo_x11_state *x11 = vo->x11;
 
-    if (!x11->window)
+    if (!x11->window || !x11->window_title)
         return;
 
-    const char *title = vo_get_window_title(vo);
-    vo_x11_set_property_string(vo, XA_WM_NAME, title);
-    vo_x11_set_property_string(vo, XA_WM_ICON_NAME, title);
-    vo_x11_set_property_utf8(vo, XA(x11, _NET_WM_NAME), title);
-    vo_x11_set_property_utf8(vo, XA(x11, _NET_WM_ICON_NAME), title);
+    vo_x11_set_property_string(vo, XA_WM_NAME, x11->window_title);
+    vo_x11_set_property_string(vo, XA_WM_ICON_NAME, x11->window_title);
+    vo_x11_set_property_utf8(vo, XA(x11, _NET_WM_NAME), x11->window_title);
+    vo_x11_set_property_utf8(vo, XA(x11, _NET_WM_ICON_NAME), x11->window_title);
 }
 
 static void vo_x11_xembed_update(struct vo_x11_state *x11, int flags)
@@ -1379,6 +1384,12 @@ static void vo_x11_create_window(struct vo *vo, XVisualInfo *vis,
     }
 
     if (!x11->parent) {
+        if (vo->opts->x11_bypass_compositor) {
+            long v = 1; // request disabling compositor
+            XChangeProperty(x11->display, x11->window,
+                XA(x11,_NET_WM_BYPASS_COMPOSITOR), XA_CARDINAL, 32,
+                PropModeReplace, (unsigned char *)&v, 1);
+        }
         vo_x11_set_wm_icon(x11);
         vo_x11_update_window_title(vo);
         vo_x11_dnd_init_window(vo);
@@ -1792,6 +1803,8 @@ int vo_x11_control(struct vo *vo, int *events, int request, void *arg)
         set_screensaver(x11, true);
         return VO_TRUE;
     case VOCTRL_UPDATE_WINDOW_TITLE:
+        talloc_free(x11->window_title);
+        x11->window_title = talloc_strdup(x11, (char *)arg);
         if (!x11->parent)
             vo_x11_update_window_title(vo);
         return VO_TRUE;
