@@ -151,15 +151,15 @@ Available filters are:
         :yes: Enable accurate rounding.
 
 ``dsize[=w:h:aspect-method:r:aspect]``
-    Changes the intended display size/aspect at an arbitrary point in the
+    Changes the intended display aspect at an arbitrary point in the
     filter chain. Aspect can be given as a fraction (4/3) or floating point
-    number (1.33). Alternatively, you may specify the exact display width and
-    height desired. Note that this filter does *not* do any scaling itself; it
+    number (1.33). Note that this filter does *not* do any scaling itself; it
     just affects what later scalers (software or hardware) will do when
     auto-scaling to the correct aspect.
 
     ``<w>,<h>``
-        New display width and height.
+        New aspect ratio given by a display width and height. Unlike older mpv
+        versions or MPlayer, this does not set the display size.
 
         Can also be these special values:
 
@@ -289,27 +289,27 @@ Available filters are:
         :prophoto:     ProPhoto RGB (ROMM)
         :cie1931:      CIE 1931 RGB
 
-     ``<gamma>``
-        Gamma function the source file was encoded with. Normally this should be set
-        in the file header, but when playing broken or mistagged files this can be
-        used to override the setting.
+    ``<gamma>``
+       Gamma function the source file was encoded with. Normally this should be set
+       in the file header, but when playing broken or mistagged files this can be
+       used to override the setting.
 
-        This option only affects video output drivers that perform color management.
+       This option only affects video output drivers that perform color management.
 
-        If this option is set to ``auto`` (which is the default), the gamma will
-        be set to BT.1886 for YCbCr content, sRGB for RGB content and Linear for
-        XYZ content.
+       If this option is set to ``auto`` (which is the default), the gamma will
+       be set to BT.1886 for YCbCr content, sRGB for RGB content and Linear for
+       XYZ content.
 
-        Available gamma functions are:
+       Available gamma functions are:
 
-        :auto:         automatic selection (default)
-        :bt.1886:      ITU-R BT.1886 (approximation of BT.601/BT.709/BT.2020 curve)
-        :srgb:         IEC 61966-2-4 (sRGB)
-        :linear:       Linear light
-        :gamma1.8:     Pure power curve (gamma 1.8)
-        :gamma2.2:     Pure power curve (gamma 2.2)
-        :gamma2.8:     Pure power curve (gamma 2.8)
-        :prophoto:     ProPhoto RGB (ROMM) curve
+       :auto:         automatic selection (default)
+       :bt.1886:      ITU-R BT.1886 (approximation of BT.601/BT.709/BT.2020 curve)
+       :srgb:         IEC 61966-2-4 (sRGB)
+       :linear:       Linear light
+       :gamma1.8:     Pure power curve (gamma 1.8)
+       :gamma2.2:     Pure power curve (gamma 2.2)
+       :gamma2.8:     Pure power curve (gamma 2.8)
+       :prophoto:     ProPhoto RGB (ROMM) curve
 
     ``<stereo-in>``
         Set the stereo mode the video is assumed to be encoded in. Takes the
@@ -438,9 +438,8 @@ Available filters are:
         generating an occasional mismatched frame, but it may also cause an
         excessive number of frames to be dropped during high motion sequences.
         Conversely, setting it to -1 will make ``pullup`` match fields more
-        easily. This may help processing of video where there is slight
-        blurring between the fields, but may also cause there to be interlaced
-        frames in the output.
+        easily. This may help process video with slight blurring between the
+        fields, but may also cause interlaced frames in the output.
 
     ``mp`` (metric plane)
         This option may be set to ``u`` or ``v`` to use a chroma plane instead of the
@@ -455,16 +454,15 @@ Available filters are:
 
     ``<mode>``
         :frame: Output 1 frame for each frame.
-        :field: Output 1 frame for each field.
+        :field: Output 1 frame for each field (default).
         :frame-nospatial: Like ``frame`` but skips spatial interlacing check.
         :field-nospatial: Like ``field`` but skips spatial interlacing check.
 
     ``<interlaced-only>``
-        :no:  Deinterlace all frames (default).
-        :yes: Only deinterlace frames marked as interlaced (default if this
-              filter is inserted via ``deinterlace`` property).
+        :no:  Deinterlace all frames.
+        :yes: Only deinterlace frames marked as interlaced (default).
 
-    This filter, is automatically inserted when using the ``d`` key (or any
+    This filter is automatically inserted when using the ``d`` key (or any
     other key that toggles the ``deinterlace`` property or when using the
     ``--deinterlace`` switch), assuming the video output does not have native
     deinterlacing support.
@@ -473,7 +471,7 @@ Available filters are:
     into ``--vf-defaults`` instead, and enable deinterlacing with ``d`` or
     ``--deinterlace``.
 
-    Also note that the ``d`` key is stupid enough to insert a deinterlacer twice
+    Also, note that the ``d`` key is stupid enough to insert a deinterlacer twice
     when inserting yadif with ``--vf``, so using the above methods is
     recommended.
 
@@ -645,10 +643,11 @@ Available filters are:
     ``buffered-frames``
         Maximum number of decoded video frames that should be buffered before
         the filter (default: 4). This specifies the maximum number of frames
-        the script can requests backwards. E.g. if ``buffered-frames=5``, and
-        the script just requested frame 15, it can still request frame 10, but
-        frame 9 is not available anymore. If it requests frame 30, mpv will
-        decode 15 more frames, and keep only frames 25-30.
+        the script can request in reverse direction.
+        E.g. if ``buffered-frames=5``, and the script just requested frame 15,
+        it can still request frame 10, but frame 9 is not available anymore.
+        If it requests frame 30, mpv will decode 15 more frames, and keep only
+        frames 25-30.
 
         The actual number of buffered frames also depends on the value of the
         ``concurrent-frames`` option. Currently, both option values are
@@ -803,6 +802,6 @@ Available filters are:
 
 ``buffer=<num>``
     Buffer ``<num>`` frames in the filter chain. This filter is probably pretty
-    useless, except for debugging. (Note that this won't help smoothing out
+    useless, except for debugging. (Note that this won't help to smooth out
     latencies with decoding, because the filter will never output a frame if
     the buffer isn't full, except on EOF.)

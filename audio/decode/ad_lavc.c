@@ -26,7 +26,7 @@
 #include <libavutil/common.h>
 #include <libavutil/intreadwrite.h>
 
-#include "talloc.h"
+#include "mpv_talloc.h"
 
 #include "config.h"
 #include "common/av_common.h"
@@ -42,8 +42,9 @@ struct priv {
     AVFrame *avframe;
     struct mp_audio frame;
     bool force_channel_map;
-    struct demux_packet *packet;
-    uint32_t skip_samples;
+    uint32_t skip_samples, trim_samples;
+    bool preroll_done;
+    double next_pts;
 };
 
 static void uninit(struct dec_audio *da);
@@ -60,7 +61,7 @@ const struct m_sub_options ad_lavc_conf = {
     .opts = (const m_option_t[]) {
         OPT_FLOATRANGE("ac3drc", ac3drc, 0, 0, 6),
         OPT_FLAG("downmix", downmix, 0),
-        OPT_INTRANGE("threads", threads, 0, 1, 16),
+        OPT_INTRANGE("threads", threads, 0, 0, 16),
         OPT_KEYVALUELIST("o", avopts, 0),
         {0}
     },
@@ -78,13 +79,12 @@ static int init(struct dec_audio *da, const char *decoder)
     struct ad_lavc_params *opts = mpopts->ad_lavc_params;
     AVCodecContext *lavc_context;
     AVCodec *lavc_codec;
-    struct sh_stream *sh = da->header;
-    struct sh_audio *sh_audio = sh->audio;
+    struct mp_codec_params *c = da->codec;
 
     struct priv *ctx = talloc_zero(NULL, struct priv);
     da->priv = ctx;
 
-    ctx->force_channel_map = sh_audio->force_channels;
+    ctx->force_channel_map = c->force_channels;
 
     lavc_codec = avcodec_find_decoder_by_name(decoder);
     if (!lavc_codec) {
@@ -116,20 +116,20 @@ static int init(struct dec_audio *da, const char *decoder)
 
     mp_set_avopts(da->log, lavc_context, opts->avopts);
 
-    lavc_context->codec_tag = sh->codec_tag;
-    lavc_context->sample_rate = sh_audio->samplerate;
-    lavc_context->bit_rate = sh_audio->bitrate;
-    lavc_context->block_align = sh_audio->block_align;
-    lavc_context->bits_per_coded_sample = sh_audio->bits_per_coded_sample;
-    lavc_context->channels = sh_audio->channels.num;
-    if (!mp_chmap_is_unknown(&sh_audio->channels))
-        lavc_context->channel_layout = mp_chmap_to_lavc(&sh_audio->channels);
+    lavc_context->codec_tag = c->codec_tag;
+    lavc_context->sample_rate = c->samplerate;
+    lavc_context->bit_rate = c->bitrate;
+    lavc_context->block_align = c->block_align;
+    lavc_context->bits_per_coded_sample = c->bits_per_coded_sample;
+    lavc_context->channels = c->channels.num;
+    if (!mp_chmap_is_unknown(&c->channels))
+        lavc_context->channel_layout = mp_chmap_to_lavc(&c->channels);
 
     // demux_mkv
-    mp_lavc_set_extradata(lavc_context, sh->extradata, sh->extradata_size);
+    mp_lavc_set_extradata(lavc_context, c->extradata, c->extradata_size);
 
-    if (sh->lav_headers)
-        mp_copy_lav_codec_headers(lavc_context, sh->lav_headers);
+    if (c->lav_headers)
+        mp_copy_lav_codec_headers(lavc_context, c->lav_headers);
 
     mp_set_avcodec_threads(da->log, lavc_context, opts->threads);
 
@@ -139,6 +139,8 @@ static int init(struct dec_audio *da, const char *decoder)
         uninit(da);
         return 0;
     }
+
+    ctx->next_pts = MP_NOPTS_VALUE;
 
     return 1;
 }
@@ -165,26 +167,20 @@ static int control(struct dec_audio *da, int cmd, void *arg)
     switch (cmd) {
     case ADCTRL_RESET:
         avcodec_flush_buffers(ctx->avctx);
-        talloc_free(ctx->packet);
-        ctx->packet = NULL;
         ctx->skip_samples = 0;
+        ctx->trim_samples = 0;
+        ctx->preroll_done = false;
+        ctx->next_pts = MP_NOPTS_VALUE;
         return CONTROL_TRUE;
     }
     return CONTROL_UNKNOWN;
 }
 
-static int decode_packet(struct dec_audio *da, struct mp_audio **out)
+static int decode_packet(struct dec_audio *da, struct demux_packet *mpkt,
+                         struct mp_audio **out)
 {
     struct priv *priv = da->priv;
     AVCodecContext *avctx = priv->avctx;
-
-    struct demux_packet *mpkt = priv->packet;
-    if (!mpkt) {
-        if (demux_read_packet_async(da->header, &mpkt) == 0)
-            return AD_WAIT;
-    }
-
-    priv->packet = talloc_steal(priv, mpkt);
 
     int in_len = mpkt ? mpkt->len : 0;
 
@@ -203,38 +199,40 @@ static int decode_packet(struct dec_audio *da, struct mp_audio **out)
             mpkt->len    -= ret;
             mpkt->pts = MP_NOPTS_VALUE; // don't reset PTS next time
         }
-        if (mpkt->len == 0 || ret < 0) {
-            talloc_free(mpkt);
-            priv->packet = NULL;
-        }
         // LATM may need many packets to find mux info
-        if (ret == AVERROR(EAGAIN))
-            return AD_OK;
+        if (ret == AVERROR(EAGAIN)) {
+            mpkt->len = 0;
+            return 0;
+        }
     }
     if (ret < 0) {
         MP_ERR(da, "Error decoding audio.\n");
-        return AD_ERR;
+        return -1;
     }
     if (!got_frame)
-        return mpkt ? AD_OK : AD_EOF;
+        return 0;
 
     double out_pts = mp_pts_from_av(priv->avframe->pkt_pts, NULL);
 
     struct mp_audio *mpframe = mp_audio_from_avframe(priv->avframe);
     if (!mpframe)
-        return AD_ERR;
+        return -1;
 
     struct mp_chmap lavc_chmap = mpframe->channels;
     if (lavc_chmap.num != avctx->channels)
         mp_chmap_from_channels(&lavc_chmap, avctx->channels);
     if (priv->force_channel_map) {
-        struct sh_audio *sh_audio = da->header->audio;
-        if (lavc_chmap.num == sh_audio->channels.num)
-            lavc_chmap = sh_audio->channels;
+        if (lavc_chmap.num == da->codec->channels.num)
+            lavc_chmap = da->codec->channels;
     }
     mp_audio_set_channels(mpframe, &lavc_chmap);
 
     mpframe->pts = out_pts;
+
+    if (mpframe->pts == MP_NOPTS_VALUE)
+        mpframe->pts = priv->next_pts;
+    if (mpframe->pts != MP_NOPTS_VALUE)
+        priv->next_pts = mpframe->pts + mpframe->samples / (double)mpframe->rate;
 
 #if HAVE_AVFRAME_SKIP_SAMPLES
     AVFrameSideData *sd =
@@ -242,18 +240,27 @@ static int decode_packet(struct dec_audio *da, struct mp_audio **out)
     if (sd && sd->size >= 10) {
         char *d = sd->data;
         priv->skip_samples += AV_RL32(d + 0);
-        uint32_t pad = AV_RL32(d + 4);
-        uint32_t skip = MPMIN(priv->skip_samples, mpframe->samples);
-        if (skip) {
-            mp_audio_skip_samples(mpframe, skip);
-            if (mpframe->pts != MP_NOPTS_VALUE)
-                mpframe->pts += skip / (double)mpframe->rate;
-            priv->skip_samples -= skip;
-        }
-        if (pad <= mpframe->samples)
-            mpframe->samples -= pad;
+        priv->trim_samples += AV_RL32(d + 4);
     }
 #endif
+
+    if (!priv->preroll_done) {
+        // Skip only if this isn't already handled by AV_FRAME_DATA_SKIP_SAMPLES.
+        if (!priv->skip_samples)
+            priv->skip_samples = avctx->delay;
+        priv->preroll_done = true;
+    }
+
+    uint32_t skip = MPMIN(priv->skip_samples, mpframe->samples);
+    if (skip) {
+        mp_audio_skip_samples(mpframe, skip);
+        priv->skip_samples -= skip;
+    }
+    uint32_t trim = MPMIN(priv->trim_samples, mpframe->samples);
+    if (trim) {
+        mpframe->samples -= trim;
+        priv->trim_samples -= trim;
+    }
 
     *out = mpframe;
 

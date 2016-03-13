@@ -25,7 +25,7 @@
 #include <signal.h>
 
 #include "config.h"
-#include "talloc.h"
+#include "mpv_talloc.h"
 
 #include "misc/dispatch.h"
 #include "osdep/io.h"
@@ -97,6 +97,11 @@ const char mp_help_text[] =
 "\n";
 
 static const char def_config[] =
+#if HAVE_RPI
+    "hwdec=rpi\n"
+    "fullscreen=yes\n"
+#endif
+    "\n"
     "[pseudo-gui]\n"
     "terminal=no\n"
     "force-window=yes\n"
@@ -156,7 +161,7 @@ void mp_print_version(struct mp_log *log, int always)
 {
     int v = always ? MSGL_INFO : MSGL_V;
     mp_msg(log, v,
-           "%s (C) 2000-2015 mpv/MPlayer/mplayer2 projects\n built on %s\n",
+           "%s (C) 2000-2016 mpv/MPlayer/mplayer2 projects\n built on %s\n",
            mpv_version, mpv_builddate);
     print_libav_versions(log, v);
     mp_msg(log, v, "\n");
@@ -222,7 +227,6 @@ void mp_destroy(struct MPContext *mpctx)
         pthread_detach(pthread_self());
 
     mp_msg_uninit(mpctx->global);
-    pthread_mutex_destroy(&mpctx->ass_lock);
     talloc_free(mpctx);
 }
 
@@ -329,8 +333,6 @@ struct MPContext *mp_create(void)
         .dispatch = mp_dispatch_create(mpctx),
         .playback_abort = mp_cancel_new(mpctx),
     };
-
-    pthread_mutex_init(&mpctx->ass_lock, NULL);
 
     mpctx->global = talloc_zero(mpctx, struct mpv_global);
 

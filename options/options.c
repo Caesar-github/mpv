@@ -86,6 +86,7 @@ const struct m_opt_choice_alternatives mp_hwdec_names[] = {
     {"videotoolbox",HWDEC_VIDEOTOOLBOX},
     {"vaapi",       HWDEC_VAAPI},
     {"vaapi-copy",  HWDEC_VAAPI_COPY},
+    {"dxva2",       HWDEC_DXVA2},
     {"dxva2-copy",  HWDEC_DXVA2_COPY},
     {"rpi",         HWDEC_RPI},
     {0}
@@ -226,6 +227,8 @@ const m_option_t mp_opts[] = {
     OPT_STRINGLIST("alang", stream_lang[STREAM_AUDIO], 0),
     OPT_STRINGLIST("slang", stream_lang[STREAM_SUB], 0),
 
+    OPT_STRING("lavfi-complex", lavfi_complex, 0),
+
     OPT_CHOICE("audio-display", audio_display, 0,
                ({"no", 0}, {"attachment", 1})),
 
@@ -271,9 +274,10 @@ const m_option_t mp_opts[] = {
 
     // force video/audio rate:
     OPT_DOUBLE("fps", force_fps, CONF_MIN, .min = 0),
-    OPT_INTRANGE("audio-samplerate", force_srate, 0, 1000, 8*48000),
+    OPT_INTRANGE("audio-samplerate", force_srate, 0, 1000, 16*48000),
     OPT_CHMAP("audio-channels", audio_output_channels, CONF_MIN, .min = 0),
     OPT_AUDIOFORMAT("audio-format", audio_output_format, 0),
+    OPT_FLAG("audio-normalize-downmix", audio_normalize, 0),
     OPT_DOUBLE("speed", playback_speed, M_OPT_RANGE | M_OPT_FIXED,
                .min = 0.01, .max = 100.0),
 
@@ -332,6 +336,8 @@ const m_option_t mp_opts[] = {
 
     OPT_STRING_APPEND_LIST("sub-file", sub_name, M_OPT_FILE),
     OPT_PATHLIST("sub-paths", sub_paths, 0),
+    OPT_PATHLIST("audio-file-paths", audiofile_paths, 0),
+    OPT_STRING_APPEND_LIST("external-file", external_files, M_OPT_FILE),
     OPT_STRING("sub-codepage", sub_cp, 0),
     OPT_FLOAT("sub-delay", sub_delay, 0),
     OPT_FLOAT("sub-fps", sub_fps, 0),
@@ -437,7 +443,7 @@ const m_option_t mp_opts[] = {
     OPT_FLOATRANGE("video-align-y", vo.align_y, 0, -1.0, 1.0),
     OPT_FLAG("video-unscaled", vo.unscaled, 0),
     OPT_FLAG("force-rgba-osd-rendering", force_rgba_osd, 0),
-    OPT_CHOICE_OR_INT("video-rotate", video_rotate, 0, 0, 360,
+    OPT_CHOICE_OR_INT("video-rotate", video_rotate, 0, 0, 359,
                       ({"no", -1})),
     OPT_CHOICE_C("video-stereo-mode", video_stereo_mode, 0, mp_stereo3d_names),
 
@@ -678,7 +684,7 @@ const struct MPOpts mp_default_opts = {
     .use_terminal = 1,
     .msg_color = 1,
     .audio_driver_list = NULL,
-    .audio_decoders = "lavc:libdcadec,-spdif:*", // never select spdif by default
+    .audio_decoders = "-spdif:*", // never select spdif by default
     .video_decoders = NULL,
     .deinterlace = -1,
     .softvol = SOFTVOL_AUTO,
@@ -786,7 +792,7 @@ const struct MPOpts mp_default_opts = {
     .sub_visibility = 1,
     .sub_pos = 100,
     .sub_speed = 1.0,
-    .audio_output_channels = {0}, // auto
+    .audio_output_channels = MP_CHMAP_INIT_STEREO,
     .audio_output_format = 0,  // AF_FORMAT_UNKNOWN
     .playback_speed = 1.,
     .pitch_correction = 1,
@@ -818,13 +824,9 @@ const struct MPOpts mp_default_opts = {
 
     .mf_fps = 1.0,
 
-#if HAVE_RPI
-    .hwdec_api = -1,
-#endif
-
     .display_tags = (char **)(const char*[]){
         "Artist", "Album", "Album_Artist", "Comment", "Composer", "Genre",
-        "Performer", "Title", "Track", "icy-title",
+        "Performer", "Title", "Track", "icy-title", "service_name",
         NULL
     },
 };

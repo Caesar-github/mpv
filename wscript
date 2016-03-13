@@ -55,6 +55,11 @@ build_options = [
         'desc': 'manpage generation',
         'func': check_ctx_vars('RST2MAN')
     }, {
+        'name': '--html-build',
+        'desc': 'html manual generation',
+        'func': check_ctx_vars('RST2HTML'),
+        'default': 'disable',
+    }, {
         'name': '--pdf-build',
         'desc': 'pdf manual generation',
         'func': check_ctx_vars('RST2PDF'),
@@ -198,12 +203,6 @@ iconv support use --disable-iconv.",
         'desc': 'w32/dos paths',
         'deps_any': [ 'os-win32', 'os-cygwin' ],
         'func': check_true
-    }, {
-        'name': '--waio',
-        'desc': 'libwaio for win32',
-        'deps': [ 'os-win32', 'mingw' ],
-        'func': check_libs(['waio'],
-                    check_statement('waio/waio.h', 'waio_alloc(0, 0, 0, 0)')),
     }, {
         'name': '--termios',
         'desc': 'termios',
@@ -423,9 +422,10 @@ FFmpeg/Libav libraries. You need at least {0}. Aborting.".format(libav_versions_
         'req':  True,
         'fmsg': 'No resampler found. Install libavresample or libswresample (FFmpeg).'
     }, {
-        'name': '--libavfilter',
+        'name': 'libavfilter',
         'desc': 'libavfilter',
         'func': check_pkg_config('libavfilter', '>= 5.0.0'),
+        'req':  True,
     }, {
         'name': '--libavdevice',
         'desc': 'libavdevice',
@@ -477,6 +477,12 @@ FFmpeg/Libav libraries. You need at least {0}. Aborting.".format(libav_versions_
         'desc': 'libavcodec AVSubtitleRect AVPicture removal',
         'func': check_statement('libavcodec/avcodec.h',
                                 'AVSubtitleRect r = {.linesize={0}}',
+                                use='libav'),
+    }, {
+        'name': 'avcodec-profile-name',
+        'desc': 'libavcodec avcodec_profile_name()',
+        'func': check_statement('libavcodec/avcodec.h',
+                                'avcodec_profile_name(0,0)',
                                 use='libav'),
     },
 ]
@@ -550,6 +556,10 @@ audio_output_features = [
         'func': check_pkg_config('openal', '>= 1.13'),
         'default': 'disable'
     }, {
+        'name': '--opensles',
+        'desc': 'OpenSL ES audio output',
+        'func': check_statement('SLES/OpenSLES.h', 'slCreateEngine', lib="OpenSLES"),
+    }, {
         'name': '--alsa',
         'desc': 'ALSA audio output',
         'func': check_pkg_config('alsa', '>= 1.0.18'),
@@ -560,10 +570,6 @@ audio_output_features = [
         'func': check_cc(
             fragment=load_fragment('coreaudio.c'),
             framework_name=['CoreFoundation', 'CoreAudio', 'AudioUnit', 'AudioToolbox'])
-    }, {
-        'name': '--dsound',
-        'desc': 'DirectSound audio output',
-        'func': check_cc(header_name='dsound.h'),
     }, {
         'name': '--wasapi',
         'desc': 'WASAPI audio output',
@@ -692,7 +698,7 @@ video_output_features = [
         'name': '--vaapi',
         'desc': 'VAAPI acceleration',
         'deps': [ 'libdl' ],
-        'deps_any': [ 'x11', 'wayland' ],
+        'deps_any': [ 'x11', 'wayland', 'egl-drm' ],
         'func': check_pkg_config('libva', '>= 0.36.0'),
     }, {
         'name': '--vaapi-x11',
@@ -704,7 +710,11 @@ video_output_features = [
         'desc': 'VAAPI (Wayland support)',
         'deps': [ 'vaapi', 'gl-wayland' ],
         'func': check_pkg_config('libva-wayland', '>= 0.36.0'),
-
+    }, {
+        'name': '--vaapi-drm',
+        'desc': 'VAAPI (DRM/EGL support)',
+        'deps': [ 'vaapi', 'egl-drm' ],
+        'func': check_pkg_config('libva-drm', '>= 0.36.0'),
     }, {
         'name': '--vaapi-glx',
         'desc': 'VAAPI GLX',
@@ -718,7 +728,6 @@ video_output_features = [
     }, {
         'name': 'vaapi-egl',
         'desc': 'VAAPI EGL',
-        'deps': [ 'c11-tls' ], # indirectly
         'deps_any': [ 'vaapi-x-egl', 'vaapi-wayland' ],
         'func': check_true,
     }, {
@@ -735,6 +744,10 @@ video_output_features = [
         'desc': 'Direct3D support',
         'deps': [ 'win32' ],
         'func': check_cc(header_name='d3d9.h'),
+    }, {
+        'name': '--android',
+        'desc': 'Android support',
+        'func': check_statement('android/api-level.h', '(void)__ANDROID__'),  # arbitrary android-specific header
     }, {
         # We need MMAL/bcm_host/dispmanx APIs. Also, most RPI distros require
         # every project to hardcode the paths to the include directories. Also,
@@ -757,10 +770,39 @@ video_output_features = [
             check_statement('GL/gl.h', '(void)GL_RGB32F'),     # arbitrary OpenGL 3.0 symbol
             check_statement('GL/gl.h', '(void)GL_LUMINANCE16') # arbitrary OpenGL legacy-only symbol
         ),
+    }, {
+        'name': '--desktop-gl',
+        'desc': 'Desktop OpengGL support',
+        'func': compose_checks(
+            check_statement('GL/gl.h', '(void)GL_RGB32F'),     # arbitrary OpenGL 3.0 symbol
+            check_statement('GL/gl.h', '(void)GL_LUMINANCE16') # arbitrary OpenGL legacy-only symbol
+        ),
+    } , {
+        'name': '--android-gl',
+        'desc': 'Android OpenGL ES support',
+        'deps': ['android'],
+        'func': check_statement('GLES3/gl3.h', '(void)GL_RGB32F'),  # arbitrary OpenGL ES 3.0 symbol
+    } , {
+        'name': '--any-gl',
+        'desc': 'Any OpenGL (ES) support',
+        'deps_any': ['desktop-gl', 'android-gl'],
+        'func': check_true
+    } , {
+        'name': '--plain-gl',
+        'desc': 'OpenGL without platform-specific code (e.g. for libmpv)',
+        'deps': ['any-gl'],
+        'deps_any': [ 'libmpv-shared', 'libmpv-static' ],
+        'func': check_true,
     } , {
         'name': '--gl',
         'desc': 'OpenGL video outputs',
-        'deps_any': [ 'gl-cocoa', 'gl-x11', 'egl-drm', 'gl-win32', 'gl-wayland', 'rpi' ],
+        'deps_any': [ 'gl-cocoa', 'gl-x11', 'egl-x11', 'egl-drm',
+                      'gl-win32', 'gl-wayland', 'rpi', 'plain-gl' ],
+        'func': check_true
+    }, {
+        'name': 'egl-helpers',
+        'desc': 'EGL helper functions',
+        'deps_any': [ 'egl-x11' ],
         'func': check_true
     }
 ]
@@ -867,6 +909,8 @@ _INSTALL_DIRS_LIST = [
     ('mandir',  '${DATADIR}/man',     'man pages '),
     ('docdir',  '${DATADIR}/doc/mpv', 'documentation files'),
     ('zshdir',  '${DATADIR}/zsh/site-functions', 'zsh completion functions'),
+
+    ('confloaddir', '${CONFDIR}', 'configuration files load directory'),
 ]
 
 def options(opt):
@@ -900,7 +944,7 @@ def options(opt):
     group.add_option('--lua',
         type    = 'string',
         dest    = 'LUA_VER',
-        help    = "select Lua package which should be autodetected. Choices: 51 51deb 51fbsd 52 52deb 52arch 52fbsd luajit")
+        help    = "select Lua package which should be autodetected. Choices: 51 51deb 51obsd 51fbsd 52 52deb 52arch 52fbsd luajit")
 
 @conf
 def is_optimization(ctx):
@@ -926,6 +970,7 @@ def configure(ctx):
     ctx.find_program(pkg_config,  var='PKG_CONFIG')
     ctx.find_program(ar,          var='AR')
     ctx.find_program('perl',      var='BIN_PERL')
+    ctx.find_program('rst2html',  var='RST2HTML',  mandatory=False)
     ctx.find_program('rst2man',   var='RST2MAN',   mandatory=False)
     ctx.find_program('rst2pdf',   var='RST2PDF',   mandatory=False)
     ctx.find_program(windres,     var='WINDRES',   mandatory=False)

@@ -1,18 +1,18 @@
 /*
  * This file is part of mpv.
  *
- * mpv is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
+ * mpv is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
  *
  * mpv is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with mpv.  If not, see <http://www.gnu.org/licenses/>.
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <stdarg.h>
@@ -21,9 +21,11 @@
 #include <libavutil/common.h>
 #include <libavutil/error.h>
 
-#include "talloc.h"
+#include "mpv_talloc.h"
 #include "misc/bstr.h"
+#include "misc/ctype.h"
 #include "common/common.h"
+#include "osdep/strnlen.h"
 
 #define appendf(ptr, ...) \
     do {(*(ptr)) = talloc_asprintf_append_buffer(*(ptr), __VA_ARGS__);} while(0)
@@ -148,7 +150,7 @@ void mp_append_utf8_bstr(void *talloc_ctx, struct bstr *buf, uint32_t codepoint)
     bstr_xappend(talloc_ctx, buf, (bstr){data, output - data});
 }
 
-// Parse a C-style escape beginning at code, and append the result to *str
+// Parse a C/JSON-style escape beginning at code, and append the result to *str
 // using talloc. The input string (*code) must point to the first character
 // after the initial '\', and after parsing *code is set to the first character
 // after the current escape.
@@ -161,6 +163,7 @@ static bool mp_parse_escape(void *talloc_ctx, bstr *dst, bstr *code)
     switch (code->start[0]) {
     case '"':  replace = '"';  break;
     case '\\': replace = '\\'; break;
+    case '/':  replace = '/'; break;
     case 'b':  replace = '\b'; break;
     case 'f':  replace = '\f'; break;
     case 'n':  replace = '\n'; break;
@@ -185,9 +188,20 @@ static bool mp_parse_escape(void *talloc_ctx, bstr *dst, bstr *code)
     }
     if (code->start[0] == 'u' && code->len >= 5) {
         bstr num = bstr_splice(*code, 1, 5);
-        int c = bstrtoll(num, &num, 16);
+        uint32_t c = bstrtoll(num, &num, 16);
         if (num.len)
             return false;
+        if (c >= 0xd800 && c <= 0xdbff) {
+            if (code->len < 5 + 6 // udddd + \udddd
+                || code->start[5] != '\\' || code->start[6] != 'u')
+                return false;
+            *code = bstr_cut(*code, 5 + 1);
+            bstr num2 = bstr_splice(*code, 1, 5);
+            uint32_t c2 = bstrtoll(num2, &num2, 16);
+            if (num2.len || c2 < 0xdc00 || c2 > 0xdfff)
+                return false;
+            c = ((c - 0xd800) << 10) + 0x10000 + (c2 - 0xdc00);
+        }
         mp_append_utf8_bstr(talloc_ctx, dst, c);
         *code = bstr_cut(*code, 5);
         return true;
@@ -255,5 +269,21 @@ char *mp_strerror_buf(char *buf, size_t buf_size, int errnum)
 {
     // This handles the nasty details of calling the right function for us.
     av_strerror(AVERROR(errnum), buf, buf_size);
+    return buf;
+}
+
+char *mp_tag_str_buf(char *buf, size_t buf_size, uint32_t tag)
+{
+    if (buf_size < 1)
+        return buf;
+    buf[0] = '\0';
+    for (int n = 0; n < 4; n++) {
+        uint8_t val = (tag >> (n * 8)) & 0xFF;
+        if (mp_isalnum(val) || val == '_' || val == ' ') {
+            mp_snprintf_cat(buf, buf_size, "%c", val);
+        } else {
+            mp_snprintf_cat(buf, buf_size, "[%d]", val);
+        }
+    }
     return buf;
 }

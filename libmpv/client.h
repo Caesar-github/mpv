@@ -403,7 +403,10 @@ const char *mpv_client_name(mpv_handle *ctx);
  * client handle. (Whether concurrent access is definitely allowed or not has
  * yet to be decided.)
  *
- * @return a new mpv client API handle
+ * @return a new mpv client API handle. Returns NULL on error. Currently, this
+ *         can happen in the following situations:
+ *         - out of memory
+ *         - LC_NUMERIC is not set to "C" (see general remarks)
  */
 mpv_handle *mpv_create(void);
 
@@ -602,7 +605,7 @@ typedef enum mpv_format {
      * Example for writing:
      *
      *     int flag = 1;
-     *     mpv_set_property(ctx, "property", MPV_FORMAT_STRING, &flag);
+     *     mpv_set_property(ctx, "property", MPV_FORMAT_FLAG, &flag);
      */
     MPV_FORMAT_FLAG             = 3,
     /**
