@@ -1,31 +1,28 @@
 /*
  * This file is part of mpv.
  *
- * mpv is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
+ * mpv is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
  *
  * mpv is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with mpv.  If not, see <http://www.gnu.org/licenses/>.
- *
- * You can alternatively redistribute this file and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <windows.h>
+#include <versionhelpers.h>
 #include <initguid.h>
 #include <d3d9.h>
 #include <dwmapi.h>
+#include "osdep/windows_utils.h"
 #include "video/out/w32_common.h"
-#include "common.h"
+#include "context.h"
 
 // For WGL_ACCESS_WRITE_DISCARD_NV, etc.
 #include <GL/wglext.h>
@@ -129,14 +126,17 @@ static int os_ctx_create(struct MPGLContext *ctx)
     };
     int pf = ChoosePixelFormat(p->os_dc, &pfd);
     if (!pf) {
-        MP_FATAL(ctx->vo, "Couldn't choose pixelformat for offscreen rendering\n");
+        MP_FATAL(ctx->vo,
+                 "Couldn't choose pixelformat for offscreen rendering: %s\n",
+                 mp_LastError_to_str());
         goto fail;
     }
     SetPixelFormat(p->os_dc, pf, &pfd);
 
     legacy_context = wglCreateContext(p->os_dc);
     if (!legacy_context || !wglMakeCurrent(p->os_dc, legacy_context)) {
-        MP_FATAL(ctx->vo, "Couldn't create GL context for offscreen rendering\n");
+        MP_FATAL(ctx->vo, "Couldn't create OpenGL context for offscreen rendering: %s\n",
+                 mp_LastError_to_str());
         goto fail;
     }
 
@@ -178,7 +178,9 @@ static int os_ctx_create(struct MPGLContext *ctx)
         p->os_ctx = wglCreateContextAttribsARB(p->os_dc, 0, attribs);
     }
     if (!p->os_ctx) {
-        MP_FATAL(ctx->vo, "Couldn't create GL 3.x context for offscreen rendering\n");
+        MP_FATAL(ctx->vo,
+                 "Couldn't create OpenGL 3.x context for offscreen rendering: %s\n",
+                 mp_LastError_to_str());
         goto fail;
     }
 
@@ -187,7 +189,9 @@ static int os_ctx_create(struct MPGLContext *ctx)
     legacy_context = NULL;
 
     if (!wglMakeCurrent(p->os_dc, p->os_ctx)) {
-        MP_FATAL(ctx->vo, "Couldn't create GL 3.x context for offscreen rendering\n");
+        MP_FATAL(ctx->vo,
+                 "Couldn't activate OpenGL 3.x context for offscreen rendering: %s\n",
+                 mp_LastError_to_str());
         goto fail;
     }
 
@@ -241,7 +245,7 @@ static int d3d_size_dependent_create(MPGLContext *ctx)
     IDirect3DSwapChain9 *sw9;
     hr = IDirect3DDevice9Ex_GetSwapChain(p->device, 0, &sw9);
     if (FAILED(hr)) {
-        MP_FATAL(ctx->vo, "Couldn't get swap chain\n");
+        MP_ERR(ctx->vo, "Couldn't get swap chain: %s\n", mp_HRESULT_to_str(hr));
         return -1;
     }
 
@@ -249,7 +253,8 @@ static int d3d_size_dependent_create(MPGLContext *ctx)
         (void**)&p->swapchain);
     if (FAILED(hr)) {
         IDirect3DSwapChain9_Release(sw9);
-        MP_FATAL(ctx->vo, "Couldn't get swap chain\n");
+        MP_ERR(ctx->vo, "Obtained swap chain is not IDirect3DSwapChain9Ex: %s\n",
+               mp_HRESULT_to_str(hr));
         return -1;
     }
     IDirect3DSwapChain9_Release(sw9);
@@ -257,7 +262,7 @@ static int d3d_size_dependent_create(MPGLContext *ctx)
     hr = IDirect3DSwapChain9Ex_GetBackBuffer(p->swapchain, 0,
         D3DBACKBUFFER_TYPE_MONO, &p->backbuffer);
     if (FAILED(hr)) {
-        MP_FATAL(ctx->vo, "Couldn't get backbuffer\n");
+        MP_ERR(ctx->vo, "Couldn't get backbuffer: %s\n", mp_HRESULT_to_str(hr));
         return -1;
     }
 
@@ -275,17 +280,17 @@ static int d3d_size_dependent_create(MPGLContext *ctx)
     // work is needed.
     switch (bb_desc.Format) {
     case D3DFMT_X1R5G5B5: case D3DFMT_A1R5G5B5:
-        ctx->depth_r = ctx->depth_g = ctx->depth_b = 5;
+        ctx->gl->fb_r = ctx->gl->fb_g = ctx->gl->fb_b = 5;
         break;
     case D3DFMT_R5G6B5:
-        ctx->depth_r = 5; ctx->depth_g = 6; ctx->depth_b = 5;
+        ctx->gl->fb_r = 5; ctx->gl->fb_g = 6; ctx->gl->fb_b = 5;
         break;
     case D3DFMT_R8G8B8: case D3DFMT_A8R8G8B8: case D3DFMT_X8R8G8B8:
     case D3DFMT_A8B8G8R8: case D3DFMT_X8B8G8R8: default:
-        ctx->depth_r = ctx->depth_g = ctx->depth_b = 8;
+        ctx->gl->fb_r = ctx->gl->fb_g = ctx->gl->fb_b = 8;
         break;
     case D3DFMT_A2R10G10B10: case D3DFMT_A2B10G10R10:
-        ctx->depth_r = ctx->depth_g = ctx->depth_b = 10;
+        ctx->gl->fb_r = ctx->gl->fb_g = ctx->gl->fb_b = 10;
         break;
     }
 
@@ -296,7 +301,7 @@ static int d3d_size_dependent_create(MPGLContext *ctx)
         bb_desc.Height, bb_desc.Format, D3DMULTISAMPLE_NONE, 0, FALSE,
         &p->rtarget, &share_handle);
     if (FAILED(hr)) {
-        MP_FATAL(ctx->vo, "Couldn't create rendertarget\n");
+        MP_ERR(ctx->vo, "Couldn't create rendertarget: %s\n", mp_HRESULT_to_str(hr));
         return -1;
     }
 
@@ -313,15 +318,16 @@ static int d3d_size_dependent_create(MPGLContext *ctx)
     p->rtarget_h = gl->DXRegisterObjectNV(p->device_h, p->rtarget, p->texture,
         GL_TEXTURE_2D, WGL_ACCESS_WRITE_DISCARD_NV);
     if (!p->rtarget_h) {
-        MP_FATAL(ctx->vo, "Couldn't share rendertarget with GL: 0x%08x\n",
-            (unsigned)GetLastError());
+        MP_ERR(ctx->vo, "Couldn't share rendertarget with OpenGL: %s\n",
+               mp_LastError_to_str());
         return -1;
     }
 
     // Lock the rendertarget for use from OpenGL. This will only be unlocked in
     // swap_buffers() when it is blitted to the real Direct3D backbuffer.
     if (!gl->DXLockObjectsNV(p->device_h, 1, &p->rtarget_h)) {
-        MP_FATAL(ctx->vo, "Couldn't lock rendertarget\n");
+        MP_ERR(ctx->vo, "Couldn't lock rendertarget: %s\n",
+               mp_LastError_to_str());
         return -1;
     }
 
@@ -341,14 +347,19 @@ static void d3d_size_dependent_destroy(MPGLContext *ctx)
         gl->DXUnlockObjectsNV(p->device_h, 1, &p->rtarget_h);
         gl->DXUnregisterObjectNV(p->device_h, p->rtarget_h);
     }
+    p->rtarget_h = 0;
     if (p->texture)
         gl->DeleteTextures(1, &p->texture);
+    p->texture = 0;
     if (p->rtarget)
         IDirect3DSurface9_Release(p->rtarget);
+    p->rtarget = NULL;
     if (p->backbuffer)
         IDirect3DSurface9_Release(p->backbuffer);
+    p->backbuffer = NULL;
     if (p->swapchain)
         IDirect3DSwapChain9Ex_Release(p->swapchain);
+    p->swapchain = NULL;
 }
 
 static void fill_presentparams(MPGLContext *ctx, D3DPRESENT_PARAMETERS *pparams)
@@ -366,6 +377,8 @@ static void fill_presentparams(MPGLContext *ctx, D3DPRESENT_PARAMETERS *pparams)
 
     *pparams = (D3DPRESENT_PARAMETERS) {
         .Windowed = TRUE,
+        .BackBufferWidth = ctx->vo->dwidth ? ctx->vo->dwidth : 1,
+        .BackBufferHeight = ctx->vo->dheight ? ctx->vo->dheight : 1,
         // The length of the backbuffer queue shouldn't affect latency because
         // swap_buffers() always uses the backbuffer at the head of the queue
         // and presents it immediately. MSDN says there is a performance
@@ -373,9 +386,8 @@ static void fill_presentparams(MPGLContext *ctx, D3DPRESENT_PARAMETERS *pparams)
         // true, at least on Nvidia, where less than four backbuffers causes
         // very high CPU usage. Use six to be safe.
         .BackBufferCount = 6,
-        .SwapEffect = D3DSWAPEFFECT_FLIPEX,
-        // Automatically get the backbuffer format from the display format. The
-        // size of the backbuffer is automatically determined too.
+        .SwapEffect = IsWindows7OrGreater() ? D3DSWAPEFFECT_FLIPEX : D3DSWAPEFFECT_FLIP,
+        // Automatically get the backbuffer format from the display format
         .BackBufferFormat = D3DFMT_UNKNOWN,
         .PresentationInterval = presentation_interval,
         .hDeviceWindow = vo_w32_hwnd(ctx->vo),
@@ -390,7 +402,8 @@ static int d3d_create(MPGLContext *ctx)
 
     p->d3d9_dll = LoadLibraryW(L"d3d9.dll");
     if (!p->d3d9_dll) {
-        MP_FATAL(ctx->vo, "\"d3d9.dll\" not found\n");
+        MP_FATAL(ctx->vo, "Failed to load \"d3d9.dll\": %s\n",
+                 mp_LastError_to_str());
         return -1;
     }
 
@@ -405,7 +418,8 @@ static int d3d_create(MPGLContext *ctx)
 
     hr = p->Direct3DCreate9Ex(D3D_SDK_VERSION, &p->d3d9ex);
     if (FAILED(hr)) {
-        MP_FATAL(ctx->vo, "Couldn't create Direct3D9Ex\n");
+        MP_FATAL(ctx->vo, "Couldn't create Direct3D9Ex: %s\n",
+                 mp_HRESULT_to_str(hr));
         return -1;
     }
 
@@ -419,7 +433,7 @@ static int d3d_create(MPGLContext *ctx)
         D3DCREATE_NOWINDOWCHANGES,
         &pparams, NULL, &p->device);
     if (FAILED(hr)) {
-        MP_FATAL(ctx->vo, "Couldn't create device\n");
+        MP_FATAL(ctx->vo, "Couldn't create device: %s\n", mp_HRESULT_to_str(hr));
         return -1;
     }
 
@@ -429,7 +443,8 @@ static int d3d_create(MPGLContext *ctx)
     // Register the Direct3D device with WGL_NV_dx_interop
     p->device_h = gl->DXOpenDeviceNV(p->device);
     if (!p->device_h) {
-        MP_FATAL(ctx->vo, "Couldn't open Direct3D from GL\n");
+        MP_FATAL(ctx->vo, "Couldn't open Direct3D device from OpenGL: %s\n",
+                 mp_LastError_to_str());
         return -1;
     }
 
@@ -499,12 +514,14 @@ static void dxinterop_reset(struct MPGLContext *ctx)
 
     hr = IDirect3DDevice9Ex_ResetEx(p->device, &pparams, NULL);
     if (FAILED(hr)) {
-        MP_FATAL(ctx->vo, "Couldn't reset device\n");
+        p->lost_device = true;
+        MP_ERR(ctx->vo, "Couldn't reset device: %s\n", mp_HRESULT_to_str(hr));
         return;
     }
 
     if (d3d_size_dependent_create(ctx) < 0) {
-        MP_FATAL(ctx->vo, "Couldn't recreate Direct3D objects after reset\n");
+        p->lost_device = true;
+        MP_ERR(ctx->vo, "Couldn't recreate Direct3D objects after reset\n");
         return;
     }
 
@@ -564,6 +581,9 @@ static int dxinterop_init(struct MPGLContext *ctx, int flags)
 
     DwmEnableMMCSS(TRUE);
 
+    ctx->native_display_type = "IDirect3DDevice9Ex";
+    ctx->native_display = p->device;
+
     return 0;
 fail:
     dxinterop_uninit(ctx);
@@ -584,8 +604,15 @@ static void dxinterop_swap_buffers(MPGLContext *ctx)
 
     pump_message_loop();
 
+    // If the device is still lost, try to reset it again
+    if (p->lost_device)
+        dxinterop_reset(ctx);
+    if (p->lost_device)
+        return;
+
     if (!gl->DXUnlockObjectsNV(p->device_h, 1, &p->rtarget_h)) {
-        MP_FATAL(ctx->vo, "Couldn't unlock rendertarget for present\n");
+        MP_ERR(ctx->vo, "Couldn't unlock rendertarget for present: %s\n",
+               mp_LastError_to_str());
         return;
     }
 
@@ -593,12 +620,14 @@ static void dxinterop_swap_buffers(MPGLContext *ctx)
     hr = IDirect3DDevice9Ex_StretchRect(p->device, p->rtarget, NULL,
                                         p->backbuffer, NULL, D3DTEXF_NONE);
     if (FAILED(hr)) {
-        MP_FATAL(ctx->vo, "Couldn't stretchrect for present\n");
+        MP_ERR(ctx->vo, "Couldn't stretchrect for present: %s\n",
+               mp_HRESULT_to_str(hr));
         return;
     }
 
     if (!gl->DXLockObjectsNV(p->device_h, 1, &p->rtarget_h)) {
-        MP_FATAL(ctx->vo, "Couldn't lock rendertarget after stretchrect\n");
+        MP_ERR(ctx->vo, "Couldn't lock rendertarget after stretchrect: %s\n",
+               mp_LastError_to_str());
         return;
     }
 
@@ -612,7 +641,7 @@ static void dxinterop_swap_buffers(MPGLContext *ctx)
         break;
     default:
         if (FAILED(hr))
-            MP_FATAL(ctx->vo, "Couldn't present! 0x%08x\n", (unsigned)hr);
+            MP_ERR(ctx->vo, "Failed to present: %s\n", mp_HRESULT_to_str(hr));
     }
 }
 

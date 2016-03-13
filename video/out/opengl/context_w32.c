@@ -1,23 +1,18 @@
 /*
  * This file is part of mpv.
  *
- * mpv is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
+ * mpv is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
  *
  * mpv is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with mpv.  If not, see <http://www.gnu.org/licenses/>.
- *
- * You can alternatively redistribute this file and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <assert.h>
@@ -25,7 +20,7 @@
 #include <dwmapi.h>
 #include "video/out/w32_common.h"
 #include "video/out/win32/exclusive_hack.h"
-#include "common.h"
+#include "context.h"
 
 struct w32_context {
     int opt_swapinterval;
@@ -79,13 +74,6 @@ static bool create_dc(struct MPGLContext *ctx, int flags)
     }
 
     SetPixelFormat(hdc, pf, &pfd);
-
-    int pfmt = GetPixelFormat(hdc);
-    if (DescribePixelFormat(hdc, pfmt, sizeof(PIXELFORMATDESCRIPTOR), &pfd)) {
-        ctx->depth_r = pfd.cRedBits;
-        ctx->depth_g = pfd.cGreenBits;
-        ctx->depth_b = pfd.cBlueBits;
-    }
 
     w32_ctx->hdc = hdc;
     return true;
@@ -221,6 +209,14 @@ static void create_ctx(void *ptr)
     if (!w32_ctx->context)
         create_context_w32_old(ctx);
 
+    int pfmt = GetPixelFormat(w32_ctx->hdc);
+    PIXELFORMATDESCRIPTOR pfd;
+    if (DescribePixelFormat(w32_ctx->hdc, pfmt, sizeof(pfd), &pfd)) {
+        ctx->gl->fb_r = pfd.cRedBits;
+        ctx->gl->fb_g = pfd.cGreenBits;
+        ctx->gl->fb_b = pfd.cBlueBits;
+    }
+
     wglMakeCurrent(w32_ctx->hdc, NULL);
 }
 
@@ -338,7 +334,7 @@ static int w32_control(MPGLContext *ctx, int *events, int request, void *arg)
 }
 
 const struct mpgl_driver mpgl_driver_w32 = {
-    .name           = "w32",
+    .name           = "win",
     .priv_size      = sizeof(struct w32_context),
     .init           = w32_init,
     .reconfig       = w32_reconfig,

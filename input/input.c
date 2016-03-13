@@ -48,7 +48,7 @@
 #include "options/m_config.h"
 #include "options/m_option.h"
 #include "options/path.h"
-#include "talloc.h"
+#include "mpv_talloc.h"
 #include "options/options.h"
 #include "misc/bstr.h"
 #include "stream/stream.h"
@@ -446,7 +446,9 @@ static mp_cmd_t *get_cmd_from_keys(struct input_ctx *ictx, char *force_section,
         return handle_test(ictx, code);
 
     struct cmd_bind *cmd = find_any_bind_for_key(ictx, force_section, code);
-    if (cmd == NULL) {
+    if (!cmd)
+        cmd = find_any_bind_for_key(ictx, force_section, MP_KEY_UNMAPPED);
+    if (!cmd) {
         if (code == MP_KEY_CLOSE_WIN)
             return mp_input_parse_cmd_strv(ictx->log, (const char*[]){"quit", 0});
         int msgl = MSGL_WARN;
@@ -460,12 +462,9 @@ static mp_cmd_t *get_cmd_from_keys(struct input_ctx *ictx, char *force_section,
     mp_cmd_t *ret = mp_input_parse_cmd(ictx, bstr0(cmd->cmd), cmd->location);
     if (ret) {
         ret->input_section = cmd->owner->section;
-        if (mp_msg_test(ictx->log, MSGL_DEBUG)) {
-            char *keyname = mp_input_get_key_combo_name(&code, 1);
-            MP_DBG(ictx, "key '%s' -> '%s' in '%s'\n",
-                   keyname, cmd->cmd, ret->input_section);
-            talloc_free(keyname);
-        }
+        ret->key_name = talloc_steal(ret, mp_input_get_key_combo_name(&code, 1));
+        MP_DBG(ictx, "key '%s' -> '%s' in '%s'\n",
+               ret->key_name, cmd->cmd, ret->input_section);
         ret->is_mouse_button = code & MP_KEY_EMIT_ON_UP;
     } else {
         char *key_buf = mp_input_get_key_combo_name(&code, 1);
@@ -605,7 +604,8 @@ static void interpret_key(struct input_ctx *ictx, int code, double scale)
     mp_input_queue_cmd(ictx, cmd);
 }
 
-static void mp_input_feed_key(struct input_ctx *ictx, int code, double scale)
+static void mp_input_feed_key(struct input_ctx *ictx, int code, double scale,
+                              bool force_mouse)
 {
     struct input_opts *opts = ictx->opts;
 
@@ -616,7 +616,7 @@ static void mp_input_feed_key(struct input_ctx *ictx, int code, double scale)
         release_down_cmd(ictx, false);
         return;
     }
-    if (!opts->enable_mouse_movements && MP_KEY_IS_MOUSE(unmod))
+    if (!opts->enable_mouse_movements && MP_KEY_IS_MOUSE(unmod) && !force_mouse)
         return;
     if (unmod == MP_KEY_MOUSE_LEAVE || unmod == MP_KEY_MOUSE_ENTER) {
         update_mouse_section(ictx);
@@ -644,7 +644,14 @@ static void mp_input_feed_key(struct input_ctx *ictx, int code, double scale)
 void mp_input_put_key(struct input_ctx *ictx, int code)
 {
     input_lock(ictx);
-    mp_input_feed_key(ictx, code, 1);
+    mp_input_feed_key(ictx, code, 1, false);
+    input_unlock(ictx);
+}
+
+void mp_input_put_key_artificial(struct input_ctx *ictx, int code)
+{
+    input_lock(ictx);
+    mp_input_feed_key(ictx, code, 1, true);
     input_unlock(ictx);
 }
 
@@ -663,7 +670,7 @@ void mp_input_put_axis(struct input_ctx *ictx, int direction, double value)
     if (value == 0.0)
         return;
     input_lock(ictx);
-    mp_input_feed_key(ictx, direction, value);
+    mp_input_feed_key(ictx, direction, value, false);
     input_unlock(ictx);
 }
 
@@ -700,11 +707,17 @@ bool mp_input_vo_keyboard_enabled(struct input_ctx *ictx)
 void mp_input_set_mouse_pos(struct input_ctx *ictx, int x, int y)
 {
     input_lock(ictx);
+    if (ictx->opts->enable_mouse_movements)
+        mp_input_set_mouse_pos_artificial(ictx, x, y);
+    input_unlock(ictx);
+}
+
+void mp_input_set_mouse_pos_artificial(struct input_ctx *ictx, int x, int y)
+{
+    input_lock(ictx);
     MP_DBG(ictx, "mouse move %d/%d\n", x, y);
 
-    if ((ictx->mouse_vo_x == x && ictx->mouse_vo_y == y) ||
-        !ictx->opts->enable_mouse_movements)
-    {
+    if (ictx->mouse_vo_x == x && ictx->mouse_vo_y == y) {
         input_unlock(ictx);
         return;
     }
@@ -1265,11 +1278,7 @@ void mp_input_load(struct input_ctx *ictx)
 
 #if defined(__MINGW32__)
     if (ictx->global->opts->input_file && *ictx->global->opts->input_file)
-#if HAVE_WAIO
         mp_input_pipe_add(ictx, ictx->global->opts->input_file);
-#else
-        MP_ERR(ictx, "Pipes not available.\n");
-#endif
 #endif
 }
 

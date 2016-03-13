@@ -57,7 +57,6 @@ struct demux_ctrl_stream_ctrl {
     int res;
 };
 
-#define SEEK_ABSOLUTE (1 << 0)      // argument is a timestamp
 #define SEEK_FACTOR   (1 << 1)      // argument is in range [0,1]
 #define SEEK_FORWARD  (1 << 2)      // prefer later time if not exact
 #define SEEK_BACKWARD (1 << 3)      // prefer earlier time if not exact
@@ -85,8 +84,6 @@ enum demux_event {
     DEMUX_EVENT_METADATA = 1 << 2,  // metadata or stream_metadata changed
     DEMUX_EVENT_ALL = 0xFFFF,
 };
-
-#define MAX_SH_STREAMS 256
 
 struct demuxer;
 struct timeline;
@@ -162,7 +159,7 @@ struct demuxer_params {
     struct matroska_segment_uid *matroska_wanted_uids;
     int matroska_wanted_segment;
     bool *matroska_was_valid;
-    bool expect_subtitle;
+    struct timeline *timeline;
     // -- demux_open_url() only
     int stream_flags;
     bool allow_capture;
@@ -181,9 +178,6 @@ typedef struct demuxer {
     double start_time;
     // File format allows PTS resets (even if the current file is without)
     bool ts_resets_possible;
-    // Send relative seek requests, instead of SEEK_ABSOLUTE or SEEK_FACTOR.
-    // This is only done if the user explicitly uses a relative seek.
-    bool rel_seeks;
     // Enable fast track switching hacks. This requires from the demuxer:
     // - seeking is somewhat reliable; packet contents must not change
     // - packet position (demux_packet.pos) is set, not negative, unique, and
@@ -198,9 +192,6 @@ typedef struct demuxer {
 
     // Bitmask of DEMUX_EVENT_*
     int events;
-
-    struct sh_stream **streams;
-    int num_streams;
 
     struct demux_edition *editions;
     int num_editions;
@@ -243,15 +234,19 @@ void free_demuxer(struct demuxer *demuxer);
 void free_demuxer_and_stream(struct demuxer *demuxer);
 
 void demux_add_packet(struct sh_stream *stream, demux_packet_t *dp);
+void demuxer_feed_caption(struct sh_stream *stream, demux_packet_t *dp);
 
 struct demux_packet *demux_read_packet(struct sh_stream *sh);
 int demux_read_packet_async(struct sh_stream *sh, struct demux_packet **out_pkt);
 bool demux_stream_is_selected(struct sh_stream *stream);
-double demux_get_next_pts(struct sh_stream *sh);
 bool demux_has_packet(struct sh_stream *sh);
 struct demux_packet *demux_read_any_packet(struct demuxer *demuxer);
 
-struct sh_stream *new_sh_stream(struct demuxer *demuxer, enum stream_type type);
+struct sh_stream *demux_get_stream(struct demuxer *demuxer, int index);
+int demux_get_num_stream(struct demuxer *demuxer);
+
+struct sh_stream *demux_alloc_sh_stream(enum stream_type type);
+void demux_add_sh_stream(struct demuxer *demuxer, struct sh_stream *sh);
 
 struct demuxer *demux_open(struct stream *stream, struct demuxer_params *params,
                            struct mpv_global *global);
@@ -275,8 +270,6 @@ void demux_set_ts_offset(struct demuxer *demuxer, double offset);
 
 int demux_control(struct demuxer *demuxer, int cmd, void *arg);
 
-void demuxer_switch_track(struct demuxer *demuxer, enum stream_type type,
-                          struct sh_stream *stream);
 void demuxer_select_track(struct demuxer *demuxer, struct sh_stream *stream,
                           bool selected);
 void demux_set_stream_autoselect(struct demuxer *demuxer, bool autoselect);

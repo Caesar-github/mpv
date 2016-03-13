@@ -418,7 +418,7 @@ List of Input Commands
 
     <reselect> (default)
         Select the default audio and subtitle streams, which typically selects
-        external files with highest preference. (The implementation is not
+        external files with the highest preference. (The implementation is not
         perfect, and could be improved on request.)
 
     <keep-selection>
@@ -546,6 +546,12 @@ Input Commands that are Possibly Subject to Change
         Always bind a key. (The input section that was made active most recently
         wins if there are ambiguities.)
 
+    This command can be used to dispatch arbitrary keys to a script or a client
+    API user. If the input section defines ``script-binding`` commands, it is
+    also possible to get separate events on key up/down, and relatively detailed
+    information about the key state. The special key name ``unmapped`` can be
+    used to match any unmapped key.
+
 ``overlay-add <id> <x> <y> "<file>" <offset> "<fmt>" <w> <h> <stride>``
     Add an OSD overlay sourced from raw data. This might be useful for scripts
     and applications controlling mpv, and which want to display things on top
@@ -647,14 +653,20 @@ Input Commands that are Possibly Subject to Change
     For completeness, here is how this command works internally. The details
     could change any time. On any matching key event, ``script_message_to``
     or ``script_message`` is called (depending on whether the script name is
-    included), where the first argument is the string ``key-binding``, the
-    second argument is the name of the binding, and the third argument is the
-    key state as string. The key state consists of a number of letters. The
-    first letter is one of ``d`` (key was pressed down), ``u`` (was released),
-    ``r`` (key is still down, and was repeated; only if key repeat is enabled
-    for this binding), ``p`` (key was pressed; happens if up/down can't be
-    tracked). The second letter whether the event originates from the mouse,
-    either ``m`` (mouse button) or ``-`` (something else).
+    included), with the following arguments:
+
+    1. The string ``key-binding``.
+    2. The name of the binding (as established above).
+    3. The key state as string (see below).
+    4. The key name (since mpv 0.15.0).
+
+    The key state consists of 2 letters:
+
+    1. One of ``d`` (key was pressed down), ``u`` (was released), ``r`` (key
+       is still down, and was repeated; only if key repeat is enabled for this
+       binding), ``p`` (key was pressed; happens if up/down can't be tracked).
+    2. Whether the event originates from the mouse, either ``m`` (mouse button)
+       or ``-`` (something else).
 
 ``ab-loop``
     Cycle through A-B loop states. The first command will set the ``A`` point
@@ -681,6 +693,18 @@ Input Commands that are Possibly Subject to Change
     is the LSB). The contents of the padding ``X`` is undefined. The ``data``
     field is of type MPV_FORMAT_BYTE_ARRAY with the actual image data. The image
     is freed as soon as the result node is freed.
+
+``vf-command "<label>" "<cmd>" "<args>"``
+    Send a command to the filter with the given ``<label>``. Use ``all`` to send
+    it to all filters at once. The command and argument string is filter
+    specific. Currently, this only works with the ``lavfi`` filter - see
+    the libavfilter documentation for which commands a filter supports.
+
+    Note that the ``<label>`` is a mpv filter label, not a libavfilter filter
+    name.
+
+``af-command "<label>" "<cmd>" "<args>"``
+    Same as ``vf-command``, but for audio filters.
 
 Undocumented commands: ``tv-last-channel`` (TV/DVB only),
 ``ao-reload`` (experimental/internal).
@@ -741,6 +765,17 @@ The following hooks are currently defined:
     ``file-local-options/<option name>``. The player will wait until all
     hooks are run.
 
+``on_preloaded``
+    Called after a file has been opened, and before tracks are selected and
+    decoders are created. This has some usefulness if an API users wants
+    to select tracks manually, based on the set of available tracks. It's
+    also useful to initialize ``--lavfi-complex`` in a specific way by API,
+    without having to "probe" the available streams at first.
+
+    Note that this does not yet apply default track selection. Which operations
+    exactly can be done and not be done, and what information is available and
+    what is not yet available yet, is all subject to change.
+
 ``on_unload``
     Run before closing a file, and before actually uninitializing
     everything. It's not possible to resume playback in this state.
@@ -782,7 +817,7 @@ Input sections group a set of bindings, and enable or disable them at once.
 In ``input.conf``, each key binding is assigned to an input section, rather
 than actually having explicit text sections.
 
-Also see ``enable_section`` and ``disable_section`` commands.
+See also: ``enable_section`` and ``disable_section`` commands.
 
 Predefined bindings:
 
@@ -961,9 +996,8 @@ Property list
 ``playback-time`` (RW)
     Position in current file in seconds. Unlike ``time-pos``, the time is
     clamped to the range of the file. (Inaccurate file durations etc. could
-    make it go out of range. Also helpful when the user attempts to seek
-    outside of the file, as the seek target time is considered the current
-    position during seeking.)
+    make it go out of range. Useful on attempts to seek outside of the file,
+    as the seek target time is considered the current position during seeking.)
 
 ``chapter`` (RW)
     Current chapter number. The number of the first chapter is 0.
@@ -1109,13 +1143,13 @@ Property list
 
 ``vf-metadata/<filter-label>``
     Metadata added by video filters. Accessed by the filter label,
-    which if not explicitly specified using the ``@filter-label:`` syntax,
+    which, if not explicitly specified using the ``@filter-label:`` syntax,
     will be ``<filter-name>NN``.
 
     Works similar to ``metadata`` property. It allows the same access
     methods (using sub-properties).
 
-    An example of these kind of metadata are the cropping parameters
+    An example of this kind of metadata are the cropping parameters
     added by ``--vf=lavfi=cropdetect``.
 
 ``af-metadata/<filter-label>``
@@ -1142,7 +1176,7 @@ Property list
 
 ``cache-size`` (RW)
     Network cache size in KB. This is similar to ``--cache``. This allows
-    to set the cache size at runtime. Currently, it's not possible to enable
+    setting the cache size at runtime. Currently, it's not possible to enable
     or disable the cache at runtime using this property, just to resize an
     existing cache.
 
@@ -1201,11 +1235,30 @@ Property list
 ``hr-seek`` (RW)
     See ``--hr-seek``.
 
+``mixer-active``
+    Return ``yes`` if the audio mixer is active, ``no`` otherwise. This has
+    implications for ``--softvol=no`` mode: if the mixer is active, changing
+    ``volume`` doesn't actually change anything on the system mixer. If the
+    ``--volume`` or ``--mute`` option are used, these might not be applied
+    property until the mixer becomes active either. (The options, if set, will
+    just overwrite the mixer state at audio initialization.)
+
+    While the behavior with ``mixer-active==yes`` is relatively well-defined,
+    the ``no`` case will provide possibly wrong or insignificant values.
+
+    Note that an active mixer does not necessarily imply active audio output,
+    although this is implied in the current implementation.
+
 ``volume`` (RW)
-    Current volume (see ``--volume`` for details).
+    Current volume (see ``--volume`` for details). Also see ``mixer-active``
+    property.
+
+``volume-max``
+    Current maximum value the volume property can be set to. (This may depend
+    on the ``--softvol-max`` option.)
 
 ``mute`` (RW)
-    Current mute status (``yes``/``no``).
+    Current mute status (``yes``/``no``). Also see ``mixer-active`` property.
 
 ``audio-delay`` (RW)
     See ``--audio-delay``.
@@ -1530,6 +1583,15 @@ Property list
 
 ``program`` (W)
     Switch TS program (write-only).
+
+``dvb-channel`` (W)
+    Pair of integers: card,channel of current DVB stream.
+    Can be switched to switch to another channel on the same card. 
+
+``dvb-channel-name`` (RW)
+    Name of current DVB program.
+    On write, a channel-switch to the named channel on the same
+    card is performed. Can also be used for channel switching. 
 
 ``sid`` (RW)
     Current subtitle track (similar to ``--sid``).
