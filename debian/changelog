@@ -1,3 +1,13 @@
+mpv (0.16.0-1) UNRELEASED; urgency=medium
+
+  * Team upload.
+  * New upstream release. (Closes: #815692)
+  * debian/patches:
+    - Refresh 01_desktop-path.patch.
+    - Remove 05_fix-typo.patch -- included upstream.
+
+ -- Mateusz Łukasik <mati75@linuxmint.pl>  Sun, 13 Mar 2016 23:32:02 +0100
+
 mpv (0.14.0-1) unstable; urgency=medium
 
   * New upstream release (Closes: #806183)
