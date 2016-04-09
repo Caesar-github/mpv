@@ -31,7 +31,3 @@ override_dh_installchangelogs:
 override_dh_auto_clean:
 	test -s ./waf && python ./waf -v distclean || true
 	find . -name "*.pyc" -delete
-
-override_dh_strip:
-	dh_strip -pmpv --dbg-package=mpv-dbg
-	dh_strip -plibmpv1 --dbg-package=libmpv-dbg

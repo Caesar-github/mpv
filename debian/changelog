@@ -1,4 +1,4 @@
-mpv (0.16.0-1) UNRELEASED; urgency=medium
+mpv (0.16.0-1) unstable; urgency=medium
 
   * Team upload.
   * New upstream release. (Closes: #815692, #816973)
@@ -11,7 +11,7 @@ mpv (0.16.0-1) UNRELEASED; urgency=medium
     - Use secured links for Vcs.
   * Drop mpv-dbg and libmpv-dbg packages.
 
- -- Mateusz Łukasik <mati75@linuxmint.pl>  Sun, 13 Mar 2016 23:32:02 +0100
+ -- Mateusz Łukasik <mati75@linuxmint.pl>  Sat, 09 Apr 2016 12:20:19 +0200
 
 mpv (0.14.0-1) unstable; urgency=medium
 
