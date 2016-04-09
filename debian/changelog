@@ -1,7 +1,7 @@
 mpv (0.16.0-1) UNRELEASED; urgency=medium
 
   * Team upload.
-  * New upstream release. (Closes: #815692)
+  * New upstream release. (Closes: #815692, #816973)
   * debian/patches:
     - Refresh 01_desktop-path.patch.
     - Remove 05_fix-typo.patch -- included upstream.
@@ -9,6 +9,7 @@ mpv (0.16.0-1) UNRELEASED; urgency=medium
   * debian/control:
     - Bump Standards-Version to 3.9.8.
     - Use secured links for Vcs.
+  * Drop mpv-dbg and libmpv-dbg packages.
 
  -- Mateusz Łukasik <mati75@linuxmint.pl>  Sun, 13 Mar 2016 23:32:02 +0100
 
