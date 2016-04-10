@@ -10,8 +10,9 @@ mpv (0.16.0-1) unstable; urgency=medium
     - Bump Standards-Version to 3.9.8.
     - Use secured links for Vcs.
   * Drop mpv-dbg and libmpv-dbg packages.
+  * Update debian/copyright.
 
- -- Mateusz Łukasik <mati75@linuxmint.pl>  Sat, 09 Apr 2016 12:20:19 +0200
+ -- Mateusz Łukasik <mati75@linuxmint.pl>  Sun, 10 Apr 2016 13:38:57 +0200
 
 mpv (0.14.0-1) unstable; urgency=medium
 

@@ -3,8 +3,8 @@ Upstream-Name: mpv
 Source: https://github.com/mpv-player/mpv/releases
 
 Files: *
-Copyright: 2000-2013, The mplayer, mplayer2 and mpv Developers
-License: GPL-2+
+Copyright: 2000-2016, The mplayer, mplayer2 and mpv Developers
+License: LGPL-2.1+
 
 Files: osdep/ar/HIDRemote.*
 Copyright: 2007-2011, IOSPIRIT GmbH
