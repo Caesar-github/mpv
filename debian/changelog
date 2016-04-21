@@ -11,6 +11,8 @@ mpv (0.17.0-1) UNRELEASED; urgency=medium
     - Use secured links for Vcs.
   * Drop mpv-dbg and libmpv-dbg packages.
   * Update debian/copyright.
+  * debian/rules:
+    - Enable encoding.
 
  -- Mateusz Łukasik <mati75@linuxmint.pl>  Sun, 10 Apr 2016 13:38:57 +0200
 
