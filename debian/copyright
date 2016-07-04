@@ -18,133 +18,134 @@ Files: TOOLS/vf_dlopen/*
 Copyright: 2012, Rudolf Polzer <divVerent@xonotic.org>
 License: LGPL-2.1+
 
-Files: audio/fmt-conversion.c
- audio/fmt-conversion.h
- audio/audio.h
+Files:
  audio/audio.c
- audio/mixer.h
- audio/format.h
+ audio/audio.h
+ audio/fmt-conversion.c
+ audio/fmt-conversion.h
  audio/format.c
+ audio/format.h
  audio/mixer.c
- common/encode_lavc.h
- common/encode_lavc.c
+ audio/mixer.h
  common/av_log.c
+ common/common.h
+ common/encode_lavc.c
+ common/encode_lavc.h
  common/msg.c
  common/msg.h
- common/common.h
  demux/demux.c
- demux/matroska.h
- demux/demux_mf.c
- demux/packet.h
- demux/demux_lavf.c
  demux/demux.h
+ demux/demux_lavf.c
+ demux/demux_mf.c
+ demux/demux_mkv.c
+ demux/demux_raw.c
  demux/ebml.c
  demux/ebml.h
+ demux/matroska.h
  demux/packet.c
- demux/demux_raw.c
- demux/demux_mkv.c
+ demux/packet.h
  demux/stheader.h
- input/cmd_list.h
  input/cmd_list.c
- input/input.c
- input/keycodes.h
+ input/cmd_list.h
  input/cmd_parse.c
+ input/cmd_parse.h
+ input/input.c
  input/input.h
  input/keycodes.c
- input/cmd_parse.h
+ input/keycodes.h
  misc/bstr.c
  misc/bstr.h
- options/path.h
- options/m_property.h
- options/parse_commandline.h
- options/options.c
  options/m_config.c
- options/path.c
- options/parse_configfile.c
- options/m_option.h
  options/m_config.h
- options/parse_configfile.h
  options/m_option.c
- options/parse_commandline.c
+ options/m_option.h
  options/m_property.c
- osdep/w32_keyboard.h
- osdep/macosx_compat.h
+ options/m_property.h
+ options/options.c
+ options/parse_commandline.c
+ options/parse_commandline.h
+ options/parse_configfile.c
+ options/parse_configfile.h
+ options/path.c
+ options/path.h
  osdep/macosx_application.h
- osdep/timer-linux.c
- osdep/terminal.h
- osdep/macosx_events.m
- osdep/timer-win2.c
- osdep/macosx_events_objc.h
- osdep/timer.h
  osdep/macosx_application.m
- osdep/terminal-unix.c
- osdep/macosx_versions.h
  osdep/macosx_application_objc.h
- osdep/w32_keyboard.c
- osdep/terminal-win.c
+ osdep/macosx_compat.h
  osdep/macosx_events.h
- player/sub.c
- player/main.c
- player/loadfile.c
- player/configfiles.c
- player/command.h
- player/core.h
- player/command.c
+ osdep/macosx_events.m
+ osdep/macosx_events_objc.h
+ osdep/macosx_versions.h
+ osdep/terminal-unix.c
+ osdep/terminal-win.c
+ osdep/terminal.h
+ osdep/timer-linux.c
+ osdep/timer-win2.c
+ osdep/timer.h
+ osdep/w32_keyboard.c
+ osdep/w32_keyboard.h
  player/audio.c
- player/osd.c
- player/video.c
+ player/command.c
+ player/command.h
+ player/configfiles.c
+ player/core.h
  player/external_files.h
+ player/loadfile.c
+ player/main.c
+ player/osd.c
  player/playloop.c
- stream/frequencies.h
- stream/cache.c
- stream/stream_dvd_common.c
- stream/stream_null.c
- stream/stream.h
- stream/stream_dvd_common.h
- stream/audio_in.c
- stream/dvb_tune.h
- stream/stream_file.c
- stream/tvi_dummy.c
- stream/stream_mf.c
- stream/stream_lavf.c
- stream/dvb_tune.c
- stream/stream_tv.c
- stream/stream_dvb.c
- stream/tvi_def.h
- stream/stream_dvd.c
- stream/tv.c
- stream/audio_in.h
- stream/stream_dvdnav.c
- stream/stream_bluray.c
- stream/stream_smb.c
+ player/sub.c
+ player/video.c
  stream/ai_alsa1x.c
- stream/stream_cdda.c
- stream/tv.h
- stream/tvi_v4l2.c
- stream/stream.c
- stream/frequencies.c
- stream/cookies.h
  stream/ai_oss.c
+ stream/audio_in.c
+ stream/audio_in.h
+ stream/cache.c
  stream/cookies.c
- sub/sd_lavc.c
- sub/osd.h
+ stream/cookies.h
+ stream/dvb_tune.c
+ stream/dvb_tune.h
+ stream/frequencies.c
+ stream/frequencies.h
+ stream/stream.c
+ stream/stream.h
+ stream/stream_bluray.c
+ stream/stream_cdda.c
+ stream/stream_dvb.c
+ stream/stream_dvd.c
+ stream/stream_dvd_common.c
+ stream/stream_dvd_common.h
+ stream/stream_dvdnav.c
+ stream/stream_file.c
+ stream/stream_lavf.c
+ stream/stream_mf.c
+ stream/stream_null.c
+ stream/stream_smb.c
+ stream/stream_tv.c
+ stream/tv.c
+ stream/tv.h
+ stream/tvi_def.h
+ stream/tvi_dummy.c
+ stream/tvi_v4l2.c
  sub/ass_mp.c
- sub/sd_ass.c
- sub/osd.c
  sub/ass_mp.h
+ sub/osd.c
+ sub/osd.h
+ sub/sd_ass.c
+ sub/sd_lavc.c
  video/fmt-conversion.c
- video/gpu_memcpy.c
- video/img_format.c
- video/vdpau_mixer.c
  video/fmt-conversion.h
+ video/gpu_memcpy.c
+ video/image_writer.c
+ video/image_writer.h
+ video/img_format.c
+ video/img_format.h
+ video/mp_image.c
+ video/mp_image.h
+ video/vaapi.c
  video/vaapi.h
  video/vdpau.c
- video/mp_image.c
- video/image_writer.h
- video/image_writer.c
- video/img_format.h
- video/vaapi.c
- video/mp_image.h
+ video/vdpau_mixer.c
 Copyright: 2000-2016, The mplayer, mplayer2 and mpv Developers
 License: GPL-2+
 
