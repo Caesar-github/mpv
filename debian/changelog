@@ -1,7 +1,16 @@
-mpv (0.18.0-1) UNRELEASED; urgency=medium
+mpv (0.18.0-1) unstable; urgency=medium
 
   * Team upload.
-  * New upstream release. (Closes: #815692, #816973)
+
+  [ James Cowgill ]
+  * New upstream release. (Closes: #815692)
+  * debian/control:
+    - Use cgit in the Vcs-Browser URL.
+  * debian/copyright:
+    - GPL-2: sort and add missing files.
+    - Add files licensed under the ISC license.
+
+  [ Mateusz Łukasik ]
   * debian/patches:
     - Refresh 01_desktop-path.patch.
     - Remove 05_fix-typo.patch -- included upstream.
@@ -15,7 +24,7 @@ mpv (0.18.0-1) UNRELEASED; urgency=medium
     - Enable encoding.
   * Update debian/libmpv-dev.examples.
 
- -- Mateusz Łukasik <mati75@linuxmint.pl>  Sun, 10 Apr 2016 13:38:57 +0200
+ -- James Cowgill <jcowgill@debian.org>  Tue, 05 Jul 2016 13:53:51 +0200
 
 mpv (0.14.0-1) unstable; urgency=medium
 
