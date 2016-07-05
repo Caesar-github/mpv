@@ -6,6 +6,25 @@ Files: *
 Copyright: 2000-2016, The mplayer, mplayer2 and mpv Developers
 License: LGPL-2.1+
 
+Files: audio/out/ao_sndio.c
+Copyright:
+ 2008, Alexandre Ratchov <alex@caoua.org>
+ 2013, Christian Neukirchen <chneukirchen@gmail.com>
+License: ISC
+
+Files:
+ libmpv/*
+ osdep/semaphore_osx.c
+ osdep/win32/pthread.c
+ player/client.c
+ ta/*
+Copyright: 2000-2016, The mplayer, mplayer2 and mpv Developers
+License: ISC
+
+Files: osdep/android/strnlen.*
+Copyright: 2009, David Schultz <das@FreeBSD.org>
+License: BSD-2-clause
+
 Files: osdep/ar/HIDRemote.*
 Copyright: 2007-2011, IOSPIRIT GmbH
 License: BSD-3-clause
@@ -13,6 +32,10 @@ License: BSD-3-clause
 Files: osdep/timer-darwin.c
 Copyright: 2003-2004, Dan Villiom Podlaski Christiansen
 License: Expat
+
+Files: osdep/win32-console-wrapper.c
+Copyright: 2013, Martin Herkt
+License: ISC
 
 Files: TOOLS/vf_dlopen/*
 Copyright: 2012, Rudolf Polzer <divVerent@xonotic.org>
@@ -240,6 +263,16 @@ Files: debian/*
 Copyright: 2013 Alessandro Ghedini <ghedo@debian.org>
 License: GPL-2+
 
+License: BSD-2-clause
+ Redistribution and use in source and binary forms, with or without
+ modification, are permitted provided that the following conditions
+ are met:
+ 1. Redistributions of source code must retain the above copyright
+    notice, this list of conditions and the following disclaimer.
+ 2. Redistributions in binary form must reproduce the above copyright
+    notice, this list of conditions and the following disclaimer in the
+    documentation and/or other materials provided with the distribution.
+
 License: BSD-3-clause
  Redistribution and use in source and binary forms, with or without
  modification, are permitted provided that the following conditions are met:
@@ -299,6 +332,19 @@ License: GPL-2+
  .
  On Debian systems, the complete text of the GNU General
  Public License version 2 can be found in "/usr/share/common-licenses/GPL-2".
+
+License: ISC
+ Permission to use, copy, modify, and/or distribute this software for any
+ purpose with or without fee is hereby granted, provided that the above
+ copyright notice and this permission notice appear in all copies.
+ .
+ THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+ WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+ MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+ WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+ OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 License: LGPL-2.1+
  This library is free software; you can redistribute it and/or
