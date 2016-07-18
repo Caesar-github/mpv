@@ -1,9 +1,3 @@
-mpv (0.18.0-2) UNRELEASED; urgency=medium
-
-  * Rebuild against ffmpeg-3.1.1 (Closes: #831537)
-
- -- Nicholas D Steeves <nsteeves@gmail.com>  Sun, 17 Jul 2016 17:38:39 -0400
-
 mpv (0.18.0-1) unstable; urgency=medium
 
   * Team upload.
