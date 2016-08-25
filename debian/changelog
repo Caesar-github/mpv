@@ -1,8 +1,11 @@
-mpv (0.19.0-1) UNRELEASED; urgency=medium
+mpv (0.19.0-1) unstable; urgency=medium
 
-  *
+  * New upstream release.
+  * Add new mpv_stream_cb_add_ro symbol to libmpv1.symbols.
+  * Update debian/copyright.
+  * Refresh patches.
 
- -- James Cowgill <jcowgill@debian.org>  Thu, 25 Aug 2016 16:15:19 +0000
+ -- James Cowgill <jcowgill@debian.org>  Thu, 25 Aug 2016 22:29:49 +0100
 
 mpv (0.18.1-1) unstable; urgency=medium
 
