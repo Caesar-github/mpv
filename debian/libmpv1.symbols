@@ -38,6 +38,7 @@ libmpv.so.1 libmpv1 #MINVER#
  mpv_set_property_async@Base 0.4.0
  mpv_set_property_string@Base 0.4.0
  mpv_set_wakeup_callback@Base 0.4.0
+ mpv_stream_cb_add_ro@Base 0.19.0
  mpv_suspend@Base 0.4.0
  mpv_terminate_destroy@Base 0.4.0
  mpv_unobserve_property@Base 0.4.0
