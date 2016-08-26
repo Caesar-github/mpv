@@ -1,3 +1,9 @@
+mpv (0.20.0-1) unstable; urgency=medium
+
+  * New upstream release.
+
+ -- James Cowgill <jcowgill@debian.org>  Sat, 27 Aug 2016 00:20:40 +0100
+
 mpv (0.19.0-1) unstable; urgency=medium
 
   * New upstream release.
