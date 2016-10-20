@@ -8,9 +8,9 @@ Bug-Debian: https://bugs.debian.org/831537
 This patch header follows DEP-3: http://dep.debian.net/deps/dep3/
 --- a/player/main.c
 +++ b/player/main.c
-@@ -416,18 +416,6 @@ int mp_initialize(struct MPContext *mpct
-     if (handle_help_options(mpctx))
-         return -2;
+@@ -429,18 +429,6 @@ int mp_initialize(struct MPContext *mpct
+ 
+     handle_deprecated_options(mpctx);
  
 -    if (!print_libav_versions(mp_null_log, 0)) {
 -        // Using mismatched libraries can be legitimate, but even then it's
@@ -24,6 +24,6 @@ This patch header follows DEP-3: http://dep.debian.net/deps/dep3/
 -        return -1;
 -    }
 -
-     if (opts->dump_stats && opts->dump_stats[0]) {
-         if (mp_msg_open_stats_file(mpctx->global, opts->dump_stats) < 0)
-             MP_ERR(mpctx, "Failed to open stats file '%s'\n", opts->dump_stats);
+     if (!mpctx->playlist->first && !opts->player_idle_mode)
+         return -3;
+ 

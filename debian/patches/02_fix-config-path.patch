@@ -7,7 +7,7 @@ Last-Update: 2015-05-03
 
 --- a/DOCS/man/mpv.rst
 +++ b/DOCS/man/mpv.rst
-@@ -926,7 +926,7 @@ FILES
+@@ -920,7 +920,7 @@ FILES
  
  For Windows-specifics, see `FILES ON WINDOWS`_ section.
  
