@@ -1,8 +1,20 @@
-mpv (0.21.0-1) UNRELEASED; urgency=medium
+mpv (0.21.0-1) unstable; urgency=medium
 
-  *
+  * New upstream release.
 
- -- James Cowgill <jcowgill@debian.org>  Thu, 20 Oct 2016 09:12:13 +0100
+  * debian/control:
+    - Enable GBM and V4L2.
+  * debian/libmpv-dev.examples:
+    - Drop, contents now included in main mpv manpage.
+  * debian/patches:
+    - Refresh patches.
+    - Drop 01_desktop-path.patch.
+  * debian/rules:
+    - Remove verbose flag from waf configure.
+    - Remove dh_install override and use debian/tmp explicitly in
+      mpv.install.
+
+ -- James Cowgill <jcowgill@debian.org>  Thu, 20 Oct 2016 11:43:36 +0100
 
 mpv (0.20.0-1) unstable; urgency=medium
 
