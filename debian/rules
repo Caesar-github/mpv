@@ -16,15 +16,11 @@ override_dh_auto_configure:
 			--enable-encoding				\
 			--disable-build-date
 
-
 override_dh_auto_build:
 	python ./waf -v build
 
 override_dh_auto_install:
 	python ./waf -v install --destdir=debian/tmp
-
-override_dh_install:
-	dh_install --sourcedir=debian/tmp
 
 override_dh_installchangelogs:
 	dh_installchangelogs RELEASE_NOTES
