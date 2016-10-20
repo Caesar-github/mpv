@@ -6,7 +6,7 @@ export DEB_BUILD_MAINT_OPTIONS := hardening=+all # #741439, #799738
 	dh $@
 
 override_dh_auto_configure:
-	python ./waf -v configure					\
+	python ./waf configure						\
 			--prefix=/usr					\
 			--libdir=/usr/lib/$(DEB_HOST_MULTIARCH)		\
 			--confdir=/etc/mpv				\
