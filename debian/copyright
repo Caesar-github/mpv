@@ -69,6 +69,7 @@ Files:
  audio/out/ao.c
  audio/out/ao.h
  audio/out/ao_alsa.c
+ audio/out/ao_audiounit.m
  audio/out/ao_coreaudio.c
  audio/out/ao_coreaudio_exclusive.c
  audio/out/ao_coreaudio_properties.c
