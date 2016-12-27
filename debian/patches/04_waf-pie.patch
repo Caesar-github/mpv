@@ -1,6 +1,6 @@
 Description: Fix waf support for PIE
 Origin: vendor
-Debian-Bug: http://bugs.debian.org/799738
+Debian-Bug: https://bugs.debian.org/799738
 Forwarded: not-needed
 Author: Simon Ruderich <simon@ruderich.org>
 Reviewed-by: Alessandro Ghedini <ghedo@debian.org>
