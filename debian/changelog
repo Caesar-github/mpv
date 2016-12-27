@@ -1,8 +1,17 @@
-mpv (0.23.0-1) UNRELEASED; urgency=medium
+mpv (0.23.0-1) unstable; urgency=medium
 
-  *
+  * New upstream release.
 
- -- James Cowgill <jcowgill@debian.org>  Tue, 27 Dec 2016 17:02:19 +0000
+  * debian/control:
+    - Build-depend on ffmpeg 3.2.2.
+    - Use https for the Homepage field.
+  * debian/copyright:
+    - Update for 0.23.0.
+  * debian/patches:
+    - Refresh.
+    - Use https for BTS links in debian/patches.
+
+ -- James Cowgill <jcowgill@debian.org>  Tue, 27 Dec 2016 23:02:13 +0000
 
 mpv (0.22.0-1) unstable; urgency=medium
 
