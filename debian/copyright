@@ -42,6 +42,7 @@ Copyright: 2012, Rudolf Polzer <divVerent@xonotic.org>
 License: LGPL-2.1+
 
 Files:
+ TOOLS/matroska.py
  audio/audio.c
  audio/audio.h
  audio/decode/ad.h
@@ -111,8 +112,6 @@ Files:
  input/input.h
  input/keycodes.c
  input/keycodes.h
- misc/bstr.c
- misc/bstr.h
  options/m_config.c
  options/m_config.h
  options/m_option.c
@@ -134,6 +133,7 @@ Files:
  osdep/macosx_events.m
  osdep/macosx_events_objc.h
  osdep/macosx_versions.h
+ osdep/mpv.rc
  osdep/terminal-unix.c
  osdep/terminal-win.c
  osdep/terminal.h
