@@ -193,7 +193,7 @@ Files:
  sub/sd_lavc.c
  video/decode/dec_video.c
  video/decode/dec_video.h
- video/decode/vaapi.c
+ video/decode/hw_vaapi_old.c
  video/decode/vd.h
  video/decode/vd_lavc.c
  video/filter/vf.c
@@ -254,11 +254,13 @@ Files:
  video/vaapi.h
  video/vdpau.c
  video/vdpau_mixer.c
-Copyright: 2000-2016, The mplayer, mplayer2 and mpv Developers
+Copyright: 2000-2017, The mplayer, mplayer2 and mpv Developers
 License: GPL-2+
 
 Files: debian/*
-Copyright: 2013 Alessandro Ghedini <ghedo@debian.org>
+Copyright:
+ 2013 Alessandro Ghedini <ghedo@debian.org>
+ 2016-2017 James Cowgill <jcowgill@debian.org>
 License: GPL-2+
 
 License: BSD-2-clause
