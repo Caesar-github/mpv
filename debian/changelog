@@ -1,3 +1,9 @@
+mpv (0.25.0-1) UNRELEASED; urgency=medium
+
+  *
+
+ -- James Cowgill <jcowgill@debian.org>  Sun, 23 Apr 2017 16:57:01 +0100
+
 mpv (0.24.0-1) experimental; urgency=medium
 
   * New upstream release.
