@@ -323,9 +323,8 @@ Available video output drivers are:
 
 ``vaapi``
     Intel VA API video output driver with support for hardware decoding. Note
-    that there is absolutely no reason to use this, other than wanting to use
-    hardware decoding to save power on laptops, or possibly preventing video
-    tearing with some setups.
+    that there is absolutely no reason to use this, other than compatibility.
+    This is low quality, and has issues with OSD.
 
     .. note:: This driver is for compatibility with crappy systems. You can
               use vaapi hardware decoding with ``--vo=opengl`` too.
@@ -419,14 +418,6 @@ Available video output drivers are:
             JPEG files, extension .jpeg.
         png
             PNG files.
-        ppm
-            Portable bitmap format.
-        pgm
-            Portable graymap format.
-        pgmyuv
-            Portable graymap format, using the YV12 pixel format.
-        tga
-            Truevision TGA.
 
     ``--vo-image-png-compression=<0-9>``
         PNG compression factor (speed vs. file size tradeoff) (default: 7)

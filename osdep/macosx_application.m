@@ -17,16 +17,22 @@
 
 #include <stdio.h>
 #include <pthread.h>
+#include "config.h"
 #include "mpv_talloc.h"
 
 #include "common/msg.h"
 #include "input/input.h"
+#include "player/client.h"
 
 #import "osdep/macosx_application_objc.h"
 #include "osdep/macosx_compat.h"
 #import "osdep/macosx_events_objc.h"
 #include "osdep/threads.h"
 #include "osdep/main-fn.h"
+
+#if HAVE_MACOS_TOUCHBAR
+#import "osdep/macosx_touchbar.h"
+#endif
 
 #define MPV_PROTOCOL @"mpv://"
 
@@ -75,8 +81,8 @@ static void terminate_cocoa_application(void)
 
 - (void)sendEvent:(NSEvent *)event
 {
-    [super sendEvent:event];
-
+    if (![_eventsResponder processKeyEvent:event])
+        [super sendEvent:event];
     [_eventsResponder wakeup];
 }
 
@@ -101,7 +107,42 @@ static void terminate_cocoa_application(void)
     NSAppleEventManager *em = [NSAppleEventManager sharedAppleEventManager];
     [em removeEventHandlerForEventClass:kInternetEventClass
                              andEventID:kAEGetURL];
+    [em removeEventHandlerForEventClass:kCoreEventClass
+                             andEventID:kAEQuitApplication];
     [super dealloc];
+}
+
+#if HAVE_MACOS_TOUCHBAR
+- (NSTouchBar *)makeTouchBar
+{
+    TouchBar *tBar = [[TouchBar alloc] init];
+    [tBar setApp:self];
+    tBar.delegate = tBar;
+    tBar.customizationIdentifier = customID;
+    tBar.defaultItemIdentifiers = @[play, previousItem, nextItem, seekBar];
+    tBar.customizationAllowedItemIdentifiers = @[play, seekBar, previousItem,
+        nextItem, previousChapter, nextChapter, cycleAudio, cycleSubtitle,
+        currentPosition, timeLeft];
+    return tBar;
+}
+
+- (void)toggleTouchBarMenu
+{
+    [NSApp toggleTouchBarCustomizationPalette:self];
+}
+#endif
+
+- (void)processEvent:(struct mpv_event *)event
+{
+#if HAVE_MACOS_TOUCHBAR
+    if ([self respondsToSelector:@selector(touchBar)])
+        [(TouchBar *)self.touchBar processEvent:event];
+#endif
+}
+
+- (void)queueCommand:(char *)cmd
+{
+    [_eventsResponder queueCommand:cmd];
 }
 
 #define _R(P, T, E, K) \
@@ -137,6 +178,15 @@ static void terminate_cocoa_application(void)
     NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Window"];
     _R(menu, @"Minimize", @"m", MPM_MINIMIZE)
     _R(menu, @"Zoom",     @"z", MPM_ZOOM)
+
+#if HAVE_MACOS_TOUCHBAR
+    if ([self respondsToSelector:@selector(touchBar)]) {
+        [menu addItem:[NSMenuItem separatorItem]];
+        [self menuItemWithParent:menu title:@"Customize Touch Bar…"
+                          action:@selector(toggleTouchBarMenu) keyEquivalent: @""];
+    }
+#endif
+
     return [menu autorelease];
 }
 
@@ -206,13 +256,17 @@ static void terminate_cocoa_application(void)
     return [item autorelease];
 }
 
-- (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)theApp
+- (void)applicationWillFinishLaunching:(NSNotification *)notification
 {
-    return NSTerminateNow;
+    NSAppleEventManager *em = [NSAppleEventManager sharedAppleEventManager];
+    [em setEventHandler:self
+            andSelector:@selector(handleQuitEvent:withReplyEvent:)
+          forEventClass:kCoreEventClass
+             andEventID:kAEQuitApplication];
 }
 
-- (void)handleQuitEvent:(NSAppleEventDescriptor*)e
-         withReplyEvent:(NSAppleEventDescriptor*)r
+- (void)handleQuitEvent:(NSAppleEventDescriptor *)event
+         withReplyEvent:(NSAppleEventDescriptor *)replyEvent
 {
     [self stopPlayback];
 }
@@ -304,69 +358,25 @@ static void macosx_redirect_output_to_logfile(const char *filename)
     [pool release];
 }
 
-static void get_system_version(int* major, int* minor, int* bugfix)
+static bool bundle_started_from_finder()
 {
-    static dispatch_once_t once_token;
-    static int s_major  = 0;
-    static int s_minor  = 0;
-    static int s_bugfix = 0;
-    dispatch_once(&once_token, ^{
-        NSString *version_plist =
-            @"/System/Library/CoreServices/SystemVersion.plist";
-        NSString *version_string =
-            [NSDictionary dictionaryWithContentsOfFile:version_plist]
-                [@"ProductVersion"];
-        NSArray* versions = [version_string componentsSeparatedByString:@"."];
-        int count = [versions count];
-        if (count >= 1)
-            s_major = [versions[0] intValue];
-        if (count >= 2)
-            s_minor = [versions[1] intValue];
-        if (count >= 3)
-            s_bugfix = [versions[2] intValue];
-    });
-    *major  = s_major;
-    *minor  = s_minor;
-    *bugfix = s_bugfix;
-}
+    NSDictionary *env = [[NSProcessInfo processInfo] environment];
+    NSString *is_bundle = [env objectForKey:@"MPVBUNDLE"];
 
-static bool is_psn_argument(char *psn_arg_to_check)
-{
-    NSString *psn_arg = [NSString stringWithUTF8String:psn_arg_to_check];
-    return [psn_arg hasPrefix:@"-psn_"];
-}
-
-static bool bundle_started_from_finder(int argc, char **argv)
-{
-    bool bundle_detected = [[NSBundle mainBundle] bundleIdentifier];
-    int major, minor, bugfix;
-    get_system_version(&major, &minor, &bugfix);
-    bool without_psn = bundle_detected && argc==1;
-    bool with_psn    = bundle_detected && argc==2 && is_psn_argument(argv[1]);
-
-    if ((major == 10) && (minor >= 9)) {
-        // Looks like opening quarantined files from the finder inserts the
-        // -psn argument while normal files do not. Hurr.
-        return with_psn || without_psn;
-    } else {
-        return with_psn;
-    }
+    return is_bundle ? [is_bundle boolValue] : false;
 }
 
 int cocoa_main(int argc, char *argv[])
 {
     @autoreleasepool {
         application_instantiated = true;
+        [[EventsResponder sharedInstance] setIsApplication:YES];
 
         struct playback_thread_ctx ctx = {0};
         ctx.argc     = &argc;
         ctx.argv     = &argv;
 
-        if (bundle_started_from_finder(argc, argv)) {
-            if (argc > 1) {
-                argc = 1; // clears out -psn argument if present
-                argv[1] = NULL;
-            }
+        if (bundle_started_from_finder()) {
             macosx_redirect_output_to_logfile("mpv");
             init_cocoa_application(true);
         } else {

@@ -34,10 +34,13 @@ local user_opts = {
     layout = "bottombar",
     seekbarstyle = "bar",       -- slider (diamond marker), knob (circle
                                 -- marker with guide), or bar (fill)
+    title = "${media-title}",   -- string compatible with property-expansion
+                                -- to be shown as OSC title
     tooltipborder = 1,          -- border of tooltip in bottom/topbar
     timetotal = false,          -- display total time instead of remaining time?
     timems = false,             -- display timecodes with milliseconds?
     visibility = "auto",        -- only used at init to set visibility_mode(...)
+    boxmaxchars = 80,           -- title crop threshold for box layout
 }
 
 -- read_options may modify hidetimeout, so save the original default value in
@@ -54,6 +57,7 @@ local osc_param = { -- calculated by osc_init()
     playresy = 0,                           -- canvas size Y
     playresx = 0,                           -- canvas size X
     display_aspect = 1,
+    unscaled_y = 0,
     areas = {},
 }
 
@@ -659,8 +663,10 @@ function render_elements(master_ass)
 
             local maxchars = element.layout.button.maxchars
             if not (maxchars == nil) and (#buttontext > maxchars) then
-                if (#buttontext > maxchars+20) then
-                    while (#buttontext > maxchars+20) do
+                local max_ratio = 1.25  -- up to 25% more chars while shrinking
+                local limit = math.max(0, math.floor(maxchars * max_ratio) - 3)
+                if (#buttontext > limit) then
+                    while (#buttontext > limit) do
                         buttontext = buttontext:gsub(".[\128-\191]*$", "")
                     end
                     buttontext = buttontext .. "..."
@@ -691,7 +697,7 @@ function limited_list(prop, pos)
     end
 
     local fs = tonumber(mp.get_property('options/osd-font-size'))
-    local max = math.ceil(720 / fs)
+    local max = math.ceil(osc_param.unscaled_y*0.75 / fs)
     if max % 2 == 0 then
         max = max - 1
     end
@@ -762,47 +768,30 @@ function show_message(text, duration)
     text = string.sub(text, 0, 4000)
 
     -- replace actual linebreaks with ASS linebreaks
-    -- and get the amount of lines along the way
-    local lines
-    text, lines = string.gsub(text, "\n", "\\N")
+    text = string.gsub(text, "\n", "\\N")
 
-    -- append a Zero-Width-Space to . and _ to enable
-    -- linebreaking of long filenames
-    text = string.gsub(text, "%.", ".\226\128\139")
-    text = string.gsub(text, "_", "_\226\128\139")
-
-    local scale = 1
-    if (mp.get_property("video") == "no") then
-        scale = user_opts.scaleforcedwindow
-    elseif state.fullscreen then
-        scale = user_opts.scalefullscreen
-    else
-        scale = user_opts.scalewindowed
-    end
-
-    -- scale the fontsize for longer multi-line output
-    local fontsize = tonumber(mp.get_property("options/osd-font-size")) / scale
-    local outline = tonumber(mp.get_property("options/osd-border-size")) / scale
-
-
-    if lines > 12 then
-        fontsize, outline = fontsize / 1.5, outline / 1.25
-    elseif lines > 8 then
-        fontsize, outline = fontsize / 1.25, outline / 1.125
-    end
-
-    local style = "{\\bord" .. outline .. "\\fs" .. fontsize .. "}"
-
-    state.message_text = style .. text
+    state.message_text = text
     state.message_timeout = mp.get_time() + duration
 end
 
 function render_message(ass)
     if not(state.message_timeout == nil) and not(state.message_text == nil)
         and state.message_timeout > mp.get_time() then
+        local _, lines = string.gsub(state.message_text, "\\N", "")
+
+        local fontsize = tonumber(mp.get_property("options/osd-font-size"))
+        local outline = tonumber(mp.get_property("options/osd-border-size"))
+        local maxlines = math.ceil(osc_param.unscaled_y*0.75 / fontsize)
+        local counterscale = osc_param.playresy / osc_param.unscaled_y
+
+        fontsize = fontsize * counterscale / math.max(0.65 + math.min(lines/maxlines, 1), 1)
+        outline = outline * counterscale / math.max(0.75 + math.min(lines/maxlines, 1)/2, 1)
+
+        local style = "{\\bord" .. outline .. "\\fs" .. fontsize .. "}"
+
 
         ass:new_event()
-        ass:append(state.message_text)
+        ass:append(style .. state.message_text)
     else
         state.message_text = nil
         state.message_timeout = nil
@@ -951,7 +940,7 @@ layouts["box"] = function ()
     lo = add_layout("title")
     lo.geometry = {x = posX, y = titlerowY, an = 8, w = 496, h = 12}
     lo.style = osc_styles.vidtitle
-    lo.button.maxchars = 80
+    lo.button.maxchars = user_opts.boxmaxchars
 
     lo = add_layout("pl_prev")
     lo.geometry =
@@ -1007,7 +996,13 @@ layouts["box"] = function ()
 
     lo = add_layout("tog_fs")
     lo.geometry =
-        {x = posX+pos_offsetX, y = bigbtnrowY, an = 6, w = 25, h = 25}
+        {x = posX+pos_offsetX - 25, y = bigbtnrowY, an = 4, w = 25, h = 25}
+    lo.style = osc_styles.smallButtonsR
+
+    lo = add_layout("volume")
+    lo.geometry = 
+        {x = posX+pos_offsetX - (25 * 2) - osc_geo.p,
+         y = bigbtnrowY, an = 4, w = 25, h = 25}
     lo.style = osc_styles.smallButtonsR
 
     --
@@ -1166,9 +1161,9 @@ layouts["bottombar"] = function()
     local padX = 9
     local padY = 3
     local buttonW = 27
-    local tcW = (state.tc_ms) and 150 or 105
+    local tcW = (state.tc_ms) and 170 or 110
     local tsW = 90
-    local minW = (buttonW + padX)*3 + (tcW + padX)*4 + (tsW + padX)*2
+    local minW = (buttonW + padX)*5 + (tcW + padX)*4 + (tsW + padX)*2
 
     if ((osc_param.display_aspect > 0) and (osc_param.playresx < minW)) then
         osc_param.playresy = minW / osc_param.display_aspect
@@ -1233,7 +1228,7 @@ layouts["bottombar"] = function()
     lo.geometry = geo
     lo.style = string.format("%s{\\clip(%f,%f,%f,%f)}",
         osc_styles.vidtitleBar,
-        geo.x, geo.y-geo.h/2, geo.w, geo.y+geo.h/2)
+        geo.x, geo.y-geo.h, geo.w, geo.y+geo.h)
 
 
     -- Playback control buttons
@@ -1262,10 +1257,21 @@ layouts["bottombar"] = function()
 
     local sb_l = geo.x + padX
 
+    -- Fullscreen button
+    geo = { x = osc_geo.x + osc_geo.w - buttonW - padX, y = geo.y, an = 4,
+            w = buttonW, h = geo.h }
+    lo = add_layout("tog_fs")
+    lo.geometry = geo
+    lo.style = osc_styles.smallButtonsBar
+
+    -- Volume
+    geo = { x = geo.x - geo.w - padX, y = geo.y, an = geo.an, w = geo.w, h = geo.h }
+    lo = add_layout("volume")
+    lo.geometry = geo
+    lo.style = osc_styles.smallButtonsBar
 
     -- Track selection buttons
-    geo = { x = osc_geo.x + osc_geo.w - padX, y = geo.y, an = geo.an,
-            w = tsW, h = geo.h }
+    geo = { x = geo.x - tsW - padX, y = geo.y, an = geo.an, w = tsW, h = geo.h }
     lo = add_layout("cy_sub")
     lo.geometry = geo
     lo.style = osc_styles.smallButtonsBar
@@ -1277,7 +1283,7 @@ layouts["bottombar"] = function()
 
 
     -- Right timecode
-    geo = { x = geo.x - geo.w - padX - tcW, y = geo.y, an = 4,
+    geo = { x = geo.x - padX - tcW - 10, y = geo.y, an = geo.an,
             w = tcW, h = geo.h }
     lo = add_layout("tc_right")
     lo.geometry = geo
@@ -1320,9 +1326,9 @@ layouts["topbar"] = function()
     local padX = 9
     local padY = 3
     local buttonW = 27
-    local tcW = (state.tc_ms) and 150 or 105
+    local tcW = (state.tc_ms) and 170 or 110
     local tsW = 90
-    local minW = (buttonW + padX)*3 + (tcW + padX)*4 + (tsW + padX)*2
+    local minW = (buttonW + padX)*5 + (tcW + padX)*4 + (tsW + padX)*2
 
     if ((osc_param.display_aspect > 0) and (osc_param.playresx < minW)) then
         osc_param.playresy = minW / osc_param.display_aspect
@@ -1385,10 +1391,21 @@ layouts["topbar"] = function()
 
     local sb_l = geo.x + padX
 
+    -- Fullscreen button
+    geo = { x = osc_geo.x + osc_geo.w - buttonW - padX, y = geo.y, an = 4,
+            w = buttonW, h = geo.h }
+    lo = add_layout("tog_fs")
+    lo.geometry = geo
+    lo.style = osc_styles.smallButtonsBar
+
+    -- Volume
+    geo = { x = geo.x - geo.w - padX, y = geo.y, an = geo.an, w = geo.w, h = geo.h }
+    lo = add_layout("volume")
+    lo.geometry = geo
+    lo.style = osc_styles.smallButtonsBar
 
     -- Track selection buttons
-    geo = { x = osc_geo.x + osc_geo.w - padX, y = geo.y, an = geo.an,
-            w = tsW, h = geo.h }
+    geo = { x = geo.x - tsW - padX, y = geo.y, an = geo.an, w = tsW, h = geo.h }
     lo = add_layout("cy_sub")
     lo.geometry = geo
     lo.style = osc_styles.smallButtonsBar
@@ -1400,7 +1417,7 @@ layouts["topbar"] = function()
 
 
     -- Right timecode
-    geo = { x = geo.x - geo.w - padX - tcW, y = geo.y, an = 4,
+    geo = { x = geo.x - geo.w - padX - tcW - 10, y = geo.y, an = 4,
             w = tcW, h = geo.h }
     lo = add_layout("tc_right")
     lo.geometry = geo
@@ -1460,7 +1477,7 @@ layouts["topbar"] = function()
     lo.geometry = geo
     lo.style = string.format("%s{\\clip(%f,%f,%f,%f)}",
         osc_styles.vidtitleBar,
-        geo.x, geo.y-geo.h/2, geo.w, geo.y+geo.h/2)
+        geo.x, geo.y-geo.h, geo.w, geo.y+geo.h)
 end
 
 -- Validate string type user options
@@ -1498,12 +1515,15 @@ function osc_init()
     end
 
     if user_opts.vidscale then
-        osc_param.playresy = baseResY / scale
+        osc_param.unscaled_y = baseResY
     else
-        osc_param.playresy = display_h / scale
+        osc_param.unscaled_y = display_h
     end
-    osc_param.playresx = osc_param.playresy * display_aspect
-    osc_param.display_aspect = display_aspect
+    osc_param.playresy = osc_param.unscaled_y / scale
+    if (display_aspect > 0) then
+        osc_param.display_aspect = display_aspect
+    end
+    osc_param.playresx = osc_param.playresy * osc_param.display_aspect
 
 
 
@@ -1516,7 +1536,7 @@ function osc_init()
     local have_pl = (pl_count > 1)
     local pl_pos = mp.get_property_number("playlist-pos", 0) + 1
     local have_ch = (mp.get_property_number("chapters", 0) > 0)
-    local loop = mp.get_property("loop", "no")
+    local loop = mp.get_property("loop-playlist", "no")
 
     local ne
 
@@ -1524,12 +1544,10 @@ function osc_init()
     ne = new_element("title", "button")
 
     ne.content = function ()
-        local title = mp.get_property_osd("media-title")
-        if not (title == nil) then
-            return (title)
-        else
-            return ("mpv")
-        end
+        local title = mp.command_native({"expand-text", user_opts.title})
+        -- escape ASS, and strip newlines and trailing slashes
+        title = title:gsub("\\n", " "):gsub("\\$", ""):gsub("{","\\{")
+        return not (title == "") and title or "mpv"
     end
 
     ne.eventresponder["mouse_btn0_up"] = function ()
@@ -1791,24 +1809,52 @@ function osc_init()
 
     ne.content = function ()
         local dmx_cache = mp.get_property_number("demuxer-cache-duration")
-        if not (dmx_cache == nil) then
-            dmx_cache = math.floor(dmx_cache + 0.5) .. "s + "
-        else
-            dmx_cache = ""
-        end
         local cache_used = mp.get_property_number("cache-used")
-        if not (cache_used == nil) then
-            if (cache_used < 1024) then
-                cache_used = cache_used .. " KB"
-            else
-                cache_used = math.floor((cache_used/102.4)+0.5)/10 .. " MB"
+        local is_network = mp.get_property_native("demuxer-via-network")
+        if dmx_cache then
+            dmx_cache = string.format("%3.0fs", dmx_cache)
+        end
+        if cache_used then
+            local suffix = " KiB"
+            if (cache_used >= 1024) then
+                cache_used = cache_used/1024
+                suffix = " MiB"
             end
-            return ("Cache: " .. dmx_cache .. cache_used)
+            cache_used = string.format("%5.1f%s", cache_used, suffix)
+        end
+        if (is_network and dmx_cache) or cache_used then
+            -- Only show dmx-cache-duration by itself if it's a network file.
+            -- Cache can be forced even for local files, so always show that.
+            return string.format("Cache: %s%s%s",
+                (dmx_cache and dmx_cache or ""),
+                ((dmx_cache and cache_used) and " + " or ""),
+                (cache_used or ""))
         else
             return ""
         end
     end
 
+    -- volume
+    ne = new_element("volume", "button")
+
+    ne.content = function()
+        local volume = mp.get_property_number("volume", 0)
+        local mute = mp.get_property_native("mute")
+        local volicon = {"\238\132\139", "\238\132\140",
+                         "\238\132\141", "\238\132\142"}
+        if volume == 0 or mute then
+            return "\238\132\138"
+        else
+            return volicon[math.min(4,math.ceil(volume / (100/3)))]
+        end
+    end
+    ne.eventresponder["mouse_btn0_up"] =
+        function () mp.commandv("cycle", "mute") end
+
+    ne.eventresponder["mouse_btn3_press"] =
+        function () mp.commandv("osd-auto", "add", "volume", 5) end
+    ne.eventresponder["mouse_btn4_press"] =
+        function () mp.commandv("osd-auto", "add", "volume", -5) end
 
 
     -- load layout
@@ -2039,7 +2085,8 @@ function render()
     end
 
     -- submit
-    mp.set_osd_ass(osc_param.playresy * aspect, osc_param.playresy, ass.text)
+    mp.set_osd_ass(osc_param.playresy * osc_param.display_aspect,
+                   osc_param.playresy, ass.text)
 
 
 
@@ -2050,24 +2097,31 @@ end
 -- Eventhandling
 --
 
-function process_event(source, what)
+local function element_has_action(element, action)
+    return element and element.eventresponder and
+        element.eventresponder[action]
+end
 
-    if what == "down" then
+function process_event(source, what)
+    local action = string.format("%s%s", source,
+        what and ("_" .. what) or "")
+
+    if what == "down" or what == "press" then
 
         for n = 1, #elements do
 
-            if not (elements[n].eventresponder == nil) then
-                if not (elements[n].eventresponder[source .. "_up"] == nil)
-                    or not (elements[n].eventresponder[source .. "_down"] == nil) then
+            if mouse_hit(elements[n]) and
+                elements[n].eventresponder and
+                (elements[n].eventresponder[source .. "_up"] or
+                    elements[n].eventresponder[action]) then
 
-                    if mouse_hit(elements[n]) then
-                        state.active_element = n
-                        state.active_event_source = source
-                        -- fire the down event if the element has one
-                        if not (elements[n].eventresponder[source .. "_" .. what] == nil) then
-                            elements[n].eventresponder[source .. "_" .. what](elements[n])
-                        end
-                    end
+                if what == "down" then
+                    state.active_element = n
+                    state.active_event_source = source
+                end
+                -- fire the down or press event if the element has one
+                if element_has_action(elements[n], action) then
+                    elements[n].eventresponder[action](elements[n])
                 end
 
             end
@@ -2075,23 +2129,19 @@ function process_event(source, what)
 
     elseif what == "up" then
 
-        if not (state.active_element == nil) then
-
+        if elements[state.active_element] then
             local n = state.active_element
 
             if n == 0 then
                 --click on background (does not work)
-            elseif n > 0 and not (n > #elements) and
-                not (elements[n].eventresponder == nil) and
-                not (elements[n].eventresponder[source .. "_" .. what] == nil) then
+            elseif element_has_action(elements[n], action) and
+                mouse_hit(elements[n]) then
 
-                if mouse_hit(elements[n]) then
-                    elements[n].eventresponder[source .. "_" .. what](elements[n])
-                end
+                elements[n].eventresponder[action](elements[n])
             end
 
             --reset active element
-            if not (elements[n].eventresponder["reset"] == nil) then
+            if element_has_action(elements[n], "reset") then
                 elements[n].eventresponder["reset"](elements[n])
             end
 
@@ -2100,6 +2150,7 @@ function process_event(source, what)
         state.mouse_down_counter = 0
 
     elseif source == "mouse_move" then
+
         local mouseX, mouseY = get_virt_mouse_pos()
         if (user_opts.minmousemove == 0) or
             (not ((state.last_mouseX == nil) or (state.last_mouseY == nil)) and
@@ -2111,15 +2162,9 @@ function process_event(source, what)
         end
         state.last_mouseX, state.last_mouseY = mouseX, mouseY
 
-        if not (state.active_element == nil) then
-
-            local n = state.active_element
-
-            if not (n > #elements) and not (elements[n].eventresponder == nil) then
-                if not (elements[n].eventresponder[source] == nil) then
-                    elements[n].eventresponder[source](elements[n])
-                end
-            end
+        local n = state.active_element
+        if element_has_action(elements[n], action) then
+            elements[n].eventresponder[action](elements[n])
         end
         tick()
     end
@@ -2257,6 +2302,8 @@ mp.set_key_bindings({
                                 function(e) process_event("shift+mouse_btn0", "down")  end},
     {"mouse_btn2",              function(e) process_event("mouse_btn2", "up") end,
                                 function(e) process_event("mouse_btn2", "down")  end},
+    {"mouse_btn3",              function(e) process_event("mouse_btn3", "press") end},
+    {"mouse_btn4",              function(e) process_event("mouse_btn4", "press") end},
     {"mouse_btn0_dbl",          "ignore"},
     {"shift+mouse_btn0_dbl",    "ignore"},
     {"mouse_btn2_dbl",          "ignore"},
@@ -2310,3 +2357,5 @@ end
 visibility_mode(user_opts.visibility, true)
 mp.register_script_message("osc-visibility", visibility_mode)
 mp.add_key_binding("del", function() visibility_mode("cycle") end)
+
+set_virt_mouse_area(0, 0, 0, 0, "input")

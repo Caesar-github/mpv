@@ -56,6 +56,7 @@ extern const vf_info_t vf_info_yadif;
 extern const vf_info_t vf_info_stereo3d;
 extern const vf_info_t vf_info_dlopen;
 extern const vf_info_t vf_info_lavfi;
+extern const vf_info_t vf_info_lavfi_bridge;
 extern const vf_info_t vf_info_vaapi;
 extern const vf_info_t vf_info_vapoursynth;
 extern const vf_info_t vf_info_vapoursynth_lazy;
@@ -74,6 +75,7 @@ static const vf_info_t *const filter_list[] = {
 
     &vf_info_mirror,
     &vf_info_lavfi,
+    &vf_info_lavfi_bridge,
     &vf_info_rotate,
     &vf_info_gradfun,
     &vf_info_pullup,
@@ -128,6 +130,8 @@ static bool get_desc(struct m_obj_desc *dst, int index)
 const struct m_obj_list vf_obj_list = {
     .get_desc = get_desc,
     .description = "video filters",
+    .allow_disable_entries = true,
+    .allow_unknown_entries = true,
 };
 
 // Try the cmd on each filter (starting with the first), and stop at the first
@@ -240,10 +244,17 @@ void vf_print_filter_chain(struct vf_chain *c, int msglevel,
 static struct vf_instance *vf_open(struct vf_chain *c, const char *name,
                                    char **args)
 {
+    const char *lavfi_name = NULL;
+    char **lavfi_args = NULL;
     struct m_obj_desc desc;
     if (!m_obj_list_find(&desc, &vf_obj_list, bstr0(name))) {
-        MP_ERR(c, "Couldn't find video filter '%s'.\n", name);
-        return NULL;
+        if (!m_obj_list_find(&desc, &vf_obj_list, bstr0("lavfi-bridge"))) {
+            MP_ERR(c, "Couldn't find video filter '%s'.\n", name);
+            return NULL;
+        }
+        lavfi_name = name;
+        lavfi_args = args;
+        args = NULL;
     }
     vf_instance_t *vf = talloc_zero(NULL, struct vf_instance);
     *vf = (vf_instance_t) {
@@ -259,6 +270,19 @@ static struct vf_instance *vf_open(struct vf_chain *c, const char *name,
                                         name, c->opts->vf_defs, args);
     if (!config)
         goto error;
+    if (lavfi_name) {
+        // Pass the filter arguments as proper sub-options to the bridge filter.
+        struct m_config_option *name_opt = m_config_get_co(config, bstr0("name"));
+        assert(name_opt);
+        assert(name_opt->opt->type == &m_option_type_string);
+        if (m_config_set_option_raw(config, name_opt, &lavfi_name, 0) < 0)
+            goto error;
+        struct m_config_option *opts = m_config_get_co(config, bstr0("opts"));
+        assert(opts);
+        assert(opts->opt->type == &m_option_type_keyvalue_list);
+        if (m_config_set_option_raw(config, opts, &lavfi_args, 0) < 0)
+            goto error;
+    }
     vf->priv = config->optstruct;
     int retcode = vf->info->open(vf);
     if (retcode < 1)
@@ -322,6 +346,8 @@ struct vf_instance *vf_append_filter(struct vf_chain *c, const char *name,
 int vf_append_filter_list(struct vf_chain *c, struct m_obj_settings *list)
 {
     for (int n = 0; list && list[n].name; n++) {
+        if (!list[n].enabled)
+            continue;
         struct vf_instance *vf =
             vf_append_filter(c, list[n].name, list[n].attribs);
         if (vf) {
@@ -576,7 +602,11 @@ static void update_formats(struct vf_chain *c, struct vf_instance *vf,
         }
         query_formats(fmts, vf);
         const char *filter = find_conv_filter(fmts, out_formats);
-        struct vf_instance *conv = vf_open(c, filter, NULL);
+        char **args = NULL;
+        char *args_no_warn[] = {"warn", "no", NULL};
+        if (strcmp(filter, "scale") == 0)
+            args = args_no_warn;
+        struct vf_instance *conv = vf_open(c, filter, args);
         if (conv) {
             conv->autoinserted = true;
             conv->next = vf->next;
@@ -594,6 +624,39 @@ static void update_formats(struct vf_chain *c, struct vf_instance *vf,
         for (int n = IMGFMT_START; n < IMGFMT_END; n++)
             vf->last_outfmts[n - IMGFMT_START] = 1;
         query_formats(fmts, vf);
+    }
+}
+
+// Insert a conversion filter _after_ vf.
+// vf needs to have been successfully configured, vf->next unconfigured but
+// with formats negotiated.
+static void auto_insert_conversion_filter_if_needed(struct vf_chain *c,
+                                                    struct vf_instance *vf)
+{
+    if (!vf->next || vf->next->query_format(vf->next, vf->fmt_out.imgfmt) ||
+        is_conv_filter(vf) || is_conv_filter(vf->next))
+        return;
+
+    MP_INFO(c, "Using conversion filter.\n");
+
+    uint8_t fmts[IMGFMT_END - IMGFMT_START];
+    query_formats(fmts, vf->next);
+
+    uint8_t out_formats[IMGFMT_END - IMGFMT_START];
+    for (int n = IMGFMT_START; n < IMGFMT_END; n++)
+        out_formats[n - IMGFMT_START] = n == vf->fmt_out.imgfmt;
+
+    const char *filter = find_conv_filter(out_formats, fmts);
+    char **args = NULL;
+    char *args_no_warn[] = {"warn", "no", NULL};
+    if (strcmp(filter, "scale") == 0)
+        args = args_no_warn;
+    struct vf_instance *conv = vf_open(c, filter, args);
+    if (conv) {
+        conv->autoinserted = true;
+        conv->next = vf->next;
+        vf->next = conv;
+        update_formats(c, conv, vf->last_outfmts);
     }
 }
 
@@ -659,6 +722,8 @@ int vf_reconfig(struct vf_chain *c, const struct mp_image_params *params)
         }
         cur = vf->fmt_out;
         hwfctx = vf->out_hwframes_ref;
+        // Recheck if the new output format works with the following filters.
+        auto_insert_conversion_filter_if_needed(c, vf);
     }
     c->output_params = cur;
     c->initialized = r < 0 ? -1 : 1;
@@ -727,12 +792,14 @@ struct vf_chain *vf_new(struct mpv_global *global)
     static const struct vf_info in = { .name = "in" };
     c->first = talloc(c, struct vf_instance);
     *c->first = (struct vf_instance) {
+        .log = c->log,
         .info = &in,
         .query_format = input_query_format,
     };
     static const struct vf_info out = { .name = "out" };
     c->last = talloc(c, struct vf_instance);
     *c->last = (struct vf_instance) {
+        .log = c->log,
         .info = &out,
         .query_format = output_query_format,
         .priv = (void *)c,

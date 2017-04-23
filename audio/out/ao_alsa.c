@@ -1121,11 +1121,17 @@ static int audio_wait(struct ao *ao, pthread_mutex_t *lock)
             return r;
 
         unsigned short revents;
-        snd_pcm_poll_descriptors_revents(p->alsa, fds, num_fds, &revents);
+        err = snd_pcm_poll_descriptors_revents(p->alsa, fds, num_fds, &revents);
         CHECK_ALSA_ERROR("cannot read poll events");
 
-        if (revents & POLLERR)
+        if (revents & POLLERR)  {
+            snd_pcm_status_t *status;
+            snd_pcm_status_alloca(&status);
+
+            err = snd_pcm_status(p->alsa, status);
+            check_device_present(ao, err);
             return -1;
+        }
         if (revents & POLLOUT)
             return 0;
     }
@@ -1137,16 +1143,16 @@ alsa_error:
 
 static bool is_useless_device(char *name)
 {
-    char *crap[] = {"front", "rear", "center_lfe", "side", "surround21",
-        "surround40", "surround41", "surround50", "surround51", "surround71",
-        "sysdefault", "pulse", "null", "dsnoop", "dmix", "hw", "iec958",
-        "default"};
+    char *crap[] = {"rear", "center_lfe", "side", "pulse", "null", "dsnoop", "hw"};
     for (int i = 0; i < MP_ARRAY_SIZE(crap); i++) {
         int l = strlen(crap[i]);
         if (name && strncmp(name, crap[i], l) == 0 &&
             (!name[l] || name[l] == ':'))
             return true;
     }
+    // The standard default entry will achieve exactly the same.
+    if (name && strcmp(name, "default") == 0)
+        return true;
     return false;
 }
 

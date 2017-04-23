@@ -39,6 +39,7 @@ static bool check_error(struct vf_instance *vf, VAStatus status, const char *msg
 struct surface_refs {
     VASurfaceID *surfaces;
     int num_surfaces;
+    int max_surfaces;
 };
 
 struct pipeline {
@@ -51,8 +52,9 @@ struct pipeline {
 };
 
 struct vf_priv_s {
-    int deint_type; // 0: none, 1: discard, 2: double fps
+    int deint_type;
     int interlaced_only;
+    int reversal_bug;
     bool do_deint;
     VABufferID buffers[VAProcFilterCount];
     int num_buffers;
@@ -73,24 +75,26 @@ static const struct vf_priv_s vf_priv_default = {
     .context = VA_INVALID_ID,
     .deint_type = 2,
     .interlaced_only = 1,
+    .reversal_bug = 1,
 };
 
 static void add_surfaces(struct vf_priv_s *p, struct surface_refs *refs, int dir)
 {
-    for (int n = 0; ; n++) {
+    for (int n = 0; n < refs->max_surfaces; n++) {
         struct mp_image *s = mp_refqueue_get(p->queue, (1 + n) * dir);
         if (!s)
             break;
         VASurfaceID id = va_surface_id(s);
-        if (id != VA_INVALID_ID)
-            MP_TARRAY_APPEND(p, refs->surfaces, refs->num_surfaces, id);
+        if (id == VA_INVALID_ID)
+            break;
+        MP_TARRAY_APPEND(p, refs->surfaces, refs->num_surfaces, id);
     }
 }
 
 // The array items must match with the "deint" suboption values.
 static const int deint_algorithm[] = {
     [0] = VAProcDeinterlacingNone,
-    [1] = VAProcDeinterlacingNone, // first-field, special-cased
+    [1] = VAProcDeinterlacingBob, // first-field, special-cased
     [2] = VAProcDeinterlacingBob,
     [3] = VAProcDeinterlacingWeave,
     [4] = VAProcDeinterlacingMotionAdaptive,
@@ -112,8 +116,6 @@ static void update_pipeline(struct vf_instance *vf)
         filters++;
         num_filters--;
     }
-    if (filters == p->pipe.filters && num_filters == p->pipe.num_filters)
-        return; /* cached state is correct */
     p->pipe.forward.num_surfaces = p->pipe.backward.num_surfaces = 0;
     p->pipe.num_input_colors = p->pipe.num_output_colors = 0;
     p->pipe.num_filters = 0;
@@ -134,8 +136,15 @@ static void update_pipeline(struct vf_instance *vf)
     p->pipe.num_filters = num_filters;
     p->pipe.num_input_colors = caps.num_input_color_standards;
     p->pipe.num_output_colors = caps.num_output_color_standards;
-    mp_refqueue_set_refs(p->queue, caps.num_backward_references,
-                                   caps.num_forward_references);
+    p->pipe.forward.max_surfaces = caps.num_forward_references;
+    p->pipe.backward.max_surfaces = caps.num_backward_references;
+    if (p->reversal_bug) {
+        int max = MPMAX(caps.num_forward_references, caps.num_backward_references);
+        mp_refqueue_set_refs(p->queue, max, max);
+    } else {
+        mp_refqueue_set_refs(p->queue, p->pipe.backward.max_surfaces,
+                                       p->pipe.forward.max_surfaces);
+    }
     mp_refqueue_set_mode(p->queue,
         (p->do_deint ? MP_MODE_DEINT : 0) |
         (p->deint_type >= 2 ? MP_MODE_OUTPUT_FIELDS : 0) |
@@ -155,6 +164,7 @@ static struct mp_image *render(struct vf_instance *vf)
     struct mp_image *img = NULL;
     bool need_end_picture = false;
     bool success = false;
+    VABufferID buffer = VA_INVALID_ID;
 
     VASurfaceID in_id = va_surface_id(in);
     if (!p->pipe.filters || in_id == VA_INVALID_ID)
@@ -187,7 +197,6 @@ static struct mp_image *render(struct vf_instance *vf)
 
     need_end_picture = true;
 
-    VABufferID buffer = VA_INVALID_ID;
     VAProcPipelineParameterBuffer *param = NULL;
     status = vaCreateBuffer(p->display, p->context,
                             VAProcPipelineParameterBufferType,
@@ -210,6 +219,7 @@ static struct mp_image *render(struct vf_instance *vf)
     if (!check_error(vf, status, "vaMapBuffer()"))
         goto cleanup;
 
+    *param = (VAProcPipelineParameterBuffer){0};
     param->surface = in_id;
     param->surface_region = &(VARectangle){0, 0, in->w, in->h};
     param->output_region = &(VARectangle){0, 0, img->w, img->h};
@@ -218,13 +228,21 @@ static struct mp_image *render(struct vf_instance *vf)
     param->filters = p->pipe.filters;
     param->num_filters = p->pipe.num_filters;
 
-    add_surfaces(p, &p->pipe.forward, 1);
+    int dir = p->reversal_bug ? -1 : 1;
+
+    add_surfaces(p, &p->pipe.forward, 1 * dir);
     param->forward_references = p->pipe.forward.surfaces;
     param->num_forward_references = p->pipe.forward.num_surfaces;
 
-    add_surfaces(p, &p->pipe.backward, -1);
+    add_surfaces(p, &p->pipe.backward, -1 * dir);
     param->backward_references = p->pipe.backward.surfaces;
     param->num_backward_references = p->pipe.backward.num_surfaces;
+
+    MP_TRACE(vf, "in=0x%x\n", (unsigned)in_id);
+    for (int n = 0; n < param->num_backward_references; n++)
+        MP_TRACE(vf, " b%d=0x%x\n", n, (unsigned)param->backward_references[n]);
+    for (int n = 0; n < param->num_forward_references; n++)
+        MP_TRACE(vf, " f%d=0x%x\n", n, (unsigned)param->forward_references[n]);
 
     vaUnmapBuffer(p->display, buffer);
 
@@ -237,6 +255,7 @@ static struct mp_image *render(struct vf_instance *vf)
 cleanup:
     if (need_end_picture)
         vaEndPicture(p->display, p->context);
+    vaDestroyBuffer(p->display, buffer);
     if (success)
         return img;
     talloc_free(img);
@@ -414,7 +433,7 @@ static bool initialize(struct vf_instance *vf)
         buffers[i] = VA_INVALID_ID;
     for (int i = 0; i < num_filters; i++) {
         if (filters[i] == VAProcFilterDeinterlacing) {
-            if (p->deint_type < 2)
+            if (p->deint_type < 1)
                 continue;
             VAProcFilterCapDeinterlacing caps[VAProcDeinterlacingCount];
             int num = va_query_filter_caps(vf, VAProcFilterDeinterlacing, caps,
@@ -425,7 +444,7 @@ static bool initialize(struct vf_instance *vf)
             for (int n=0; n < num; n++) { // find the algorithm
                 if (caps[n].type != algorithm)
                     continue;
-                VAProcFilterParameterBufferDeinterlacing param;
+                VAProcFilterParameterBufferDeinterlacing param = {0};
                 param.type = VAProcFilterDeinterlacing;
                 param.algorithm = algorithm;
                 buffers[VAProcFilterDeinterlacing] =
@@ -477,6 +496,7 @@ static const m_option_t vf_opts_fields[] = {
                 {"motion-adaptive", 4},
                 {"motion-compensated", 5})),
     OPT_FLAG("interlaced-only", interlaced_only, 0),
+    OPT_FLAG("reversal-bug", reversal_bug, 0),
     {0}
 };
 

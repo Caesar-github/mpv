@@ -30,7 +30,7 @@ void gl_upload_tex(GL *gl, GLenum target, GLenum format, GLenum type,
                    const void *dataptr, int stride,
                    int x, int y, int w, int h);
 
-mp_image_t *gl_read_window_contents(GL *gl, int w, int h);
+mp_image_t *gl_read_fbo_contents(GL *gl, int fbo, int w, int h);
 
 const char* mp_sampler_type(GLenum texture_target);
 
@@ -171,7 +171,9 @@ void gl_sc_set_vao(struct gl_shader_cache *sc, struct gl_vao *vao);
 void gl_sc_enable_extension(struct gl_shader_cache *sc, char *name);
 void gl_sc_generate(struct gl_shader_cache *sc);
 void gl_sc_reset(struct gl_shader_cache *sc);
-void gl_sc_unbind(struct gl_shader_cache *sc);
+struct mpv_global;
+void gl_sc_set_cache_dir(struct gl_shader_cache *sc, struct mpv_global *global,
+                         const char *dir);
 
 struct gl_timer;
 
@@ -199,5 +201,8 @@ void gl_pbo_upload_tex(struct gl_pbo_upload *pbo, GL *gl, bool use_pbo,
                        int tex_w, int tex_h, const void *dataptr, int stride,
                        int x, int y, int w, int h);
 void gl_pbo_upload_uninit(struct gl_pbo_upload *pbo);
+
+int gl_determine_16bit_tex_depth(GL *gl);
+int gl_get_fb_depth(GL *gl, int fbo);
 
 #endif

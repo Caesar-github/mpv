@@ -132,7 +132,19 @@ static void print_stream(struct MPContext *mpctx, struct track *t)
     if (t->title)
         APPEND(b, " '%s'", t->title);
     const char *codec = s ? s->codec->codec : NULL;
-    APPEND(b, " (%s)", codec ? codec : "<unknown>");
+    APPEND(b, " (%s", codec ? codec : "<unknown>");
+    if (t->type == STREAM_VIDEO) {
+        if (s && s->codec->disp_w)
+            APPEND(b, " %dx%d", s->codec->disp_w, s->codec->disp_h);
+        if (s && s->codec->fps)
+            APPEND(b, " %.3ffps", s->codec->fps);
+    } else if (t->type == STREAM_AUDIO) {
+        if (s && s->codec->channels.num)
+            APPEND(b, " %dch", s->codec->channels.num);
+        if (s && s->codec->samplerate)
+            APPEND(b, " %dHz", s->codec->samplerate);
+    }
+    APPEND(b, ")");
     if (t->is_external)
         APPEND(b, " (external)");
     MP_INFO(mpctx, "%s\n", b);
@@ -1256,19 +1268,22 @@ reopen_file:
         execute_queued_seek(mpctx);
     }
 
-    if (mpctx->opts->pause)
-        pause_player(mpctx);
+    update_internal_pause_state(mpctx);
 
     open_recorder(mpctx, true);
 
     playback_start = mp_time_sec();
     mpctx->error_playing = 0;
+    mpctx->in_playloop = true;
     while (!mpctx->stop_play)
         run_playloop(mpctx);
+    mpctx->in_playloop = false;
 
     MP_VERBOSE(mpctx, "EOF code: %d  \n", mpctx->stop_play);
 
 terminate_playback:
+
+    update_core_idle_state(mpctx);
 
     process_unload_hooks(mpctx);
 
@@ -1295,7 +1310,6 @@ terminate_playback:
         uninit_audio_out(mpctx);
 
     mpctx->playback_initialized = false;
-    update_screensaver_state(mpctx);
 
     if (mpctx->stop_play == PT_RELOAD_FILE) {
         mpctx->stop_play = KEEP_PLAYING;

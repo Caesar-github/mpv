@@ -40,7 +40,6 @@
 #include "stream/stream.h"
 #include "video/csputils.h"
 #include "video/hwdec.h"
-#include "video/out/opengl/hwdec.h"
 #include "video/image_writer.h"
 #include "sub/osd.h"
 #include "audio/filter/af.h"
@@ -51,6 +50,10 @@
 
 #if HAVE_DRM
 #include "video/out/drm_common.h"
+#endif
+
+#if HAVE_GL
+#include "video/out/opengl/hwdec.h"
 #endif
 
 extern const char mp_help_text[];
@@ -89,6 +92,7 @@ extern const struct m_obj_list vo_obj_list;
 extern const struct m_obj_list ao_obj_list;
 
 extern const struct m_sub_options angle_conf;
+extern const struct m_sub_options cocoa_conf;
 
 const struct m_opt_choice_alternatives mp_hwdec_names[] = {
     {"no",          HWDEC_NONE},
@@ -157,6 +161,8 @@ static const m_option_t mp_vo_opt_list[] = {
     OPT_FLAG("taskbar-progress", taskbar_progress, 0),
     OPT_FLAG("snap-window", snap_window, 0),
     OPT_FLAG("ontop", ontop, 0),
+    OPT_CHOICE_OR_INT("ontop-level", ontop_level, 0, 0, INT_MAX,
+                      ({"window", -1}, {"system", -2})),
     OPT_FLAG("border", border, 0),
     OPT_FLAG("fit-border", fit_border, 0),
     OPT_FLAG("on-all-workspaces", all_workspaces, 0),
@@ -230,6 +236,7 @@ const struct m_sub_options vo_sub_opts = {
         .window_scale = 1.0,
         .x11_bypass_compositor = 2,
         .mmcss_profile = "Playback",
+        .ontop_level = -1,
     },
 };
 
@@ -298,7 +305,7 @@ const m_option_t mp_opts[] = {
 #endif
     OPT_FLAG("config", load_config, M_OPT_FIXED | CONF_PRE_PARSE),
     OPT_STRING("config-dir", force_configdir,
-               M_OPT_FIXED | CONF_NOCFG | CONF_PRE_PARSE),
+               M_OPT_FIXED | CONF_NOCFG | CONF_PRE_PARSE | M_OPT_FILE),
     OPT_STRINGLIST("reset-on-next-file", reset_options, 0),
 
 #if HAVE_LUA
@@ -347,6 +354,7 @@ const m_option_t mp_opts[] = {
                ({"no", 0},
                 {"yes", 1},
                 {"always", 2})),
+    OPT_FLAG("keep-open-pause", keep_open_pause, 0),
     OPT_DOUBLE("image-display-duration", image_display_duration,
                M_OPT_RANGE, 0, INFINITY),
 
@@ -441,7 +449,7 @@ const m_option_t mp_opts[] = {
     OPT_CHOICE_C("hwdec", hwdec_api, 0, mp_hwdec_names),
     OPT_STRING("hwdec-codecs", hwdec_codecs, 0),
 #if HAVE_VIDEOTOOLBOX_HWACCEL
-    OPT_IMAGEFORMAT("videotoolbox-format", videotoolbox_format, 0),
+    OPT_IMAGEFORMAT("videotoolbox-format", videotoolbox_format, 0, .min = -1),
 #endif
 
     // -1 means auto aspect (prefer container size until aspect change)
@@ -485,6 +493,8 @@ const m_option_t mp_opts[] = {
     OPT_FLOATRANGE("sub-gauss", sub_gauss, UPDATE_OSD, 0.0, 3.0),
     OPT_FLAG("sub-gray", sub_gray, UPDATE_OSD),
     OPT_FLAG("sub-ass", ass_enabled, 0),
+    OPT_FLAG("sub-filter-sdh", sub_filter_SDH, 0),
+    OPT_FLAG("sub-filter-sdh-harder", sub_filter_SDH_harder, 0),
     OPT_FLOATRANGE("sub-scale", sub_scale, UPDATE_OSD, 0, 100),
     OPT_FLOATRANGE("sub-ass-line-spacing", ass_line_spacing, UPDATE_OSD, -1000, 1000),
     OPT_FLAG("sub-use-margins", sub_use_margins, UPDATE_OSD),
@@ -598,7 +608,7 @@ const m_option_t mp_opts[] = {
 
     OPT_FLAG("stop-playback-on-init-failure", stop_playback_on_init_failure, 0),
 
-    OPT_CHOICE_OR_INT("loop", loop_times, 0, 1, 10000,
+    OPT_CHOICE_OR_INT("loop-playlist", loop_times, 0, 1, 10000,
                       ({"no", 1},
                        {"inf", -1}, {"yes", -1},
                        {"force", -2})),
@@ -611,7 +621,7 @@ const m_option_t mp_opts[] = {
     OPT_FLAG("save-position-on-quit", position_save_on_quit, 0),
     OPT_FLAG("write-filename-in-watch-later-config", write_filename_in_watch_later_config, 0),
     OPT_FLAG("ignore-path-in-watch-later-config", ignore_path_in_watch_later_config, 0),
-    OPT_STRING("watch-later-directory", watch_later_directory, 0),
+    OPT_STRING("watch-later-directory", watch_later_directory, M_OPT_FILE),
 
     OPT_FLAG("ordered-chapters", ordered_chapters, 0),
     OPT_STRING("ordered-chapters-files", ordered_chapters_files, M_OPT_FILE),
@@ -679,7 +689,7 @@ const m_option_t mp_opts[] = {
 
     OPT_SUBSTRUCT("screenshot", screenshot_image_opts, screenshot_conf, 0),
     OPT_STRING("screenshot-template", screenshot_template, 0),
-    OPT_STRING("screenshot-directory", screenshot_directory, 0),
+    OPT_STRING("screenshot-directory", screenshot_directory, M_OPT_FILE),
 
     OPT_STRING("record-file", record_file, M_OPT_FILE),
 
@@ -700,6 +710,10 @@ const m_option_t mp_opts[] = {
 
 #if HAVE_EGL_ANGLE
     OPT_SUBSTRUCT("", angle_opts, angle_conf, 0),
+#endif
+
+#if HAVE_GL_COCOA
+    OPT_SUBSTRUCT("", cocoa_opts, cocoa_conf, 0),
 #endif
 
 #if HAVE_GL_WIN32
@@ -819,6 +833,8 @@ const m_option_t mp_opts[] = {
     OPT_REPLACED("ass-style-override", "sub-ass-style-override"),
     OPT_REPLACED("ass-scale-with-window", "sub-ass-scale-with-window"),
     OPT_REMOVED("fs-black-out-screens", NULL),
+    OPT_REPLACED_MSG("loop", "loop-playlist", "--loop will be changed to map to"
+        " --loop-file in future releases."),
 
     {0}
 };
@@ -896,6 +912,7 @@ const struct MPOpts mp_default_opts = {
     .play_frames = -1,
     .rebase_start_time = 1,
     .keep_open = 0,
+    .keep_open_pause = 1,
     .image_display_duration = 1.0,
     .stream_id = { { [STREAM_AUDIO] = -1,
                      [STREAM_VIDEO] = -1,
@@ -916,7 +933,7 @@ const struct MPOpts mp_default_opts = {
     .movie_aspect = -1.,
     .field_dominance = -1,
     .sub_auto = 0,
-    .audiofile_auto = 0,
+    .audiofile_auto = -1,
     .osd_bar_visible = 1,
 #if HAVE_LIBASS
     .ass_enabled = 1,
@@ -934,6 +951,11 @@ const struct MPOpts mp_default_opts = {
     .hwdec_api = HAVE_RPI ? HWDEC_RPI : 0,
     .hwdec_codecs = "h264,vc1,wmv3,hevc,mpeg2video,vp9",
     .videotoolbox_format = IMGFMT_NV12,
+
+    .audio_output_channels = {
+        .set = 1,
+        .auto_safe = 1,
+    },
 
     .index_mode = 1,
 

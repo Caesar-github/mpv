@@ -1,3 +1,165 @@
+Release 0.25.0
+==============
+
+This release drops support for OS X 10.7 and earlier.
+Support for some optical media functionality (DVD/CD) is now disabled by default.
+
+More parts of the player are now licensed under LGPL. In particular:
+
+    * OSD symbol font
+    * ass_mp, sd_ass
+    * common.h
+    * demux/packet
+    * demux_mkv (with minor exceptions), ebml, matroska.h
+    * sd_lavc
+    * sub/osd
+
+Thanks to all contributors who have agreed to relicensing of their changes!
+See #2033 for details.
+
+Starting with this release, releases will be tagged on the master branch.
+The release/current branch is thus abandoned.
+
+
+Features
+--------
+
+Added
+~~~~~
+
+- TOOLS: add acompressor.lua script for runtime acompressor ffmpeg filter control
+- dvb: add support for DVB-T2
+- lavfi: support hwdec filters for --lavfi-complex
+- macOS: initial Touch Bar support
+- osc: add volume button (mouse wheel to change volume)
+- sub: add SDH subtitle filter
+- vo_opengl: add experimental vdpauglx backend
+- vo_opengl: implement videotoolbox hwdec on iOS
+
+
+Removed
+~~~~~~~
+
+- image_writer: remove useless formats (PPM, PGM, TGA)
+- af_drc: remove (use --af=acompressor instead; higher quality)
+
+
+Options and Commands
+--------------------
+
+Added
+~~~~~
+
+- --demuxer-lavf-probe-info
+- --sub-filter-sdh, --sub-filter-sdh-harder
+- add automatic libavfilter bridges to option parsing
+- command: add better runtime filter toggling method
+- command: add demux-start-time property
+- command: add property notifications for hwdec properties (#4289)
+- input: add "async" flag
+- osc: add user_opts.boxmaxchars for box layout title limit
+- player: add --keep-open-pause=no option
+- va_vavpp: reversal-bug=no
+- vo_opengl: --opengl-es=force2
+- vo_opengl: add --opengl-shader-cache-dir option for caching shaders on disk (mostly for ANGLE)
+- vo_opengl: angle: add --angle-flip to set the ANGLE present model
+
+
+Changed
+~~~~~~~
+
+- command: update sub-fps etc. options on runtime changes
+- vo_opengl: prefer X11 backends over Wayland backends
+- options: change --audio-file-auto default to not to load any files
+
+
+Deprecated
+~~~~~~~~~~
+
+- audio: deprecate most non-lavfi audio filters
+  (channels, equalizer, pan, volume)
+- video: deprecate almost all non-lavfi video filters
+  (buffer, crop, dlopen, dsize, eq, expand, flip, gradfun, mirror, noformat,
+  pullup, rotate, scale, stereo3d, sub, yadif)
+- options: deprecate --loop semantics (planned alias to --loop-file)
+
+
+Fixes and Minor Enhancements
+----------------------------
+
+- Windows: demux_cue: fix UTF-8 paths
+- Windows: fix mismatched free/talloc_free (#4315)
+- Windows: fix undefined behaviour when toggling fullscreen
+- ao_alsa: close lost audio devices (#4189)
+- ao_alsa: filter fewer devices
+- ao_alsa: fix an error check (#4188)
+- ao_jack: update latency on buffer_size/graph change
+- ao_wasapi: do not pass nonsense to drivers with double precision formats
+- ass_mp: reallocate cached subtitle image data on format changes (#4325)
+- build: decouple dvdnav check from dvdread (#4290)
+- build: encode_lavc: fix build failure after libavcodec major bump
+- build: fix build with HAVE_GL==0
+- build: replace android-gl check with a standard GLES3 check
+- build: update bundled waf to 1.9.8
+- build: vd_lavc: fix potential build failure with vaapi
+- demux_lavf: disable half-working mp4 edit list support in libavcodec
+- demux_lavf: skip avformat_find_stream_info() for some formats (hls, mp4, mkv by default)
+- etc/encoding_profiles.conf: update and remove deprecated stuff
+- etc/mpv.conf: remove deprecated options
+- external_files: actually try to autoload from fallback paths
+- external_files: enable autoloading with URLs (#3264)
+- image_writer: make it work with libavcodec's jpg encoder
+- macOS: add --ontop-level option for modifying ontop window level (#2376, #3974)
+- macOS: add key mappings for previous and next Media Keys (#4204)
+- macOS: add option to force dedicated GPU (#3242)
+- macOS: fix autofit options on HiDPI resolutions without HiDPI scaling (#4194)
+- macOS: fix black edges on live resize
+- macOS: fix cursor hiding in the Dock area and top of the screen
+- macOS: fix event propagation of menu bar item key shortcuts
+- macOS: fix first responder when borderless window is used
+- macOS: fix key input in certain circumstances
+- macOS: fix retrieval of non-fullscreen window size, also while animating (#4323)
+- macOS: fix scroll wheel input with Shift modifier (#3506)
+- macOS: improve bundle environment variable handling (#2061)
+- macOS: make window draggable on init
+- macOS: only move window into screen bounds when changing screens (#4178)
+- macOS: only report mouse movements when window is not being dragged (might have triggered OSC and other scripts)
+- macOS: properly restore shell state when quitting from the Dock's context menu
+- macOS: refactor mouse events and cursor visibility (#1817, #3856, #4147)
+- macOS: set background of the title bar from black to white
+- osc: bottom/topbar: add fullscreen button
+- osc: bottom/topbar: don't clip title vertically
+- osc: bottom/topbar: increase timecodes width a bit (#3952)
+- osc: fix PlayResX undefined warning when aspect is 0
+- osc: fix window dragging with showwindowed=no (#1819)
+- osc: make title configurable and use property expansion on it (#4221)
+- osc: refactor osc message scaling (#4081, #4083, #4102)
+- player: don't block playback stop when seeking
+- player: enable "buffering" pausing for DASH streams too
+- player: fix core-idle and eof-reached update notifcations
+- player: make screenshot commands honor the async flag (#4250)
+- player: reduce blocking on VO when switching pause (#4152)
+- sd_ass: disable --sub-fix-timing if sub style override is fully disabled
+- stream/stream_dvdnav: don't ignore setting title (#4283)
+- stream_dvd: fix subs/audio detection on DVDs containing multi-PGC titles
+- vf_vavpp: add advanced deint bug compatibility for Intel vaapi drivers
+- vf_vavpp: fix first-field mode
+- vo_opengl: fix crash with temporal dithering in dumb mode
+- vo_opengl: hwdec_d3d11egl: make it work with some ANGLE DLL versions
+- vo_x11: reduce flickering on playlist navigation
+- wayland: correctly map mouse buttons
+
+
+This listing is not complete. Check DOCS/client-api-changes.rst for a history
+of changes to the client API, and DOCS/interface-changes.rst for a history
+of changes to other user-visible interfaces.
+
+A complete changelog can be seen by running `git log v0.24.0..v0.25.0`
+in the git repository or by visiting either
+https://github.com/mpv-player/mpv/compare/v0.24.0...v0.25.0 or
+https://git.srsfckn.biz/mpv/log/?qt=range&q=v0.24.0..v0.25.0
+
+
 Release 0.24.0
 ==============
 

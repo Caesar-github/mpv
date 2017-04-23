@@ -4,8 +4,8 @@ AUDIO FILTERS
 Audio filters allow you to modify the audio stream and its properties. The
 syntax is:
 
-``--af=<filter1[=parameter1:parameter2:...],filter2,...>``
-    Setup a chain of audio filters.
+``--af=...``
+    Setup a chain of audio filters. See ``--vf`` for the syntax.
 
 .. note::
 
@@ -15,27 +15,8 @@ syntax is:
     wrapper, which gives you access to most of libavfilter's filters. This
     includes all filters that have been ported from MPlayer to libavfilter.
 
-You can also set defaults for each filter. The defaults are applied before the
-normal filter parameters.
-
-``--af-defaults=<filter1[=parameter1:parameter2:...],filter2,...>``
-    Set defaults for each filter.
-
-Audio filters are managed in lists. There are a few commands to manage the
-filter list:
-
-``--af-add=<filter1[,filter2,...]>``
-    Appends the filters given as arguments to the filter list.
-
-``--af-pre=<filter1[,filter2,...]>``
-    Prepends the filters given as arguments to the filter list.
-
-``--af-del=<index1[,index2,...]>``
-    Deletes the filters at the given indexes. Index numbers start at 0,
-    negative numbers address the end of the list (-1 is the last).
-
-``--af-clr``
-    Completely empties the filter list.
+See ``--vf`` group of options for info on how ``--af-defaults``, ``--af-add``,
+``--af-pre``, ``--af-del``, ``--af-clr``, and possibly others work.
 
 Available filters are:
 
@@ -318,29 +299,6 @@ Available filters are:
         Set the ``<matrix>`` argument dynamically. This can be used to change
         the mixing matrix at runtime, without reinitializing the entire filter
         chain.
-
-``drc[=method:target]``
-    Applies dynamic range compression. This maximizes the volume by compressing
-    the audio signal's dynamic range. (Formerly called ``volnorm``.)
-
-    ``<method>``
-        Sets the used method.
-
-        1
-            Use a single sample to smooth the variations via the standard
-            weighted mean over past samples (default).
-        2
-            Use several samples to smooth the variations via the standard
-            weighted mean over past samples.
-
-    ``<target>``
-        Sets the target amplitude as a fraction of the maximum for the sample
-        type (default: 0.25).
-
-    .. note::
-
-        This filter can cause distortion with audio signals that have a very
-        large dynamic range.
 
 ``scaletempo[=option1:option2:...]``
     Scales audio tempo without altering pitch, optionally synced to playback

@@ -38,8 +38,8 @@ struct mp_hwdec_ctx {
     const char *driver_name; // NULL if unknown/not loaded
 
     // This is never NULL. Its meaning depends on the .type field:
-    //  HWDEC_VDPAU:            struct mp_vaapi_ctx*
-    //  HWDEC_VIDEOTOOLBOX:     struct mp_vt_ctx*
+    //  HWDEC_VDPAU:            struct mp_vdpau_ctx*
+    //  HWDEC_VIDEOTOOLBOX:     non-NULL dummy pointer
     //  HWDEC_VAAPI:            struct mp_vaapi_ctx*
     //  HWDEC_D3D11VA:          ID3D11Device*
     //  HWDEC_DXVA2:            IDirect3DDevice9*
@@ -53,6 +53,9 @@ struct mp_hwdec_ctx {
     // List of IMGFMT_s, terminated with 0. NULL if N/A.
     int *supported_formats;
 
+    // Hint to generic code: it's using a wrapper API
+    bool emulated;
+
     // Optional. Legacy. (New code should use AVHWFramesContext and
     // mp_image_hw_download().)
     // Allocates a software image from the pool, downloads the hw image from
@@ -62,11 +65,9 @@ struct mp_hwdec_ctx {
     struct mp_image *(*download_image)(struct mp_hwdec_ctx *ctx,
                                        struct mp_image *mpi,
                                        struct mp_image_pool *swpool);
-};
 
-struct mp_vt_ctx {
-    void *priv;
-    uint32_t (*get_vt_fmt)(struct mp_vt_ctx *ctx);
+    // Optional. Do not set for VO-bound devices.
+    void (*destroy)(struct mp_hwdec_ctx *ctx);
 };
 
 // Used to communicate hardware decoder device handles from VO to video decoder.

@@ -5,7 +5,41 @@ Video filters allow you to modify the video stream and its properties. The
 syntax is:
 
 ``--vf=<filter1[=parameter1:parameter2:...],filter2,...>``
-    Setup a chain of video filters.
+    Setup a chain of video filters. This consists on the filter name, and an
+    option list of parameters after ``=``. The parameters are separated by
+    ``:`` (not ``,``, as that starts a new filter entry).
+
+    Before the filter name, a label can be specified with ``@name:``, where
+    name is an arbitrary user-given name, which identifies the filter. This
+    is only needed if you want to toggle the filter at runtime.
+
+    A ``!`` before the filter name means the filter is enabled by default. It
+    will be skipped on filter creation. This is also useful for runtime filter
+    toggling.
+
+    See the ``vf`` command (and ``toggle`` sub-command) for further explanations
+    and examples.
+
+    The general filter entry syntax is:
+
+        ``["@"<label-name>":"] ["!"] <filter-name> [ "=" <filter-parameter-list> ]``
+
+    or for the special "toggle" syntax (see ``vf`` command):
+
+        ``"@"<label-name>``
+
+    and the ``filter-parameter-list``:
+
+        ``<filter-parameter> | <filter-parameter> "," <filter-parameter-list>``
+
+    and ``filter-parameter``:
+
+        ``( <param-name> "=" <param-value> ) | <param-value>``
+
+    ``param-value`` can further be quoted in ``[`` / ``]`` in case the value
+    contains characters like ``,`` or ``=``. This is used in particular with
+    the ``lavfi`` filter, which uses a very similar syntax as mpv (MPlayer
+    historically) to specify filters and their parameters.
 
 You can also set defaults for each filter. The defaults are applied before the
 normal filter parameters.
@@ -20,6 +54,17 @@ normal filter parameters.
     Also, keep in mind that most actual filters are available via the ``lavfi``
     wrapper, which gives you access to most of libavfilter's filters. This
     includes all filters that have been ported from MPlayer to libavfilter.
+
+    Most filters are deprecated in some ways, unless they're only available
+    in mpv (such as filters which deal with mpv specifics, or which are
+    implemented in mpv only).
+
+    If a filter is not builtin, the ``lavfi-bridge`` will be automatically
+    tried. This bridge does not support help output, and does not verify
+    parameters before the filter is actually used. Although the mpv syntax
+    is rather similar to libavfilter's, it's not the same. (Which means not
+    everything accepted by vf_lavfi's ``graph`` option will be accepted by
+    ``--vf``.)
 
 Video filters are managed in lists. There are a few commands to manage the
 filter list.
@@ -753,6 +798,15 @@ Available filters are:
     ``<interlaced-only>``
         :no:  Deinterlace all frames.
         :yes: Only deinterlace frames marked as interlaced (default).
+
+    ``reversal-bug=<yes|no>``
+        :no:  Use the API as it was interpreted by older Mesa drivers. While
+              this interpretation was more obvious and inuitive, it was
+              apparently wrong, and not shared by Intel driver developers.
+        :yes: Use Intel interpretation of surface forward and backwards
+              references (default). This is what Intel drivers and newer Mesa
+              drivers expect. Matters only for the advanced deinterlacing
+              algorithms.
 
 ``vdpaupp``
     VDPAU video post processing. Works with ``--vo=vdpau`` and ``--vo=opengl``

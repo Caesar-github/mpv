@@ -29,6 +29,8 @@ struct input_ctx;
 
 - (void)setInputContext:(struct input_ctx *)ctx;
 
+- (void)setIsApplication:(BOOL)isApplication;
+
 /// Blocks until inputContext is present.
 - (void)waitForInputContext;
 
@@ -39,5 +41,7 @@ struct input_ctx;
 - (void)putKey:(int)keycode;
 
 - (void)handleFilesArray:(NSArray *)files;
+
+- (bool)processKeyEvent:(NSEvent *)event;
 
 @end

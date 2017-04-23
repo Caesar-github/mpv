@@ -36,7 +36,7 @@
 #define OPT_BASE_STRUCT struct encode_opts
 const struct m_sub_options encode_config = {
     .opts = (const m_option_t[]) {
-        OPT_STRING("o", file, M_OPT_FIXED | CONF_NOCFG | CONF_PRE_PARSE),
+        OPT_STRING("o", file, M_OPT_FIXED | CONF_NOCFG | CONF_PRE_PARSE | M_OPT_FILE),
         OPT_STRING("of", format, M_OPT_FIXED),
         OPT_STRINGLIST("ofopts*", fopts, M_OPT_FIXED),
         OPT_FLOATRANGE("ofps", fps, M_OPT_FIXED, 0.0, 1000000.0),
@@ -676,7 +676,7 @@ int encode_lavc_open_codec(struct encode_lavc_context *ctx,
         MP_INFO(ctx, "Opening video encoder: %s [%s]\n",
                 ctx->vc->long_name, ctx->vc->name);
 
-        if (ctx->vc->capabilities & CODEC_CAP_EXPERIMENTAL) {
+        if (ctx->vc->capabilities & AV_CODEC_CAP_EXPERIMENTAL) {
             codec->strict_std_compliance = FF_COMPLIANCE_EXPERIMENTAL;
             MP_WARN(ctx, "\n\n"
                        "           ********************************************\n"
@@ -713,7 +713,7 @@ int encode_lavc_open_codec(struct encode_lavc_context *ctx,
         MP_INFO(ctx, "Opening audio encoder: %s [%s]\n",
                 ctx->ac->long_name, ctx->ac->name);
 
-        if (ctx->ac->capabilities & CODEC_CAP_EXPERIMENTAL) {
+        if (ctx->ac->capabilities & AV_CODEC_CAP_EXPERIMENTAL) {
             codec->strict_std_compliance = FF_COMPLIANCE_EXPERIMENTAL;
             MP_WARN(ctx, "\n\n"
                        "           ********************************************\n"

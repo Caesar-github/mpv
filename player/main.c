@@ -74,7 +74,7 @@ static const char def_config[] =
 #define FULLCONFIG "(missing)\n"
 #endif
 
-#if !(HAVE_STDATOMIC || HAVE_ATOMIC_BUILTINS || HAVE_SYNC_BUILTINS)
+#if !HAVE_STDATOMIC
 pthread_mutex_t mp_atomic_mutex = PTHREAD_MUTEX_INITIALIZER;
 #endif
 
@@ -150,7 +150,7 @@ void mp_print_version(struct mp_log *log, int always)
 static void shutdown_clients(struct MPContext *mpctx)
 {
     mp_client_enter_shutdown(mpctx);
-    while (mp_clients_num(mpctx)) {
+    while (mp_clients_num(mpctx) || mpctx->outstanding_async) {
         mp_client_broadcast_event(mpctx, MPV_EVENT_SHUTDOWN, NULL);
         mp_wait_events(mpctx);
     }
@@ -454,6 +454,11 @@ int mp_initialize(struct MPContext *mpctx, char **options)
         return -3;
 
     MP_STATS(mpctx, "start init");
+
+#if HAVE_COCOA
+    mpv_handle *ctx = mp_new_client(mpctx->clients, "osx");
+    cocoa_set_mpv_handle(ctx);
+#endif
 
 #if HAVE_ENCODING
     if (opts->encode_opts->file && opts->encode_opts->file[0]) {

@@ -189,7 +189,8 @@ static int probe_deint_filters(struct vo_chain *vo_c)
     if (check_output_format(vo_c, IMGFMT_D3D11VA) ||
         check_output_format(vo_c, IMGFMT_D3D11NV12))
         return try_filter(vo_c, "d3d11vpp", VF_DEINTERLACE_LABEL, NULL);
-    return try_filter(vo_c, "yadif", VF_DEINTERLACE_LABEL, NULL);
+    char *args[] = {"warn", "no", NULL};
+    return try_filter(vo_c, "yadif", VF_DEINTERLACE_LABEL, args);
 }
 
 // Reconfigure the filter chain according to the new input format.
@@ -220,7 +221,7 @@ static void filter_reconfig(struct MPContext *mpctx, struct vo_chain *vo_c)
     if (params.rotate) {
         if (!(vo_c->vo->driver->caps & VO_CAP_ROTATE90) || params.rotate % 90) {
             // Try to insert a rotation filter.
-            char *args[] = {"angle", "auto", NULL};
+            char *args[] = {"angle", "auto", "warn", "no", NULL};
             if (try_filter(vo_c, "rotate", "autorotate", args) < 0)
                 MP_ERR(vo_c, "Can't insert rotation filter.\n");
         }
@@ -231,7 +232,7 @@ static void filter_reconfig(struct MPContext *mpctx, struct vo_chain *vo_c)
     {
         char *to = (char *)MP_STEREO3D_NAME(params.stereo_out);
         if (to) {
-            char *args[] = {"in", "auto", "out", to, NULL, NULL};
+            char *args[] = {"in", "auto", "out", to, "warn", "no", NULL, NULL};
             if (try_filter(vo_c, "stereo3d", "autostereo3d", args) < 0)
                 MP_ERR(vo_c, "Can't insert 3D conversion filter.\n");
         }
@@ -495,6 +496,9 @@ int reinit_video_chain_src(struct MPContext *mpctx, struct lavfi_pad *src)
     vo_c->vf = vf_new(mpctx->global);
 
     vo_c->hwdec_devs = vo_c->vo->hwdec_devs;
+
+    if (mpctx->lavfi)
+        lavfi_set_hwdec_devs(mpctx->lavfi, vo_c->hwdec_devs);
 
     vo_c->filter_src = src;
     if (!vo_c->filter_src) {
@@ -1539,8 +1543,8 @@ void write_video(struct MPContext *mpctx)
     if (mpctx->video_status != STATUS_EOF) {
         if (mpctx->step_frames > 0) {
             mpctx->step_frames--;
-            if (!mpctx->step_frames && !opts->pause)
-                pause_player(mpctx);
+            if (!mpctx->step_frames)
+                set_pause_state(mpctx, true);
         }
         if (mpctx->max_frames == 0 && !mpctx->stop_play)
             mpctx->stop_play = AT_END_OF_FILE;

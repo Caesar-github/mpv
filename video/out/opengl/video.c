@@ -92,11 +92,9 @@ struct texplane {
     int tex_w, tex_h;
     GLint gl_internal_format;
     GLenum gl_target;
-    bool use_integer;
     GLenum gl_format;
     GLenum gl_type;
     GLuint gl_texture;
-    char swizzle[5];
     bool flipped;
     struct gl_pbo_upload pbo;
 };
@@ -125,11 +123,10 @@ struct img_tex {
     float multiplier; // multiplier to be used when sampling
     GLuint gl_tex;
     GLenum gl_target;
-    bool use_integer;
+    GLenum gl_format;
     int tex_w, tex_h; // source texture size
     int w, h; // logical size (after transformation)
     struct gl_transform transform; // rendering transformation
-    char swizzle[5];
 };
 
 // A named img_tex, for user scripting purposes
@@ -272,34 +269,6 @@ struct gl_video {
     bool broken_frame; // temporary error state
 };
 
-struct packed_fmt_entry {
-    int fmt;
-    int8_t component_size;
-    int8_t components[4]; // source component - 0 means unmapped
-};
-
-static const struct packed_fmt_entry mp_packed_formats[] = {
-    //                  w   R  G  B  A
-    {IMGFMT_Y8,         1, {1, 0, 0, 0}},
-    {IMGFMT_Y16,        2, {1, 0, 0, 0}},
-    {IMGFMT_YA8,        1, {1, 0, 0, 2}},
-    {IMGFMT_YA16,       2, {1, 0, 0, 2}},
-    {IMGFMT_ARGB,       1, {2, 3, 4, 1}},
-    {IMGFMT_0RGB,       1, {2, 3, 4, 0}},
-    {IMGFMT_BGRA,       1, {3, 2, 1, 4}},
-    {IMGFMT_BGR0,       1, {3, 2, 1, 0}},
-    {IMGFMT_ABGR,       1, {4, 3, 2, 1}},
-    {IMGFMT_0BGR,       1, {4, 3, 2, 0}},
-    {IMGFMT_RGBA,       1, {1, 2, 3, 4}},
-    {IMGFMT_RGB0,       1, {1, 2, 3, 0}},
-    {IMGFMT_BGR24,      1, {3, 2, 1, 0}},
-    {IMGFMT_RGB24,      1, {1, 2, 3, 0}},
-    {IMGFMT_RGB48,      2, {1, 2, 3, 0}},
-    {IMGFMT_RGBA64,     2, {1, 2, 3, 4}},
-    {IMGFMT_BGRA64,     2, {3, 2, 1, 4}},
-    {0},
-};
-
 static const struct gl_video_opts gl_video_opts_def = {
     .dither_algo = DITHER_FRUIT,
     .dither_depth = -1,
@@ -411,7 +380,7 @@ const struct m_sub_options gl_video_conf = {
                    ({"no", BLEND_SUBS_NO},
                     {"yes", BLEND_SUBS_YES},
                     {"video", BLEND_SUBS_VIDEO})),
-        OPT_STRINGLIST("opengl-shaders", user_shaders, 0),
+        OPT_STRINGLIST("opengl-shaders", user_shaders, M_OPT_FILE),
         OPT_FLAG("deband", deband, 0),
         OPT_SUBSTRUCT("deband", deband_opts, deband_conf, 0),
         OPT_FLOAT("sharpen", unsharp, 0),
@@ -420,7 +389,7 @@ const struct m_sub_options gl_video_conf = {
         OPT_SUBSTRUCT("", icc_opts, mp_icc_conf, 0),
         OPT_CHOICE("opengl-early-flush", early_flush, 0,
                    ({"no", 0}, {"yes", 1}, {"auto", -1})),
-
+        OPT_STRING("opengl-shader-cache-dir", shader_cache_dir, 0),
         {0}
     },
     .size = sizeof(struct gl_video_opts),
@@ -630,7 +599,6 @@ static struct img_tex img_tex_fbo(struct fbotex *fbo, enum plane_type type,
         .gl_tex = fbo->texture,
         .gl_target = GL_TEXTURE_2D,
         .multiplier = 1.0,
-        .use_integer = false,
         .tex_w = fbo->rw,
         .tex_h = fbo->rh,
         .w = fbo->lw,
@@ -737,15 +705,14 @@ static void pass_get_img_tex(struct gl_video *p, struct video_image *vimg,
             .type = type,
             .gl_tex = t->gl_texture,
             .gl_target = t->gl_target,
+            .gl_format = t->gl_format,
             .multiplier = tex_mul,
-            .use_integer = t->use_integer,
             .tex_w = t->tex_w,
             .tex_h = t->tex_h,
             .w = t->w,
             .h = t->h,
             .components = p->image_desc.components[n],
         };
-        snprintf(tex[n].swizzle, sizeof(tex[n].swizzle), "%s", t->swizzle);
         get_transform(t->w, t->h, p->image_params.rotate, t->flipped,
                       &tex[n].transform);
         if (p->image_params.rotate % 180 == 90)
@@ -843,7 +810,8 @@ static void init_video(struct gl_video *p)
                            plane->tex_w, plane->tex_h, 0,
                            plane->gl_format, plane->gl_type, NULL);
 
-            int filter = plane->use_integer ? GL_NEAREST : GL_LINEAR;
+            int filter = gl_is_integer_format(plane->gl_format)
+                         ? GL_NEAREST : GL_LINEAR;
             gl->TexParameteri(gl_target, GL_TEXTURE_MIN_FILTER, filter);
             gl->TexParameteri(gl_target, GL_TEXTURE_MAG_FILTER, filter);
             gl->TexParameteri(gl_target, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -926,7 +894,7 @@ static void pass_prepare_src_tex(struct gl_video *p)
         snprintf(texture_rot, sizeof(texture_rot), "texture_rot%d", n);
         snprintf(pixel_size, sizeof(pixel_size), "pixel_size%d", n);
 
-        if (s->use_integer) {
+        if (gl_is_integer_format(s->gl_format)) {
             gl_sc_uniform_tex_ui(sc, texture_name, s->gl_tex);
         } else {
             gl_sc_uniform_tex(sc, texture_name, s->gl_target, s->gl_tex);
@@ -1009,6 +977,11 @@ static void finish_pass_fbo(struct gl_video *p, struct fbotex *dst_fbo,
                        &(struct mp_rect){0, 0, w, h});
 }
 
+static const char *get_tex_swizzle(struct img_tex *img)
+{
+    return img->gl_format == GL_LUMINANCE_ALPHA ? "raaa" : "rgba";
+}
+
 // Copy a texture to the vec4 color, while increasing offset. Also applies
 // the texture multiplier to the sampled color
 static void copy_img_tex(struct gl_video *p, int *offset, struct img_tex img)
@@ -1019,14 +992,14 @@ static void copy_img_tex(struct gl_video *p, int *offset, struct img_tex img)
     int id = pass_bind(p, img);
     char src[5] = {0};
     char dst[5] = {0};
-    const char *tex_fmt = img.swizzle[0] ? img.swizzle : "rgba";
+    const char *tex_fmt = get_tex_swizzle(&img);
     const char *dst_fmt = "rgba";
     for (int i = 0; i < count; i++) {
         src[i] = tex_fmt[i];
         dst[i] = dst_fmt[*offset + i];
     }
 
-    if (img.use_integer) {
+    if (gl_is_integer_format(img.gl_format)) {
         uint64_t tex_max = 1ull << p->image_desc.component_full_bits;
         img.multiplier *= 1.0 / (tex_max - 1);
     }
@@ -1064,7 +1037,7 @@ static void hook_prelude(struct gl_video *p, const char *name, int id,
 
     // Set up the sampling functions
     GLSLHF("#define %s_tex(pos) (%f * vec4(texture(%s_raw, pos)).%s)\n",
-           name, tex.multiplier, name, tex.swizzle[0] ? tex.swizzle : "rgba");
+           name, tex.multiplier, name, get_tex_swizzle(&tex));
 
     // Since the extra matrix multiplication impacts performance,
     // skip it unless the texture was actually rotated
@@ -1251,11 +1224,19 @@ static void load_shader(struct gl_video *p, struct bstr body)
     gl_sc_hadd_bstr(p->sc, body);
     gl_sc_uniform_f(p->sc, "random", (double)av_lfg_get(&p->lfg) / UINT32_MAX);
     gl_sc_uniform_f(p->sc, "frame", p->frames_uploaded);
-    gl_sc_uniform_vec2(p->sc, "image_size", (GLfloat[]){p->image_params.w,
-                                                        p->image_params.h});
+    gl_sc_uniform_vec2(p->sc, "input_size",
+                       (GLfloat[]){(p->src_rect.x1 - p->src_rect.x0) *
+                                   p->texture_offset.m[0][0],
+                                   (p->src_rect.y1 - p->src_rect.y0) *
+                                   p->texture_offset.m[1][1]});
     gl_sc_uniform_vec2(p->sc, "target_size",
                        (GLfloat[]){p->dst_rect.x1 - p->dst_rect.x0,
                                    p->dst_rect.y1 - p->dst_rect.y0});
+    gl_sc_uniform_vec2(p->sc, "tex_offset",
+                       (GLfloat[]){p->src_rect.x0 * p->texture_offset.m[0][0] +
+                                   p->texture_offset.t[0],
+                                   p->src_rect.y0 * p->texture_offset.m[1][1] +
+                                   p->texture_offset.t[1]});
 }
 
 // Semantic equality
@@ -1479,13 +1460,12 @@ static bool img_tex_equiv(struct img_tex a, struct img_tex b)
            a.components == b.components &&
            a.multiplier == b.multiplier &&
            a.gl_target == b.gl_target &&
-           a.use_integer == b.use_integer &&
+           a.gl_format == b.gl_format &&
            a.tex_w == b.tex_w &&
            a.tex_h == b.tex_h &&
            a.w == b.w &&
            a.h == b.h &&
-           gl_transform_eq(a.transform, b.transform) &&
-           strcmp(a.swizzle, b.swizzle) == 0;
+           gl_transform_eq(a.transform, b.transform);
 }
 
 static void pass_add_hook(struct gl_video *p, struct tex_hook hook)
@@ -1536,6 +1516,12 @@ static bool szexp_lookup(void *priv, struct bstr var, float size[2])
 {
     struct szexp_ctx *ctx = priv;
     struct gl_video *p = ctx->p;
+
+    if (bstr_equals0(var, "NATIVE_CROPPED")) {
+        size[0] = (p->src_rect.x1 - p->src_rect.x0) * p->texture_offset.m[0][0];
+        size[1] = (p->src_rect.y1 - p->src_rect.y0) * p->texture_offset.m[1][1];
+        return true;
+    }
 
     // The size of OUTPUT is determined. It could be useful for certain
     // user shaders to skip passes.
@@ -1701,7 +1687,7 @@ static void pass_read_video(struct gl_video *p)
     // If any textures are still in integer format by this point, we need
     // to introduce an explicit conversion pass to avoid breaking hooks/scaling
     for (int n = 0; n < 4; n++) {
-        if (tex[n].use_integer) {
+        if (gl_is_integer_format(tex[n].gl_format)) {
             GLSLF("// use_integer fix for plane %d\n", n);
 
             copy_img_tex(p, &(int){0}, tex[n]);
@@ -2671,6 +2657,17 @@ void gl_video_render_frame(struct gl_video *p, struct vo_frame *frame, int fbo)
         return;
     }
 
+    if (p->fb_depth == 0) {
+        debug_check_gl(p, "before retrieving framebuffer depth");
+        p->fb_depth = gl_get_fb_depth(gl, fbo);
+        debug_check_gl(p, "retrieving framebuffer depth");
+        if (p->fb_depth > 0) {
+            MP_VERBOSE(p, "Reported display depth: %d\n", p->fb_depth);
+        } else {
+            p->fb_depth = 8;
+        }
+    }
+
     p->broken_frame = false;
 
     gl->BindFramebuffer(GL_FRAMEBUFFER, fbo);
@@ -2933,10 +2930,11 @@ static bool gl_video_upload_image(struct gl_video *p, struct mp_image *mpi,
                     .tex_h = plane->tex_h,
                     .gl_target = plane->gl_target,
                     .gl_texture = plane->gl_texture,
+                    .gl_format = plane->gl_format,
                 };
-                snprintf(vimg->planes[n].swizzle, sizeof(vimg->planes[n].swizzle),
-                         "%s", plane->swizzle);
             }
+            snprintf(p->color_swizzle, sizeof(p->color_swizzle), "%s",
+                     gl_frame.swizzle);
         } else {
             MP_FATAL(p, "Mapping hardware decoded surface failed.\n");
             goto error;
@@ -3068,7 +3066,13 @@ static void check_gl_features(struct gl_video *p)
             .alpha_mode = p->opts.alpha_mode,
             .use_rectangle = p->opts.use_rectangle,
             .background = p->opts.background,
-            .dither_algo = DITHER_NONE,
+            .dither_algo = p->opts.dither_algo,
+            .dither_depth = p->opts.dither_depth,
+            .dither_size = p->opts.dither_size,
+            .temporal_dither = p->opts.temporal_dither,
+            .temporal_dither_period = p->opts.temporal_dither_period,
+            .tex_pad_x = p->opts.tex_pad_x,
+            .tex_pad_y = p->opts.tex_pad_y,
             .target_brightness = p->opts.target_brightness,
             .hdr_tone_mapping = p->opts.hdr_tone_mapping,
             .tone_mapping_param = p->opts.tone_mapping_param,
@@ -3144,57 +3148,10 @@ static void init_gl(struct gl_video *p)
 
     gl_video_set_gl_state(p);
 
-    // Test whether we can use 10 bit. Hope that testing a single format/channel
-    // is good enough (instead of testing all 1-4 channels variants etc.).
-    const struct gl_format *fmt = gl_find_unorm_format(gl, 2, 1);
-    if (gl->GetTexLevelParameteriv && fmt) {
-        GLuint tex;
-        gl->GenTextures(1, &tex);
-        gl->BindTexture(GL_TEXTURE_2D, tex);
-        gl->TexImage2D(GL_TEXTURE_2D, 0, fmt->internal_format, 64, 64, 0,
-                       fmt->format, fmt->type, NULL);
-        GLenum pname = 0;
-        switch (fmt->format) {
-        case GL_RED:        pname = GL_TEXTURE_RED_SIZE; break;
-        case GL_LUMINANCE:  pname = GL_TEXTURE_LUMINANCE_SIZE; break;
-        }
-        GLint param = 0;
-        if (pname)
-            gl->GetTexLevelParameteriv(GL_TEXTURE_2D, 0, pname, &param);
-        if (param) {
-            MP_VERBOSE(p, "16 bit texture depth: %d.\n", (int)param);
-            p->texture_16bit_depth = param;
-        }
-        gl->DeleteTextures(1, &tex);
-    }
-
-    if ((gl->es >= 300 || gl->version) && (gl->mpgl_caps & MPGL_CAP_FB)) {
-        gl->BindFramebuffer(GL_FRAMEBUFFER, gl->main_fb);
-
-        debug_check_gl(p, "before retrieving framebuffer depth");
-
-        GLenum obj = gl->version ? GL_BACK_LEFT : GL_BACK;
-        if (gl->main_fb)
-            obj = GL_COLOR_ATTACHMENT0;
-
-        GLint depth_r = -1, depth_g = -1, depth_b = -1;
-
-        gl->GetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER, obj,
-                            GL_FRAMEBUFFER_ATTACHMENT_RED_SIZE, &depth_r);
-        gl->GetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER, obj,
-                            GL_FRAMEBUFFER_ATTACHMENT_GREEN_SIZE, &depth_g);
-        gl->GetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER, obj,
-                            GL_FRAMEBUFFER_ATTACHMENT_BLUE_SIZE, &depth_b);
-
-        debug_check_gl(p, "retrieving framebuffer depth");
-
-        MP_VERBOSE(p, "Reported display depth: R=%d, G=%d, B=%d\n",
-                   depth_r, depth_g, depth_b);
-
-        p->fb_depth = depth_g > 0 ? depth_g : 8;
-
-        gl->BindFramebuffer(GL_FRAMEBUFFER, 0);
-    }
+    // Test whether we can use 10 bit.
+    p->texture_16bit_depth = gl_determine_16bit_tex_depth(gl);
+    if (p->texture_16bit_depth > 0)
+        MP_VERBOSE(p, "16 bit texture depth: %d.\n", p->texture_16bit_depth);
 
     p->upload_timer = gl_timer_create(p->gl);
     p->render_timer = gl_timer_create(p->gl);
@@ -3255,25 +3212,6 @@ bool gl_video_showing_interpolated_frame(struct gl_video *p)
     return p->is_interpolated;
 }
 
-// dest = src.<w> (always using 4 components)
-static void packed_fmt_swizzle(char w[5], const struct packed_fmt_entry *fmt)
-{
-    for (int c = 0; c < 4; c++)
-        w[c] = "rgba"[MPMAX(fmt->components[c] - 1, 0)];
-    w[4] = '\0';
-}
-
-// Like gl_find_unorm_format(), but takes bits (not bytes), and if no fixed
-// point format is available, return an unsigned integer format.
-static const struct gl_format *find_plane_format(GL *gl, int bits, int n_channels)
-{
-    int bytes = (bits + 7) / 8;
-    const struct gl_format *f = gl_find_unorm_format(gl, bytes, n_channels);
-    if (f)
-        return f;
-    return gl_find_uint_format(gl, bytes, n_channels);
-}
-
 static void init_image_desc(struct gl_video *p, int fmt)
 {
     p->image_desc = mp_imgfmt_get_desc(fmt);
@@ -3291,85 +3229,17 @@ static void init_image_desc(struct gl_video *p, int fmt)
 // test_only=false also initializes some rendering parameters accordingly
 static bool init_format(struct gl_video *p, int fmt, bool test_only)
 {
-    struct GL *gl = p->gl;
-
-    struct mp_imgfmt_desc desc = mp_imgfmt_get_desc(fmt);
-    if (!desc.id)
+    int cdepth = mp_imgfmt_get_desc(fmt).component_bits;
+    if (cdepth > 8 && cdepth < 16 && p->texture_16bit_depth < 16)
         return false;
 
-    if (desc.num_planes > 4)
+    struct gl_imgfmt_desc desc;
+    if (!gl_get_imgfmt_desc(p->gl, fmt, &desc))
         return false;
-
-    const struct gl_format *plane_format[4] = {0};
-    char color_swizzle[5] = "";
-    const struct packed_fmt_entry *packed_format = {0};
-
-    // YUV/planar formats
-    if (desc.flags & (MP_IMGFLAG_YUV_P | MP_IMGFLAG_RGB_P)) {
-        int bits = desc.component_bits;
-        if ((desc.flags & MP_IMGFLAG_NE) && bits >= 8 && bits <= 16) {
-            plane_format[0] = find_plane_format(gl, bits, 1);
-            for (int n = 1; n < desc.num_planes; n++)
-                plane_format[n] = plane_format[0];
-            // RGB/planar
-            if (desc.flags & MP_IMGFLAG_RGB_P)
-                snprintf(color_swizzle, sizeof(color_swizzle), "brga");
-            goto supported;
-        }
-    }
-
-    // YUV/half-packed
-    if (desc.flags & MP_IMGFLAG_YUV_NV) {
-        int bits = desc.component_bits;
-        if ((desc.flags & MP_IMGFLAG_NE) && bits >= 8 && bits <= 16) {
-            plane_format[0] = find_plane_format(gl, bits, 1);
-            plane_format[1] = find_plane_format(gl, bits, 2);
-            if (desc.flags & MP_IMGFLAG_YUV_NV_SWAP)
-                snprintf(color_swizzle, sizeof(color_swizzle), "rbga");
-            goto supported;
-        }
-    }
-
-    // XYZ (same organization as RGB packed, but requires conversion matrix)
-    if (fmt == IMGFMT_XYZ12) {
-        plane_format[0] = gl_find_unorm_format(gl, 2, 3);
-        goto supported;
-    }
-
-    // Packed RGB(A) formats
-    for (const struct packed_fmt_entry *e = mp_packed_formats; e->fmt; e++) {
-        if (e->fmt == fmt) {
-            int n_comp = desc.bytes[0] / e->component_size;
-            plane_format[0] = gl_find_unorm_format(gl, e->component_size, n_comp);
-            packed_format = e;
-            goto supported;
-        }
-    }
-
-    // Special formats for which OpenGL happens to have direct support.
-    plane_format[0] = gl_find_special_format(gl, fmt);
-    if (plane_format[0]) {
-        // Packed YUV Apple formats color permutation
-        if (plane_format[0]->format == GL_RGB_422_APPLE)
-            snprintf(color_swizzle, sizeof(color_swizzle), "gbra");
-        goto supported;
-    }
-
-    // Unsupported format
-    return false;
-
-supported:
-
-    if (desc.component_bits > 8 && desc.component_bits < 16) {
-        if (p->texture_16bit_depth < 16)
-            return false;
-    }
 
     int use_integer = -1;
     for (int n = 0; n < desc.num_planes; n++) {
-        if (!plane_format[n])
-            return false;
-        int use_int_plane = !!gl_integer_format_to_base(plane_format[n]->format);
+        int use_int_plane = gl_is_integer_format(desc.planes[n]->format);
         if (use_integer < 0)
             use_integer = use_int_plane;
         if (use_integer != use_int_plane)
@@ -3382,23 +3252,16 @@ supported:
     if (!test_only) {
         for (int n = 0; n < desc.num_planes; n++) {
             struct texplane *plane = &p->image.planes[n];
-            const struct gl_format *format = plane_format[n];
-            assert(format);
+            const struct gl_format *format = desc.planes[n];
             plane->gl_format = format->format;
             plane->gl_internal_format = format->internal_format;
             plane->gl_type = format->type;
-            plane->use_integer = use_integer;
-            snprintf(plane->swizzle, sizeof(plane->swizzle), "rgba");
-            if (packed_format)
-                packed_fmt_swizzle(plane->swizzle, packed_format);
-            if (plane->gl_format == GL_LUMINANCE_ALPHA)
-                MPSWAP(char, plane->swizzle[1], plane->swizzle[3]);
         }
 
         init_image_desc(p, fmt);
 
         p->use_integer_conversion = use_integer;
-        snprintf(p->color_swizzle, sizeof(p->color_swizzle), "%s", color_swizzle);
+        snprintf(p->color_swizzle, sizeof(p->color_swizzle), "%s", desc.swizzle);
     }
 
     return true;
@@ -3448,7 +3311,6 @@ struct gl_video *gl_video_init(GL *gl, struct mp_log *log, struct mpv_global *g)
         .gl = gl,
         .global = g,
         .log = log,
-        .texture_16bit_depth = 16,
         .sc = gl_sc_create(gl, log),
         .opts_cache = m_config_cache_alloc(p, g, &gl_video_conf),
     };
@@ -3501,6 +3363,7 @@ static void reinit_from_options(struct gl_video *p)
 
     check_gl_features(p);
     uninit_rendering(p);
+    gl_sc_set_cache_dir(p->sc, p->global, p->opts.shader_cache_dir);
     gl_video_setup_hooks(p);
     reinit_osd(p);
 
@@ -3521,6 +3384,9 @@ void gl_video_configure_queue(struct gl_video *p, struct vo *vo)
         const struct filter_kernel *kernel =
             mp_find_filter_kernel(p->opts.scaler[SCALER_TSCALE].kernel.name);
         if (kernel) {
+            // filter_scale wouldn't be correctly initialized were we to use it here.
+            // This is fine since we're always upsampling, but beware if downsampling
+            // is added!
             double radius = kernel->f.radius;
             radius = radius > 0 ? radius : p->opts.scaler[SCALER_TSCALE].radius;
             queue_size += 1 + ceil(radius);

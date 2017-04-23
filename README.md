@@ -33,14 +33,12 @@ Releases can be found on the [release list][releases].
 - A not too ancient Linux, or Windows Vista or later, or OSX 10.8 or later.
 - A somewhat capable CPU. Hardware decoding might sometimes help if the CPU
   is too slow to decode video realtime, but must be explicitly enabled with
-  the `--hwdec` option. On Windows, a CPU with SSE4 instruction set is required
-  to get decent hardware decoding performance.
+  the `--hwdec` option.
 - A not too crappy GPU. mpv is not intended to be used with bad GPUs. There are
   many caveats with drivers or system compositors causing tearing, stutter,
   etc. On Windows, you might want to make sure the graphics drivers are
-  current, especially OpenGL. In some cases, ancient fallback video output
-  methods can help (such as `--vo=xv` on Linux), but this use is not
-  recommended or supported.
+  current. In some cases, ancient fallback video output methods can help
+  (such as `--vo=xv` on Linux), but this use is not recommended or supported.
 
 
 ## Downloads
@@ -91,7 +89,8 @@ to the *prefix* after it is compiled.
 Essential dependencies (incomplete list):
 
 - gcc or clang
-- X development headers (xlib, X extensions, libvdpau, libGL, libXv, ...)
+- X development headers (xlib, xrandr, xext, xscrnsaver, xinerama, libvdpau,
+  libGL, libXv, ...)
 - Audio output development headers (libasound/ALSA, pulseaudio)
 - FFmpeg libraries (libavutil libavcodec libavformat libswscale libavfilter
   and either libswresample or libavresample)
@@ -123,12 +122,13 @@ FFmpeg dependencies:
 Most of the above libraries are available in suitable versions on normal
 Linux distributions. However FFmpeg is an exception (distro versions may be
 too old to work at all or work well). For that reason you may want to use
-the separately available build wrapper ([mpv-build][mpv-build]) that first compiles FFmpeg
-libraries and libass, and then compiles the player statically linked against
-those.
+the separately available build wrapper ([mpv-build][mpv-build]) that first
+compiles FFmpeg libraries and libass, and then compiles the player statically
+linked against those.
 
 If you want to build a Windows binary, you either have to use MSYS2 and MinGW,
-or cross-compile from Linux with MinGW. See [Windows compilation][windows_compilation].
+or cross-compile from Linux with MinGW. See
+[Windows compilation][windows_compilation].
 
 
 ## FFmpeg vs. Libav

@@ -47,7 +47,7 @@ static const struct gl_hwdec_driver *const mpgl_hwdec_drivers[] = {
 #if HAVE_VDPAU_GL_X11
     &gl_hwdec_vdpau,
 #endif
-#if HAVE_VIDEOTOOLBOX_GL
+#if HAVE_VIDEOTOOLBOX_GL || HAVE_IOS_GL
     &gl_hwdec_videotoolbox,
 #endif
 #if HAVE_D3D_HWACCEL
@@ -59,7 +59,6 @@ static const struct gl_hwdec_driver *const mpgl_hwdec_drivers[] = {
 #if HAVE_GL_DXINTEROP
     &gl_hwdec_dxva2gldx,
 #endif
-    &gl_hwdec_dxva2,
 #endif
 #if HAVE_CUDA_HWACCEL
     &gl_hwdec_cuda,

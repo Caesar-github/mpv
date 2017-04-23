@@ -1,18 +1,18 @@
 /*
  * This file is part of mpv.
  *
- * mpv is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
+ * mpv is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
  *
  * mpv is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with mpv.  If not, see <http://www.gnu.org/licenses/>.
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <stdlib.h>
@@ -259,8 +259,15 @@ static void decode(struct sd *sd, struct demux_packet *packet)
             packet->duration = UNKNOWN_DURATION;
         }
         char **r = lavc_conv_decode(ctx->converter, packet);
-        for (int n = 0; r && r[n]; n++)
-            ass_process_data(track, r[n], strlen(r[n]));
+        for (int n = 0; r && r[n]; n++) {
+            char *ass_line = r[n];
+            if (sd->opts->sub_filter_SDH)
+                ass_line = filter_SDH(sd, track->event_format, 0, ass_line, 0);
+            if (ass_line)
+                ass_process_data(track, ass_line, strlen(ass_line));
+            if (sd->opts->sub_filter_SDH)
+                talloc_free(ass_line);
+        }
         if (ctx->duration_unknown) {
             for (int n = 0; n < track->n_events - 1; n++) {
                 if (track->events[n].Duration == UNKNOWN_DURATION * 1000) {
@@ -272,9 +279,18 @@ static void decode(struct sd *sd, struct demux_packet *packet)
     } else {
         // Note that for this packet format, libass has an internal mechanism
         // for discarding duplicate (already seen) packets.
-        ass_process_chunk(track, packet->buffer, packet->len,
-                          llrint(packet->pts * 1000),
-                          llrint(packet->duration * 1000));
+        char *ass_line = packet->buffer;
+        int ass_len = packet->len;
+        if (sd->opts->sub_filter_SDH) {
+            ass_line = filter_SDH(sd, track->event_format, 1, ass_line, ass_len);
+            ass_len = strlen(ass_line);
+        }
+        if (ass_line)
+            ass_process_chunk(track, ass_line, ass_len,
+                              llrint(packet->pts * 1000),
+                              llrint(packet->duration * 1000));
+        if (sd->opts->sub_filter_SDH)
+            talloc_free(ass_line);
     }
 }
 
@@ -371,7 +387,7 @@ static long long find_timestamp(struct sd *sd, double pts)
 
     long long ts = llrint(pts * 1000);
 
-    if (!sd->opts->sub_fix_timing)
+    if (!sd->opts->sub_fix_timing || sd->opts->ass_style_override == 0)
         return ts;
 
     // Try to fix small gaps and overlaps.
