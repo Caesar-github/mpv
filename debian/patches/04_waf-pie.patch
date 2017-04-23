@@ -8,7 +8,7 @@ Last-Update: 2015-09-24
 
 --- a/waflib/Context.py
 +++ b/waflib/Context.py
-@@ -140,6 +140,10 @@
+@@ -140,6 +140,10 @@ class Context(ctx):
  	def exec_command(self,cmd,**kw):
  		subprocess=Utils.subprocess
  		kw['shell']=isinstance(cmd,str)
