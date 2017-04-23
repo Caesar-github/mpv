@@ -72,7 +72,7 @@ build_options = [
         'desc': 'C plugins',
         'deps': [ 'libdl' ],
         'default': 'disable',
-        'func': check_cc(linkflags=['-Wl,-export-dynamic']),
+        'func': check_cc(linkflags=['-rdynamic']),
     }, {
         'name': 'dlopen',
         'desc': 'dlopen',
@@ -171,19 +171,11 @@ main_dependencies = [
                 'atomic_int_least64_t test = ATOMIC_VAR_INIT(123);'
                 'atomic_fetch_add(&test, 1)'))
     }, {
-        'name': 'atomic-builtins',
-        'desc': 'compiler support for __atomic built-ins',
-        'func': check_libs(['atomic'],
-            check_statement('stdint.h',
-                'int64_t test = 0;'
-                'test = __atomic_add_fetch(&test, 1, __ATOMIC_SEQ_CST)')),
-        'deps_neg': [ 'stdatomic' ],
-    }, {
         'name': 'atomics',
-        'desc': 'stdatomic.h support or emulation',
+        'desc': 'stdatomic.h support or slow emulation',
         'func': check_true,
         'req': True,
-        'deps_any': ['stdatomic', 'atomic-builtins', 'gnuc'],
+        'deps_any': ['stdatomic', 'gnuc'],
     }, {
         'name': 'c11-tls',
         'desc': 'C11 TLS support',
@@ -337,19 +329,28 @@ iconv support use --disable-iconv.",
         'name': '--libbluray',
         'desc': 'Bluray support',
         'func': check_pkg_config('libbluray', '>= 0.3.0'),
+        #'default': 'disable',
     }, {
         'name': '--dvdread',
         'desc': 'dvdread support',
         'func': check_pkg_config('dvdread', '>= 4.1.0'),
+        'default': 'disable',
     }, {
         'name': '--dvdnav',
         'desc': 'dvdnav support',
-        'deps': [ 'dvdread' ],
-        'func': check_pkg_config('dvdnav', '>= 4.2.0'),
+        'func': check_pkg_config('dvdnav',  '>= 4.2.0',
+                                 'dvdread', '>= 4.1.0'),
+        'default': 'disable',
+    }, {
+        'name': 'dvdread-common',
+        'desc': 'DVD/IFO support',
+        'deps_any': [ 'dvdread', 'dvdnav' ],
+        'func': check_true,
     }, {
         'name': '--cdda',
         'desc': 'cdda support (libcdio)',
         'func': check_pkg_config('libcdio_paranoia'),
+        'default': 'disable',
     }, {
         'name': '--uchardet',
         'desc': 'uchardet support',
@@ -578,32 +579,16 @@ video_output_features = [
     } , {
         'name': '--x11',
         'desc': 'X11',
-        'func': check_pkg_config('x11'),
-    } , {
-        'name': '--xss',
-        'desc': 'Xss screensaver extensions',
-        'deps': [ 'x11' ],
-        'func': check_pkg_config('xscrnsaver'),
-    } , {
-        'name': '--xext',
-        'desc': 'X extensions',
-        'deps': [ 'x11' ],
-        'func': check_pkg_config('xext'),
+        'func': check_pkg_config('x11',         '>= 1.0.0',
+                                 'xscrnsaver',  '>= 1.0.0',
+                                 'xext',        '>= 1.0.0',
+                                 'xinerama',    '>= 1.0.0',
+                                 'xrandr',      '>= 1.2.0'),
     } , {
         'name': '--xv',
         'desc': 'Xv video output',
         'deps': [ 'x11' ],
         'func': check_pkg_config('xv'),
-    } , {
-        'name': '--xinerama',
-        'desc': 'Xinerama',
-        'deps': [ 'x11' ],
-        'func': check_pkg_config('xinerama'),
-    }, {
-        'name': '--xrandr',
-        'desc': 'Xrandr',
-        'deps': [ 'x11' ],
-        'func': check_pkg_config('xrandr', '>= 1.2.0'),
     } , {
         'name': '--gl-cocoa',
         'desc': 'OpenGL Cocoa Backend',
@@ -671,8 +656,10 @@ video_output_features = [
         'groups': [ 'gl' ],
         'func': check_statement(['EGL/egl.h'],
                                 'eglCreateWindowSurface(0, 0, 0, 0)',
-                                cflags="-DGL_APICALL= -DEGLAPI= -DANGLE_NO_ALIASES -DANGLE_EXPORT=",
-                                lib=['EGL', 'GLESv2', 'dxguid', 'd3d9', 'gdi32', 'stdc++'])
+                                cflags=['-DGL_APICALL=', '-DEGLAPI=',
+                                        '-DANGLE_NO_ALIASES', '-DANGLE_EXPORT='],
+                                lib=['EGL', 'GLESv2', 'dxguid', 'd3d9',
+                                     'gdi32', 'stdc++'])
     } , {
         'name': '--vdpau',
         'desc': 'VDPAU acceleration',
@@ -741,37 +728,19 @@ video_output_features = [
         'name': '--rpi',
         'desc': 'Raspberry Pi support',
         'func': check_rpi,
-    }, {
-        'name': '--standard-gl',
-        'desc': 'Desktop standard OpenGL support',
-        'func': compose_checks(
-            check_statement('GL/gl.h', '(void)GL_RGB32F'),     # arbitrary OpenGL 3.0 symbol
-            check_statement('GL/gl.h', '(void)GL_LUMINANCE16') # arbitrary OpenGL legacy-only symbol
-        ),
-    } , {
-        'name': '--android-gl',
-        'desc': 'Android OpenGL ES support',
-        'deps': ['android'],
-        'func': check_statement('GLES3/gl3.h', '(void)GL_RGB32F'),  # arbitrary OpenGL ES 3.0 symbol
     } , {
         'name': '--ios-gl',
-        'desc': 'iOS OpenGL ES support',
+        'desc': 'iOS OpenGL ES hardware decoding interop support',
         'func': check_statement('OpenGLES/ES3/glext.h', '(void)GL_RGB32F'),  # arbitrary OpenGL ES 3.0 symbol
-    } , {
-        'name': '--any-gl',
-        'desc': 'Any OpenGL (ES) support',
-        'deps_any': ['standard-gl', 'android-gl', 'ios-gl', 'cocoa'],
-        'func': check_true
     } , {
         'name': '--plain-gl',
         'desc': 'OpenGL without platform-specific code (e.g. for libmpv)',
-        'deps': ['any-gl'],
         'deps_any': [ 'libmpv-shared', 'libmpv-static' ],
         'func': check_true,
     }, {
         'name': '--mali-fbdev',
         'desc': 'MALI via Linux fbdev',
-        'deps': ['standard-gl', 'libdl'],
+        'deps': ['libdl'],
         'func': compose_checks(
             check_cc(lib="EGL"),
             check_cc(lib="GLESv2"),
@@ -803,7 +772,7 @@ hwaccel_features = [
         'name': '--vaapi-hwaccel',
         'desc': 'libavcodec VAAPI hwaccel',
         'deps': [ 'vaapi' ],
-        'func': check_headers('libavcodec/vaapi.h', use='libav'),
+        'func': check_true,
     }, {
         'name': '--vaapi-hwaccel-new',
         'desc': 'libavcodec VAAPI hwaccel (new)',
@@ -834,20 +803,35 @@ hwaccel_features = [
         'desc': 'Videotoolbox with OpenGL',
         'deps': [ 'gl-cocoa', 'videotoolbox-hwaccel' ],
         'func': check_true
-    } , {
+    }, {
         'name': '--vdpau-hwaccel',
         'desc': 'libavcodec VDPAU hwaccel',
         'deps': [ 'vdpau' ],
+        'func': check_true,
+    }, {
+        'name': '--vdpau-hwaccel-new',
+        'desc': 'libavcodec VDPAU hwaccel (new)',
+        'deps': [ 'vdpau-hwaccel' ],
+        'func': check_statement('libavcodec/version.h',
+            'int x[(LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(57, 37, 1) && '
+            '       LIBAVCODEC_VERSION_MICRO < 100) ||'
+            '      (LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(57, 85, 101) && '
+            '       LIBAVCODEC_VERSION_MICRO >= 100)'
+            '      ? 1 : -1]',
+            use='libav'),
+    }, {
+        'name': '--vdpau-hwaccel-old',
+        'desc': 'libavcodec VDPAU hwaccel (old)',
+        'deps': [ 'vdpau' ],
+        'deps_neg': [ 'vdpau-hwaccel-new' ],
         'func': check_statement('libavcodec/vdpau.h',
                                 'av_vdpau_bind_context(0,0,0,AV_HWACCEL_FLAG_ALLOW_HIGH_DEPTH)',
                                 use='libav'),
     }, {
         'name': '--d3d-hwaccel',
-        'desc': 'libavcodec DXVA2 and D3D11VA hwaccel',
+        'desc': 'DXVA2 and D3D11VA hwaccel',
         'deps': [ 'win32' ],
-        'func': compose_checks(
-                    check_headers('libavcodec/dxva2.h',  use='libav'),
-                    check_headers('libavcodec/d3d11va.h',  use='libav')),
+        'func': check_true,
     }, {
         'name': '--cuda-hwaccel',
         'desc': 'CUDA hwaccel',
@@ -910,7 +894,16 @@ standalone_features = [
         'desc': 'Apple Remote support',
         'deps': [ 'cocoa' ],
         'func': check_true
-    }
+    }, {
+        'name': '--macos-touchbar',
+        'desc': 'macOS Touch Bar support',
+        'deps': [ 'cocoa' ],
+        'func': check_cc(
+            fragment=load_fragment('touchbar.m'),
+            framework_name=['AppKit'],
+            compile_filename='test-touchbar.m',
+            linkflags='-fobjc-arc')
+     }
 ]
 
 _INSTALL_DIRS_LIST = [
@@ -1041,7 +1034,7 @@ def configure(ctx):
         # not linked against libmpv. The C plugin needs to be able to pick
         # up the libmpv symbols from the binary. We still restrict the set
         # of exported symbols via mpv.def.
-        ctx.env.LINKFLAGS += ['-Wl,-export-dynamic']
+        ctx.env.LINKFLAGS += ['-rdynamic']
 
     ctx.store_dependencies_lists()
 

@@ -122,13 +122,15 @@ static void draw_frame(struct vo *vo, struct vo_frame *frame)
     struct gl_priv *p = vo->priv;
     GL *gl = p->gl;
 
+    mpgl_start_frame(p->glctx);
+
     if (gl->FenceSync && p->num_vsync_fences < p->opts.vsync_fences) {
         GLsync fence = gl->FenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);;
         if (fence)
             p->vsync_fences[p->num_vsync_fences++] = fence;
     }
 
-    gl_video_render_frame(p->renderer, frame, gl->main_fb);
+    gl_video_render_frame(p->renderer, frame, p->glctx->main_fb);
 
     if (p->opts.use_glFinish)
         gl->Finish();
@@ -270,8 +272,8 @@ static int control(struct vo *vo, uint32_t request, void *data)
         return VO_NOTIMPL;
     }
     case VOCTRL_SCREENSHOT_WIN: {
-        struct mp_image *screen =
-            gl_read_window_contents(p->gl, vo->dwidth, vo->dheight);
+        struct mp_image *screen = gl_read_fbo_contents(p->gl, p->glctx->main_fb,
+                                                       vo->dwidth, vo->dheight);
         if (!screen)
             break; // redirect to backend
         // set image parameters according to the display, if possible
@@ -295,10 +297,8 @@ static int control(struct vo *vo, uint32_t request, void *data)
         gl_video_reset(p->renderer);
         return true;
     case VOCTRL_PAUSE:
-        if (gl_video_showing_interpolated_frame(p->renderer)) {
+        if (gl_video_showing_interpolated_frame(p->renderer))
             vo->want_redraw = true;
-            vo_wakeup(vo);
-        }
         return true;
     case VOCTRL_PERFORMANCE_DATA:
         *(struct voctrl_performance_data *)data = gl_video_perfdata(p->renderer);
@@ -375,6 +375,8 @@ static int preinit(struct vo *vo)
 
     if (p->opts.es == 1)
         vo_flags |= VOFLAG_GLES;
+    if (p->opts.es == 2)
+        vo_flags |= VOFLAG_GLES | VOFLAG_GLES2;
     if (p->opts.es == -1)
         vo_flags |= VOFLAG_NO_GLES;
 
@@ -439,7 +441,8 @@ const struct vo_driver video_out_opengl = {
         OPT_STRING_VALIDATE("opengl-backend", opts.backend, 0,
                             mpgl_validate_backend_opt),
         OPT_FLAG("opengl-sw", opts.allow_sw, 0),
-        OPT_CHOICE("opengl-es", opts.es, 0, ({"no", -1}, {"auto", 0}, {"yes", 1})),
+        OPT_CHOICE("opengl-es", opts.es, 0, ({"no", -1}, {"auto", 0},
+                                             {"yes", 1}, {"force2", 2})),
         OPT_INTPAIR("opengl-check-pattern", opts.pattern, 0),
         OPT_INTRANGE("opengl-vsync-fences", opts.vsync_fences, 0,
                      0, NUM_VSYNC_FENCES),

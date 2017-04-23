@@ -30,7 +30,6 @@
 #include <libavutil/time.h>
 #include <libavutil/opt.h>
 #include <libavfilter/avfilter.h>
-#include <libavfilter/avfiltergraph.h>
 #include <libavfilter/buffersink.h>
 #include <libavfilter/buffersrc.h>
 
@@ -57,6 +56,9 @@
 #endif
 
 struct priv {
+    // Single filter bridge, instead of a graph.
+    bool is_bridge;
+
     AVFilterGraph *graph;
     AVFilterContext *in;
     AVFilterContext *out;
@@ -72,6 +74,8 @@ struct priv {
     // options
     char *cfg_graph;
     char **cfg_avopts;
+    char *cfg_filter_name;
+    char **cfg_filter_opts;
 };
 
 static void destroy_graph(struct af_instance *af)
@@ -87,15 +91,14 @@ static bool recreate_graph(struct af_instance *af, struct mp_audio *config)
 {
     void *tmp = talloc_new(NULL);
     struct priv *p = af->priv;
-    AVFilterContext *in = NULL, *out = NULL, *f_format = NULL;
+    AVFilterContext *in = NULL, *out = NULL;
 
-    if (bstr0(p->cfg_graph).len == 0) {
+    if (!p->is_bridge && bstr0(p->cfg_graph).len == 0) {
         MP_FATAL(af, "lavfi: no filter graph set\n");
         return false;
     }
 
     destroy_graph(af);
-    MP_VERBOSE(af, "lavfi: create graph: '%s'\n", p->cfg_graph);
 
     AVFilterGraph *graph = avfilter_graph_alloc();
     if (!graph)
@@ -108,24 +111,6 @@ static bool recreate_graph(struct af_instance *af, struct mp_audio *config)
     AVFilterInOut *inputs  = avfilter_inout_alloc();
     if (!outputs || !inputs)
         goto error;
-
-    // Build list of acceptable output sample formats. libavfilter will insert
-    // conversion filters if needed.
-    static const enum AVSampleFormat sample_fmts[] = {
-        AV_SAMPLE_FMT_U8, AV_SAMPLE_FMT_S16, AV_SAMPLE_FMT_S32,
-        AV_SAMPLE_FMT_FLT, AV_SAMPLE_FMT_DBL,
-        AV_SAMPLE_FMT_U8P, AV_SAMPLE_FMT_S16P, AV_SAMPLE_FMT_S32P,
-        AV_SAMPLE_FMT_FLTP, AV_SAMPLE_FMT_DBLP,
-        AV_SAMPLE_FMT_NONE
-    };
-    char *fmtstr = talloc_strdup(tmp, "");
-    for (int n = 0; sample_fmts[n] != AV_SAMPLE_FMT_NONE; n++) {
-        const char *name = av_get_sample_fmt_name(sample_fmts[n]);
-        if (name) {
-            const char *s = fmtstr[0] ? "|" : "";
-            fmtstr = talloc_asprintf_append_buffer(fmtstr, "%s%s", s, name);
-        }
-    }
 
     char *src_args = talloc_asprintf(tmp,
         "sample_rate=%d:sample_fmt=%s:time_base=%d/%d:"
@@ -141,21 +126,46 @@ static bool recreate_graph(struct af_instance *af, struct mp_audio *config)
                                      "out", NULL, NULL, graph) < 0)
         goto error;
 
-    if (avfilter_graph_create_filter(&f_format, avfilter_get_by_name("aformat"),
-                                     "format", fmtstr, NULL, graph) < 0)
-        goto error;
+    if (p->is_bridge) {
+        AVFilterContext *filter = avfilter_graph_alloc_filter(graph,
+                        avfilter_get_by_name(p->cfg_filter_name), "filter");
+        if (!filter)
+            goto error;
 
-    if (avfilter_link(f_format, 0, out, 0) < 0)
-        goto error;
+        if (mp_set_avopts(af->log, filter->priv, p->cfg_filter_opts) < 0)
+            goto error;
 
-    outputs->name = av_strdup("in");
-    outputs->filter_ctx = in;
+        if (avfilter_init_str(filter, NULL) < 0)
+            goto error;
 
-    inputs->name = av_strdup("out");
-    inputs->filter_ctx = f_format;
+        // Yep, we have to manually link those filters.
+        if (filter->nb_inputs != 1 ||
+            avfilter_pad_get_type(filter->input_pads, 0) != AVMEDIA_TYPE_AUDIO ||
+            filter->nb_outputs != 1 ||
+            avfilter_pad_get_type(filter->output_pads, 0) != AVMEDIA_TYPE_AUDIO)
+        {
+            MP_ERR(af, "The filter is required to have 1 audio input pad and "
+                       "1 audio output pad.\n");
+            goto error;
+        }
+        if (avfilter_link(in, 0, filter, 0) < 0 ||
+            avfilter_link(filter, 0, out, 0) < 0)
+        {
+            MP_ERR(af, "Failed to link filter.\n");
+            goto error;
+        }
+    } else {
+        MP_VERBOSE(af, "lavfi: create graph: '%s'\n", p->cfg_graph);
 
-    if (graph_parse(graph, p->cfg_graph, inputs, outputs, NULL) < 0)
-        goto error;
+        outputs->name = av_strdup("in");
+        outputs->filter_ctx = in;
+
+        inputs->name = av_strdup("out");
+        inputs->filter_ctx = out;
+
+        if (graph_parse(graph, p->cfg_graph, inputs, outputs, NULL) < 0)
+            goto error;
+    }
 
     if (avfilter_graph_config(graph, NULL) < 0)
         goto error;
@@ -347,10 +357,23 @@ static void uninit(struct af_instance *af)
 
 static int af_open(struct af_instance *af)
 {
+    struct priv *p = af->priv;
+
     af->control = control;
     af->uninit = uninit;
     af->filter_frame = filter_frame;
     af->filter_out = filter_out;
+
+    if (p->is_bridge) {
+        if (!p->cfg_filter_name) {
+            MP_ERR(af, "Filter name not set!\n");
+            return 0;
+        }
+        if (!avfilter_get_by_name(p->cfg_filter_name)) {
+            MP_ERR(af, "libavfilter filter '%s' not found!\n", p->cfg_filter_name);
+            return 0;
+        }
+    }
     return AF_OK;
 }
 
@@ -362,6 +385,23 @@ const struct af_info af_info_lavfi = {
     .open = af_open,
     .priv_size = sizeof(struct priv),
     .options = (const struct m_option[]) {
+        OPT_STRING("graph", cfg_graph, 0),
+        OPT_KEYVALUELIST("o", cfg_avopts, 0),
+        {0}
+    },
+};
+
+const struct af_info af_info_lavfi_bridge = {
+    .info = "libavfilter bridge (explicit options)",
+    .name = "lavfi-bridge",
+    .open = af_open,
+    .priv_size = sizeof(struct priv),
+    .priv_defaults = &(const struct priv){
+        .is_bridge = true,
+    },
+    .options = (const struct m_option[]) {
+        OPT_STRING("name", cfg_filter_name, M_OPT_MIN, .min = 1),
+        OPT_KEYVALUELIST("opts", cfg_filter_opts, 0),
         OPT_STRING("graph", cfg_graph, 0),
         OPT_KEYVALUELIST("o", cfg_avopts, 0),
         {0}

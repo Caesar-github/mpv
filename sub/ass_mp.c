@@ -3,18 +3,18 @@
  *
  * This file is part of mpv.
  *
- * mpv is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
+ * mpv is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
  *
  * mpv is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with mpv.  If not, see <http://www.gnu.org/licenses/>.
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <inttypes.h>
@@ -220,7 +220,8 @@ static bool pack(struct mp_ass_packer *p, struct sub_bitmaps *res, int imgfmt)
     res->packed_h = bb[1].y;
 
     if (!p->cached_img || p->cached_img->w < res->packed_w ||
-                          p->cached_img->h < res->packed_h)
+                          p->cached_img->h < res->packed_h ||
+                          p->cached_img->imgfmt != imgfmt)
     {
         talloc_free(p->cached_img);
         p->cached_img = mp_image_alloc(imgfmt, p->packer->w, p->packer->h);

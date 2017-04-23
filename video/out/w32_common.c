@@ -37,6 +37,7 @@
 #include "win_state.h"
 #include "w32_common.h"
 #include "win32/displayconfig.h"
+#include "win32/droptarget.h"
 #include "osdep/io.h"
 #include "osdep/threads.h"
 #include "osdep/w32_keyboard.h"
@@ -147,203 +148,6 @@ struct vo_w32_state {
 
     HANDLE avrt_handle;
 };
-
-typedef struct tagDropTarget {
-    IDropTarget iface;
-    atomic_int refCnt;
-    DWORD lastEffect;
-    IDataObject* dataObj;
-    struct vo_w32_state *w32;
-} DropTarget;
-
-static FORMATETC fmtetc_file = { CF_HDROP, 0, DVASPECT_CONTENT, -1, TYMED_HGLOBAL };
-static FORMATETC fmtetc_url = { 0, NULL, DVASPECT_CONTENT, -1, TYMED_HGLOBAL };
-
-static void DropTarget_Destroy(DropTarget* This)
-{
-    if (This->dataObj != NULL) {
-        This->dataObj->lpVtbl->Release(This->dataObj);
-        This->dataObj->lpVtbl = NULL;
-    }
-
-    talloc_free(This);
-}
-
-static HRESULT STDMETHODCALLTYPE DropTarget_QueryInterface(IDropTarget* This,
-                                                           REFIID riid,
-                                                           void** ppvObject)
-{
-    if (!IsEqualGUID(riid, &IID_IUnknown) ||
-        !IsEqualGUID(riid, &IID_IDataObject)) {
-        *ppvObject = NULL;
-        return E_NOINTERFACE;
-    }
-
-    *ppvObject = This;
-    This->lpVtbl->AddRef(This);
-    return S_OK;
-}
-
-static ULONG STDMETHODCALLTYPE DropTarget_AddRef(IDropTarget* This)
-{
-    DropTarget* t = (DropTarget*)This;
-    return atomic_fetch_add(&t->refCnt, 1) + 1;
-}
-
-static ULONG STDMETHODCALLTYPE DropTarget_Release(IDropTarget* This)
-{
-    DropTarget* t = (DropTarget*)This;
-    ULONG cRef = atomic_fetch_add(&t->refCnt, -1) - 1;
-
-    if (cRef == 0) {
-        DropTarget_Destroy(t);
-    }
-
-    return cRef;
-}
-
-static HRESULT STDMETHODCALLTYPE DropTarget_DragEnter(IDropTarget* This,
-                                                      IDataObject* pDataObj,
-                                                      DWORD grfKeyState,
-                                                      POINTL pt,
-                                                      DWORD* pdwEffect)
-{
-    DropTarget* t = (DropTarget*)This;
-
-    pDataObj->lpVtbl->AddRef(pDataObj);
-    if (pDataObj->lpVtbl->QueryGetData(pDataObj, &fmtetc_file) != S_OK &&
-        pDataObj->lpVtbl->QueryGetData(pDataObj, &fmtetc_url) != S_OK) {
-
-        *pdwEffect = DROPEFFECT_NONE;
-    }
-
-    if (t->dataObj != NULL) {
-        t->dataObj->lpVtbl->Release(t->dataObj);
-    }
-
-    t->dataObj = pDataObj;
-    t->lastEffect = *pdwEffect;
-    return S_OK;
-}
-
-static HRESULT STDMETHODCALLTYPE DropTarget_DragOver(IDropTarget* This,
-                                                     DWORD grfKeyState,
-                                                     POINTL pt,
-                                                     DWORD* pdwEffect)
-{
-    DropTarget* t = (DropTarget*)This;
-
-    *pdwEffect = t->lastEffect;
-    return S_OK;
-}
-
-static HRESULT STDMETHODCALLTYPE DropTarget_DragLeave(IDropTarget* This)
-{
-    DropTarget* t = (DropTarget*)This;
-
-    if (t->dataObj != NULL) {
-        t->dataObj->lpVtbl->Release(t->dataObj);
-        t->dataObj = NULL;
-    }
-
-    return S_OK;
-}
-
-static HRESULT STDMETHODCALLTYPE DropTarget_Drop(IDropTarget* This,
-                                                 IDataObject* pDataObj,
-                                                 DWORD grfKeyState, POINTL pt,
-                                                 DWORD* pdwEffect)
-{
-    DropTarget* t = (DropTarget*)This;
-
-    STGMEDIUM medium;
-
-    if (t->dataObj != NULL) {
-        t->dataObj->lpVtbl->Release(t->dataObj);
-        t->dataObj = NULL;
-    }
-
-    enum mp_dnd_action action = (grfKeyState & MK_SHIFT) ? DND_APPEND : DND_REPLACE;
-
-    pDataObj->lpVtbl->AddRef(pDataObj);
-
-    if (pDataObj->lpVtbl->GetData(pDataObj, &fmtetc_file, &medium) == S_OK) {
-        if (GlobalLock(medium.hGlobal) != NULL) {
-            HDROP hDrop = (HDROP)medium.hGlobal;
-
-            UINT numFiles = DragQueryFileW(hDrop, 0xFFFFFFFF, NULL, 0);
-            char** files = talloc_zero_array(NULL, char*, numFiles);
-
-            UINT nrecvd_files = 0;
-            for (UINT i = 0; i < numFiles; i++) {
-                UINT len = DragQueryFileW(hDrop, i, NULL, 0);
-                wchar_t* buf = talloc_array(NULL, wchar_t, len + 1);
-
-                if (DragQueryFileW(hDrop, i, buf, len + 1) == len) {
-                    char* fname = mp_to_utf8(files, buf);
-                    files[nrecvd_files++] = fname;
-
-                    MP_VERBOSE(t->w32, "received dropped file: %s\n",
-                               fname);
-                } else {
-                    MP_ERR(t->w32, "error getting dropped file name\n");
-                }
-
-                talloc_free(buf);
-            }
-
-            GlobalUnlock(medium.hGlobal);
-            mp_event_drop_files(t->w32->input_ctx, nrecvd_files, files,
-                                action);
-
-            talloc_free(files);
-        }
-
-        ReleaseStgMedium(&medium);
-    } else if (pDataObj->lpVtbl->GetData(pDataObj,
-                                         &fmtetc_url, &medium) == S_OK) {
-        // get the URL encoded in US-ASCII
-        wchar_t* wurl = GlobalLock(medium.hGlobal);
-        if (wurl != NULL) {
-            char *url = mp_to_utf8(NULL, wurl);
-            if (mp_event_drop_mime_data(t->w32->input_ctx, "text/uri-list",
-                                        bstr0(url), action) > 0) {
-                MP_VERBOSE(t->w32, "received dropped URL: %s\n", url);
-            } else {
-                MP_ERR(t->w32, "error getting dropped URL\n");
-            }
-
-            talloc_free(url);
-            GlobalUnlock(medium.hGlobal);
-        }
-
-        ReleaseStgMedium(&medium);
-    }
-    else {
-        t->lastEffect = DROPEFFECT_NONE;
-    }
-
-    pDataObj->lpVtbl->Release(pDataObj);
-    *pdwEffect = t->lastEffect;
-    return S_OK;
-}
-
-
-static void DropTarget_Init(DropTarget* This, struct vo_w32_state *w32)
-{
-    IDropTargetVtbl* vtbl = talloc(This, IDropTargetVtbl);
-    *vtbl = (IDropTargetVtbl){
-        DropTarget_QueryInterface, DropTarget_AddRef, DropTarget_Release,
-        DropTarget_DragEnter, DropTarget_DragOver, DropTarget_DragLeave,
-        DropTarget_Drop
-    };
-
-    This->iface.lpVtbl = vtbl;
-    atomic_store(&This->refCnt, 0);
-    This->lastEffect = 0;
-    This->dataObj = NULL;
-    This->w32 = w32;
-}
 
 static void add_window_borders(HWND hwnd, RECT *rc)
 {
@@ -595,6 +399,35 @@ static bool handle_char(struct vo_w32_state *w32, wchar_t wc)
     return true;
 }
 
+static bool handle_mouse_down(struct vo_w32_state *w32, int btn, int x, int y)
+{
+    btn |= mod_state(w32);
+    mp_input_put_key(w32->input_ctx, btn | MP_KEY_STATE_DOWN);
+
+    if (btn == MP_MOUSE_BTN0 && !w32->current_fs &&
+        !mp_input_test_dragging(w32->input_ctx, x, y))
+    {
+        // Window dragging hack
+        ReleaseCapture();
+        SendMessage(w32->window, WM_NCLBUTTONDOWN, HTCAPTION, 0);
+        mp_input_put_key(w32->input_ctx, MP_MOUSE_BTN0 | MP_KEY_STATE_UP);
+
+        // Indicate the message was handled, so DefWindowProc won't be called
+        return true;
+    }
+
+    SetCapture(w32->window);
+    return false;
+}
+
+static void handle_mouse_up(struct vo_w32_state *w32, int btn)
+{
+    btn |= mod_state(w32);
+    mp_input_put_key(w32->input_ctx, btn | MP_KEY_STATE_UP);
+
+    ReleaseCapture();
+}
+
 static void signal_events(struct vo_w32_state *w32, int events)
 {
     atomic_fetch_or(&w32->event_flags, events);
@@ -815,386 +648,6 @@ static bool snap_to_screen_edges(struct vo_w32_state *w32, RECT *rc)
     return true;
 }
 
-static void toggle_fullscreen(struct vo_w32_state *w32)
-{
-    w32->toggle_fs = true;
-    signal_events(w32, VO_EVENT_FULLSCREEN_STATE);
-}
-
-static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam,
-                                LPARAM lParam)
-{
-    assert(w32_thread_context);
-    struct vo_w32_state *w32 = w32_thread_context;
-    if (!w32->window)
-        w32->window = hWnd; // can happen during CreateWindow*!
-    assert(w32->window == hWnd);
-    int mouse_button = 0;
-
-    switch (message) {
-    case WM_USER:
-        // This message is used to wakeup the GUI thread, see wakeup_gui_thread.
-        mp_dispatch_queue_process(w32->dispatch, 0);
-        break;
-    case WM_ERASEBKGND: // no need to erase background separately
-        return 1;
-    case WM_PAINT:
-        signal_events(w32, VO_EVENT_EXPOSE);
-        break;
-    case WM_MOVE: {
-        POINT p = {0};
-        ClientToScreen(w32->window, &p);
-        w32->window_x = p.x;
-        w32->window_y = p.y;
-
-        // Window may intersect with new monitors (see VOCTRL_GET_DISPLAY_NAMES)
-        signal_events(w32, VO_EVENT_WIN_STATE);
-
-        update_display_info(w32);  // if we moved between monitors
-        MP_DBG(w32, "move window: %d:%d\n", w32->window_x, w32->window_y);
-        break;
-    }
-    case WM_MOVING: {
-        RECT *rc = (RECT*)lParam;
-        if (snap_to_screen_edges(w32, rc))
-            return TRUE;
-        break;
-    }
-    case WM_ENTERSIZEMOVE:
-        if (w32->snapped) {
-            // Save the cursor offset from the window borders,
-            // so the player window can be unsnapped later
-            RECT rc;
-            POINT cursor;
-            if (GetWindowRect(w32->window, &rc) && GetCursorPos(&cursor)) {
-                w32->snap_dx = cursor.x - rc.left;
-                w32->snap_dy = cursor.y - rc.top;
-            }
-        }
-        break;
-    case WM_SIZE: {
-        RECT r;
-        if (GetClientRect(w32->window, &r) && r.right > 0 && r.bottom > 0) {
-            w32->dw = r.right;
-            w32->dh = r.bottom;
-            signal_events(w32, VO_EVENT_RESIZE);
-            MP_VERBOSE(w32, "resize window: %d:%d\n", w32->dw, w32->dh);
-        }
-
-        // Window may have been minimized or restored
-        signal_events(w32, VO_EVENT_WIN_STATE);
-
-        update_display_info(w32);
-        break;
-    }
-    case WM_SIZING:
-        if (w32->opts->keepaspect && w32->opts->keepaspect_window &&
-            !w32->current_fs && !w32->parent)
-        {
-            RECT *rc = (RECT*)lParam;
-            // get client area of the windows if it had the rect rc
-            // (subtracting the window borders)
-            RECT r = *rc;
-            subtract_window_borders(w32->window, &r);
-            int c_w = r.right - r.left, c_h = r.bottom - r.top;
-            float aspect = w32->o_dwidth / (float) MPMAX(w32->o_dheight, 1);
-            int d_w = c_h * aspect - c_w;
-            int d_h = c_w / aspect - c_h;
-            int d_corners[4] = { d_w, d_h, -d_w, -d_h };
-            int corners[4] = { rc->left, rc->top, rc->right, rc->bottom };
-            int corner = get_resize_border(wParam);
-            if (corner >= 0)
-                corners[corner] -= d_corners[corner];
-            *rc = (RECT) { corners[0], corners[1], corners[2], corners[3] };
-            return TRUE;
-        }
-        break;
-    case WM_DPICHANGED:
-        update_display_info(w32);
-        break;
-    case WM_CLOSE:
-        // Don't actually allow it to destroy the window, or whatever else it
-        // is that will make us lose WM_USER wakeups.
-        mp_input_put_key(w32->input_ctx, MP_KEY_CLOSE_WIN);
-        return 0;
-    case WM_NCDESTROY: // Sometimes only WM_NCDESTROY is received in --wid mode
-    case WM_DESTROY:
-        if (w32->destroyed)
-            break;
-        // If terminate is not set, something else destroyed the window. This
-        // can also happen in --wid mode when the parent window is destroyed.
-        if (!w32->terminate)
-            mp_input_put_key(w32->input_ctx, MP_KEY_CLOSE_WIN);
-        RevokeDragDrop(w32->window);
-        w32->destroyed = true;
-        w32->window = NULL;
-        PostQuitMessage(0);
-        break;
-    case WM_SYSCOMMAND:
-        switch (wParam & 0xFFF0) {
-        case SC_SCREENSAVE:
-        case SC_MONITORPOWER:
-            if (w32->disable_screensaver) {
-                MP_VERBOSE(w32, "killing screensaver\n");
-                return 0;
-            }
-            break;
-        case SC_RESTORE:
-            if (IsMaximized(w32->window) && w32->current_fs) {
-                toggle_fullscreen(w32);
-                return 0;
-            }
-            break;
-        }
-        break;
-    case WM_NCHITTEST:
-        // Provide sizing handles for borderless windows
-        if (!w32->opts->border && !w32->current_fs) {
-            return borderless_nchittest(w32, GET_X_LPARAM(lParam),
-                                        GET_Y_LPARAM(lParam));
-        }
-        break;
-    case WM_SYSKEYDOWN:
-        // Open the window menu on Alt+Space. Normally DefWindowProc opens the
-        // window menu in response to WM_SYSCHAR, but since mpv translates its
-        // own keyboard input, WM_SYSCHAR isn't generated, so the window menu
-        // must be opened manually.
-        if (wParam == VK_SPACE) {
-            SendMessage(w32->window, WM_SYSCOMMAND, SC_KEYMENU, ' ');
-            return 0;
-        }
-
-        // Handle all other WM_SYSKEYDOWN messages as WM_KEYDOWN
-    case WM_KEYDOWN:
-        handle_key_down(w32, wParam, HIWORD(lParam));
-        if (wParam == VK_F10)
-            return 0;
-        break;
-    case WM_SYSKEYUP:
-    case WM_KEYUP:
-        handle_key_up(w32, wParam, HIWORD(lParam));
-        if (wParam == VK_F10)
-            return 0;
-        break;
-    case WM_CHAR:
-    case WM_SYSCHAR:
-        if (handle_char(w32, wParam))
-            return 0;
-        break;
-    case WM_KILLFOCUS:
-        mp_input_put_key(w32->input_ctx, MP_INPUT_RELEASE_ALL);
-        break;
-    case WM_SETCURSOR:
-        // The cursor should only be hidden if the mouse is in the client area
-        // and if the window isn't in menu mode (HIWORD(lParam) is non-zero)
-        w32->can_set_cursor = LOWORD(lParam) == HTCLIENT && HIWORD(lParam);
-        if (w32->can_set_cursor && !w32->cursor_visible) {
-            SetCursor(NULL);
-            return TRUE;
-        }
-        break;
-    case WM_MOUSELEAVE:
-        w32->tracking = FALSE;
-        mp_input_put_key(w32->input_ctx, MP_KEY_MOUSE_LEAVE);
-        break;
-    case WM_MOUSEMOVE: {
-        if (!w32->tracking) {
-            w32->tracking = TrackMouseEvent(&w32->trackEvent);
-            mp_input_put_key(w32->input_ctx, MP_KEY_MOUSE_ENTER);
-        }
-        // Windows can send spurious mouse events, which would make the mpv
-        // core unhide the mouse cursor on completely unrelated events. See:
-        //  https://blogs.msdn.com/b/oldnewthing/archive/2003/10/01/55108.aspx
-        int x = GET_X_LPARAM(lParam);
-        int y = GET_Y_LPARAM(lParam);
-        if (x != w32->mouse_x || y != w32->mouse_y) {
-            w32->mouse_x = x;
-            w32->mouse_y = y;
-            mp_input_set_mouse_pos(w32->input_ctx, x, y);
-        }
-        break;
-    }
-    case WM_LBUTTONDOWN:
-        mouse_button = MP_MOUSE_BTN0 | MP_KEY_STATE_DOWN;
-        break;
-    case WM_LBUTTONUP:
-        mouse_button = MP_MOUSE_BTN0 | MP_KEY_STATE_UP;
-        break;
-    case WM_MBUTTONDOWN:
-        mouse_button = MP_MOUSE_BTN1 | MP_KEY_STATE_DOWN;
-        break;
-    case WM_MBUTTONUP:
-        mouse_button = MP_MOUSE_BTN1 | MP_KEY_STATE_UP;
-        break;
-    case WM_RBUTTONDOWN:
-        mouse_button = MP_MOUSE_BTN2 | MP_KEY_STATE_DOWN;
-        break;
-    case WM_RBUTTONUP:
-        mouse_button = MP_MOUSE_BTN2 | MP_KEY_STATE_UP;
-        break;
-    case WM_MOUSEWHEEL: {
-        int x = GET_WHEEL_DELTA_WPARAM(wParam);
-        mouse_button = x > 0 ? MP_MOUSE_BTN3 : MP_MOUSE_BTN4;
-        break;
-    }
-    case WM_XBUTTONDOWN:
-        mouse_button = HIWORD(wParam) == 1 ? MP_MOUSE_BTN5 : MP_MOUSE_BTN6;
-        mouse_button |= MP_KEY_STATE_DOWN;
-        break;
-    case WM_XBUTTONUP:
-        mouse_button = HIWORD(wParam) == 1 ? MP_MOUSE_BTN5 : MP_MOUSE_BTN6;
-        mouse_button |= MP_KEY_STATE_UP;
-        break;
-    case WM_DISPLAYCHANGE:
-        force_update_display_info(w32);
-        break;
-    }
-
-    if (message == w32->tbtnCreatedMsg) {
-        w32->tbtnCreated = true;
-        update_playback_state(w32);
-        return 0;
-    }
-
-    if (mouse_button) {
-        mouse_button |= mod_state(w32);
-        mp_input_put_key(w32->input_ctx, mouse_button);
-
-        if (mp_input_mouse_enabled(w32->input_ctx)) {
-            int x = GET_X_LPARAM(lParam);
-            int y = GET_Y_LPARAM(lParam);
-
-            if (mouse_button == (MP_MOUSE_BTN0 | MP_KEY_STATE_DOWN) &&
-                !w32->current_fs &&
-                !mp_input_test_dragging(w32->input_ctx, x, y))
-            {
-                // Window dragging hack
-                ReleaseCapture();
-                SendMessage(hWnd, WM_NCLBUTTONDOWN, HTCAPTION, 0);
-                mp_input_put_key(w32->input_ctx, MP_MOUSE_BTN0 |
-                                                 MP_KEY_STATE_UP);
-                return 0;
-            }
-        }
-
-        if (mouse_button & MP_KEY_STATE_DOWN)
-            SetCapture(w32->window);
-        else
-            ReleaseCapture();
-    }
-
-    return DefWindowProcW(hWnd, message, wParam, lParam);
-}
-
-static pthread_once_t window_class_init_once = PTHREAD_ONCE_INIT;
-static ATOM window_class;
-static void register_window_class(void)
-{
-    window_class = RegisterClassExW(&(WNDCLASSEXW) {
-        .cbSize = sizeof(WNDCLASSEXW),
-        .style = CS_HREDRAW | CS_VREDRAW,
-        .lpfnWndProc = WndProc,
-        .hInstance = HINST_THISCOMPONENT,
-        .hIcon = LoadIconW(HINST_THISCOMPONENT, L"IDI_ICON1"),
-        .hCursor = LoadCursor(NULL, IDC_ARROW),
-        .lpszClassName = L"mpv",
-    });
-}
-
-static ATOM get_window_class(void)
-{
-    pthread_once(&window_class_init_once, register_window_class);
-    return window_class;
-}
-
-static void resize_child_win(HWND parent)
-{
-    // Check if an mpv window is a child of this window. This will not
-    // necessarily be the case because the hook functions will run for all
-    // windows on the parent window's thread.
-    ATOM cls = get_window_class();
-    HWND child = FindWindowExW(parent, NULL, (LPWSTR)MAKEINTATOM(cls), NULL);
-    if (!child)
-        return;
-    // Make sure the window was created by this instance
-    if (GetWindowLongPtrW(child, GWLP_HINSTANCE) != (LONG_PTR)HINST_THISCOMPONENT)
-        return;
-
-    // Resize the mpv window to match its parent window's size
-    RECT rm, rp;
-    if (!GetClientRect(child, &rm))
-        return;
-    if (!GetClientRect(parent, &rp))
-        return;
-    if (EqualRect(&rm, &rp))
-        return;
-    SetWindowPos(child, NULL, 0, 0, rp.right, rp.bottom, SWP_ASYNCWINDOWPOS |
-        SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOOWNERZORDER);
-}
-
-static LRESULT CALLBACK parent_win_hook(int nCode, WPARAM wParam, LPARAM lParam)
-{
-    if (nCode != HC_ACTION)
-        goto done;
-    CWPSTRUCT *cwp = (CWPSTRUCT*)lParam;
-    if (cwp->message != WM_WINDOWPOSCHANGED)
-        goto done;
-    resize_child_win(cwp->hwnd);
-done:
-    return CallNextHookEx(NULL, nCode, wParam, lParam);
-}
-
-static void CALLBACK parent_evt_hook(HWINEVENTHOOK hWinEventHook, DWORD event,
-    HWND hwnd, LONG idObject, LONG idChild, DWORD dwEventThread,
-    DWORD dwmsEventTime)
-{
-    if (event != EVENT_OBJECT_LOCATIONCHANGE)
-        return;
-    if (!hwnd || idObject != OBJID_WINDOW || idChild != CHILDID_SELF)
-        return;
-    resize_child_win(hwnd);
-}
-
-static void install_parent_hook(struct vo_w32_state *w32)
-{
-    DWORD pid;
-    DWORD tid = GetWindowThreadProcessId(w32->parent, &pid);
-
-    // If the parent lives inside the current process, install a Windows hook
-    if (pid == GetCurrentProcessId()) {
-        w32->parent_win_hook = SetWindowsHookExW(WH_CALLWNDPROC,
-            parent_win_hook, NULL, tid);
-    } else {
-        // Otherwise, use a WinEvent hook. These don't seem to be as smooth as
-        // Windows hooks, but they can be delivered across process boundaries.
-        w32->parent_evt_hook = SetWinEventHook(
-            EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_LOCATIONCHANGE,
-            NULL, parent_evt_hook, pid, tid, WINEVENT_OUTOFCONTEXT);
-    }
-}
-
-static void remove_parent_hook(struct vo_w32_state *w32)
-{
-    if (w32->parent_win_hook)
-        UnhookWindowsHookEx(w32->parent_win_hook);
-    if (w32->parent_evt_hook)
-        UnhookWinEvent(w32->parent_evt_hook);
-}
-
-// Dispatch incoming window events and handle them.
-// This returns only when the thread is asked to terminate.
-static void run_message_loop(struct vo_w32_state *w32)
-{
-    MSG msg;
-    while (GetMessageW(&msg, 0, 0, 0) > 0)
-        DispatchMessageW(&msg);
-
-    // Even if the message loop somehow exits, we still have to respond to
-    // external requests until termination is requested.
-    while (!w32->terminate)
-        mp_dispatch_queue_process(w32->dispatch, 1000);
-}
-
 struct get_monitor_data {
     int i;
     int target;
@@ -1408,6 +861,361 @@ static void reinit_window_state(struct vo_w32_state *w32)
     signal_events(w32, VO_EVENT_RESIZE);
 }
 
+static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam,
+                                LPARAM lParam)
+{
+    assert(w32_thread_context);
+    struct vo_w32_state *w32 = w32_thread_context;
+    if (!w32->window)
+        w32->window = hWnd; // can happen during CreateWindow*!
+    assert(w32->window == hWnd);
+
+    switch (message) {
+    case WM_USER:
+        // This message is used to wakeup the GUI thread, see wakeup_gui_thread.
+        mp_dispatch_queue_process(w32->dispatch, 0);
+        break;
+    case WM_ERASEBKGND: // no need to erase background separately
+        return 1;
+    case WM_PAINT:
+        signal_events(w32, VO_EVENT_EXPOSE);
+        break;
+    case WM_MOVE: {
+        POINT p = {0};
+        ClientToScreen(w32->window, &p);
+        w32->window_x = p.x;
+        w32->window_y = p.y;
+
+        // Window may intersect with new monitors (see VOCTRL_GET_DISPLAY_NAMES)
+        signal_events(w32, VO_EVENT_WIN_STATE);
+
+        update_display_info(w32);  // if we moved between monitors
+        MP_DBG(w32, "move window: %d:%d\n", w32->window_x, w32->window_y);
+        break;
+    }
+    case WM_MOVING: {
+        RECT *rc = (RECT*)lParam;
+        if (snap_to_screen_edges(w32, rc))
+            return TRUE;
+        break;
+    }
+    case WM_ENTERSIZEMOVE:
+        if (w32->snapped) {
+            // Save the cursor offset from the window borders,
+            // so the player window can be unsnapped later
+            RECT rc;
+            POINT cursor;
+            if (GetWindowRect(w32->window, &rc) && GetCursorPos(&cursor)) {
+                w32->snap_dx = cursor.x - rc.left;
+                w32->snap_dy = cursor.y - rc.top;
+            }
+        }
+        break;
+    case WM_SIZE: {
+        RECT r;
+        if (GetClientRect(w32->window, &r) && r.right > 0 && r.bottom > 0) {
+            w32->dw = r.right;
+            w32->dh = r.bottom;
+            signal_events(w32, VO_EVENT_RESIZE);
+            MP_VERBOSE(w32, "resize window: %d:%d\n", w32->dw, w32->dh);
+        }
+
+        // Window may have been minimized or restored
+        signal_events(w32, VO_EVENT_WIN_STATE);
+
+        update_display_info(w32);
+        break;
+    }
+    case WM_SIZING:
+        if (w32->opts->keepaspect && w32->opts->keepaspect_window &&
+            !w32->current_fs && !w32->parent)
+        {
+            RECT *rc = (RECT*)lParam;
+            // get client area of the windows if it had the rect rc
+            // (subtracting the window borders)
+            RECT r = *rc;
+            subtract_window_borders(w32->window, &r);
+            int c_w = r.right - r.left, c_h = r.bottom - r.top;
+            float aspect = w32->o_dwidth / (float) MPMAX(w32->o_dheight, 1);
+            int d_w = c_h * aspect - c_w;
+            int d_h = c_w / aspect - c_h;
+            int d_corners[4] = { d_w, d_h, -d_w, -d_h };
+            int corners[4] = { rc->left, rc->top, rc->right, rc->bottom };
+            int corner = get_resize_border(wParam);
+            if (corner >= 0)
+                corners[corner] -= d_corners[corner];
+            *rc = (RECT) { corners[0], corners[1], corners[2], corners[3] };
+            return TRUE;
+        }
+        break;
+    case WM_DPICHANGED:
+        update_display_info(w32);
+        break;
+    case WM_CLOSE:
+        // Don't actually allow it to destroy the window, or whatever else it
+        // is that will make us lose WM_USER wakeups.
+        mp_input_put_key(w32->input_ctx, MP_KEY_CLOSE_WIN);
+        return 0;
+    case WM_NCDESTROY: // Sometimes only WM_NCDESTROY is received in --wid mode
+    case WM_DESTROY:
+        if (w32->destroyed)
+            break;
+        // If terminate is not set, something else destroyed the window. This
+        // can also happen in --wid mode when the parent window is destroyed.
+        if (!w32->terminate)
+            mp_input_put_key(w32->input_ctx, MP_KEY_CLOSE_WIN);
+        RevokeDragDrop(w32->window);
+        w32->destroyed = true;
+        w32->window = NULL;
+        PostQuitMessage(0);
+        break;
+    case WM_SYSCOMMAND:
+        switch (wParam & 0xFFF0) {
+        case SC_SCREENSAVE:
+        case SC_MONITORPOWER:
+            if (w32->disable_screensaver) {
+                MP_VERBOSE(w32, "killing screensaver\n");
+                return 0;
+            }
+            break;
+        case SC_RESTORE:
+            if (IsMaximized(w32->window) && w32->current_fs) {
+                w32->toggle_fs = true;
+                reinit_window_state(w32);
+                signal_events(w32, VO_EVENT_FULLSCREEN_STATE);
+                return 0;
+            }
+            break;
+        }
+        break;
+    case WM_NCHITTEST:
+        // Provide sizing handles for borderless windows
+        if (!w32->opts->border && !w32->current_fs) {
+            return borderless_nchittest(w32, GET_X_LPARAM(lParam),
+                                        GET_Y_LPARAM(lParam));
+        }
+        break;
+    case WM_SYSKEYDOWN:
+        // Open the window menu on Alt+Space. Normally DefWindowProc opens the
+        // window menu in response to WM_SYSCHAR, but since mpv translates its
+        // own keyboard input, WM_SYSCHAR isn't generated, so the window menu
+        // must be opened manually.
+        if (wParam == VK_SPACE) {
+            SendMessage(w32->window, WM_SYSCOMMAND, SC_KEYMENU, ' ');
+            return 0;
+        }
+
+        // Handle all other WM_SYSKEYDOWN messages as WM_KEYDOWN
+    case WM_KEYDOWN:
+        handle_key_down(w32, wParam, HIWORD(lParam));
+        if (wParam == VK_F10)
+            return 0;
+        break;
+    case WM_SYSKEYUP:
+    case WM_KEYUP:
+        handle_key_up(w32, wParam, HIWORD(lParam));
+        if (wParam == VK_F10)
+            return 0;
+        break;
+    case WM_CHAR:
+    case WM_SYSCHAR:
+        if (handle_char(w32, wParam))
+            return 0;
+        break;
+    case WM_KILLFOCUS:
+        mp_input_put_key(w32->input_ctx, MP_INPUT_RELEASE_ALL);
+        break;
+    case WM_SETCURSOR:
+        // The cursor should only be hidden if the mouse is in the client area
+        // and if the window isn't in menu mode (HIWORD(lParam) is non-zero)
+        w32->can_set_cursor = LOWORD(lParam) == HTCLIENT && HIWORD(lParam);
+        if (w32->can_set_cursor && !w32->cursor_visible) {
+            SetCursor(NULL);
+            return TRUE;
+        }
+        break;
+    case WM_MOUSELEAVE:
+        w32->tracking = FALSE;
+        mp_input_put_key(w32->input_ctx, MP_KEY_MOUSE_LEAVE);
+        break;
+    case WM_MOUSEMOVE: {
+        if (!w32->tracking) {
+            w32->tracking = TrackMouseEvent(&w32->trackEvent);
+            mp_input_put_key(w32->input_ctx, MP_KEY_MOUSE_ENTER);
+        }
+        // Windows can send spurious mouse events, which would make the mpv
+        // core unhide the mouse cursor on completely unrelated events. See:
+        //  https://blogs.msdn.com/b/oldnewthing/archive/2003/10/01/55108.aspx
+        int x = GET_X_LPARAM(lParam);
+        int y = GET_Y_LPARAM(lParam);
+        if (x != w32->mouse_x || y != w32->mouse_y) {
+            w32->mouse_x = x;
+            w32->mouse_y = y;
+            mp_input_set_mouse_pos(w32->input_ctx, x, y);
+        }
+        break;
+    }
+    case WM_LBUTTONDOWN:
+        if (handle_mouse_down(w32, MP_MOUSE_BTN0, GET_X_LPARAM(lParam),
+                                                  GET_Y_LPARAM(lParam)))
+            return 0;
+        break;
+    case WM_LBUTTONUP:
+        handle_mouse_up(w32, MP_MOUSE_BTN0);
+        break;
+    case WM_MBUTTONDOWN:
+        handle_mouse_down(w32, MP_MOUSE_BTN1, GET_X_LPARAM(lParam),
+                                              GET_Y_LPARAM(lParam));
+        break;
+    case WM_MBUTTONUP:
+        handle_mouse_up(w32, MP_MOUSE_BTN1);
+        break;
+    case WM_RBUTTONDOWN:
+        handle_mouse_down(w32, MP_MOUSE_BTN2, GET_X_LPARAM(lParam),
+                                              GET_Y_LPARAM(lParam));
+        break;
+    case WM_RBUTTONUP:
+        handle_mouse_up(w32, MP_MOUSE_BTN2);
+        break;
+    case WM_MOUSEWHEEL: {
+        int x = GET_WHEEL_DELTA_WPARAM(wParam);
+        mp_input_put_key(w32->input_ctx,
+                         (x > 0 ? MP_MOUSE_BTN3 : MP_MOUSE_BTN4) |
+                         mod_state(w32));
+        ReleaseCapture();
+        break;
+    }
+    case WM_XBUTTONDOWN:
+        handle_mouse_down(w32,
+                          HIWORD(wParam) == 1 ? MP_MOUSE_BTN5 : MP_MOUSE_BTN6,
+                          GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
+        break;
+    case WM_XBUTTONUP:
+        handle_mouse_up(w32, HIWORD(wParam) == 1 ? MP_MOUSE_BTN5 : MP_MOUSE_BTN6);
+        break;
+    case WM_DISPLAYCHANGE:
+        force_update_display_info(w32);
+        break;
+    }
+
+    if (message == w32->tbtnCreatedMsg) {
+        w32->tbtnCreated = true;
+        update_playback_state(w32);
+        return 0;
+    }
+
+    return DefWindowProcW(hWnd, message, wParam, lParam);
+}
+
+static pthread_once_t window_class_init_once = PTHREAD_ONCE_INIT;
+static ATOM window_class;
+static void register_window_class(void)
+{
+    window_class = RegisterClassExW(&(WNDCLASSEXW) {
+        .cbSize = sizeof(WNDCLASSEXW),
+        .style = CS_HREDRAW | CS_VREDRAW,
+        .lpfnWndProc = WndProc,
+        .hInstance = HINST_THISCOMPONENT,
+        .hIcon = LoadIconW(HINST_THISCOMPONENT, L"IDI_ICON1"),
+        .hCursor = LoadCursor(NULL, IDC_ARROW),
+        .lpszClassName = L"mpv",
+    });
+}
+
+static ATOM get_window_class(void)
+{
+    pthread_once(&window_class_init_once, register_window_class);
+    return window_class;
+}
+
+static void resize_child_win(HWND parent)
+{
+    // Check if an mpv window is a child of this window. This will not
+    // necessarily be the case because the hook functions will run for all
+    // windows on the parent window's thread.
+    ATOM cls = get_window_class();
+    HWND child = FindWindowExW(parent, NULL, (LPWSTR)MAKEINTATOM(cls), NULL);
+    if (!child)
+        return;
+    // Make sure the window was created by this instance
+    if (GetWindowLongPtrW(child, GWLP_HINSTANCE) != (LONG_PTR)HINST_THISCOMPONENT)
+        return;
+
+    // Resize the mpv window to match its parent window's size
+    RECT rm, rp;
+    if (!GetClientRect(child, &rm))
+        return;
+    if (!GetClientRect(parent, &rp))
+        return;
+    if (EqualRect(&rm, &rp))
+        return;
+    SetWindowPos(child, NULL, 0, 0, rp.right, rp.bottom, SWP_ASYNCWINDOWPOS |
+        SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOOWNERZORDER);
+}
+
+static LRESULT CALLBACK parent_win_hook(int nCode, WPARAM wParam, LPARAM lParam)
+{
+    if (nCode != HC_ACTION)
+        goto done;
+    CWPSTRUCT *cwp = (CWPSTRUCT*)lParam;
+    if (cwp->message != WM_WINDOWPOSCHANGED)
+        goto done;
+    resize_child_win(cwp->hwnd);
+done:
+    return CallNextHookEx(NULL, nCode, wParam, lParam);
+}
+
+static void CALLBACK parent_evt_hook(HWINEVENTHOOK hWinEventHook, DWORD event,
+    HWND hwnd, LONG idObject, LONG idChild, DWORD dwEventThread,
+    DWORD dwmsEventTime)
+{
+    if (event != EVENT_OBJECT_LOCATIONCHANGE)
+        return;
+    if (!hwnd || idObject != OBJID_WINDOW || idChild != CHILDID_SELF)
+        return;
+    resize_child_win(hwnd);
+}
+
+static void install_parent_hook(struct vo_w32_state *w32)
+{
+    DWORD pid;
+    DWORD tid = GetWindowThreadProcessId(w32->parent, &pid);
+
+    // If the parent lives inside the current process, install a Windows hook
+    if (pid == GetCurrentProcessId()) {
+        w32->parent_win_hook = SetWindowsHookExW(WH_CALLWNDPROC,
+            parent_win_hook, NULL, tid);
+    } else {
+        // Otherwise, use a WinEvent hook. These don't seem to be as smooth as
+        // Windows hooks, but they can be delivered across process boundaries.
+        w32->parent_evt_hook = SetWinEventHook(
+            EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_LOCATIONCHANGE,
+            NULL, parent_evt_hook, pid, tid, WINEVENT_OUTOFCONTEXT);
+    }
+}
+
+static void remove_parent_hook(struct vo_w32_state *w32)
+{
+    if (w32->parent_win_hook)
+        UnhookWindowsHookEx(w32->parent_win_hook);
+    if (w32->parent_evt_hook)
+        UnhookWinEvent(w32->parent_evt_hook);
+}
+
+// Dispatch incoming window events and handle them.
+// This returns only when the thread is asked to terminate.
+static void run_message_loop(struct vo_w32_state *w32)
+{
+    MSG msg;
+    while (GetMessageW(&msg, 0, 0, 0) > 0)
+        DispatchMessageW(&msg);
+
+    // Even if the message loop somehow exits, we still have to respond to
+    // external requests until termination is requested.
+    while (!w32->terminate)
+        mp_dispatch_queue_process(w32->dispatch, 1000);
+}
+
 static void gui_thread_reconfig(void *ptr)
 {
     struct vo_w32_state *w32 = ptr;
@@ -1536,10 +1344,8 @@ static void *gui_thread(void *ptr)
     if (SUCCEEDED(OleInitialize(NULL))) {
         ole_ok = true;
 
-        fmtetc_url.cfFormat = (CLIPFORMAT)RegisterClipboardFormat(TEXT("UniformResourceLocatorW"));
-        DropTarget* dropTarget = talloc(NULL, DropTarget);
-        DropTarget_Init(dropTarget, w32);
-        RegisterDragDrop(w32->window, &dropTarget->iface);
+        IDropTarget *dt = mp_w32_droptarget_create(w32->log, w32->input_ctx);
+        RegisterDragDrop(w32->window, dt);
 
         // ITaskbarList2 has the MarkFullscreenWindow method, which is used to
         // make sure the taskbar is hidden when mpv goes fullscreen
@@ -1710,7 +1516,7 @@ static int gui_thread_control(struct vo_w32_state *w32, int request, void *arg)
         reinit_window_state(w32);
         return VO_TRUE;
     case VOCTRL_GET_FULLSCREEN:
-        *(bool *)arg = w32->toggle_fs != w32->current_fs;
+        *(bool *)arg = w32->current_fs;
         return VO_TRUE;
     case VOCTRL_GET_UNFS_WINDOW_SIZE: {
         int *s = arg;
@@ -1811,8 +1617,6 @@ static void do_control(void *ptr)
         w32->vo->dwidth = w32->dw;
         w32->vo->dheight = w32->dh;
     }
-    if (*events & VO_EVENT_FULLSCREEN_STATE)
-        reinit_window_state(w32);
 }
 
 int vo_w32_control(struct vo *vo, int *events, int request, void *arg)
@@ -1826,8 +1630,6 @@ int vo_w32_control(struct vo *vo, int *events, int request, void *arg)
             vo->dheight = w32->dh;
             mp_dispatch_unlock(w32->dispatch);
         }
-        if (*events & VO_EVENT_FULLSCREEN_STATE)
-            reinit_window_state(w32);
         return VO_TRUE;
     } else {
         int r;

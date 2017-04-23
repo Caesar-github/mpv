@@ -19,6 +19,35 @@ Interface changes
 
 ::
 
+ --- mpv 0.25.0 ---
+    - remove opengl-cb dxva2 dummy hwdec interop
+      (see git "vo_opengl: remove dxva2 dummy hwdec backend")
+    - remove ppm, pgm, pgmyuv, tga choices from the --screenshot-format and
+      --vo-image-format options
+    - the "jpeg" choice in the option above now leads to a ".jpg" file extension
+    - --af=drc is gone (you can use e.g. lavfi/acompressor instead)
+    - remove image_size predefined uniform from OpenGL user shaders. Use
+      input_size instead
+    - add --sub-filter-sdh
+    - add --sub-filter-sdh-harder
+    - remove --input-app-events option (macOS)
+    - deprecate most --vf and --af filters. Only some filters not in libavfilter
+      will be kept.
+      Also, you can use libavfilter filters directly (e.g. you can use
+      --vf=name=opts instead of --vf=lavfi=[name=opts]), as long as the
+      libavfilter filter's name doesn't clash with a mpv builtin filter.
+      In the long term, --vf/--af syntax might change again, but if it does, it
+      will switch to libavfilter's native syntax. (The above mentioned direct
+      support for lavfi filters still has some differences, such as how strings
+      are escaped.) If this happens, the non-deprecated builtin filters might be
+      moved to "somewhere else" syntax-wise.
+    - deprecate --loop - after a deprecation period, it will be undeprecated,
+      but changed to alias --loop-file
+    - add --keep-open-pause=no
+    - deprecate --demuxer-max-packets
+    - change --audio-file-auto default from "exact" to "no" (mpv won't load
+      files with the same filename as the video, but different extension, as
+      audio track anymore)
  --- mpv 0.24.0 ---
     - deprecate --hwdec-api and replace it with --opengl-hwdec-interop.
       The new option accepts both --hwdec values, as well as named backends.

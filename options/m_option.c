@@ -2047,6 +2047,8 @@ const m_option_type_t m_option_type_size_box = {
 static int parse_imgfmt(struct mp_log *log, const m_option_t *opt,
                         struct bstr name, struct bstr param, void *dst)
 {
+    bool accept_no = opt->min < 0;
+
     if (param.len == 0)
         return M_OPT_MISSING_PARAM;
 
@@ -2055,28 +2057,29 @@ static int parse_imgfmt(struct mp_log *log, const m_option_t *opt,
         char **list = mp_imgfmt_name_list();
         for (int i = 0; list[i]; i++)
             mp_info(log, " %s", list[i]);
+        if (accept_no)
+            mp_info(log, " no");
         mp_info(log, "\n");
         talloc_free(list);
         return M_OPT_EXIT;
     }
 
     unsigned int fmt = mp_imgfmt_from_name(param, true);
-    if (!fmt) {
+    if (!fmt && !(accept_no && bstr_equals0(param, "no"))) {
         mp_err(log, "Option %.*s: unknown format name: '%.*s'\n",
                BSTR_P(name), BSTR_P(param));
         return M_OPT_INVALID;
     }
 
     if (dst)
-        *((uint32_t *)dst) = fmt;
+        *((int *)dst) = fmt;
 
     return 1;
 }
 
 const m_option_type_t m_option_type_imgfmt = {
-    // Please report any missing colorspaces
     .name  = "Image format",
-    .size  = sizeof(uint32_t),
+    .size  = sizeof(int),
     .parse = parse_imgfmt,
     .copy  = copy_opt,
 };
@@ -2587,6 +2590,7 @@ static void copy_obj_settings_list(const m_option_t *opt, void *dst,
     for (n = 0; s[n].name; n++) {
         d[n].name = talloc_strdup(NULL, s[n].name);
         d[n].label = talloc_strdup(NULL, s[n].label);
+        d[n].enabled = s[n].enabled;
         d[n].attribs = NULL;
         copy_str_list(NULL, &(d[n].attribs), &(s[n].attribs));
     }
@@ -2602,17 +2606,33 @@ static void copy_obj_settings_list(const m_option_t *opt, void *dst,
 static int get_obj_param(struct mp_log *log, bstr opt_name, bstr obj_name,
                          struct m_config *config, bstr name, bstr val,
                          int flags, bool nopos,
-                         int *nold, bstr *out_name, bstr *out_val)
+                         int *nold, bstr *out_name, bstr *out_val,
+                         char *tmp, size_t tmp_size)
 {
     int r;
 
     if (!config) {
-        *out_name = name; // preserve args for opengl-hq legacy handling
-        *out_val = val;
+        // Duplicates the logic below, but with unknown parameter types/names.
+        if (val.start || nopos) {
+            *out_name = name;
+            *out_val = val;
+        } else {
+            val = name;
+            // positional fields
+            if (val.len == 0) { // Empty field, count it and go on
+                (*nold)++;
+                return 0;
+            }
+            // Positional naming convention for/followed by mp_set_avopts().
+            snprintf(tmp, tmp_size, "@%d", *nold);
+            *out_name = bstr0(tmp);
+            *out_val = val;
+            (*nold)++;
+        }
         return 1;
     }
 
-    // va.start != NULL => of the form name=val (not positional)
+    // val.start != NULL => of the form name=val (not positional)
     // If it's just "name", and the associated option exists and is a flag,
     // don't accept it as positional argument.
     if (val.start || m_config_option_requires_param(config, name) == 0 || nopos) {
@@ -2679,6 +2699,7 @@ static int m_obj_parse_sub_config(struct mp_log *log, struct bstr opt_name,
     char **args = NULL;
     int num_args = 0;
     int r = 1;
+    char tmp[80];
 
     if (ret) {
         args = *ret;
@@ -2704,7 +2725,7 @@ static int m_obj_parse_sub_config(struct mp_log *log, struct bstr opt_name,
         if (bstr_equals0(fname, "help"))
             goto print_help;
         r = get_obj_param(log, opt_name, name, config, fname, fval, flags,
-                          nopos, &nold, &fname, &fval);
+                          nopos, &nold, &fname, &fval, tmp, sizeof(tmp));
         if (r < 0)
             goto exit;
 
@@ -2751,26 +2772,50 @@ exit:
 #define NAMECH "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
 
 // Parse one item, e.g. -vf a=b:c:d,e=f:g => parse a=b:c:d into "a" and "b:c:d"
-static int parse_obj_settings(struct mp_log *log, struct bstr opt,
+static int parse_obj_settings(struct mp_log *log, struct bstr opt, int op,
                               struct bstr *pstr, const struct m_obj_list *list,
                               m_obj_settings_t **_ret)
 {
     int r;
     char **plist = NULL;
     struct m_obj_desc desc;
+    bstr str = {0};
     bstr label = {0};
     bool nopos = list->disallow_positional_parameters;
+    bool enabled = true;
 
     if (bstr_eatstart0(pstr, "@")) {
-        if (!bstr_split_tok(*pstr, ":", &label, pstr)) {
+        bstr rest;
+        if (!bstr_split_tok(*pstr, ":", &label, &rest)) {
+            // "@labelname" is the special enable/disable toggle syntax
+            if (op == OP_TOGGLE) {
+                int idx = bstrspn(*pstr, NAMECH);
+                label = bstr_splice(*pstr, 0, idx);
+                if (label.len) {
+                    *pstr = bstr_cut(*pstr, idx);
+                    goto done;
+                }
+            }
             mp_err(log, "Option %.*s: ':' expected after label.\n", BSTR_P(opt));
+            return M_OPT_INVALID;
+        }
+        *pstr = rest;
+        if (label.len == 0) {
+            mp_err(log, "Option %.*s: label name expected.\n", BSTR_P(opt));
             return M_OPT_INVALID;
         }
     }
 
+    if (list->allow_disable_entries && bstr_eatstart0(pstr, "!"))
+        enabled = false;
+
     bool has_param = false;
     int idx = bstrspn(*pstr, NAMECH);
-    bstr str = bstr_splice(*pstr, 0, idx);
+    str = bstr_splice(*pstr, 0, idx);
+    if (!str.len) {
+        mp_err(log, "Option %.*s: filter name expected.\n", BSTR_P(opt));
+        return M_OPT_INVALID;
+    }
     *pstr = bstr_cut(*pstr, idx);
     // video filters use "=", VOs use ":"
     if (bstr_eatstart0(pstr, "=") || bstr_eatstart0(pstr, ":"))
@@ -2814,9 +2859,11 @@ static int parse_obj_settings(struct mp_log *log, struct bstr opt,
     if (!_ret)
         return 1;
 
+done: ;
     m_obj_settings_t item = {
         .name = bstrto0(NULL, str),
         .label = bstrdup0(NULL, label),
+        .enabled = enabled,
         .attribs = plist,
     };
     obj_settings_list_insert_at(_ret, -1, &item);
@@ -2961,7 +3008,7 @@ static int parse_obj_settings_list(struct mp_log *log, const m_option_t *opt,
         if (op == OP_DEL)
             r = parse_obj_settings_del(log, name, &param, dst, mark_del);
         if (r == 0) {
-            r = parse_obj_settings(log, name, &param, ol, dst ? &res : NULL);
+            r = parse_obj_settings(log, name, op, &param, ol, dst ? &res : NULL);
         }
         if (r < 0)
             return r;
@@ -3014,12 +3061,25 @@ static int parse_obj_settings_list(struct mp_log *log, const m_option_t *opt,
             talloc_free(res);
         } else if (op == OP_TOGGLE) {
             for (int n = 0; res && res[n].name; n++) {
-                int found = obj_settings_find_by_content(list, &res[n]);
-                if (found < 0) {
-                    obj_settings_list_insert_at(&list, -1, &res[n]);
-                } else {
-                    obj_settings_list_del_at(&list, found);
+                if (res[n].label && !res[n].name[0]) {
+                    // Toggle enable/disable special case.
+                    int found =
+                        obj_settings_list_find_by_label0(list, res[n].label);
+                    if (found < 0) {
+                        mp_warn(log, "Option %.*s: Label %s not found\n",
+                                BSTR_P(name), res[n].label);
+                    } else {
+                        list[found].enabled = !list[found].enabled;
+                    }
                     obj_setting_free(&res[n]);
+                } else {
+                    int found = obj_settings_find_by_content(list, &res[n]);
+                    if (found < 0) {
+                        obj_settings_list_insert_at(&list, -1, &res[n]);
+                    } else {
+                        obj_settings_list_del_at(&list, found);
+                        obj_setting_free(&res[n]);
+                    }
                 }
             }
             talloc_free(res);
@@ -3070,6 +3130,8 @@ static char *print_obj_settings_list(const m_option_t *opt, const void *val)
         // Assume labels and names don't need escaping
         if (entry->label && entry->label[0])
             res = talloc_asprintf_append(res, "@%s:", entry->label);
+        if (!entry->enabled)
+            res = talloc_strdup_append(res, "!");
         res = talloc_strdup_append(res, entry->name);
         if (entry->attribs && entry->attribs[0]) {
             res = talloc_strdup_append(res, "=");
@@ -3094,6 +3156,7 @@ static int set_obj_settings_list(const m_option_t *opt, void *dst,
         talloc_zero_array(NULL, m_obj_settings_t, src->u.list->num + 1);
     for (int n = 0; n < src->u.list->num; n++) {
         m_obj_settings_t *entry = &entries[n];
+        entry->enabled = true;
         if (src->u.list->values[n].format != MPV_FORMAT_NODE_MAP)
             goto error;
         struct mpv_node_list *src_entry = src->u.list->values[n].u.list;
@@ -3108,6 +3171,10 @@ static int set_obj_settings_list(const m_option_t *opt, void *dst,
                 if (val->format != MPV_FORMAT_STRING)
                     goto error;
                 entry->label = talloc_strdup(NULL, val->u.string);
+            } else if (strcmp(key, "enabled") == 0) {
+                if (val->format != MPV_FORMAT_FLAG)
+                    goto error;
+                entry->enabled = val->u.flag;
             } else if (strcmp(key, "params") == 0) {
                 if (val->format != MPV_FORMAT_NODE_MAP)
                     goto error;
@@ -3173,6 +3240,9 @@ static int get_obj_settings_list(const m_option_t *opt, void *ta_parent,
         add_map_string(nentry, "name", entry->name);
         if (entry->label && entry->label[0])
             add_map_string(nentry, "label", entry->label);
+        struct mpv_node *enabled = add_map_entry(nentry, "enabled");
+        enabled->format = MPV_FORMAT_FLAG;
+        enabled->u.flag = entry->enabled;
         struct mpv_node *params = add_map_entry(nentry, "params");
         params->format = MPV_FORMAT_NODE_MAP;
         params->u.list = talloc_zero(ta_parent, struct mpv_node_list);

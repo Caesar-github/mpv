@@ -12,6 +12,7 @@ typedef struct mp_vo_opts {
     int taskbar_progress;
     int snap_window;
     int ontop;
+    int ontop_level;
     int fullscreen;
     int border;
     int fit_border;
@@ -199,6 +200,7 @@ typedef struct MPOpts {
     char *watch_later_directory;
     int pause;
     int keep_open;
+    int keep_open_pause;
     double image_display_duration;
     char *lavfi_complex;
     int stream_id[2][STREAM_TYPE_COUNT];
@@ -269,6 +271,8 @@ typedef struct MPOpts {
     float sub_scale;
     float sub_gauss;
     int sub_gray;
+    int sub_filter_SDH;
+    int sub_filter_SDH_harder;
     int ass_enabled;
     float ass_line_spacing;
     int ass_use_margins;
@@ -326,6 +330,7 @@ typedef struct MPOpts {
 
     struct gl_video_opts *gl_video_opts;
     struct angle_opts *angle_opts;
+    struct cocoa_opts *cocoa_opts;
     struct dvd_opts *dvd_opts;
 } MPOpts;
 

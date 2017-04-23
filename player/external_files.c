@@ -1,3 +1,20 @@
+/*
+ * This file is part of mpv.
+ *
+ * mpv is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * mpv is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with mpv.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
 #include <dirent.h>
 #include <string.h>
 #include <strings.h>
@@ -96,9 +113,6 @@ static void append_dir_subtitles(struct mpv_global *global,
     struct MPOpts *opts = global->opts;
     struct mp_log *log = mp_log_new(tmpmem, global->log, "find_files");
 
-    if (mp_is_url(bstr0(fname)))
-        goto out;
-
     struct bstr f_fbname = bstr0(mp_basename(fname));
     struct bstr f_fname = mp_iconv_to_utf8(log, f_fbname,
                                            "UTF-8-MAC", MP_NO_LATIN1_FALLBACK);
@@ -114,6 +128,10 @@ static void append_dir_subtitles(struct mpv_global *global,
     // 2 = any sub file containing movie name
     // 3 = sub file containing movie name and the lang extension
     char *path0 = bstrdup0(tmpmem, path);
+
+    if (mp_is_url(bstr0(path0)))
+        goto out;
+
     DIR *d = opendir(path0);
     if (!d)
         goto out;
@@ -270,12 +288,12 @@ struct subfn *find_external_files(struct mpv_global *global, const char *fname)
 
     // Load subtitles in dirs specified by sub-paths option
     if (opts->sub_auto >= 0) {
-        load_paths(global, &slist, &n, fname, opts->sub_paths, "sub/",
+        load_paths(global, &slist, &n, fname, opts->sub_paths, "sub",
                    STREAM_SUB);
     }
 
     if (opts->audiofile_auto >= 0) {
-        load_paths(global, &slist, &n, fname, opts->audiofile_paths, "audio/",
+        load_paths(global, &slist, &n, fname, opts->audiofile_paths, "audio",
                    STREAM_AUDIO);
     }
 

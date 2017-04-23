@@ -31,23 +31,11 @@
 
 #include "video/mp_image.h"
 
-#if HAVE_GL_COCOA
-#define GL_DO_NOT_WARN_IF_MULTI_GL_VERSION_HEADERS_INCLUDED 1
-#include <OpenGL/gl.h>
-#include <OpenGL/gl3.h>
-#include <OpenGL/glext.h>
-#elif HAVE_IOS_GL
-#include <OpenGLES/ES2/glext.h>
-#include <OpenGLES/ES3/glext.h>
-#elif HAVE_ANDROID_GL
-#include <GLES3/gl3.h>
-#else
-#include <GL/gl.h>
-#include <GL/glext.h>
-#endif
+#include "gl_headers.h"
 
-#define MP_GET_GL_WORKAROUNDS
-#include "header_fixes.h"
+#if HAVE_GL_WIN32
+#include <windows.h>
+#endif
 
 struct GL;
 typedef struct GL GL;
@@ -94,7 +82,6 @@ struct GL {
     char *extensions;           // Equivalent to GL_EXTENSIONS
     int mpgl_caps;              // Bitfield of MPGL_CAP_* constants
     bool debug_context;         // use of e.g. GLX_CONTEXT_DEBUG_BIT_ARB
-    GLuint main_fb;             // framebuffer to render to (normally 0)
 
     void (GLAPIENTRY *Viewport)(GLint, GLint, GLsizei, GLsizei);
     void (GLAPIENTRY *Clear)(GLbitfield);
@@ -163,6 +150,10 @@ struct GL {
     void (GLAPIENTRY *GetShaderiv)(GLuint, GLenum, GLint *);
     void (GLAPIENTRY *GetProgramInfoLog)(GLuint, GLsizei, GLsizei *, GLchar *);
     void (GLAPIENTRY *GetProgramiv)(GLenum, GLenum, GLint *);
+    void (GLAPIENTRY *GetProgramBinary)(GLuint, GLsizei, GLsizei *, GLenum *,
+                                        void *);
+    void (GLAPIENTRY *ProgramBinary)(GLuint, GLenum, const void *, GLsizei);
+
     const GLubyte* (GLAPIENTRY *GetStringi)(GLenum, GLuint);
     void (GLAPIENTRY *BindAttribLocation)(GLuint, GLuint, const GLchar *);
     void (GLAPIENTRY *BindFramebuffer)(GLenum, GLuint);

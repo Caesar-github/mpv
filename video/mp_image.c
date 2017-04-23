@@ -41,6 +41,9 @@
 
 #include "video/filter/vf.h"
 
+#define HAVE_OPAQUE_REF (LIBAVUTIL_VERSION_MICRO >= 100 && \
+                         LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(55, 47, 100))
+
 static bool mp_image_alloc_planes(struct mp_image *mpi)
 {
     assert(!mpi->planes[0]);
@@ -172,6 +175,17 @@ void mp_image_steal_data(struct mp_image *dst, struct mp_image *src)
 
     *src = (struct mp_image){0};
     talloc_free(src);
+}
+
+// Unref most data buffer (and clear the data array), but leave other fields
+// allocated. In particular, mp_image.hwctx is preserved.
+void mp_image_unref_data(struct mp_image *img)
+{
+    for (int n = 0; n < MP_MAX_PLANES; n++) {
+        img->planes[n] = NULL;
+        img->stride[n] = 0;
+        av_buffer_unref(&img->bufs[n]);
+    }
 }
 
 // Return a new reference to img. The returned reference is owned by the caller,
@@ -600,7 +614,8 @@ void mp_image_set_attributes(struct mp_image *image,
 // the colorspace as implied by the pixel format.
 void mp_image_params_guess_csp(struct mp_image_params *params)
 {
-    struct mp_imgfmt_desc fmt = mp_imgfmt_get_desc(params->imgfmt);
+    int imgfmt = params->hw_subfmt ? params->hw_subfmt : params->imgfmt;
+    struct mp_imgfmt_desc fmt = mp_imgfmt_get_desc(imgfmt);
     if (!fmt.id)
         return;
     if (fmt.flags & MP_IMGFLAG_YUV) {
@@ -721,6 +736,15 @@ static void mp_image_copy_fields_from_av_frame(struct mp_image *dst,
     };
 
     dst->params.chroma_location = avchroma_location_to_mp(src->chroma_location);
+
+#if HAVE_OPAQUE_REF
+    if (src->opaque_ref) {
+        struct mp_image_params *p = (void *)src->opaque_ref->data;
+        dst->params.rotate = p->rotate;
+        dst->params.stereo_in = p->stereo_in;
+        dst->params.stereo_out = p->stereo_out;
+    }
+#endif
 }
 
 // Copy properties and data of the mp_image into the AVFrame, without taking
@@ -756,6 +780,14 @@ static void mp_image_copy_fields_to_av_frame(struct AVFrame *dst,
     dst->color_trc = mp_csp_trc_to_avcol_trc(src->params.color.gamma);
 
     dst->chroma_location = mp_chroma_location_to_av(src->params.chroma_location);
+
+#if HAVE_OPAQUE_REF
+    av_buffer_unref(&dst->opaque_ref);
+    dst->opaque_ref = av_buffer_alloc(sizeof(struct mp_image_params));
+    if (!dst->opaque_ref)
+        abort();
+    *(struct mp_image_params *)dst->opaque_ref->data = src->params;
+#endif
 }
 
 // Create a new mp_image reference to av_frame.

@@ -439,7 +439,7 @@ specifying the path to the local copy: ``--dvd-device=PATH``.
 Alternatively, running ``mpv PATH`` should auto-detect a DVD directory
 tree and play the longest title.
 
-.. note::
+.. note:: DVD library choices
 
     mpv uses a different default DVD library than MPlayer. MPlayer
     uses libdvdread by default, and mpv uses libdvdnav by default.
@@ -452,8 +452,12 @@ tree and play the longest title.
     when using libdvdnav, in which playback gets stuck in a DVD menu
     stream. These problems are reported to go away when auto-selecting
     the title (``dvd://`` rather than ``dvd://1``) or when using
-    libdvdread (e.g. ``dvdread://0``).
+    libdvdread (e.g. ``dvdread://0``). There are also outstanding bugs
+    in libdvdnav with seeking backwards and forwards in a video
+    stream. Specify ``dvdread://...`` to fix such problems.
 
+.. note:: DVD subtitles
+    
     DVDs use image-based subtitles. Image subtitles are implemented as
     a bitmap video stream which can be superimposed over the main
     movie. mpv's subtitle styling and positioning options and keyboard
@@ -665,6 +669,7 @@ PROTOCOLS
 =========
 
 ``http://...``, ``https://``, ...
+
     Many network protocols are supported, but the protocol prefix must always
     be specified. mpv will never attempt to guess whether a filename is
     actually a network address. A protocol prefix is always required.
@@ -678,6 +683,7 @@ PROTOCOLS
     can also prefix it with ``lavf://`` or ``ffmpeg://``.
 
 ``ytdl://...``
+
     By default, the youtube-dl hook script (enabled by default for mpv CLI)
     only looks at http URLs. Prefixing an URL with ``ytdl://`` forces it to
     be always processed by the script. This can also be used to invoke special
@@ -687,17 +693,21 @@ PROTOCOLS
     and you have to use ``--ytdl-raw-options`` instead.
 
 ``-``
+
     Play data from stdin.
 
 ``smb://PATH``
+
     Play a path from  Samba share.
 
 ``bd://[title][/device]`` ``--bluray-device=PATH``
+
     Play a Blu-ray disc. Currently, this does not accept ISO files. Instead,
     you must mount the ISO file as filesystem, and point ``--bluray-device``
     to the mounted directory directly.
 
 ``dvd://[title|[starttitle]-endtitle][/device]`` ``--dvd-device=PATH``
+
     Play a DVD. DVD menus are not supported. If no title is given, the longest
     title is auto-selected.
 
@@ -705,30 +715,39 @@ PROTOCOLS
     thing.
 
 ``dvdread://...:``
-    Play a DVD using the old libdvdread code. This is what MPlayer and older
-    mpv versions use for ``dvd://``. Use is discouraged. It's provided only
-    for compatibility and for transition.
+
+    Play a DVD using the old libdvdread code. This is what MPlayer and
+    older mpv versions use for ``dvd://``. Use is discouraged. It's
+    provided only for compatibility and for transition, and to work
+    around outstanding dvdnav bugs (see "DVD library choices" above).
 
 ``tv://[channel][/input_id]`` ``--tv-...``
+
     Analogue TV via V4L. Also useful for webcams. (Linux only.)
 
 ``pvr://`` ``--pvr-...``
+
     PVR. (Linux only.)
 
 ``dvb://[cardnumber@]channel`` ``--dvbin-...``
+
     Digital TV via DVB. (Linux only.)
 
 ``mf://[filemask|@listfile]`` ``--mf-...``
+
     Play a series of images as video.
 
 ``cdda://[device]`` ``--cdrom-device=PATH`` ``--cdda-...``
+
     Play CD.
 
 ``lavf://...``
+
     Access any FFmpeg/Libav libavformat protocol. Basically, this passed the
     string after the ``//`` directly to libavformat.
 
 ``av://type:options``
+
     This is intended for using libavdevice inputs. ``type`` is the libavdevice
     demuxer name, and ``options`` is the (pseudo-)filename passed to the
     demuxer.
@@ -740,26 +759,32 @@ PROTOCOLS
     ``avdevice://`` is an alias.
 
 ``file://PATH``
+
     A local path as URL. Might be useful in some special use-cases. Note that
     ``PATH`` itself should start with a third ``/`` to make the path an
     absolute path.
 
 ``fd://123``
+
     Read data from the given file descriptor (for example 123). This is similar
     to piping data to stdin via ``-``, but can use an arbitrary file descriptor.
 
 ``edl://[edl specification as in edl-mpv.rst]``
+
     Stitch together parts of multiple files and play them.
 
 ``null://``
+
     Simulate an empty file. If opened for writing, it will discard all data.
     The ``null`` demuxer will specifically pass autoprobing if this protocol
     is used (while it's not automatically invoked for empty files).
 
 ``memory://data``
+
     Use the ``data`` part as source data.
 
 ``hex://data``
+
     Like ``memory://``, but the string is interpreted as hexdump.
 
 PSEUDO GUI MODE

@@ -27,12 +27,13 @@
 #include "common.h"
 
 enum {
-    VOFLAG_GLES         = 1 << 0,       // Hint to create a GLES2 context
+    VOFLAG_GLES         = 1 << 0,       // Hint to create a GLES context
     VOFLAG_NO_GLES      = 1 << 1,       // Hint to create a desktop GL context
     VOFLAG_GL_DEBUG     = 1 << 2,       // Hint to request debug OpenGL context
     VOFLAG_ALPHA        = 1 << 3,       // Hint to request alpha framebuffer
     VOFLAG_SW           = 1 << 4,       // Hint to accept a software GL renderer
     VOFLAG_PROBING      = 1 << 6,       // The backend is being auto-probed.
+    VOFLAG_GLES2        = 1 << 7,       // Hint for GLESv2 (needs VOFLAG_GLES)
 };
 
 extern const int mpgl_preferred_gl_versions[];
@@ -58,6 +59,11 @@ struct mpgl_driver {
     // Return 0 on success, negative value (-1) on error.
     int (*reconfig)(struct MPGLContext *ctx);
 
+    // Called when rendering starts. The backend can map or resize the
+    // framebuffer, or update GL.main_fb. swap_buffers() ends the frame.
+    // Optional.
+    void (*start_frame)(struct MPGLContext *ctx);
+
     // Present the frame.
     void (*swap_buffers)(struct MPGLContext *ctx);
 
@@ -78,6 +84,7 @@ typedef struct MPGLContext {
     struct vo *vo;
     const struct mpgl_driver *driver;
     struct mpv_global *global;
+    struct mp_log *log;
 
     // For hwdec_vaegl.c.
     const char *native_display_type;
@@ -85,6 +92,9 @@ typedef struct MPGLContext {
 
     // Flip the rendered image vertically. This is useful for dxinterop.
     bool flip_v;
+
+    // framebuffer to render to (normally 0)
+    GLuint main_fb;
 
     // For free use by the mpgl_driver.
     void *priv;
@@ -94,6 +104,7 @@ MPGLContext *mpgl_init(struct vo *vo, const char *backend_name, int vo_flags);
 void mpgl_uninit(MPGLContext *ctx);
 int mpgl_reconfig_window(struct MPGLContext *ctx);
 int mpgl_control(struct MPGLContext *ctx, int *events, int request, void *arg);
+void mpgl_start_frame(struct MPGLContext *ctx);
 void mpgl_swap_buffers(struct MPGLContext *ctx);
 
 int mpgl_find_backend(const char *name);

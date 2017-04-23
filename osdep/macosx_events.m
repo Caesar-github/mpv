@@ -28,18 +28,22 @@
 #include "mpv_talloc.h"
 #include "input/event.h"
 #include "input/input.h"
+#include "player/client.h"
 #include "input/keycodes.h"
 // doesn't make much sense, but needed to access keymap functionality
 #include "video/out/vo.h"
 
 #include "osdep/macosx_compat.h"
 #import "osdep/macosx_events_objc.h"
+#import "osdep/macosx_application_objc.h"
 
 #include "config.h"
 
 @interface EventsResponder ()
 {
     struct input_ctx *_inputContext;
+    struct mpv_handle *_ctx;
+    BOOL _is_application;
     NSCondition *_input_lock;
     CFMachPortRef _mk_tap_port;
 #if HAVE_APPLE_REMOTE
@@ -49,7 +53,8 @@
 
 - (BOOL)handleMediaKey:(NSEvent *)event;
 - (NSEvent *)handleKey:(NSEvent *)event;
-- (void)startEventMonitor;
+- (BOOL)setMpvHandle:(struct mpv_handle *)ctx;
+- (void)readEvents;
 - (void)startAppleRemote;
 - (void)stopAppleRemote;
 - (void)startMediaKeys;
@@ -115,11 +120,6 @@ static int convert_key(unsigned key, unsigned charcode)
     if (mpkey)
         return mpkey;
     return charcode;
-}
-
-void cocoa_start_event_monitor(void)
-{
-    [[EventsResponder sharedInstance] startEventMonitor];
 }
 
 void cocoa_init_apple_remote(void)
@@ -210,6 +210,21 @@ void cocoa_set_input_context(struct input_ctx *input_context)
     [[EventsResponder sharedInstance] setInputContext:input_context];
 }
 
+static void wakeup(void *context)
+{
+    [[EventsResponder sharedInstance] readEvents];
+}
+
+void cocoa_set_mpv_handle(struct mpv_handle *ctx)
+{
+    if ([[EventsResponder sharedInstance] setMpvHandle:ctx]) {
+        mpv_observe_property(ctx, 0, "duration", MPV_FORMAT_DOUBLE);
+        mpv_observe_property(ctx, 0, "time-pos", MPV_FORMAT_DOUBLE);
+        mpv_observe_property(ctx, 0, "pause", MPV_FORMAT_FLAG);
+        mpv_set_wakeup_callback(ctx, wakeup, NULL);
+    }
+}
+
 @implementation EventsResponder
 
 + (EventsResponder *)sharedInstance
@@ -286,17 +301,47 @@ void cocoa_set_input_context(struct input_ctx *input_context)
     return r;
 }
 
-- (void)startEventMonitor
+- (void)setIsApplication:(BOOL)isApplication
 {
-    [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown|NSEventMaskKeyUp
-                                          handler:^(NSEvent *event) {
-        BOOL equivalent = [[NSApp mainMenu] performKeyEquivalent:event];
-        if (equivalent) {
-            return (NSEvent *)nil;
-        } else {
-            return [self handleKey:event];
+    _is_application = isApplication;
+}
+
+- (BOOL)setMpvHandle:(struct mpv_handle *)ctx
+{
+    if (_is_application) {
+        dispatch_sync(dispatch_get_main_queue(), ^{ _ctx = ctx; });
+        return YES;
+    } else {
+        mpv_detach_destroy(ctx);
+        return NO;
+    }
+}
+
+- (void)readEvents
+{
+    dispatch_async(dispatch_get_main_queue(), ^{
+        while (_ctx) {
+            mpv_event *event = mpv_wait_event(_ctx, 0);
+            if (event->event_id == MPV_EVENT_NONE)
+                break;
+            [self processEvent:event];
         }
-    }];
+    });
+}
+
+-(void)processEvent:(struct mpv_event *)event
+{
+    switch (event->event_id) {
+    case MPV_EVENT_SHUTDOWN: {
+        mpv_detach_destroy(_ctx);
+        _ctx = nil;
+        break;
+    }
+    }
+
+    if(_is_application) {
+        [NSApp processEvent:event];
+    }
 }
 
 - (void)startAppleRemote
@@ -358,9 +403,11 @@ void cocoa_set_input_context(struct input_ctx *input_context)
 - (BOOL)handleMediaKey:(NSEvent *)event
 {
     NSDictionary *keymapd = @{
-        @(NX_KEYTYPE_PLAY):    @(MP_KEY_PLAY),
-        @(NX_KEYTYPE_REWIND):  @(MP_KEY_PREV),
-        @(NX_KEYTYPE_FAST):    @(MP_KEY_NEXT),
+        @(NX_KEYTYPE_PLAY):     @(MP_KEY_PLAY),
+        @(NX_KEYTYPE_REWIND):   @(MP_KEY_PREV),
+        @(NX_KEYTYPE_FAST):     @(MP_KEY_NEXT),
+        @(NX_KEYTYPE_PREVIOUS): @(MP_KEY_REWIND),
+        @(NX_KEYTYPE_NEXT):     @(MP_KEY_FORWARD),
     };
 
     return [self handleKey:mk_code(event)
@@ -462,6 +509,16 @@ void cocoa_set_input_context(struct input_ctx *input_context)
         [self handleMPKey:key withMask:[self keyModifierMask:event]];
 
     return nil;
+}
+
+- (bool)processKeyEvent:(NSEvent *)event
+{
+    if (event.type == NSEventTypeKeyDown || event.type == NSEventTypeKeyUp){
+        if (![[NSApp mainMenu] performKeyEquivalent:event])
+            [self handleKey:event];
+        return true;
+    }
+    return false;
 }
 
 - (void)handleFilesArray:(NSArray *)files

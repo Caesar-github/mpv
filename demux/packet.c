@@ -1,19 +1,20 @@
 /*
  * This file is part of mpv.
  *
- * mpv is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
+ * mpv is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
  *
  * mpv is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with mpv.  If not, see <http://www.gnu.org/licenses/>.
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
+
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -128,6 +129,32 @@ struct demux_packet *demux_copy_packet(struct demux_packet *dp)
         return NULL;
     demux_packet_copy_attribs(new, dp);
     return new;
+}
+
+#define ROUND_ALLOC(s) MP_ALIGN_UP(s, 64)
+
+// Attempt to estimate the total memory consumption of the given packet.
+// This is important if we store thousands of packets and not to exceed
+// user-provided limits. Of course we can't know how much memory internal
+// fragmentation of the libc memory allocator will waste.
+// Note that this should return a "stable" value - e.g. if a new packet ref
+// is created, this should return the same value with the new ref. (This
+// implies the value is not exact and does not return the actual size of
+// memory wasted due to internal fragmentation.)
+size_t demux_packet_estimate_total_size(struct demux_packet *dp)
+{
+    size_t size = ROUND_ALLOC(sizeof(struct demux_packet));
+    size += ROUND_ALLOC(dp->len);
+    if (dp->avpacket) {
+        size += ROUND_ALLOC(sizeof(AVPacket));
+        size += ROUND_ALLOC(sizeof(AVBufferRef));
+        size += 64; // upper bound estimate on sizeof(AVBuffer)
+        size += ROUND_ALLOC(dp->avpacket->side_data_elems *
+                            sizeof(dp->avpacket->side_data[0]));
+        for (int n = 0; n < dp->avpacket->side_data_elems; n++)
+            size += ROUND_ALLOC(dp->avpacket->side_data[n].size);
+    }
+    return size;
 }
 
 int demux_packet_set_padding(struct demux_packet *dp, int start, int end)

@@ -28,6 +28,7 @@
 #include <libavutil/mathematics.h>
 #include <libavutil/rational.h>
 #include <libavutil/error.h>
+#include <libavutil/opt.h>
 #include <libavfilter/avfilter.h>
 #include <libavfilter/buffersink.h>
 #include <libavfilter/buffersrc.h>
@@ -40,6 +41,7 @@
 #include "video/mp_image.h"
 #include "audio/fmt-conversion.h"
 #include "video/fmt-conversion.h"
+#include "video/hwdec.h"
 
 #include "lavfi.h"
 
@@ -51,6 +53,8 @@
 struct lavfi {
     struct mp_log *log;
     char *graph_string;
+
+    struct mp_hwdec_devices *hwdec_devs;
 
     AVFilterGraph *graph;
     // Set to true once all inputs have been initialized, and the graph is
@@ -71,6 +75,8 @@ struct lavfi {
 
     struct lavfi_pad **pads;
     int num_pads;
+
+    AVFrame *tmp_frame;
 };
 
 struct lavfi_pad {
@@ -78,7 +84,6 @@ struct lavfi_pad {
     enum stream_type type;
     enum lavfi_direction dir;
     char *name; // user-given pad name
-    AVFrame *tmp_frame;
 
     bool connected;     // if false, inputs/otuputs are considered always EOF
 
@@ -101,7 +106,7 @@ struct lavfi_pad {
     bool input_eof;     // caller notified us that no input will come anymore
 
     // used to check for format changes manually
-    struct mp_image_params in_fmt_v;
+    struct mp_image *in_fmt_v;
     struct mp_audio in_fmt_a;
 
     // -- dir==LAVFI_OUT
@@ -144,9 +149,6 @@ static void add_pad(struct lavfi *c, enum lavfi_direction dir, AVFilterInOut *it
         p->main = c;
         p->dir = dir;
         p->name = talloc_strdup(p, item->name);
-        p->tmp_frame = av_frame_alloc();
-        if (!p->tmp_frame)
-            abort();
         p->type = type;
         MP_TARRAY_APPEND(c, c->pads, c->num_pads, p);
     }
@@ -196,7 +198,7 @@ static void free_graph(struct lavfi *c)
         pad->filter = NULL;
         pad->filter_pad = -1;
         pad->buffer = NULL;
-        pad->in_fmt_v = (struct mp_image_params){0};
+        TA_FREEP(&pad->in_fmt_v);
         pad->in_fmt_a = (struct mp_audio){0};
         pad->buffer_is_eof = false;
         pad->input_needed = false;
@@ -238,6 +240,9 @@ struct lavfi *lavfi_create(struct mp_log *log, char *graph_string)
     struct lavfi *c = talloc_zero(NULL, struct lavfi);
     c->log = log;
     c->graph_string = graph_string;
+    c->tmp_frame = av_frame_alloc();
+    if (!c->tmp_frame)
+        abort();
     precreate_graph(c);
     return c;
 }
@@ -246,6 +251,7 @@ void lavfi_destroy(struct lavfi *c)
 {
     free_graph(c);
     clear_data(c);
+    av_frame_free(&c->tmp_frame);
     talloc_free(c);
 }
 
@@ -303,11 +309,11 @@ static bool is_aformat_ok(struct mp_audio *a, struct mp_audio *b)
 {
     return mp_audio_config_equals(a, b);
 }
-static bool is_vformat_ok(struct mp_image_params *a, struct mp_image_params *b)
+static bool is_vformat_ok(struct mp_image *a, struct mp_image *b)
 {
     return a->imgfmt == b->imgfmt &&
            a->w == b->w && a->h && b->h &&
-           a->p_w == b->p_w && a->p_h == b->p_h;
+           a->params.p_w == b->params.p_w && a->params.p_h == b->params.p_h;
 }
 
 static void check_format_changes(struct lavfi *c)
@@ -322,9 +328,9 @@ static void check_format_changes(struct lavfi *c)
             c->draining_new_format |= !is_aformat_ok(pad->pending_a,
                                                      &pad->in_fmt_a);
         }
-        if (pad->type == STREAM_VIDEO && pad->pending_v && pad->in_fmt_v.imgfmt) {
-            c->draining_new_format |= !is_vformat_ok(&pad->pending_v->params,
-                                                     &pad->in_fmt_v);
+        if (pad->type == STREAM_VIDEO && pad->pending_v && pad->in_fmt_v) {
+            c->draining_new_format |= !is_vformat_ok(pad->pending_v,
+                                                     pad->in_fmt_v);
         }
     }
 
@@ -370,8 +376,7 @@ static bool init_pads(struct lavfi *c)
             if (avfilter_link(pad->filter, pad->filter_pad, pad->buffer, 0) < 0)
                 goto error;
         } else {
-            char src_args[256];
-            AVFilter *src_filter = NULL;
+            TA_FREEP(&pad->in_fmt_v); // potentially cleanup previous error state
 
             pad->input_eof |= !pad->connected;
 
@@ -380,7 +385,10 @@ static bool init_pads(struct lavfi *c)
                 mp_audio_copy_config(&pad->in_fmt_a, pad->pending_a);
             } else if (pad->pending_v) {
                 assert(pad->type == STREAM_VIDEO);
-                pad->in_fmt_v = pad->pending_v->params;
+                pad->in_fmt_v = mp_image_new_ref(pad->pending_v);
+                if (!pad->in_fmt_v)
+                    goto error;
+                mp_image_unref_data(pad->in_fmt_v);
             } else if (pad->input_eof) {
                 // libavfilter makes this painful. Init it with a dummy config,
                 // just so we can tell it the stream is EOF.
@@ -389,11 +397,9 @@ static bool init_pads(struct lavfi *c)
                     mp_audio_set_num_channels(&pad->in_fmt_a, 2);
                     pad->in_fmt_a.rate = 48000;
                 } else if (pad->type == STREAM_VIDEO) {
-                    pad->in_fmt_v = (struct mp_image_params){
-                        .imgfmt = IMGFMT_420P,
-                        .w = 64, .h = 64,
-                        .p_w = 1, .p_h = 1,
-                    };
+                    pad->in_fmt_v = talloc_zero(NULL, struct mp_image);
+                    mp_image_setfmt(pad->in_fmt_v, IMGFMT_420P);
+                    mp_image_set_size(pad->in_fmt_v, 64, 64);
                 }
             } else {
                 // no input data, format unknown, can't init, wait longer.
@@ -401,35 +407,58 @@ static bool init_pads(struct lavfi *c)
                 return false;
             }
 
+            AVBufferSrcParameters *params = av_buffersrc_parameters_alloc();
+            if (!params)
+                goto error;
+
+            char *filter_name = NULL;
             if (pad->type == STREAM_AUDIO) {
-                pad->timebase = (AVRational){1, pad->in_fmt_a.rate};
-                snprintf(src_args, sizeof(src_args),
-                    "sample_rate=%d:sample_fmt=%s:time_base=%d/%d:"
-                    "channel_layout=0x%"PRIx64, pad->in_fmt_a.rate,
-                    av_get_sample_fmt_name(af_to_avformat(pad->in_fmt_a.format)),
-                    pad->timebase.num, pad->timebase.den,
-                    mp_chmap_to_lavc(&pad->in_fmt_a.channels));
-                src_filter = avfilter_get_by_name("abuffer");
+                params->time_base = pad->timebase =
+                    (AVRational){1, pad->in_fmt_a.rate};
+                params->format = af_to_avformat(pad->in_fmt_a.format);
+                params->sample_rate = pad->in_fmt_a.rate;
+                params->channel_layout =
+                    mp_chmap_to_lavc(&pad->in_fmt_a.channels);
+                filter_name = "abuffer";
             } else if (pad->type == STREAM_VIDEO) {
-                pad->timebase = AV_TIME_BASE_Q;
-                snprintf(src_args, sizeof(src_args), "%d:%d:%d:%d:%d:%d:%d",
-                         pad->in_fmt_v.w, pad->in_fmt_v.h,
-                         imgfmt2pixfmt(pad->in_fmt_v.imgfmt),
-                         pad->timebase.num, pad->timebase.den,
-                         pad->in_fmt_v.p_w, pad->in_fmt_v.p_h);
-                src_filter = avfilter_get_by_name("buffer");
+                params->time_base = pad->timebase = AV_TIME_BASE_Q;
+                params->format = imgfmt2pixfmt(pad->in_fmt_v->imgfmt);
+                params->width = pad->in_fmt_v->w;
+                params->height = pad->in_fmt_v->h;
+                params->sample_aspect_ratio.num = pad->in_fmt_v->params.p_w;
+                params->sample_aspect_ratio.den = pad->in_fmt_v->params.p_h;
+                params->hw_frames_ctx = pad->in_fmt_v->hwctx;
+                filter_name = "buffer";
             } else {
                 assert(0);
             }
 
-            if (!src_filter)
+            AVFilter *filter = avfilter_get_by_name(filter_name);
+            if (filter) {
+                char name[256];
+                snprintf(name, sizeof(name), "mpv_src_%s", pad->name);
+
+                pad->buffer = avfilter_graph_alloc_filter(c->graph, filter, name);
+            }
+            if (!pad->buffer) {
+                av_free(params);
+                goto error;
+            }
+
+            if (pad->type == STREAM_AUDIO) {
+                char layout[80];
+                snprintf(layout, sizeof(layout), "%lld",
+                         (long long)params->channel_layout);
+                av_opt_set(pad->buffer, "channel_layout", layout,
+                           AV_OPT_SEARCH_CHILDREN);
+            }
+
+            int ret = av_buffersrc_parameters_set(pad->buffer, params);
+            av_free(params);
+            if (ret < 0)
                 goto error;
 
-            char name[256];
-            snprintf(name, sizeof(name), "mpv_src_%s", pad->name);
-
-            if (avfilter_graph_create_filter(&pad->buffer, src_filter,
-                                             name, src_args, NULL, c->graph) < 0)
+            if (avfilter_init_str(pad->buffer, NULL) < 0)
                 goto error;
 
             if (avfilter_link(pad->buffer, 0, pad->filter, pad->filter_pad) < 0)
@@ -455,6 +484,11 @@ static void dump_graph(struct lavfi *c)
 #endif
 }
 
+void lavfi_set_hwdec_devs(struct lavfi *c, struct mp_hwdec_devices *hwdevs)
+{
+    c->hwdec_devs = hwdevs;
+}
+
 // Initialize the graph if all inputs have formats set. If it's already
 // initialized, or can't be initialized yet, do nothing.
 static void init_graph(struct lavfi *c)
@@ -462,6 +496,15 @@ static void init_graph(struct lavfi *c)
     assert(!c->initialized);
 
     if (init_pads(c)) {
+        if (c->hwdec_devs) {
+            struct mp_hwdec_ctx *hwdec = hwdec_devices_get_first(c->hwdec_devs);
+            for (int n = 0; n < c->graph->nb_filters; n++) {
+                AVFilterContext *filter = c->graph->filters[n];
+                if (hwdec && hwdec->av_device_ref)
+                    filter->hw_device_ctx = av_buffer_ref(hwdec->av_device_ref);
+            }
+        }
+
         // And here the actual libavfilter initialization happens.
         if (avfilter_graph_config(c->graph, NULL) < 0) {
             MP_FATAL(c, "failed to configure the filter graph\n");
@@ -564,22 +607,22 @@ static void read_output_pads(struct lavfi *c)
         int flags = pad->output_needed ? 0 : AV_BUFFERSINK_FLAG_NO_REQUEST;
         int r = AVERROR_EOF;
         if (!pad->buffer_is_eof)
-            r = av_buffersink_get_frame_flags(pad->buffer, pad->tmp_frame, flags);
+            r = av_buffersink_get_frame_flags(pad->buffer, c->tmp_frame, flags);
         if (r >= 0) {
             pad->output_needed = false;
-            double pts = mp_pts_from_av(pad->tmp_frame->pts, &pad->timebase);
+            double pts = mp_pts_from_av(c->tmp_frame->pts, &pad->timebase);
             if (pad->type == STREAM_AUDIO) {
-                pad->pending_a = mp_audio_from_avframe(pad->tmp_frame);
+                pad->pending_a = mp_audio_from_avframe(c->tmp_frame);
                 if (pad->pending_a)
                     pad->pending_a->pts = pts;
             } else if (pad->type == STREAM_VIDEO) {
-                pad->pending_v = mp_image_from_av_frame(pad->tmp_frame);
+                pad->pending_v = mp_image_from_av_frame(c->tmp_frame);
                 if (pad->pending_v)
                     pad->pending_v->pts = pts;
             } else {
                 assert(0);
             }
-            av_frame_unref(pad->tmp_frame);
+            av_frame_unref(c->tmp_frame);
             if (!pad->pending_v && !pad->pending_a)
                 MP_ERR(c, "could not use filter output\n");
             pad->output_eof = false;

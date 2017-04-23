@@ -146,6 +146,8 @@ struct m_obj_list {
     // Allow unknown entries, for which a dummy entry is inserted, and whose
     // options are skipped and ignored.
     bool allow_unknown_entries;
+    // Allow syntax for disabling entries.
+    bool allow_disable_entries;
     // This helps with confusing error messages if unknown flag options are used.
     bool disallow_positional_parameters;
     // Each sub-item is backed by global options (for AOs and VOs).
@@ -162,6 +164,8 @@ typedef struct m_obj_settings {
     char *name;
     // Optional user-defined name.
     char *label;
+    // User enable flag.
+    bool enabled;
     // NULL terminated array of parameter/value pairs.
     char **attribs;
 } m_obj_settings_t;
@@ -711,9 +715,12 @@ extern const char m_option_path_separator;
 
 // If "--optname" was removed, but "--newname" has the same semantics.
 // It will be redirected, and a warning will be printed on first use.
-#define OPT_REPLACED(optname, newname) \
+#define OPT_REPLACED_MSG(optname, newname, msg) \
     {.name = optname, .type = &m_option_type_alias, .priv = newname, \
-     .deprecation_message = "", .offset = -1}
+     .deprecation_message = (msg), .offset = -1}
+
+// Same, with a generic deprecation message.
+#define OPT_REPLACED(optname, newname) OPT_REPLACED_MSG(optname, newname, "")
 
 // "--optname" doesn't exist, but inform the user about a replacement with msg.
 #define OPT_REMOVED(optname, msg) \

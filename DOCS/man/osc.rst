@@ -20,12 +20,12 @@ The Interface
 
 ::
 
-    +---------+----------+----------------------------+-------------+
-    | pl prev | pl next  |  title                     |       cache |
-    +------+--+---+------+---------+-----------+------+-------+-----+
-    | play | skip | skip | time    |  seekbar  | time | audio | sub |
-    |      | back | frwd | elapsed |           | left |       |     |
-    +------+------+------+---------+-----------+------+-------+-----+
+    +---------+----------+------------------------------------------+----------+
+    | pl prev | pl next  |  title                                   |    cache |
+    +------+--+---+------+---------+-----------+------+-------+-----+-----+----+
+    | play | skip | skip | time    |  seekbar  | time | audio | sub | vol | fs |
+    |      | back | frwd | elapsed |           | left |       |     |     |    |
+    +------+------+------+---------+-----------+------+-------+-----+-----+----+
 
 
 pl prev
@@ -43,7 +43,7 @@ pl next
     =============   ================================================
 
 title
-    | Displays current media-title or filename
+    | Displays current media-title, filename, or custom title
 
     =============   ================================================
     left-click      show playlist position and length and full title
@@ -100,6 +100,17 @@ audio and sub
     left-click      cycle audio/sub tracks forward
     right-click     cycle audio/sub tracks backwards
     shift+L-click   show available audio/sub tracks
+    =============   ================================================
+
+vol
+    =============   ================================================
+    left-click      toggle mute
+    mouse wheel     volume up/down
+    =============   ================================================
+
+fs
+    =============   ================================================
+    left-click      toggle fullscreen
     =============   ================================================
 
 Key Bindings
@@ -239,6 +250,13 @@ Configurable Options
 
     Duration of fade out in ms, 0 = no fade
 
+``title``
+    Default: ${media-title}
+
+    String that supports property expansion that will be displayed as
+    OSC title.
+    ASS tags are escaped, and newlines and trailing slashes are stripped.
+
 ``tooltipborder``
     Default: 1
 
@@ -258,6 +276,14 @@ Configurable Options
     Default: auto (auto hide/show on mouse move)
 
     Also supports ``never`` and ``always``
+
+``boxmaxchars``
+    Default: 80
+
+    Max chars for the osc title at the box layout. mpv does not measure the
+    text width on screen and so it needs to limit it by number of chars. The
+    default is conservative to allow wide fonts to be used without overflow.
+    However, with many common fonts a bigger number can be used. YMMV.
 
 Script Commands
 ~~~~~~~~~~~~~~~

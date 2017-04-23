@@ -135,7 +135,8 @@ void audio_update_volume(struct MPContext *mpctx)
         if (gain == 1.0)
             return;
         MP_VERBOSE(mpctx, "Inserting volume filter.\n");
-        if (!(af_add(ao_c->af, "volume", "softvol", NULL)
+        char *args[] = {"warn", "no", NULL};
+        if (!(af_add(ao_c->af, "volume", "softvol", args)
               && af_control_any_rev(ao_c->af, AF_CONTROL_SET_VOLUME, &gain)))
             MP_ERR(mpctx, "No volume control available.\n");
     }
@@ -1105,8 +1106,10 @@ void fill_audio_out_buffers(struct MPContext *mpctx)
         // we trigger EOF immediately, and let it play asynchronously.
         if (ao_eof_reached(mpctx->ao) || opts->gapless_audio) {
             mpctx->audio_status = STATUS_EOF;
-            if (!was_eof)
+            if (!was_eof) {
+                MP_VERBOSE(mpctx, "audio EOF reached\n");
                 mp_wakeup_core(mpctx);
+            }
         }
     }
 }

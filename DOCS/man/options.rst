@@ -134,17 +134,6 @@ Playback Control
     speed higher than normal automatically inserts the ``scaletempo`` audio
     filter.
 
-``--loop=<N|inf|force|no>``, ``--loop``
-    Loops playback ``N`` times. A value of ``1`` plays it one time (default),
-    ``2`` two times, etc. ``inf`` means forever. ``no`` is the same as ``1`` and
-    disables looping. If several files are specified on command line, the
-    entire playlist is looped. ``--loop`` is the same as ``--loop=inf``.
-
-    The ``force`` mode is like ``inf``, but does not skip playlist entries
-    which have been marked as failing. This means the player might waste CPU
-    time trying to loop a file that doesn't exist. But it might be useful for
-    playing webradios under very bad network conditions.
-
 ``--pause``
     Start the player in paused state.
 
@@ -287,15 +276,31 @@ Playback Control
     directory). Prefixing the filename with ``./`` if it doesn't start with
     a ``/`` will avoid this.
 
+``--loop-playlist=<N|inf|force|no>``, ``--loop-playlist``
+    Loops playback ``N`` times. A value of ``1`` plays it one time (default),
+    ``2`` two times, etc. ``inf`` means forever. ``no`` is the same as ``1`` and
+    disables looping. If several files are specified on command line, the
+    entire playlist is looped. ``--loop-playlist`` is the same as
+    ``--loop-playlist=inf``.
+
+    The ``force`` mode is like ``inf``, but does not skip playlist entries
+    which have been marked as failing. This means the player might waste CPU
+    time trying to loop a file that doesn't exist. But it might be useful for
+    playing webradios under very bad network conditions.
+
+``--loop``
+    Currently a deprecated alias to ``--loop-playlist``. After a deprecation
+    period, it will be undeprecated, but changed to alias ``--loop-file``.
+
 ``--loop-file=<N|inf|no>``
     Loop a single file N times. ``inf`` means forever, ``no`` means normal
     playback. For compatibility, ``--loop-file`` and ``--loop-file=yes`` are
     also accepted, and are the same as ``--loop-file=inf``.
 
-    The difference to ``--loop`` is that this doesn't loop the playlist, just
-    the file itself. If the playlist contains only a single file, the difference
-    between the two option is that this option performs a seek on loop, instead
-    of reloading the file.
+    The difference to ``--loop-playlist`` is that this doesn't loop the playlist,
+    just the file itself. If the playlist contains only a single file, the
+    difference between the two option is that this option performs a seek on
+    loop, instead of reloading the file.
 
 ``--ab-loop-a=<time>``, ``--ab-loop-b=<time>``
     Set loop points. If playback passes the ``b`` timestamp, it will seek to
@@ -634,8 +639,9 @@ Video
     :vdpau-copy: copies video back into system RAM (Linux with some GPUs only)
     :vaapi:     requires ``--vo=opengl`` or ``--vo=vaapi`` (Linux only)
     :vaapi-copy: copies video back into system RAM (Linux with Intel GPUs only)
-    :videotoolbox: requires ``--vo=opengl`` (OS X 10.8 and up only)
-    :videotoolbox-copy: copies video back into system RAM (OS X 10.8 and up only)
+    :videotoolbox: requires ``--vo=opengl`` (OS X 10.8 and up),
+                   or ``--vo=opengl-cb`` (iOS 9.0 and up)
+    :videotoolbox-copy: copies video back into system RAM (OS X 10.8 or iOS 9.0 and up)
     :dxva2:     requires ``--vo=opengl`` with ``--opengl-backend=angle`` or
                 ``--opengl-backend=dxinterop`` (Windows only)
     :dxva2-copy: copies video back to system RAM (Windows only)
@@ -776,8 +782,10 @@ Video
     choice of the format can influence performance considerably. On the other
     hand, there doesn't appear to be a good way to detect the best format for
     the given hardware. ``nv12``, the default, works better on modern hardware,
-    while ``uyvy422`` appears to be better for old hardware. ``rgb0`` and
-    ``yuv420p`` also work.
+    while ``uyvy422`` appears to be better for old hardware. ``yuv420p`` also
+    works.
+    Since mpv 0.25.0, ``no`` is an accepted value, which lets the decoder pick
+    the format on newer FFmpeg versions (will use ``nv12`` on older versions).
 
 ``--panscan=<0.0-1.0>``
     Enables pan-and-scan functionality (cropping the sides of e.g. a 16:9
@@ -1410,18 +1418,6 @@ Audio
     if you want to force a different audio profile (e.g. with PulseAudio),
     or to set your own application name when using libmpv.
 
-``--volume-restore-data=<string>``
-    Used internally for use by playback resume (e.g. with ``quit-watch-later``).
-    Restoring value has to be done carefully, because different AOs as well as
-    softvol can have different value ranges, and we don't want to restore
-    volume if setting the volume changes it system wide. The normal options
-    (like ``--volume``) would always set the volume. This option was added for
-    restoring volume in a safer way (by storing the method used to set the
-    volume), and is not generally useful. Its semantics are considered private
-    to mpv.
-
-    Do not use.
-
 ``--audio-buffer=<seconds>``
     Set the audio output minimum buffer. The audio device might actually create
     a larger buffer if it pleases. If the device creates a smaller buffer,
@@ -1833,6 +1829,8 @@ Subtitles
     Multiple directories can be separated by ":" (";" on Windows).
     Paths can be relative or absolute. Relative paths are interpreted relative
     to video file directory.
+    If the file is a URL, only absolute paths and ``sub`` configuration
+    subdirectory will be scanned.
 
     .. admonition:: Example
 
@@ -2000,6 +1998,23 @@ Subtitles
 
     Default: 0.
 
+``--sub-filter-sdh=<yes|no>``
+    Applies filter removing subtitle additions for the deaf or hard-of-hearing (SDH).
+    This is intended for English, but may in part work for other languages too.
+    The intention is that it can be always enabled so may not remove
+    all parts added.
+    It removes speaker labels (like MAN:), upper case text in parentheses and
+    any text in brackets.
+
+    Default: ``no``.
+
+``--sub-filter-sdh-harder=<yes|no>``
+    Do harder SDH filtering (if enabled by ``--sub-filter-sdh``).
+    Will also remove speaker labels and text within parentheses using both
+    lower and upper case letters.
+
+    Default: ``no``.
+
 Window
 ------
 
@@ -2055,6 +2070,9 @@ Window
     Instead, pause the player. When trying to seek beyond end of the file, the
     player will attempt to seek to the last frame.
 
+    Normally, this will act like ``set pause yes`` on EOF, unless the
+    ``--keep-open-pause=no`` option is set.
+
     The following arguments can be given:
 
     :no:        If the current file ends, go to the next file or terminate.
@@ -2080,6 +2098,11 @@ Window
     is not the case (e.g. ``mpv --keep-open file.mkv /dev/null`` will play
     file.mkv normally, then fail to open ``/dev/null``, then exit). (In
     mpv 0.8.0, ``always`` was introduced, which restores the old behavior.)
+
+``--keep-open-pause=<yes|no>``
+    If set to ``no``, instead of pausing when ``--keep-open`` is active, just
+    stop at end of file and continue playing forward when you seek backwards
+    until end where it stops again. Default: ``yes``.
 
 ``--image-display-duration=<seconds|inf>``
     If the current file is an image, play the image for the given amount of
@@ -2129,6 +2152,14 @@ Window
     On Windows, if combined with fullscreen mode, this causes mpv to be
     treated as exclusive fullscreen window that bypasses the Desktop Window
     Manager.
+
+``--ontop-level=<window|system|level>``
+    (OS X only)
+    Sets the level of an ontop window (default: window).
+
+    :window:  On top of all other windows.
+    :system:  On top of system elements like Taskbar, Menubar and Dock.
+    :level:   A level as integer.
 
 ``--border``, ``--no-border``
     Play video with window border and decorations. Since this is on by
@@ -2555,6 +2586,15 @@ Demuxer
 ``--demuxer-lavf-analyzeduration=<value>``
     Maximum length in seconds to analyze the stream properties.
 
+``--demuxer-lavf-probe-info=<yes|no|auto>``
+    Whether to probe stream information (default: auto). Technically, this
+    controls whether libavformat's ``avformat_find_stream_info()`` function
+    is called. Usually it's safer to call it, but it can also make startup
+    slower.
+
+    The ``auto`` choice (the default) tries to skip this for a few know-safe
+    whitelisted formats, while calling it for everything else.
+
 ``--demuxer-lavf-probescore=<1-100>``
     Minimum required libavformat probe score. Lower values will require
     less data to be loaded (makes streams start faster), but makes file
@@ -2714,19 +2754,25 @@ Demuxer
 ``--demuxer-rawvideo-size=<value>``
     Frame size in bytes when using ``--demuxer=rawvideo``.
 
-``--demuxer-max-packets=<packets>``, ``--demuxer-max-bytes=<bytes>``
+``--demuxer-max-bytes=<bytes>``
     This controls how much the demuxer is allowed to buffer ahead. The demuxer
     will normally try to read ahead as much as necessary, or as much is
-    requested with ``--demuxer-readahead-secs``. The ``--demuxer-max-...``
-    options can be used to restrict the maximum readahead. This limits excessive
-    readahead in case of broken files or desynced playback. The demuxer will
-    stop reading additional packets as soon as one of the limits is reached.
-    (The limits still can be slightly overstepped due to technical reasons.)
+    requested with ``--demuxer-readahead-secs``. The option can be used to
+    restrict the maximum readahead. This limits excessive readahead in case of
+    broken files or desynced playback. The demuxer will stop reading additional
+    packets as soon as one of the limits is reached. (The limits still can be
+    slightly overstepped due to technical reasons.)
 
     Set these limits higher if you get a packet queue overflow warning, and
     you think normal playback would be possible with a larger packet queue.
 
     See ``--list-options`` for defaults and value range.
+
+``--demuxer-max-packets=<packets>``
+    Quite similar ``--demuxer-max-bytes=<bytes>``. Deprecated, because the
+    other option does basically the same job. Since mpv 0.25.0, the code
+    tries to account for per-packet overhead, which is why this option becomes
+    rather pointless.
 
 ``--demuxer-thread=<yes|no>``
     Run the demuxer in a separate thread, and let it prefetch a certain amount
@@ -2897,11 +2943,6 @@ Input
     the mpv default key bindings.
 
     (This option was renamed from ``--input-x11-keyboard``.)
-
-``--input-app-events=<yes|no>``
-    (OS X only)
-    Enable/disable application wide keyboard events so that keyboard shortcuts
-    can be processed without a window. Enabled by default (except for libmpv).
 
 OSD
 ---
@@ -3099,12 +3140,8 @@ Screenshot
     Available choices:
 
     :png:       PNG
-    :ppm:       PPM
-    :pgm:       PGM
-    :pgmyuv:    PGM with YV12 pixel format
-    :tga:       TARGA
     :jpg:       JPEG (default)
-    :jpeg:      JPEG (same as jpg, but with .jpeg file ending)
+    :jpeg:      JPEG (alias for jpg)
 
 ``--screenshot-tag-colorspace=<yes|no>``
     Tag screenshots with the appropriate colorspace.
@@ -4137,9 +4174,11 @@ The following video options are currently all specific to ``--vo=opengl`` and
         Specifies the size of the resulting texture for this pass. ``szexpr``
         refers to an expression in RPN (reverse polish notation), using the
         operators + - * / > < !, floating point literals, and references to
-        sizes of existing texture and OUTPUT (such as MAIN.width or
-        CHROMA.height). By default, these are set to HOOKED.w and HOOKED.h,
-        respectively.
+        sizes of existing texture (such as MAIN.width or CHROMA.height),
+        OUTPUT, or NATIVE_CROPPED (size of an input texture cropped after
+        pan-and-scan, video-align-x/y, video-pan-x/y, etc. and possibly
+        prescaled). By default, these are set to HOOKED.w and HOOKED.h,
+        espectively.
 
     WHEN <szexpr>
         Specifies a condition that needs to be true (non-zero) for the shader
@@ -4193,11 +4232,13 @@ The following video options are currently all specific to ``--vo=opengl`` and
     int frame
         A simple count of frames rendered, increases by one per frame and never
         resets (regardless of seeks).
-    vec2 image_size
-        The size in pixels of the input image.
+    vec2 input_size
+        The size in pixels of the input image (possibly cropped and prescaled).
     vec2 target_size
         The size in pixels of the visible part of the scaled (and possibly
         cropped) image.
+    vec2 tex_offset
+        Texture offset introduced by user shaders or options like panscan, video-align-x/y, video-pan-x/y.
 
     Internally, vo_opengl may generate any number of the following textures.
     Whenever a texture is rendered and saved by vo_opengl, all of the passes
@@ -4359,8 +4400,21 @@ The following video options are currently all specific to ``--vo=opengl`` and
     chain will be used for D3D9. This option is mainly for debugging purposes,
     in case the custom swap chain has poor performance or does not work.
 
-    If set to ``yes``, the ``--angle-max-frame-latency`` and
-    ``--angle-swapchain-length`` options will have no effect.
+    If set to ``yes``, the ``--angle-max-frame-latency``,
+    ``--angle-swapchain-length`` and ``--angle-flip`` options will have no
+    effect.
+
+    Windows with ANGLE only.
+
+``--angle-flip=<yes|no>``
+    Enable flip-model presentation, which avoids unnecessarily copying the
+    backbuffer by sharing surfaces with the DWM (default: yes). This may cause
+    performance issues with older drivers. If flip-model presentation is not
+    supported (for example, on Windows 7 without the platform update), mpv will
+    automatically fall back to the older bitblt presentation model.
+
+    If set to ``no``, the ``--angle-swapchain-length`` option will have no
+    effect.
 
     Windows with ANGLE only.
 
@@ -4394,6 +4448,12 @@ The following video options are currently all specific to ``--vo=opengl`` and
     recommends at least 4.
 
     Windows 8+ with ANGLE only.
+
+``--cocoa-force-dedicated-gpu=<yes|no>``
+    Deactivates the automatic graphics switching and forces the dedicated GPU.
+    (default: no)
+
+    OS X only.
 
 ``--opengl-sw``
     Continue even if a software renderer is detected.
@@ -4430,12 +4490,19 @@ The following video options are currently all specific to ``--vo=opengl`` and
         X11/EGL
     mali-fbdev
         Direct fbdev/EGL support on some ARM/MALI devices.
+    vdpauglx
+        Use vdpau presentation with GLX as backing. Experimental use only.
+        Using this will have no advantage (other than additional bugs or
+        performance problems), and is for doing experiments only. Will not
+        be used automatically.
 
 ``--opengl-es=<mode>``
     Select whether to use GLES:
 
     yes
         Try to prefer ES over Desktop GL
+    force2
+        Try to request a ES 2.0 context (the driver might ignore this)
     no
         Try to prefer desktop GL over ES
     auto
@@ -4702,6 +4769,18 @@ The following video options are currently all specific to ``--vo=opengl`` and
 
     This option might be silently removed in the future.
 
+``--opengl-shader-cache-dir=<dirname>``
+    Store and load compiled GL shaders in this directory. Normally, shader
+    compilation is very fast, so this is usually not needed. But some GL
+    implementations (notably ANGLE, the default on Windows) have relatively
+    slow shader compilation, and can cause startup delays.
+
+    NOTE: This is not cleaned automatically, so old, unused cache files may
+    stick around indefinitely.
+
+    This option might be silently removed in the future, if ANGLE fixes shader
+    compilation speed.
+
 Miscellaneous
 -------------
 
@@ -4733,6 +4812,10 @@ Miscellaneous
 
 ``--video-sync=<audio|...>``
     How the player synchronizes audio and video.
+
+    If you use this option, you usually want to set it to ``display-resample``
+    to enable a timing mode that tries to not skip or repeat frames when for
+    example playing 24fps video on a 24Hz screen.
 
     The modes starting with ``display-`` try to output video frames completely
     synchronously to the display, using the detected display vertical refresh

@@ -22,9 +22,11 @@
 
 #include "common/av_common.h"
 #include "common/msg.h"
+#include "options/options.h"
 #include "video/mp_image.h"
 #include "video/decode/lavc.h"
 #include "video/mp_image_pool.h"
+#include "video/vt.h"
 #include "config.h"
 
 struct priv {
@@ -95,9 +97,22 @@ static void print_videotoolbox_error(struct mp_log *log, int lev, char *message,
     mp_msg(log, lev, "%s: %d\n", message, error_code);
 }
 
-static int init_decoder_common(struct lavc_ctx *ctx, int w, int h, AVVideotoolboxContext *vtctx)
+static int init_decoder(struct lavc_ctx *ctx, int w, int h)
 {
     av_videotoolbox_default_free(ctx->avctx);
+
+    AVVideotoolboxContext *vtctx = av_videotoolbox_alloc_context();
+    if (!vtctx)
+        return -1;
+
+    int imgfmt = ctx->opts->videotoolbox_format;
+#if LIBAVCODEC_VERSION_INT < AV_VERSION_INT(57, 81, 103)
+    if (!imgfmt)
+        imgfmt = IMGFMT_NV12;
+#endif
+    vtctx->cv_pix_fmt_type = mp_imgfmt_to_cvpixelformat(imgfmt);
+    MP_VERBOSE(ctx, "Requesting cv_pix_fmt_type=0x%x\n",
+               (unsigned)vtctx->cv_pix_fmt_type);
 
     int err = av_videotoolbox_default_init2(ctx->avctx, vtctx);
     if (err < 0) {
@@ -106,20 +121,6 @@ static int init_decoder_common(struct lavc_ctx *ctx, int w, int h, AVVideotoolbo
     }
 
     return 0;
-}
-
-static int init_decoder(struct lavc_ctx *ctx, int w, int h)
-{
-    AVVideotoolboxContext *vtctx = av_videotoolbox_alloc_context();
-    struct mp_vt_ctx *vt = hwdec_devices_load(ctx->hwdec_devs, HWDEC_VIDEOTOOLBOX);
-    vtctx->cv_pix_fmt_type = vt->get_vt_fmt(vt);
-
-    return init_decoder_common(ctx, w, h, vtctx);
-}
-
-static int init_decoder_copy(struct lavc_ctx *ctx, int w, int h)
-{
-    return init_decoder_common(ctx, w, h, NULL);
 }
 
 static void uninit(struct lavc_ctx *ctx)
@@ -138,55 +139,11 @@ static void uninit(struct lavc_ctx *ctx)
     ctx->hwdec_priv = NULL;
 }
 
-static int mp_imgfmt_from_cvpixelformat(uint32_t cvpixfmt)
-{
-    switch (cvpixfmt) {
-    case kCVPixelFormatType_420YpCbCr8Planar:               return IMGFMT_420P;
-    case kCVPixelFormatType_422YpCbCr8:                     return IMGFMT_UYVY;
-    case kCVPixelFormatType_32BGRA:                         return IMGFMT_RGB0;
-    case kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange:   return IMGFMT_NV12;
-    }
-    return 0;
-}
-
 static struct mp_image *copy_image(struct lavc_ctx *ctx, struct mp_image *hw_image)
 {
-    if (hw_image->imgfmt != IMGFMT_VIDEOTOOLBOX)
-        return hw_image;
-
     struct priv *p = ctx->hwdec_priv;
-    struct mp_image *image = NULL;
-    CVPixelBufferRef pbuf = (CVPixelBufferRef)hw_image->planes[3];
-    CVPixelBufferLockBaseAddress(pbuf, kCVPixelBufferLock_ReadOnly);
-    size_t width  = CVPixelBufferGetWidth(pbuf);
-    size_t height = CVPixelBufferGetHeight(pbuf);
-    uint32_t cvpixfmt = CVPixelBufferGetPixelFormatType(pbuf);
-    int pixfmt = mp_imgfmt_from_cvpixelformat(cvpixfmt);
-    if (!pixfmt)
-        goto unlock;
 
-    struct mp_image img = {0};
-    mp_image_setfmt(&img, pixfmt);
-    mp_image_set_size(&img, width, height);
-
-    if (CVPixelBufferIsPlanar(pbuf)) {
-        int planes = CVPixelBufferGetPlaneCount(pbuf);
-        for (int i = 0; i < planes; i++) {
-            img.planes[i] = CVPixelBufferGetBaseAddressOfPlane(pbuf, i);
-            img.stride[i] = CVPixelBufferGetBytesPerRowOfPlane(pbuf, i);
-        }
-    } else {
-        img.planes[0] = CVPixelBufferGetBaseAddress(pbuf);
-        img.stride[0] = CVPixelBufferGetBytesPerRow(pbuf);
-    }
-
-    mp_image_copy_attributes(&img, hw_image);
-
-    image = mp_image_pool_new_copy(p->sw_pool, &img);
-
-unlock:
-    CVPixelBufferUnlockBaseAddress(pbuf, kCVPixelBufferLock_ReadOnly);
-
+    struct mp_image *image = mp_vt_download_image(NULL, hw_image, p->sw_pool);
     if (image) {
         talloc_free(hw_image);
         return image;
@@ -222,7 +179,7 @@ const struct vd_lavc_hwdec mp_vd_lavc_videotoolbox_copy = {
     .probe = probe_copy,
     .init = init,
     .uninit = uninit,
-    .init_decoder = init_decoder_copy,
+    .init_decoder = init_decoder,
     .process_image = copy_image,
     .delay_queue = HWDEC_DELAY_QUEUE_COUNT,
 };

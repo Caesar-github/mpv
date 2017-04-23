@@ -16,8 +16,9 @@
 // This number might require adjustment depending on whatever the player does;
 // for example, if vo_opengl increases the number of reference surfaces for
 // interpolation, this value has to be increased too.
-// This value does not yet include HWDEC_DELAY_QUEUE_COUNT.
-#define HWDEC_EXTRA_SURFACES 4
+#define HWDEC_EXTRA_SURFACES 6
+
+struct mpv_global;
 
 typedef struct lavc_ctx {
     struct mp_log *log;
@@ -54,6 +55,9 @@ typedef struct lavc_ctx {
 
     // For free use by hwdec implementation
     void *hwdec_priv;
+
+    // Set by generic hwaccels.
+    struct mp_hwdec_ctx *hwdec_dev;
 
     int hwdec_fmt;
     int hwdec_w;
@@ -92,15 +96,24 @@ struct vd_lavc_hwdec {
     struct mp_image *(*allocate_image)(struct lavc_ctx *ctx, int w, int h);
     // Process the image returned by the libavcodec decoder.
     struct mp_image *(*process_image)(struct lavc_ctx *ctx, struct mp_image *img);
-    // For horrible Intel shit-drivers only
-    void (*lock)(struct lavc_ctx *ctx);
-    void (*unlock)(struct lavc_ctx *ctx);
-    // Optional; if a special hardware decoder is needed (instead of "hwaccel").
-    const char *(*get_codec)(struct lavc_ctx *ctx, const char *codec);
-    // Suffix for libavcodec decoder. If non-NULL, get_codec() is overridden
+    // For copy hwdecs. If probing is true, don't log errors if unavailable.
+    // The returned device must be freed with mp_hwdec_ctx->destroy.
+    struct mp_hwdec_ctx *(*create_dev)(struct mpv_global *global,
+                                       struct mp_log *log, bool probing);
+    // Suffix for libavcodec decoder. If non-NULL, the codec is overridden
     // with hwdec_find_decoder.
     // Intuitively, this will force the corresponding wrapper decoder.
     const char *lavc_suffix;
+    // Generic hwaccels set AVCodecContext.hw_frames_ctx in get_format().
+    // pixfmt_map must be non-NULL.
+    // struct lavc_ctx.hwdec_dev must be set at runtime (in init).
+    bool generic_hwaccel;
+    // Array of pixfmt pairs. The first pixfmt is the AVCodecContext.sw_pix_fmt,
+    // the second the required AVHWFramesContext.sw_format.
+    const enum AVPixelFormat (*pixfmt_map)[2];
+    // The generic hwaccel has a fixed pool size. Enough surfaces need to be
+    // preallocated before decoding begins. If false, pool size is left to 0.
+    bool static_pool;
 };
 
 enum {
