@@ -12,10 +12,16 @@ Copyright:
  2013, Christian Neukirchen <chneukirchen@gmail.com>
 License: ISC
 
+Files: debian/*
+Copyright:
+ 2013 Alessandro Ghedini <ghedo@debian.org>
+ 2016-2017 James Cowgill <jcowgill@debian.org>
+License: GPL-2+
+
 Files:
  libmpv/*
  osdep/semaphore_osx.c
- osdep/win32/pthread.c
+ osdep/win32/*
  player/client.c
  ta/*
 Copyright: 2000-2016, The mplayer, mplayer2 and mpv Developers
@@ -42,6 +48,7 @@ Copyright: 2012, Rudolf Polzer <divVerent@xonotic.org>
 License: LGPL-2.1+
 
 Files:
+ DOCS/man/*
  TOOLS/matroska.py
  audio/audio.c
  audio/audio.h
@@ -53,7 +60,6 @@ Files:
  audio/filter/af.c
  audio/filter/af.h
  audio/filter/af_channels.c
- audio/filter/af_drc.c
  audio/filter/af_equalizer.c
  audio/filter/af_format.c
  audio/filter/af_lavcac3enc.c
@@ -87,7 +93,6 @@ Files:
  audio/out/ao_rsound.c
  audio/out/internal.h
  common/av_log.c
- common/common.h
  common/encode_lavc.c
  common/encode_lavc.h
  common/msg.c
@@ -96,13 +101,7 @@ Files:
  demux/demux.h
  demux/demux_lavf.c
  demux/demux_mf.c
- demux/demux_mkv.c
  demux/demux_raw.c
- demux/ebml.c
- demux/ebml.h
- demux/matroska.h
- demux/packet.c
- demux/packet.h
  demux/stheader.h
  input/cmd_list.c
  input/cmd_list.h
@@ -132,6 +131,8 @@ Files:
  osdep/macosx_events.h
  osdep/macosx_events.m
  osdep/macosx_events_objc.h
+ osdep/macosx_touchbar.h
+ osdep/macosx_touchbar.m
  osdep/macosx_versions.h
  osdep/mpv.rc
  osdep/terminal-unix.c
@@ -147,6 +148,7 @@ Files:
  player/command.h
  player/configfiles.c
  player/core.h
+ player/external_files.c
  player/external_files.h
  player/loadfile.c
  player/main.c
@@ -185,12 +187,6 @@ Files:
  stream/tvi_def.h
  stream/tvi_dummy.c
  stream/tvi_v4l2.c
- sub/ass_mp.c
- sub/ass_mp.h
- sub/osd.c
- sub/osd.h
- sub/sd_ass.c
- sub/sd_lavc.c
  video/decode/dec_video.c
  video/decode/dec_video.h
  video/decode/hw_vaapi_old.c
@@ -255,12 +251,6 @@ Files:
  video/vdpau.c
  video/vdpau_mixer.c
 Copyright: 2000-2017, The mplayer, mplayer2 and mpv Developers
-License: GPL-2+
-
-Files: debian/*
-Copyright:
- 2013 Alessandro Ghedini <ghedo@debian.org>
- 2016-2017 James Cowgill <jcowgill@debian.org>
 License: GPL-2+
 
 License: BSD-2-clause
