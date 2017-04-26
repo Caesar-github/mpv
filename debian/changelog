@@ -1,8 +1,17 @@
-mpv (0.25.0-1) UNRELEASED; urgency=medium
+mpv (0.25.0-1) experimental; urgency=medium
 
-  *
+  * New upstream release.
 
- -- James Cowgill <jcowgill@debian.org>  Sun, 23 Apr 2017 16:57:01 +0100
+  * debian/compat:
+    - Use debhelper compat 10.
+  * debian/copyright:
+    - Update various files which were relicensed from GPL to LGPL.
+  * debian/patches:
+    - Refresh.
+  * debian/rules:
+    - Re-enable dvd functionality which was disabled by default upstream.
+
+ -- James Cowgill <jcowgill@debian.org>  Wed, 26 Apr 2017 21:34:39 +0100
 
 mpv (0.24.0-1) experimental; urgency=medium
 
