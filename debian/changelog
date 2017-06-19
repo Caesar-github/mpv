@@ -1,8 +1,13 @@
-mpv (0.25.0-2) UNRELEASED; urgency=medium
+mpv (0.25.0-2) unstable; urgency=medium
 
-  *
+  * Upload to unstable.
 
- -- James Cowgill <jcowgill@debian.org>  Thu, 11 May 2017 13:27:19 +0100
+  * debian/control:
+    - Drop build dependencies on libenca-dev and libguess-dev.
+      Thanks to Yuriy M. Kaminskiy
+    - Bump standards to 4.0.0 (no changes required).
+
+ -- James Cowgill <jcowgill@debian.org>  Mon, 19 Jun 2017 09:11:40 +0100
 
 mpv (0.25.0-1) experimental; urgency=medium
 
