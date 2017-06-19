@@ -97,15 +97,3 @@ Description: video player based on MPlayer/mplayer2 (client library dev files)
  variety of video file formats, audio and video codecs, and subtitle types.
  .
  This package provides development files for libmpv.
-
-Package: mplayer2
-Section: oldlibs
-Architecture: all
-Depends: mpv, ${misc:Depends}
-Multi-Arch: foreign
-Replaces: mplayer
-Conflicts: mplayer
-Description: transitional dummy package for mpv
- This is a transitional dummy package to get upgrading systems to install
- the mpv package. It can safely be removed once no other package depends
- on it.

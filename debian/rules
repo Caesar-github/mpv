@@ -2,8 +2,6 @@
 
 export DEB_BUILD_MAINT_OPTIONS := hardening=+all # #741439, #799738
 
-PACKAGE_VERSION = $(shell dpkg-parsechangelog -SVersion)
-
 %:
 	dh $@
 
@@ -28,10 +26,6 @@ override_dh_auto_install:
 
 override_dh_installchangelogs:
 	dh_installchangelogs RELEASE_NOTES
-
-override_dh_gencontrol:
-	dh_gencontrol -pmplayer2 -- -v3:$(PACKAGE_VERSION)
-	dh_gencontrol --remaining-packages
 
 override_dh_auto_clean:
 	test -s ./waf && python ./waf -v distclean || true
