@@ -17,6 +17,7 @@ Build-Depends:
  libavresample-dev (>= 7:3.2.2),
  libavutil-dev (>= 7:3.2.2),
  libbluray-dev,
+ libcaca-dev,
  libcdio-paranoia-dev,
  libdvdnav-dev,
  libdvdread-dev,
