@@ -1,8 +1,10 @@
-mpv (0.25.0-3) UNRELEASED; urgency=medium
+mpv (0.25.0-3) unstable; urgency=medium
 
-  *
+  * debian/control:
+    - Drop mplayer2 transitional package.
+    - Build-Depend on libcaca-dev. (Closes: #865517)
 
- -- James Cowgill <jcowgill@debian.org>  Mon, 19 Jun 2017 10:27:26 +0100
+ -- James Cowgill <jcowgill@debian.org>  Thu, 22 Jun 2017 12:19:08 +0100
 
 mpv (0.25.0-2) unstable; urgency=medium
 
