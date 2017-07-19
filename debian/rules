@@ -11,11 +11,14 @@ override_dh_auto_configure:
 			--libdir=/usr/lib/$(DEB_HOST_MULTIARCH)		\
 			--confdir=/etc/mpv				\
 			--zshdir=/usr/share/zsh/vendor-completions	\
-			--enable-cdda --enable-sdl2 --enable-sndio	\
-			--enable-zsh-comp --enable-libmpv-shared	\
-			--enable-encoding				\
+			--enable-cdda					\
 			--enable-dvdnav					\
 			--enable-dvdread				\
+			--enable-encoding				\
+			--enable-libmpv-shared				\
+			--enable-sdl2					\
+			--enable-sndio					\
+			--enable-zsh-comp				\
 			--disable-build-date
 
 override_dh_auto_build:
