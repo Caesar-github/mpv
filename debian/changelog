@@ -1,8 +1,21 @@
-mpv (0.26.0-1) UNRELEASED; urgency=medium
+mpv (0.26.0-1) unstable; urgency=medium
 
-  *
+  * New upstream release.
+    - Fixes unfinished --audio-spdif sentence in the manpage.
+      (Closes: #864908)
 
- -- James Cowgill <jcowgill@debian.org>  Wed, 19 Jul 2017 10:56:18 +0100
+  * debian/copyright:
+    - Update d/copyright and list of GPL-2 files.
+    - Clarify license of distributed binaries is GPL-3+.
+  * debian/patches:
+    - Refresh patches.
+    - Update waf to 1.9.8.
+  * debian/rules:
+    - Reformat and sort configure options in d/rules.
+    - Fix DEB_HOST_MULTIARCH when d/rules is invoked directly.
+    - Enable libsmbclient and tv (disabled upstream).
+
+ -- James Cowgill <jcowgill@debian.org>  Wed, 19 Jul 2017 14:59:54 +0100
 
 mpv (0.25.0-3) unstable; urgency=medium
 
