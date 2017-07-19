@@ -1,6 +1,10 @@
 Format: http://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: mpv
 Source: https://github.com/mpv-player/mpv/releases
+Comment:
+ While the mpv source code is distributed mostly under the GPL-2+ or LGPL-2.1+
+ licenses, the binaries are distributed under the GPL-3+ license because they
+ are linked to the GPL-3+ libsmbclient library.
 
 Files: *
 Copyright: 2000-2017, The mplayer, mplayer2 and mpv Developers
