@@ -8,7 +8,7 @@ Bug-Debian: https://bugs.debian.org/831537
 This patch header follows DEP-3: http://dep.debian.net/deps/dep3/
 --- a/player/main.c
 +++ b/player/main.c
-@@ -438,18 +438,6 @@ int mp_initialize(struct MPContext *mpct
+@@ -447,18 +447,6 @@ int mp_initialize(struct MPContext *mpct
  
      handle_deprecated_options(mpctx);
  
