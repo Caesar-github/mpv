@@ -18,8 +18,10 @@ override_dh_auto_configure:
 			--enable-dvdread				\
 			--enable-encoding				\
 			--enable-libmpv-shared				\
+			--enable-libsmbclient				\
 			--enable-sdl2					\
 			--enable-sndio					\
+			--enable-tv					\
 			--enable-zsh-comp				\
 			--disable-build-date
 
