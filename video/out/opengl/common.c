@@ -95,6 +95,7 @@ static const struct gl_functions gl_functions[] = {
             DEF_FN(BindTexture),
             DEF_FN(BlendFuncSeparate),
             DEF_FN(BufferData),
+            DEF_FN(BufferSubData),
             DEF_FN(Clear),
             DEF_FN(ClearColor),
             DEF_FN(CompileShader),
@@ -579,8 +580,8 @@ void mpgl_load_functions2(GL *gl, void *(*get_fn)(void *ctx, const char *n),
         int glsl_major = 0, glsl_minor = 0;
         if (shader && sscanf(shader, "%d.%d", &glsl_major, &glsl_minor) == 2)
             gl->glsl_version = glsl_major * 100 + glsl_minor;
-        // GLSL 400 defines "sample" as keyword - breaks custom shaders.
-        gl->glsl_version = MPMIN(gl->glsl_version, 330);
+        // restrict GLSL version to be forwards compatible
+        gl->glsl_version = MPMIN(gl->glsl_version, 400);
     }
 
     if (is_software_gl(gl)) {
@@ -609,4 +610,14 @@ void mpgl_load_functions(GL *gl, void *(*getProcAddress)(const GLubyte *),
                          const char *ext2, struct mp_log *log)
 {
     mpgl_load_functions2(gl, get_procaddr_wrapper, getProcAddress, ext2, log);
+}
+
+void *mpgl_get_native_display(struct GL *gl, const char *name)
+{
+    void *res = NULL;
+    if (gl->get_native_display)
+        res = gl->get_native_display(gl->get_native_display_ctx, name);
+    if (!res && gl->MPGetNativeDisplay)
+        res = gl->MPGetNativeDisplay(name);
+    return res;
 }

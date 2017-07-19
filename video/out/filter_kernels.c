@@ -117,8 +117,8 @@ static double sample_filter(struct filter_kernel *filter, double x)
 {
     // The window is always stretched to the entire kernel
     double w = sample_window(&filter->w, x / filter->f.radius * filter->w.radius);
-    double k = sample_window(&filter->f, x);
-    return filter->clamp ? fmax(0.0, fmin(1.0, w * k)) : w * k;
+    double k = w * sample_window(&filter->f, x);
+    return k < 0 ? (1 - filter->clamp) * k : k;
 }
 
 // Calculate the 1D filtering kernel for N sample points.
@@ -152,10 +152,14 @@ static void mp_compute_weights(struct filter_kernel *filter, double f,
 void mp_compute_lut(struct filter_kernel *filter, int count, float *out_array)
 {
     if (filter->polar) {
+        filter->radius_cutoff = 0.0;
         // Compute a 1D array indexed by radius
         for (int x = 0; x < count; x++) {
             double r = x * filter->f.radius / (count - 1);
             out_array[x] = sample_filter(filter, r);
+
+            if (fabs(out_array[x]) > filter->value_cutoff)
+                filter->radius_cutoff = r;
         }
     } else {
         // Compute a 2D array indexed by subpixel position

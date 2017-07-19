@@ -190,10 +190,8 @@ static void add_functions(struct script_ctx *ctx);
 static void load_file(lua_State *L, const char *fname)
 {
     struct script_ctx *ctx = get_ctx(L);
-    char *res_name = mp_get_user_path(NULL, ctx->mpctx->global, fname);
-    MP_VERBOSE(ctx, "loading file %s\n", res_name);
-    int r = luaL_loadfile(L, res_name);
-    talloc_free(res_name); // careful to not leak this on Lua errors
+    MP_VERBOSE(ctx, "loading file %s\n", fname);
+    int r = luaL_loadfile(L, fname);
     if (r)
         lua_error(L);
     lua_call(L, 0, 0);
@@ -1154,7 +1152,7 @@ static int script_subprocess(lua_State *L)
     lua_pop(L, 1); // -
 
     lua_getfield(L, 1, "max_size"); // m
-    int64_t max_size = lua_isnil(L, -1) ? 16 * 1024 * 1024 : lua_tointeger(L, -1);
+    int64_t max_size = lua_isnil(L, -1) ? 64 * 1024 * 1024 : lua_tointeger(L, -1);
 
     struct subprocess_cb_ctx cb_ctx = {
         .log = ctx->log,

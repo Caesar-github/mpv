@@ -12,11 +12,10 @@ Track Selection
 
     .. admonition:: Examples
 
-        ``mpv dvd://1 --alang=hu,en``
-            Chooses the Hungarian language track on a DVD and falls back on
-            English if Hungarian is not available.
-        ``mpv --alang=jpn example.mkv``
-            Plays a Matroska file in Japanese.
+        - ``mpv dvd://1 --alang=hu,en`` chooses the Hungarian language track
+          on a DVD and falls back on English if Hungarian is not available.
+        - ``mpv --alang=jpn example.mkv`` plays a Matroska file with Japanese
+          audio.
 
 ``--slang=<languagecode[,languagecode,...]>``
     Specify a priority list of subtitle languages to use. Different container
@@ -67,7 +66,7 @@ Track Selection
     stream index is relatively arbitrary, but useful when interacting with
     other software using FFmpeg (consider ``ffprobe``).
 
-    Note that with external tracks (added with ``--sub-file`` and similar
+    Note that with external tracks (added with ``--sub-files`` and similar
     options), there will be streams with duplicate IDs. In this case, the
     first stream in order is selected.
 
@@ -335,6 +334,10 @@ Playback Control
     Load chapters from this file, instead of using the chapter metadata found
     in the main file.
 
+    This accepts a media file (like mkv) or even a pseudo-format like ffmetadata
+    and uses its chapters to replace the current file's chapters. This doesn't
+    work with OGM or XML chapters directly.
+
 ``--sstep=<sec>``
     Skip <sec> seconds after every frame.
 
@@ -527,6 +530,25 @@ Program Behavior
 
     If the script can't do anything with an URL, it will do nothing.
 
+    The `exclude` script option accepts a ``|``-separated list of URL patterns
+    which mpv should not use with youtube-dl. The patterns are matched after
+    the ``http(s)://`` part of the URL.
+
+    ``^`` matches the beginning of the URL, ``$`` matches its end, and you
+    should use ``%`` before any of the characters ``^$()%|,.[]*+-?`` to match
+    that character.
+
+    .. admonition:: Examples
+
+        - ``--script-opts=ytdl_hook-exclude='^youtube%.com'``
+          will exclude any URL that starts with ``http://youtube.com`` or
+          ``https://youtube.com``.
+        - ``--script-opts=ytdl_hook-exclude='%.mkv$|%.mp4$'``
+          will exclude any URL that ends with ``.mkv`` or ``.mp4``.
+
+    See more lua patterns here: https://www.lua.org/manual/5.1/manual.html#5.4.1
+
+
 ``--ytdl-format=<best|worst|mp4|webm|...>``
     Video format/quality that is directly passed to youtube-dl. The possible
     values are specific to the website and the video, for a given url the
@@ -544,8 +566,8 @@ Program Behavior
 
     .. admonition:: Example
 
-        ``--ytdl-raw-options=username=user,password=pass``
-        ``--ytdl-raw-options=force-ipv6=``
+        - ``--ytdl-raw-options=username=user,password=pass``
+        - ``--ytdl-raw-options=force-ipv6=``
 
 ``--player-operation-mode=<cplayer|pseudo-gui>``
     For enabling "pseudo GUI mode", which means that the defaults for some
@@ -819,16 +841,20 @@ Video
 
     :hybrid:    Prefer the container aspect ratio. If the bitstream aspect
                 switches mid-stream, switch to preferring the bitstream aspect.
-                This is the default behavior in mpv and mplayer2.
+                This was the default in older mpv and mplayer2. Deprecated.
     :container: Strictly prefer the container aspect ratio. This is apparently
-                the default behavior with VLC, at least with Matroska.
+                the default behavior with VLC, at least with Matroska. Note that
+                if the container has no aspect ratio set, the behavior is the
+                same as with bitstream.
     :bitstream: Strictly prefer the bitstream aspect ratio, unless the bitstream
                 aspect ratio is not set. This is apparently the default behavior
                 with XBMC/kodi, at least with Matroska.
 
-    Normally you should not set this. Try the ``container`` and ``bitstream``
-    choices if you encounter video that has the wrong aspect ratio in mpv,
-    but seems to be correct in other players.
+    The current default for mpv is ``container``.
+
+    Normally you should not set this. Try the various choices if you encounter
+    video that has the wrong aspect ratio in mpv, but seems to be correct in
+    other players.
 
 ``--video-unscaled=<no|yes|downscale-big>``
     Disable scaling of the video. If the window is larger than the video,
@@ -1141,7 +1167,8 @@ Audio
     If both ``dts`` and ``dts-hd`` are specified, it behaves equivalent to
     specifying ``dts-hd`` only.
 
-    In earlier mpv versions
+    In earlier mpv versions you could use ``--ad`` to force the spdif wrapper.
+    This does not work anymore.
 
     .. admonition:: Warning
 
@@ -1181,6 +1208,23 @@ Audio
     treated as 0.
 
     Since mpv 0.18.1, this always controls the internal mixer (aka "softvol").
+
+``--replaygain=<no|track|album>``
+    Adjust volume gain according to the track-gain or album-gain replaygain
+    value stored in the file metadata (default: no replaygain).
+
+``--replaygain-preamp=<db>``
+    Pre-amplification gain in dB to apply to the selected replaygain gain
+    (default: 0).
+
+``--replaygain-clip=<yes|no>``
+    Prevent clipping caused by replaygain by automatically lowering the
+    gain (default). Use ``--replaygain-clip=no`` to disable this.
+
+``--replaygain-fallback=<db>``
+    Gain in dB to apply if the file has no replay gain tags. This option
+    is always applied if the replaygain logic is somehow inactive. If this
+    is applied, no other replaygain options are applied.
 
 ``--balance=<value>``
     How much left/right channels contribute to the audio. (The implementation
@@ -1336,8 +1380,13 @@ Audio
 
     This option has no influence on files with normal video tracks.
 
-``--audio-file=<filename>``
-    Play audio from an external file while viewing a video. Each use of this
+``--audio-files=<files>``
+    Play audio from an external file while viewing a video.
+
+    This is a list option. See `List Options`_ for details.
+
+``--audio-file=<file>``
+    CLI/config file only alias for ``--audio-files-append``. Each use of this
     option will add a new audio track. The details are similar to how
     ``--sub-file`` works.
 
@@ -1407,11 +1456,11 @@ Audio
     :no:    Don't automatically load external audio files.
     :exact: Load the media filename with audio file extension (default).
     :fuzzy: Load all audio files containing media filename.
-    :all:   Load all audio files in the current and ``--audio-file-paths``
+    :all:   Load all audio files in the current and ``--audio-file-path``
             directories.
 
 ``--audio-file-paths=<path1:path2:...>``
-    Equivalent to ``--sub-paths`` option, but for auto-loaded audio files.
+    Equivalent to ``--sub-file-paths`` option, but for auto-loaded audio files.
 
 ``--audio-client-name=<name>``
     The application name the player reports to the audio API. Can be useful
@@ -1460,7 +1509,7 @@ Subtitles
     Changing styling and position does not work with all subtitles. Image-based
     subtitles (DVD, Bluray/PGS, DVB) cannot changed for fundamental reasons.
     Subtitles in ASS format are normally not changed intentionally, but
-    overriding them can be controlled with ``--sub-ass-style-override``.
+    overriding them can be controlled with ``--sub-ass-override``.
 
     Previously some options working on text subtitles were called
     ``--sub-text-*``, they are now named ``--sub-*``, and those specifically
@@ -1474,7 +1523,7 @@ Subtitles
 ``--sub-delay=<sec>``
     Delays subtitles by ``<sec>`` seconds. Can be negative.
 
-``--sub-file=subtitlefile``
+``--sub-files=<file-list>``
     Add a subtitle file to the list of external subtitles.
 
     If you use ``--sub-file`` only once, this subtitle file is displayed by
@@ -1485,6 +1534,8 @@ Subtitles
     two subtitles at once: use ``--sid`` to select the first subtitle index,
     and ``--secondary-sid`` to select the second index. (The index is printed
     on the terminal output after the ``--sid=`` in the list of streams.)
+
+    This is a list option. See `List Options`_ for details.
 
 ``--secondary-sid=<ID|auto|no>``
     Select a secondary subtitle stream. This is similar to ``--sid``. If a
@@ -1537,8 +1588,8 @@ Subtitles
     scales with the approximate window size, while the other option disables
     this scaling.
 
-    Affects plain text subtitles only (or ASS if ``--sub-ass-style-override`` is
-    set high enough).
+    Affects plain text subtitles only (or ASS if ``--sub-ass-override`` is set
+    high enough).
 
 ``--sub-ass-scale-with-window=<yes|no>``
     Like ``--sub-scale-with-window``, but affects subtitles in ASS format only.
@@ -1566,7 +1617,7 @@ Subtitles
 
     .. admonition:: Example
 
-        `--sub-speed=25/23.976`` plays frame based subtitles which have been
+        ``--sub-speed=25/23.976`` plays frame based subtitles which have been
         loaded assuming a framerate of 23.976 at 25 FPS.
 
 ``--sub-ass-force-style=<[Style.]Param=Value[,...]>``
@@ -1617,16 +1668,19 @@ Subtitles
 
         Using this option may lead to incorrect subtitle rendering.
 
-``--sub-ass-style-override=<yes|no|force|signfs|strip>``
-    Control whether user style overrides should be applied.
+``--sub-ass-override=<yes|no|force|scale|strip>``
+    Control whether user style overrides should be applied. Note that all of
+    these overrides try to be somewhat smart about figuring out whether or not
+    a subtitle is considered a "sign".
 
-    :yes:   Apply all the ``--sub-ass-*`` style override options. Changing the default
-            for any of these options can lead to incorrect subtitle rendering
-            (default).
-    :signfs: like ``yes``, but apply ``--sub-scale`` only to signs
-    :no:    Render subtitles as forced by subtitle scripts.
-    :force: Try to force the font style as defined by the ``--sub-*``
-            options. Can break rendering easily.
+    :no:    Render subtitles as specified by the subtitle scripts, without
+            overrides.
+    :yes:   Apply all the ``--sub-ass-*`` style override options. Changing the
+            default for any of these options can lead to incorrect subtitle
+            rendering (default).
+    :force: Like ``yes``, but also force all ``--sub-*`` options. Can break
+            rendering easily.
+    :scale: Like ``yes``, but also apply ``--sub-scale``.
     :strip: Radically strip all ASS tags and styles from the subtitle. This
             is equivalent to the old ``--no-ass`` / ``--no-sub-ass`` options.
 
@@ -1639,7 +1693,7 @@ Subtitles
 ``--sub-use-margins``
     Enables placing toptitles and subtitles in black borders when they are
     available, if the subtitles are in a plain text format  (or ASS if
-    ``--sub-ass-style-override`` is set high enough).
+    ``--sub-ass-override`` is set high enough).
 
     Default: yes.
 
@@ -1694,7 +1748,7 @@ Subtitles
 
     Choosing anything other than ``no`` will make the subtitle color depend on
     the video color space, and it's for example in theory not possible to reuse
-    a subtitle script with another video file. The ``--sub-ass-style-override``
+    a subtitle script with another video file. The ``--sub-ass-override``
     option doesn't affect how this option is interpreted.
 
 ``--stretch-dvd-subs=<yes|no>``
@@ -1734,9 +1788,9 @@ Subtitles
 
     .. note::
 
-        This has been deprecated by ``--sub-ass-style-override=strip``. You also
+        This has been deprecated by ``--sub-ass-override=strip``. You also
         may need ``--embeddedfonts=no`` to get the same behavior. Also,
-        using ``--sub-ass-style-override=force`` should give better results
+        using ``--sub-ass-override=style`` should give better results
         without breaking subtitles too much.
 
     If ``--no-sub-ass`` is specified, all tags and style declarations are
@@ -1757,7 +1811,7 @@ Subtitles
     :no:    Don't automatically load external subtitle files.
     :exact: Load the media filename with subtitle file extension (default).
     :fuzzy: Load all subs containing media filename.
-    :all:   Load all subs in the current and ``--sub-paths`` directories.
+    :all:   Load all subs in the current and ``--sub-file-path`` directories.
 
 ``--sub-codepage=<codepage>``
     You can use this option to specify the subtitle codepage. uchardet will be
@@ -1787,10 +1841,10 @@ Subtitles
     removed in mpv 0.24.0.
 
 
-``--sub-fix-timing``, ``--no-sub-fix-timing``
-    By default, subtitle timing is adjusted to remove minor gaps or overlaps
-    between subtitles (if the difference is smaller than 210 ms, the gap or
-    overlap is removed).
+``--sub-fix-timing=<yes|no>``
+    Adjust subtitle timing is to remove minor gaps or overlaps between
+    subtitles (if the difference is smaller than 210 ms, the gap or overlap
+    is removed).
 
 ``--sub-forced-only``
     Display only forced subtitles for the DVD subtitle stream selected by e.g.
@@ -1825,6 +1879,9 @@ Subtitles
         Never applied to text subtitles.
 
 ``--sub-paths=<path1:path2:...>``
+    Deprecated, use ``--sub-file-paths``.
+
+``--sub-file-paths=<path-list>``
     Specify extra directories to search for subtitles matching the video.
     Multiple directories can be separated by ":" (";" on Windows).
     Paths can be relative or absolute. Relative paths are interpreted relative
@@ -1835,14 +1892,15 @@ Subtitles
     .. admonition:: Example
 
         Assuming that ``/path/to/video/video.avi`` is played and
-        ``--sub-paths=sub:subtitles:/tmp/subs`` is specified, mpv searches for
-        subtitle files in these directories:
+        ``--sub-file-paths=sub:subtitles`` is specified, mpv
+        searches for subtitle files in these directories:
 
         - ``/path/to/video/``
         - ``/path/to/video/sub/``
         - ``/path/to/video/subtitles/``
-        - ``/tmp/subs/``
         -  the ``sub`` configuration subdirectory (usually ``~/.config/mpv/sub/``)
+
+    This is a list option. See `List Options`_ for details.
 
 ``--sub-visibility``, ``--no-sub-visibility``
     Can be used to disable display of subtitles, but still select and decode
@@ -1867,7 +1925,7 @@ Subtitles
     .. admonition:: Examples
 
         - ``--sub-font='Bitstream Vera Sans'``
-        - ``--sub-font='MS Comic Sans'``
+        - ``--sub-font='Comic Sans MS'``
 
     .. note::
 
@@ -1979,7 +2037,7 @@ Subtitles
 
 ``--sub-ass-justify=<yes|no>``
     Applies justification as defined by ``--sub-justify`` on ASS subtitles
-    if ``--sub-ass-style-override`` is not set to ``no``.
+    if ``--sub-ass-override`` is not set to ``no``.
     Default: ``no``.
 
 ``--sub-shadow-color=<color>``
@@ -2647,10 +2705,6 @@ Demuxer
     libavformat might reallocate the buffer internally, or not fully use all
     of it.
 
-``--demuxer-lavf-cryptokey=<hexstring>``
-    Encryption key the demuxer should use. This is the raw binary data of
-    the key converted to a hexadecimal string.
-
 ``--demuxer-mkv-subtitle-preroll=<yes|index|no>``, ``--mkv-subtitle-preroll``
     Try harder to show embedded soft subtitles when seeking somewhere. Normally,
     it can happen that the subtitle at the seek target is not shown due to how
@@ -2967,7 +3021,7 @@ OSD
     .. admonition:: Examples
 
         - ``--osd-font='Bitstream Vera Sans'``
-        - ``--osd-font='MS Comic Sans'``
+        - ``--osd-font='Comic Sans MS'``
 
 ``--osd-font-size=<size>``
     Specify the OSD font size. See ``--sub-font-size`` for details.
@@ -3865,6 +3919,7 @@ The following video options are currently all specific to ``--vo=opengl`` and
 ``--vo=opengl-cb`` only, which are the only VOs that implement them.
 
 ``--scale=<filter>``
+    The filter function to use when upscaling video.
 
     ``bilinear``
         Bilinear hardware texture filtering (fastest, very low quality). This
@@ -3957,12 +4012,24 @@ The following video options are currently all specific to ``--vo=opengl`` and
     this too low (eg. 0.5) leads to bad results. It's generally recommended to
     stick to values between 0.8 and 1.2.
 
-``--scale-clamp``, ``--cscale-clamp``, ``--dscale-clamp``, ``--tscale-clamp``
-    Clamp the filter kernel's value range to [0-1]. This is especially useful
-    for ``--tscale``, where it reduces excessive ringing artifacts in the
-    temporal domain (which typically manifest themselves as short flashes or
-    fringes of black, mostly around moving edges) in exchange for potentially
-    adding more blur.
+``--scale-clamp=<0.0-1.0>``, ``--cscale-clamp``, ``--dscale-clamp``, ``--tscale-clamp``
+    Specifies a weight bias to multiply into negative coefficients. Specifying
+    ``--scale-clamp=1`` has the effect of removing negative weights completely,
+    thus effectively clamping the value range to [0-1]. Values between 0.0 and
+    1.0 can be specified to apply only a moderate diminishment of negative
+    weights. This is especially useful for ``--tscale``, where it reduces
+    excessive ringing artifacts in the temporal domain (which typically
+    manifest themselves as short flashes or fringes of black, mostly around
+    moving edges) in exchange for potentially adding more blur. The default for
+    ``--tscale-clamp`` is 1.0, the others default to 0.0.
+
+``--scale-cutoff=<value>``, ``--cscale-cutoff=<value>``, ``--dscale-cutoff=<value>``
+    Cut off the filter kernel prematurely once the value range drops below
+    this threshold. Doing so allows more aggressive pruning of skippable
+    coefficients by disregarding parts of the LUT which are effectively zeroed
+    out by the window function. Only affects polar (EWA) filters. The default
+    is 0.001 for each, which is perceptually transparent but provides a 10%-20%
+    speedup, depending on the exact radius and filter kernel chosen.
 
 ``--scale-taper=<value>``, ``--scale-wtaper=<value>``, ``--dscale-taper=<value>``, ``--dscale-wtaper=<value>``, ``--cscale-taper=<value>``, ``--cscale-wtaper=<value>``, ``--tscale-taper=<value>``, ``--tscale-wtaper=<value>``
     Kernel/window taper factor. Increasing this flattens the filter function.
@@ -3986,7 +4053,7 @@ The following video options are currently all specific to ``--vo=opengl`` and
     0.0 and 1.0. The default value of 0.0 disables antiringing entirely.
 
     Note that this doesn't affect the special filters ``bilinear`` and
-    ``bicubic_fast``.
+    ``bicubic_fast``, nor does it affect any polar (EWA) scalers.
 
 ``--scale-window=<window>``, ``--cscale-window=<window>``, ``--dscale-window=<window>``, ``--tscale-window=<window>``
     (Advanced users only) Choose a custom windowing function for the kernel.
@@ -4069,9 +4136,6 @@ The following video options are currently all specific to ``--vo=opengl`` and
     source video size is huge (e.g. so called "4K" video). On other drivers it
     might be slower or cause latency issues.
 
-    In theory, this can sometimes lead to sporadic and temporary image
-    corruption (because reupload is not retried when it fails).
-
 ``--dither-depth=<N|no|auto>``
     Set dither target depth to N. Default: no.
 
@@ -4127,10 +4191,11 @@ The following video options are currently all specific to ``--vo=opengl`` and
     results, as can missing or incorrect display FPS information (see
     ``--display-fps``).
 
-``--opengl-shaders=<files>``
+``--opengl-shaders=<file-list>``
     Custom GLSL hooks. These are a flexible way to add custom fragment shaders,
     which can be injected at almost arbitrary points in the rendering pipeline,
-    and access all previous intermediate textures.
+    and access all previous intermediate textures. Each use of the option will
+    add another file to the internal list of shaders (see `List Options`_).
 
     .. admonition:: Warning
 
@@ -4153,6 +4218,11 @@ The following video options are currently all specific to ``--vo=opengl`` and
 
     Each block of metadata, along with the non-metadata lines after it, defines
     a single pass. Each pass can set the following metadata:
+
+    DESC <title>
+        User-friendly description of the pass. This is the name used when
+        representing this shader in the list of passes for property
+        `vo-passes`.
 
     HOOK <name> (required)
         The texture which to hook into. May occur multiple times within a
@@ -4220,9 +4290,17 @@ The following video options are currently all specific to ``--vo=opengl`` and
         to texture coordinates)
     vec2 NAME_pt
         The (unrotated) size of a single pixel, range [0,1].
+    float NAME_mul
+        The coefficient that needs to be multiplied into the texture contents
+        in order to normalize it to the range [0,1].
     sampler NAME_raw
         The raw bound texture itself. The use of this should be avoided unless
         absolutely necessary.
+
+    Normally, users should use either NAME_tex or NAME_texOff to read from the
+    texture. For some shaders however , it can be better for performance to do
+    custom sampling from NAME_raw, in which case care needs to be taken to
+    respect NAME_mul and NAME_rot.
 
     In addition to these parameters, the following uniforms are also globally
     available:
@@ -4286,6 +4364,9 @@ The following video options are currently all specific to ``--vo=opengl`` and
     Only the textures labelled with ``resizable`` may be transformed by the
     pass. When overwriting a texture marked ``fixed``, the WIDTH, HEIGHT and
     OFFSET must be left at their default values.
+
+``--opengl-shader=<file>``
+    CLI/config file only alias for ``--opengl-shaders-append``.
 
 ``--deband``
     Enable the debanding algorithm. This greatly reduces the amount of visible
@@ -4447,7 +4528,7 @@ The following video options are currently all specific to ``--vo=opengl`` and
     buffer before rendering a new frame to it. For this reason, Microsoft
     recommends at least 4.
 
-    Windows 8+ with ANGLE only.
+    Windows with ANGLE only.
 
 ``--cocoa-force-dedicated-gpu=<yes|no>``
     Deactivates the automatic graphics switching and forces the dedicated GPU.
@@ -4572,6 +4653,8 @@ The following video options are currently all specific to ``--vo=opengl`` and
         DCI-P3 (Digital Cinema Colorspace), SMPTE RP431-2
     v-gamut
         Panasonic V-Gamut (VARICAM) primaries
+    s-gamut
+        Sony S-Gamut (S-Log) primaries
 
 ``--target-trc=<value>``
     Specifies the transfer characteristics (gamma) of the display. Video colors
@@ -4594,12 +4677,16 @@ The following video options are currently all specific to ``--vo=opengl`` and
         Pure power curve (gamma 2.8), also used for BT.470-BG
     prophoto
         ProPhoto RGB (ROMM)
-    st2084
-        SMPTE ST2084 (HDR) curve, PQ OETF
-    std-b67
-        ARIB STD-B67 (Hybrid Log-gamma) curve, also known as BBC/NHK HDR
+    pq
+        ITU-R BT.2100 PQ (Perceptual quantizer) curve, aka SMPTE ST2084
+    hlg
+        ITU-R BT.2100 HLG (Hybrid Log-gamma) curve, aka ARIB STD-B67
     v-log
         Panasonic V-Log (VARICAM) curve
+    s-log1
+        Sony S-Log1 curve
+    s-log2
+        Sony S-Log2 curve
 
     .. note::
 
@@ -4609,25 +4696,32 @@ The following video options are currently all specific to ``--vo=opengl`` and
         The user should independently guarantee this before using these signal
         formats for display.
 
-``--target-brightness=<1..100000>``
-    Specifies the display's approximate brightness in cd/m^2. When playing HDR
-    content on a SDR display (or SDR content on an HDR display), video colors
-    will be tone mapped to this target brightness using the algorithm specified
-    by ``--hdr-tone-mapping``. The default of 250 cd/m^2 corresponds to a
-    typical consumer display.
-
 ``--hdr-tone-mapping=<value>``
     Specifies the algorithm used for tone-mapping HDR images onto the target
     display. Valid values are:
 
     clip
-        Hard-clip any out-of-range values.
+        Hard-clip any out-of-range values. Use this when you care about
+        perfect color accuracy for in-range values at the cost of completely
+        distorting out-of-range values. Not generally recommended.
+    mobius
+        Generalization of Reinhard to a Möbius transform with linear section.
+        Smoothly maps out-of-range values while retaining contrast and colors
+        for in-range material as much as possible. Use this when you care about
+        color accuracy more than detail preservation. This is somewhere in
+        between ``clip`` and ``reinhard``, depending on the value of
+        ``--tone-mapping-param``. (default)
     reinhard
         Reinhard tone mapping algorithm. Very simple continuous curve.
-        Preserves dynamic range and peak but uses nonlinear contrast.
+        Preserves overall image brightness but uses nonlinear contrast, which
+        results in flattening of details and degradation in color accuracy.
     hable
-        Similar to ``reinhard`` but preserves dark contrast better (slightly
-        sigmoidal). Developed by John Hable for use in video games. (default)
+        Similar to ``reinhard`` but preserves both dark and bright details
+        better (slightly sigmoidal), at the cost of slightly darkening
+        everything. Developed by John Hable for use in video games. Use this
+        when you care about detail preservation more than color/brightness
+        accuracy. This is roughly equivalent to
+        ``--hdr-tone-mapping=reinhard --tone-mapping-param=0.24``.
     gamma
         Fits a logarithmic transfer between the tone curves.
     linear
@@ -4638,6 +4732,15 @@ The following video options are currently all specific to ``--vo=opengl`` and
     Set tone mapping parameters. Ignored if the tone mapping algorithm is not
     tunable. This affects the following tone mapping algorithms:
 
+    clip
+        Specifies an extra linear coefficient to multiply into the signal
+        before clipping. Defaults to 1.0.
+    mobius
+        Specifies the transition point from linear to mobius transform. Every
+        value below this point is guaranteed to be mapped 1:1. The higher the
+        value, the more accurate the result will be, at the cost of losing
+        bright details. Defaults to 0.3, which due to the steep initial slope
+        still preserves in-range colors fairly accurately.
     reinhard
         Specifies the local contrast coefficient at the display peak. Defaults
         to 0.5, which means that in-gamut values will be about half as bright
@@ -4646,6 +4749,16 @@ The following video options are currently all specific to ``--vo=opengl`` and
         Specifies the exponent of the function. Defaults to 1.8.
     linear
         Specifies the scale factor to use while stretching. Defaults to 1.0.
+
+``--tone-mapping-desaturate=<value>``
+    Apply desaturation for highlights that exceed this level of brightness. The
+    higher the parameter, the more color information will be preserved. This
+    setting helps prevent unnaturally blown-out colors for super-highlights, by
+    (smoothly) turning into white instead. This makes images feel more natural,
+    at the cost of reducing information about out-of-range colors.
+
+    The default of 2.0 is somewhat conservative and will mostly just apply to
+    skies or directly sunlit surfaces. A setting of 0.0 disables this option.
 
 ``--icc-profile=<file>``
     Load an ICC profile and use it to transform video RGB to screen output.
@@ -4755,17 +4868,17 @@ The following video options are currently all specific to ``--vo=opengl`` and
     flipping GL front and backbuffers immediately (i.e. it doesn't call it
     in display-sync mode).
 
-``--opengl-dumb-mode=<yes|no>``
+``--opengl-dumb-mode=<yes|no|auto>``
     This mode is extremely restricted, and will disable most extended OpenGL
-    features. This includes high quality scalers and custom shaders!
+    features. That includes high quality scalers and custom shaders!
 
     It is intended for hardware that does not support FBOs (including GLES,
     which supports it insufficiently), or to get some more performance out of
     bad or old hardware.
 
     This mode is forced automatically if needed, and this option is mostly
-    useful for debugging. It's also enabled automatically if nothing uses
-    features which require FBOs.
+    useful for debugging. The default of ``auto`` will enable it automatically
+    if nothing uses features which require FBOs.
 
     This option might be silently removed in the future.
 
@@ -4780,6 +4893,16 @@ The following video options are currently all specific to ``--vo=opengl`` and
 
     This option might be silently removed in the future, if ANGLE fixes shader
     compilation speed.
+
+``--cuda-decode-device=<auto|0..>``
+    Choose the GPU device used for decoding when using the ``cuda`` hwdec.
+
+    By default, the device that is being used to provide OpenGL output will
+    also be used for decoding (and in the vast majority of cases, only one
+    GPU will be present).
+
+    Note that when using the ``cuda-copy`` hwdec, a different option must be
+    passed: ``--vd-lavc-o=gpu=<0..>``.
 
 Miscellaneous
 -------------
@@ -4931,17 +5054,28 @@ Miscellaneous
     for scripts which want to set a title, without overriding the user's
     setting in ``--title``.
 
-``--external-file=<filename>``
-    Add all tracks from the given file. Unlike ``--sub-file`` and
-    ``--audio-file``, this includes all tracks, and does not cause default
-    stream selection over the "proper" file.
+``--external-files=<file-list>``
+    Load a file and add all of its tracks. This is useful to play different
+    files together (for example audio from one file, video from another), or
+    for advanced ``--lavfi-complex`` used (like playing two video files at
+    the same time).
+
+    Unlike ``--sub-files`` and ``--audio-files``, this includes all tracks, and
+    does not cause default stream selection over the "proper" file. This makes
+    it slightly less intrusive.
+
+    This is a list option. See `List Options`_ for details.
+
+``--external-file=<file>``
+    CLI/config file only alias for ``--external-files-append``. Each use of this
+    option will add a new external files.
 
 ``--autoload-files=<yes|no>``
     Automatically load/select external files (default: yes).
 
     If set to ``no``, then do not automatically load external files as specified
     by ``--sub-auto`` and ``--audio-file-auto``. If external files are forcibly
-    added (like with ``--sub-file``), they will not be auto-selected.
+    added (like with ``--sub-files``), they will not be auto-selected.
 
     This does not affect playlist expansion, redirection, or other loading of
     referenced files like with ordered chapters.

@@ -15,6 +15,9 @@ syntax is:
     wrapper, which gives you access to most of libavfilter's filters. This
     includes all filters that have been ported from MPlayer to libavfilter.
 
+    The ``--vf`` description describes how libavfilter can be used and how to
+    workaround deprecated mpv filters.
+
 See ``--vf`` group of options for info on how ``--af-defaults``, ``--af-add``,
 ``--af-pre``, ``--af-del``, ``--af-clr``, and possibly others work.
 
@@ -207,6 +210,9 @@ Available filters are:
     can reduce the signal to noise ratio of the sound. In most cases it is
     best to use the *Master* volume control of your sound card or the volume
     knob on your amplifier.
+
+    *WARNING*: This filter is deprecated. Use the top-level options like
+    ``--volume`` and ``--replaygain...`` instead.
 
     *NOTE*: This filter is not reentrant and can therefore only be enabled
     once for every audio stream.

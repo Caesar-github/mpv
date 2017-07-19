@@ -1,18 +1,18 @@
 /*
  * This file is part of mpv.
  *
- * mpv is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
+ * mpv is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
  *
  * mpv is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with mpv.  If not, see <http://www.gnu.org/licenses/>.
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <stddef.h>
@@ -284,7 +284,7 @@ static void mp_seek(MPContext *mpctx, struct seek_params seek)
         double len = get_time_length(mpctx);
         if (len >= 0)
             seek_pts = seek.amount * len;
-        demux_flags = seek_pts > current_time ? SEEK_FORWARD : SEEK_BACKWARD;
+        demux_flags = SEEK_BACKWARD;
         break;
     default: abort();
     }
@@ -441,14 +441,7 @@ void execute_queued_seek(struct MPContext *mpctx)
 double get_time_length(struct MPContext *mpctx)
 {
     struct demuxer *demuxer = mpctx->demuxer;
-    if (!demuxer)
-        return -1;
-
-    double len = demuxer_get_time_length(demuxer);
-    if (len >= 0)
-        return len;
-
-    return -1; // unknown
+    return demuxer ? demuxer->duration : -1;
 }
 
 double get_current_time(struct MPContext *mpctx)
@@ -691,6 +684,7 @@ int get_cache_buffering_percentage(struct MPContext *mpctx)
 
 static void handle_heartbeat_cmd(struct MPContext *mpctx)
 {
+#if !HAVE_UWP
     struct MPOpts *opts = mpctx->opts;
     if (opts->heartbeat_cmd && !mpctx->paused && mpctx->video_out) {
         double now = mp_time_sec();
@@ -700,6 +694,7 @@ static void handle_heartbeat_cmd(struct MPContext *mpctx)
         }
         mp_set_timeout(mpctx, mpctx->next_heartbeat - now);
     }
+#endif
 }
 
 static void handle_cursor_autohide(struct MPContext *mpctx)

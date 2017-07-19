@@ -1,18 +1,20 @@
 /*
  * This file is part of mpv.
  *
- * mpv is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
+ * mpv is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
  *
  * mpv is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with mpv.  If not, see <http://www.gnu.org/licenses/>.
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ * Parts under HAVE_GPL are licensed under GNU General Public License.
  */
 
 #include <stddef.h>
@@ -68,6 +70,7 @@ static const char av_desync_help_text[] =
 "position will not match to the video (see A-V status field).\n"
 "\n";
 
+#if HAVE_GPL
 int video_set_colors(struct vo_chain *vo_c, const char *item, int value)
 {
     vf_equalizer_t data;
@@ -96,6 +99,7 @@ int video_get_colors(struct vo_chain *vo_c, const char *item, int *value)
     }
     return 0;
 }
+#endif
 
 // Send a VCTRL, or if it doesn't work, translate it to a VOCTRL and try the VO.
 int video_vf_vo_control(struct vo_chain *vo_c, int vf_cmd, void *data)
@@ -107,10 +111,6 @@ int video_vf_vo_control(struct vo_chain *vo_c, int vf_cmd, void *data)
     }
 
     switch (vf_cmd) {
-    case VFCTRL_GET_DEINTERLACE:
-        return vo_control(vo_c->vo, VOCTRL_GET_DEINTERLACE, data) == VO_TRUE;
-    case VFCTRL_SET_DEINTERLACE:
-        return vo_control(vo_c->vo, VOCTRL_SET_DEINTERLACE, data) == VO_TRUE;
     case VFCTRL_SET_EQUALIZER: {
         vf_equalizer_t *eq = data;
         if (!vo_c->vo->config_ok)
@@ -162,6 +162,7 @@ static bool check_output_format(struct vo_chain *vo_c, int imgfmt)
 
 static int probe_deint_filters(struct vo_chain *vo_c)
 {
+#if HAVE_GPL
     // Usually, we prefer inserting/removing deint filters. But If there's VO
     // support, or the user inserted a filter that supports swichting deint and
     // that has no VF_DEINTERLACE_LABEL, or if the filter was auto-inserted
@@ -169,6 +170,7 @@ static int probe_deint_filters(struct vo_chain *vo_c)
     // use the runtime switching method.
     if (video_vf_vo_control(vo_c, VFCTRL_SET_DEINTERLACE, &(int){1}) == CONTROL_OK)
         return 0;
+#endif
 
     if (check_output_format(vo_c, IMGFMT_VDPAU)) {
         char *args[5] = {"deint", "yes"};
@@ -214,9 +216,11 @@ static void filter_reconfig(struct MPContext *mpctx, struct vo_chain *vo_c)
             return;
     }
 
+#if HAVE_GPL
     // Make sure to reset this even if runtime deint switching is used.
     if (mpctx->opts->deinterlace >= 0)
         video_vf_vo_control(vo_c, VFCTRL_SET_DEINTERLACE, &(int){0});
+#endif
 
     if (params.rotate) {
         if (!(vo_c->vo->driver->caps & VO_CAP_ROTATE90) || params.rotate % 90) {
@@ -255,8 +259,10 @@ int get_deinterlacing(struct MPContext *mpctx)
 {
     struct vo_chain *vo_c = mpctx->vo_chain;
     int enabled = 0;
+#if HAVE_GPL
     if (video_vf_vo_control(vo_c, VFCTRL_GET_DEINTERLACE, &enabled) != CONTROL_OK)
         enabled = -1;
+#endif
     if (enabled < 0) {
         // vf_lavfi doesn't support VFCTRL_GET_DEINTERLACE
         if (vf_find_by_label(vo_c->vf, VF_DEINTERLACE_LABEL))
@@ -990,6 +996,7 @@ static void init_vo(struct MPContext *mpctx)
     struct MPOpts *opts = mpctx->opts;
     struct vo_chain *vo_c = mpctx->vo_chain;
 
+#if HAVE_GPL
     if (opts->gamma_gamma != 0)
         video_set_colors(vo_c, "gamma", opts->gamma_gamma);
     if (opts->gamma_brightness != 0)
@@ -1001,6 +1008,7 @@ static void init_vo(struct MPContext *mpctx)
     if (opts->gamma_hue != 0)
         video_set_colors(vo_c, "hue", opts->gamma_hue);
     video_set_colors(vo_c, "output-levels", opts->video_output_levels);
+#endif
 
     mp_notify(mpctx, MPV_EVENT_VIDEO_RECONFIG, NULL);
 }

@@ -3,7 +3,7 @@ from waftools.checks.generic import *
 from waflib import Utils
 import os
 
-__all__ = ["check_pthreads", "check_iconv", "check_lua", "check_oss_4front",
+__all__ = ["check_pthreads", "check_iconv", "check_lua",
            "check_cocoa", "check_openal", "check_rpi"]
 
 pthreads_program = load_fragment('pthreads.c')
@@ -83,32 +83,6 @@ def check_lua(ctx, dependency_identifier):
             return True
     return False
 
-def __get_osslibdir():
-    cmd = ['sh', '-c', '. /etc/oss.conf && echo $OSSLIBDIR']
-    p = Utils.subprocess.Popen(cmd, stdin=Utils.subprocess.PIPE,
-                                    stdout=Utils.subprocess.PIPE,
-                                    stderr=Utils.subprocess.PIPE)
-    return p.communicate()[0].decode().rstrip()
-
-def check_oss_4front(ctx, dependency_identifier):
-    oss_libdir = __get_osslibdir()
-
-    # avoid false positive from native sys/soundcard.h
-    if not oss_libdir:
-        ctx.undefine(inflector.define_key(dependency_identifier))
-        return False
-
-    soundcard_h = os.path.join(oss_libdir, "include/sys/soundcard.h")
-    include_dir = os.path.join(oss_libdir, "include")
-
-    fn = check_cc(header_name=soundcard_h,
-                  defines=['PATH_DEV_DSP="/dev/dsp"',
-                           'PATH_DEV_MIXER="/dev/mixer"'],
-                  cflags='-I{0}'.format(include_dir),
-                  fragment=load_fragment('oss_audio.c'))
-
-    return fn(ctx, dependency_identifier)
-
 def check_cocoa(ctx, dependency_identifier):
     fn = check_cc(
         fragment         = load_fragment('cocoa.m'),
@@ -144,12 +118,7 @@ def check_rpi(ctx, dependency_identifier):
     checks = [
         check_pkg_config('bcm_host', uselib_store='bcm_host'),
         check_pkg_config('egl'),
-        check_pkg_config('glesv2'),
         check_cc(lib=['mmal_core', 'mmal_util', 'mmal_vc_client'], use=['bcm_host']),
-        # We still need all OpenGL symbols, because the vo_opengl code is
-        # generic and supports anything from GLES2/OpenGL 2.1 to OpenGL 4 core.
-        check_statement('GL/gl.h', '(void)GL_RGB32F'),     # arbitrary OpenGL 3.0 symbol
-        check_statement('GL/gl.h', '(void)GL_LUMINANCE16') # arbitrary OpenGL legacy-only symbol
     ]
 
     ret = all((fn(ctx, dependency_identifier) for fn in checks))

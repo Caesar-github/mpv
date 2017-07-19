@@ -72,6 +72,9 @@ function find_and_add_entries()
         return
     end
     table.filter(files, function (v, k)
+        if string.match(v, "^%.") then
+            return false
+        end
         local ext = get_extension(v)
         if ext == nil then
             return false
@@ -82,7 +85,8 @@ function find_and_add_entries()
         local len = string.len(a) - string.len(b)
         if len ~= 0 then -- case for ordering filename ending with such as X.Y.Z
             local ext = string.len(get_extension(a)) + 1
-            return string.sub(a, 1, -ext) < string.sub(b, 1, -ext)
+            a = string.sub(a, 1, -ext)
+            b = string.sub(b, 1, -ext)
         end
         return string.lower(a) < string.lower(b)
     end)

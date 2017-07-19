@@ -59,7 +59,6 @@ static const struct fmtentry va_to_imgfmt[] = {
     {VA_FOURCC_YV12, IMGFMT_420P},
     {VA_FOURCC_IYUV, IMGFMT_420P},
     {VA_FOURCC_UYVY, IMGFMT_UYVY},
-    {VA_FOURCC_YUY2, IMGFMT_YUYV},
     // Note: not sure about endian issues (the mp formats are byte-addressed)
     {VA_FOURCC_RGBA, IMGFMT_RGBA},
     {VA_FOURCC_RGBX, IMGFMT_RGBA},
@@ -224,6 +223,8 @@ error:
 void va_destroy(struct mp_vaapi_ctx *ctx)
 {
     if (ctx) {
+        av_buffer_unref(&ctx->av_device_ref);
+
         if (ctx->display)
             vaTerminate(ctx->display);
 

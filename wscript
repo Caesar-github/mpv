@@ -12,6 +12,19 @@ from waftools.checks.custom import *
 c_preproc.go_absolute=True # enable system folders
 c_preproc.standard_includes.append('/usr/local/include')
 
+"""
+Dependency identifiers (for win32 vs. Unix):
+    wscript / C source      meaning
+    --------------------------------------------------------------------------
+    posix / HAVE_POSIX:                 defined on Linux, OSX, Cygwin
+                                        (Cygwin emulates POSIX APIs on Windows)
+    mingw / __MINGW32__:                defined if posix is not defined
+                                        (Windows without Cygwin)
+    os-win32 / _WIN32:                  defined if basic windows.h API is available
+    win32-desktop / HAVE_WIN32_DESKTOP: defined if desktop windows.h API is available
+    uwp / HAVE_UWP:                     defined if building for UWP (basic Windows only)
+"""
+
 build_options = [
     {
         'name': '--cplayer',
@@ -71,19 +84,8 @@ build_options = [
         'name': '--cplugins',
         'desc': 'C plugins',
         'deps': [ 'libdl' ],
-        'default': 'disable',
+        'deps_neg': [ 'os-win32' ],
         'func': check_cc(linkflags=['-rdynamic']),
-    }, {
-        'name': 'dlopen',
-        'desc': 'dlopen',
-        'deps_any': [ 'libdl', 'os-win32', 'os-cygwin' ],
-        'func': check_true
-    }, {
-        'name': '--vf-dlopen-filters',
-        'desc': 'compilation of default filters for vf_dlopen',
-        'deps': [ 'dlopen' ],
-        'default': 'disable',
-        'func': check_true
     }, {
         'name': '--zsh-comp',
         'desc': 'zsh completion',
@@ -143,15 +145,23 @@ main_dependencies = [
         'fmsg': 'Unable to find either POSIX or MinGW-w64 environment, ' \
                 'or compiler does not work.',
     }, {
-        'name': 'win32',
-        'desc': 'win32',
+        'name': '--uwp',
+        'desc': 'Universal Windows Platform',
+        'default': 'disable',
+        'deps': [ 'os-win32', 'mingw' ],
+        'deps_neg': [ 'cplayer' ],
+        'func': check_cc(lib=['windowsapp']),
+    }, {
+        'name': 'win32-desktop',
+        'desc': 'win32 desktop APIs',
         'deps_any': [ 'os-win32', 'os-cygwin' ],
+        'deps_neg': [ 'uwp' ],
         'func': check_cc(lib=['winmm', 'gdi32', 'ole32', 'uuid', 'avrt', 'dwmapi']),
     }, {
         'name': '--win32-internal-pthreads',
         'desc': 'internal pthread wrapper for win32 (Vista+)',
         'deps_neg': [ 'posix' ],
-        'deps': [ 'win32' ],
+        'deps': [ 'os-win32' ],
         'func': check_true,
     }, {
         'name': 'pthreads',
@@ -176,14 +186,6 @@ main_dependencies = [
         'func': check_true,
         'req': True,
         'deps_any': ['stdatomic', 'gnuc'],
-    }, {
-        'name': 'c11-tls',
-        'desc': 'C11 TLS support',
-        'func': check_statement('stddef.h', 'static _Thread_local int x = 0'),
-    }, {
-        'name': 'gcc-tls',
-        'desc': 'GCC TLS support',
-        'func': check_statement('stddef.h', 'static __thread int x = 0'),
     }, {
         'name': 'librt',
         'desc': 'linking with -lrt',
@@ -222,18 +224,15 @@ iconv support use --disable-iconv.",
             'posix_spawnp(0,0,0,0,0,0); kill(0,0)'),
         'deps_neg': ['mingw'],
     }, {
-        'name': 'subprocess',
-        'desc': 'posix_spawnp() or MinGW',
+        'name': 'win32-pipes',
+        'desc': 'Windows pipe support',
         'func': check_true,
-        'deps_any': ['posix-spawn', 'mingw'],
+        'deps': [ 'win32-desktop' ],
+        'deps_neg': [ 'posix' ],
     }, {
-        'name': 'glob',
-        'desc': 'glob()',
-        'func': check_statement('glob.h', 'glob("filename", 0, 0, 0)')
-    }, {
-        'name': 'glob-win32-replacement',
+        'name': 'glob-win32',
         'desc': 'glob() win32 replacement',
-        'deps_neg': [ 'glob' ],
+        'deps_neg': [ 'posix' ],
         'deps_any': [ 'os-win32', 'os-cygwin' ],
         'func': check_true
     }, {
@@ -265,15 +264,8 @@ iconv support use --disable-iconv.",
         'name': 'bsd-thread-name',
         'desc': 'BSD API for setting thread name',
         'deps_neg': [ 'glibc-thread-name', 'osx-thread-name' ],
-        'func': check_statement(['pthread.h', 'pthread_np.h'],
-                                'pthread_set_name_np(pthread_self(), "ducks")',
-                                use=['pthreads']),
-    }, {
-        'name': 'netbsd-thread-name',
-        'desc': 'NetBSD API for setting thread name',
-        'deps_neg': [ 'glibc-thread-name', 'osx-thread-name', 'bsd-thread-name' ],
         'func': check_statement('pthread.h',
-                                'pthread_setname_np(pthread_self(), "%s", (void *)"ducks")',
+                                'pthread_set_name_np(pthread_self(), "ducks")',
                                 use=['pthreads']),
     }, {
         'name': 'bsd-fstatfs',
@@ -288,14 +280,19 @@ iconv support use --disable-iconv.",
                                 'struct statfs fs; fstatfs(0, &fs); fs.f_namelen')
     }, {
         'name': '--libsmbclient',
-        'desc': 'Samba support',
+        'desc': 'Samba support (makes mpv GPLv3)',
         'deps': [ 'libdl' ],
         'func': check_pkg_config('smbclient'),
+        'default': 'disable',
         'module': 'input',
     }, {
         'name' : '--lua',
         'desc' : 'Lua',
         'func': check_lua,
+    }, {
+        'name' : '--javascript',
+        'desc' : 'Javascript (MuJS backend)',
+        'func': check_pkg_config('mujs', '>= 1.0.0'),
     }, {
         'name': '--libass',
         'desc': 'SSA/ASS support',
@@ -315,7 +312,7 @@ iconv support use --disable-iconv.",
         'deps_neg': [ 'libass-osd' ],
         'func': check_true,
     } , {
-        'name': 'zlib',
+        'name': '--zlib',
         'desc': 'zlib',
         'func': check_libs(['z'],
                     check_statement('zlib.h', 'inflate(0, Z_NO_FLUSH)')),
@@ -458,6 +455,12 @@ FFmpeg/Libav libraries. You need at least {0}. Aborting.".format(libav_versions_
         'func': check_statement('libavutil/imgutils.h',
                                 'av_image_copy_uc_from(0,0,0,0,0,0,0)',
                                 use='libav'),
+    }, {
+        'name': 'avutil-content-light-level',
+        'desc': 'libavutil content light level struct',
+        'func': check_statement('libavutil/frame.h',
+                                'AV_FRAME_DATA_CONTENT_LIGHT_LEVEL',
+                                use='libav'),
     },
 ]
 
@@ -474,35 +477,10 @@ audio_output_features = [
         'func': check_pkg_config('sdl'),
         'default': 'disable'
     }, {
-        'name': 'oss-audio-4front',
-        'desc': 'OSS (implementation from opensound.com)',
-        'func': check_oss_4front,
-        'groups' : [ 'oss-audio' ]
-    }, {
-        'name': 'oss-audio-native',
-        'desc': 'OSS (platform-specific OSS implementation)',
-        'func': check_cc(header_name='sys/soundcard.h',
-                         defines=['PATH_DEV_DSP="/dev/dsp"',
-                                  'PATH_DEV_MIXER="/dev/mixer"'],
-                         fragment=load_fragment('oss_audio.c')),
-        'deps_neg': [ 'oss-audio-4front' ],
-        'groups' : [ 'oss-audio' ]
-    }, {
-        'name': 'oss-audio-sunaudio',
-        'desc': 'OSS (emulation on top of SunAudio)',
-        'func': check_cc(header_name='soundcard.h',
-                         lib='ossaudio',
-                         defines=['PATH_DEV_DSP="/dev/sound"',
-                                  'PATH_DEV_MIXER="/dev/mixer"'],
-                         fragment=load_fragment('oss_audio_sunaudio.c')),
-        'deps_neg': [ 'oss-audio-4front', 'oss-audio-native' ],
-        'groups' : [ 'oss-audio' ]
-    }, {
         'name': '--oss-audio',
-        'desc': 'OSS audio output',
-        'func': check_true,
-        'deps_any': [ 'oss-audio-native', 'oss-audio-sunaudio',
-                      'oss-audio-4front' ]
+        'desc': 'OSS',
+        'func': check_cc(header_name='sys/soundcard.h'),
+        'deps': [ 'posix' ],
     }, {
         'name': '--rsound',
         'desc': 'RSound audio output',
@@ -550,7 +528,7 @@ audio_output_features = [
     }, {
         'name': '--wasapi',
         'desc': 'WASAPI audio output',
-        'deps': ['win32'],
+        'deps': ['os-win32'],
         'func': check_cc(fragment=load_fragment('wasapi.c')),
     }
 ]
@@ -610,16 +588,13 @@ video_output_features = [
         'desc': 'OpenGL X11 EGL Backend',
         'deps': [ 'x11' ],
         'groups': [ 'gl' ],
-        'func': check_pkg_config('egl', 'gl'),
+        'func': check_pkg_config('egl'),
     } , {
         'name': '--egl-drm',
         'desc': 'OpenGL DRM EGL Backend',
         'deps': [ 'drm', 'gbm' ],
         'groups': [ 'gl' ],
-        'func': compose_checks(
-            check_pkg_config('egl'),
-            check_pkg_config_cflags('gl')
-        )
+        'func': check_pkg_config('egl'),
     } , {
         'name': '--gl-wayland',
         'desc': 'OpenGL Wayland Backend',
@@ -630,7 +605,7 @@ video_output_features = [
     } , {
         'name': '--gl-win32',
         'desc': 'OpenGL Win32 Backend',
-        'deps': [ 'win32' ],
+        'deps': [ 'win32-desktop' ],
         'groups': [ 'gl' ],
         'func': check_statement('windows.h', 'wglCreateContext(0)',
                                 lib='opengl32')
@@ -644,7 +619,7 @@ video_output_features = [
             check_statement('d3d9.h', 'IDirect3D9Ex *d'))
     } , {
         'name': '--egl-angle',
-        'desc': 'OpenGL Win32 ANGLE Backend',
+        'desc': 'OpenGL ANGLE headers',
         'deps_any': [ 'os-win32', 'os-cygwin' ],
         'groups': [ 'gl' ],
         'func': check_statement(['EGL/egl.h', 'EGL/eglext.h'],
@@ -660,6 +635,12 @@ video_output_features = [
                                         '-DANGLE_NO_ALIASES', '-DANGLE_EXPORT='],
                                 lib=['EGL', 'GLESv2', 'dxguid', 'd3d9',
                                      'gdi32', 'stdc++'])
+    }, {
+        'name': '--egl-angle-win32',
+        'desc': 'OpenGL Win32 ANGLE Backend',
+        'deps': [ 'egl-angle', 'win32-desktop' ],
+        'groups': [ 'gl' ],
+        'func': check_true,
     } , {
         'name': '--vdpau',
         'desc': 'VDPAU acceleration',
@@ -718,7 +699,7 @@ video_output_features = [
     }, {
         'name': '--direct3d',
         'desc': 'Direct3D support',
-        'deps': [ 'win32' ],
+        'deps': [ 'win32-desktop' ],
         'func': check_cc(header_name='d3d9.h'),
     }, {
         'name': '--android',
@@ -743,7 +724,6 @@ video_output_features = [
         'deps': ['libdl'],
         'func': compose_checks(
             check_cc(lib="EGL"),
-            check_cc(lib="GLESv2"),
             check_statement('EGL/fbdev_window.h', 'struct fbdev_window test'),
             check_statement('linux/fb.h', 'struct fb_var_screeninfo test'),
         ),
@@ -755,14 +735,14 @@ video_output_features = [
                       'plain-gl' ],
         'func': check_true,
         'req': True,
-        'fmsg': "Unable to find OpenGL header files for video output. " +
+        'fmsg': "No OpenGL video output found or enabled. " +
                 "Aborting. If you really mean to compile without OpenGL " +
                 "video outputs use --disable-gl."
     }, {
         'name': 'egl-helpers',
         'desc': 'EGL helper functions',
         'deps_any': [ 'egl-x11', 'mali-fbdev', 'rpi', 'gl-wayland', 'egl-drm',
-                      'egl-angle' ],
+                      'egl-angle-win32' ],
         'func': check_true
     }
 ]
@@ -770,13 +750,8 @@ video_output_features = [
 hwaccel_features = [
     {
         'name': '--vaapi-hwaccel',
-        'desc': 'libavcodec VAAPI hwaccel',
+        'desc': 'libavcodec VAAPI hwaccel (FFmpeg 3.3 API)',
         'deps': [ 'vaapi' ],
-        'func': check_true,
-    }, {
-        'name': '--vaapi-hwaccel-new',
-        'desc': 'libavcodec VAAPI hwaccel (new)',
-        'deps': [ 'vaapi-hwaccel' ],
         'func': check_statement('libavcodec/version.h',
             'int x[(LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(57, 26, 0) && '
             '       LIBAVCODEC_VERSION_MICRO < 100) ||'
@@ -785,33 +760,38 @@ hwaccel_features = [
             '      ? 1 : -1]',
             use='libav'),
     }, {
-        'name': '--vaapi-hwaccel-old',
-        'desc': 'libavcodec VAAPI hwaccel (old)',
-        'deps': [ 'vaapi-hwaccel' ],
-        'deps_neg': [ 'vaapi-hwaccel-new' ],
-        'func': check_true,
+        'name': '--videotoolbox-hwaccel-new',
+        'desc': 'libavcodec videotoolbox hwaccel (new API)',
+        'deps': [ 'gl-cocoa' ],
+        'func': check_statement('libavcodec/version.h',
+            'int x[(LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(57, 96, 100) && '
+            '       LIBAVCODEC_VERSION_MICRO >= 100)'
+            '      ? 1 : -1]',
+            use='libav'),
     }, {
-        'name': '--videotoolbox-hwaccel',
-        'desc': 'libavcodec videotoolbox hwaccel',
+        'name': '--videotoolbox-hwaccel-old',
+        'desc': 'libavcodec videotoolbox hwaccel (old API)',
+        'deps': [ 'gl-cocoa' ],
+        'deps_neg': [ 'videotoolbox-hwaccel-new' ],
         'func': compose_checks(
             check_headers('VideoToolbox/VideoToolbox.h'),
             check_statement('libavcodec/videotoolbox.h',
                             'av_videotoolbox_alloc_context()',
                             use='libav')),
-    } , {
+    }, {
+        'name': 'videotoolbox-hwaccel',
+        'desc': 'libavcodec videotoolbox hwaccel',
+        'deps_any': [ 'videotoolbox-hwaccel-new', 'videotoolbox-hwaccel-old' ],
+        'func': check_true,
+    }, {
         'name': '--videotoolbox-gl',
         'desc': 'Videotoolbox with OpenGL',
         'deps': [ 'gl-cocoa', 'videotoolbox-hwaccel' ],
         'func': check_true
     }, {
         'name': '--vdpau-hwaccel',
-        'desc': 'libavcodec VDPAU hwaccel',
+        'desc': 'libavcodec VDPAU hwaccel (FFmpeg 3.3 API)',
         'deps': [ 'vdpau' ],
-        'func': check_true,
-    }, {
-        'name': '--vdpau-hwaccel-new',
-        'desc': 'libavcodec VDPAU hwaccel (new)',
-        'deps': [ 'vdpau-hwaccel' ],
         'func': check_statement('libavcodec/version.h',
             'int x[(LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(57, 37, 1) && '
             '       LIBAVCODEC_VERSION_MICRO < 100) ||'
@@ -820,17 +800,32 @@ hwaccel_features = [
             '      ? 1 : -1]',
             use='libav'),
     }, {
-        'name': '--vdpau-hwaccel-old',
-        'desc': 'libavcodec VDPAU hwaccel (old)',
-        'deps': [ 'vdpau' ],
-        'deps_neg': [ 'vdpau-hwaccel-new' ],
-        'func': check_statement('libavcodec/vdpau.h',
-                                'av_vdpau_bind_context(0,0,0,AV_HWACCEL_FLAG_ALLOW_HIGH_DEPTH)',
-                                use='libav'),
-    }, {
+        # (conflated with ANGLE for easier deps)
         'name': '--d3d-hwaccel',
-        'desc': 'DXVA2 and D3D11VA hwaccel',
-        'deps': [ 'win32' ],
+        'desc': 'D3D11VA hwaccel (plus ANGLE)',
+        'deps': [ 'os-win32', 'egl-angle' ],
+        'func': check_true,
+    }, {
+        'name': '--d3d-hwaccel-new',
+        'desc': 'D3D11VA hwaccel (new API)',
+        'func': check_statement('libavcodec/version.h',
+            'int x[(LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(58, 4, 0) && '
+            '       LIBAVCODEC_VERSION_MICRO < 100) ||'
+            '      (LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(57, 100, 100) && '
+            '       LIBAVCODEC_VERSION_MICRO >= 100)'
+            '      ? 1 : -1]',
+            use='libav'),
+        'deps': [ 'd3d-hwaccel' ],
+    }, {
+        'name': '--d3d9-hwaccel',
+        'desc': 'DXVA2 hwaccel (plus ANGLE)',
+        'deps': [ 'd3d-hwaccel', 'egl-angle-win32' ],
+        'func': check_true,
+    }, {
+        'name': '--gl-dxinterop-d3d9',
+        'desc': 'OpenGL/DirectX Interop Backend DXVA2 interop',
+        'deps': [ 'gl-dxinterop', 'd3d9-hwaccel' ],
+        'groups': [ 'gl' ],
         'func': check_true,
     }, {
         'name': '--cuda-hwaccel',
@@ -841,7 +836,8 @@ hwaccel_features = [
     }, {
         'name': 'sse4-intrinsics',
         'desc': 'GCC SSE4 intrinsics for GPU memcpy',
-        'deps_any': [ 'd3d-hwaccel', 'vaapi-hwaccel-old' ],
+        'deps_any': [ 'd3d-hwaccel' ],
+        'deps_neg': [ 'd3d-hwaccel-new' ],
         'func': check_cc(fragment=load_fragment('sse.c')),
     }
 ]
@@ -851,14 +847,17 @@ radio_and_tv_features = [
         'name': '--tv',
         'desc': 'TV interface',
         'func': check_true,
+        'default': 'disable',
     }, {
         'name': 'sys_videoio_h',
         'desc': 'videoio.h',
-        'func': check_cc(header_name=['sys/time.h', 'sys/videoio.h'])
+        'func': check_cc(header_name=['sys/time.h', 'sys/videoio.h']),
+        'deps': [ 'tv' ],
     }, {
         'name': 'videodev',
         'desc': 'videodev2.h',
         'func': check_cc(header_name=['sys/time.h', 'linux/videodev2.h']),
+        'deps': [ 'tv' ],
         'deps_neg': [ 'sys_videoio_h' ],
     }, {
         'name': '--tv-v4l2',
@@ -879,7 +878,8 @@ radio_and_tv_features = [
     } , {
         'name': '--dvbin',
         'desc': 'DVB input module',
-        'func': check_cc(fragment=load_fragment('dvb.c')),
+        'func': check_true,
+        'default': 'disable',
     }
 ]
 
@@ -1012,14 +1012,6 @@ def configure(ctx):
         ctx.options.enable_lua = True
 
     ctx.parse_dependencies(standalone_features)
-
-    ctx.define('HAVE_SYS_SOUNDCARD_H',
-               '(HAVE_OSS_AUDIO_NATIVE || HAVE_OSS_AUDIO_4FRONT)',
-               quote=False)
-
-    ctx.define('HAVE_SOUNDCARD_H',
-               'HAVE_OSS_AUDIO_SUNAUDIO',
-               quote=False)
 
     ctx.load('generators.headers')
 

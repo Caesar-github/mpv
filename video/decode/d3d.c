@@ -19,6 +19,8 @@
 
 #include <libavcodec/avcodec.h>
 
+#include "config.h"
+
 #include "lavc.h"
 #include "common/common.h"
 #include "common/av_common.h"
@@ -28,6 +30,8 @@
 #include "osdep/windows_utils.h"
 
 #include "d3d.h"
+
+#if !HAVE_D3D_HWACCEL_NEW
 
 // define all the GUIDs used directly here, to avoid problems with inconsistent
 // dxva2api.h versions in mingw-w64 and different MSVC version
@@ -100,21 +104,52 @@ static const struct d3dva_mode d3dva_modes[] = {
 #undef MODE
 #undef MODE2
 
+#endif
+
 HMODULE d3d11_dll, d3d9_dll, dxva2_dll;
+PFN_D3D11_CREATE_DEVICE d3d11_D3D11CreateDevice;
 
 static pthread_once_t d3d_load_once = PTHREAD_ONCE_INIT;
 
+#if !HAVE_UWP
 static void d3d_do_load(void)
 {
     d3d11_dll = LoadLibrary(L"d3d11.dll");
     d3d9_dll  = LoadLibrary(L"d3d9.dll");
     dxva2_dll = LoadLibrary(L"dxva2.dll");
+
+    if (d3d11_dll) {
+        d3d11_D3D11CreateDevice =
+            (void *)GetProcAddress(d3d11_dll, "D3D11CreateDevice");
+    }
 }
+#else
+static void d3d_do_load(void)
+{
+
+    d3d11_D3D11CreateDevice = D3D11CreateDevice;
+}
+#endif
 
 void d3d_load_dlls(void)
 {
     pthread_once(&d3d_load_once, d3d_do_load);
 }
+
+
+// Test if Direct3D11 can be used by us. Basically, this prevents trying to use
+// D3D11 on Win7, and then failing somewhere in the process.
+bool d3d11_check_decoding(ID3D11Device *dev)
+{
+    HRESULT hr;
+    // We assume that NV12 is always supported, if hw decoding is supported at
+    // all.
+    UINT supported = 0;
+    hr = ID3D11Device_CheckFormatSupport(dev, DXGI_FORMAT_NV12, &supported);
+    return !FAILED(hr) && (supported & D3D11_BIND_DECODER);
+}
+
+#if !HAVE_D3D_HWACCEL_NEW
 
 int d3d_probe_codec(const char *codec)
 {
@@ -269,18 +304,6 @@ void copy_nv12(struct mp_image *dest, uint8_t *src_bits,
     mp_image_copy_gpu(dest, &buf);
 }
 
-// Test if Direct3D11 can be used by us. Basically, this prevents trying to use
-// D3D11 on Win7, and then failing somewhere in the process.
-bool d3d11_check_decoding(ID3D11Device *dev)
-{
-    HRESULT hr;
-    // We assume that NV12 is always supported, if hw decoding is supported at
-    // all.
-    UINT supported = 0;
-    hr = ID3D11Device_CheckFormatSupport(dev, DXGI_FORMAT_NV12, &supported);
-    return !FAILED(hr) && (supported & D3D11_BIND_DECODER);
-}
-
 static int get_dxgi_mpfmt(DWORD dxgi_fmt)
 {
     switch (dxgi_fmt) {
@@ -301,8 +324,8 @@ struct mp_image *d3d11_download_image(struct mp_hwdec_ctx *ctx,
     if (mpi->imgfmt != IMGFMT_D3D11VA && mpi->imgfmt != IMGFMT_D3D11NV12)
         return NULL;
 
-    ID3D11Texture2D *texture = (void *)mpi->planes[1];
-    int subindex = (intptr_t)mpi->planes[2];
+    ID3D11Texture2D *texture = (void *)mpi->planes[0];
+    int subindex = (intptr_t)mpi->planes[1];
     if (!texture)
         return NULL;
 
@@ -360,3 +383,79 @@ done:
         mp_image_unrefp(&sw_img);
     return sw_img;
 }
+
+// Dummies for simpler compat.
+AVBufferRef *d3d11_wrap_device_ref(ID3D11Device *device)           { return NULL; }
+AVBufferRef *d3d9_wrap_device_ref(struct IDirect3DDevice9 *device) { return NULL; }
+
+#else /* !HAVE_D3D_HWACCEL_NEW */
+
+#include <libavutil/hwcontext.h>
+#include <libavutil/hwcontext_d3d11va.h>
+
+#if HAVE_D3D9_HWACCEL
+#include <libavutil/hwcontext_dxva2.h>
+#endif
+
+void d3d_hwframes_refine(struct lavc_ctx *ctx, AVBufferRef *hw_frames_ctx)
+{
+    AVHWFramesContext *fctx = (void *)hw_frames_ctx->data;
+
+    int alignment = 16;
+    switch (ctx->avctx->codec_id) {
+        // decoding MPEG-2 requires additional alignment on some Intel GPUs, but it
+        // causes issues for H.264 on certain AMD GPUs.....
+    case AV_CODEC_ID_MPEG2VIDEO:
+        alignment = 32;
+        break;
+        // the HEVC DXVA2 spec asks for 128 pixel aligned surfaces to ensure
+        // all coding features have enough room to work with
+    case AV_CODEC_ID_HEVC:
+        alignment = 128;
+        break;
+    }
+    fctx->width  = FFALIGN(fctx->width,  alignment);
+    fctx->height = FFALIGN(fctx->height, alignment);
+
+#if HAVE_D3D9_HWACCEL
+    if (fctx->format == AV_PIX_FMT_DXVA2_VLD) {
+        AVDXVA2FramesContext *hwctx = fctx->hwctx;
+
+        hwctx->surface_type = DXVA2_VideoDecoderRenderTarget;
+    }
+#endif
+
+    if (fctx->format == AV_PIX_FMT_D3D11) {
+        AVD3D11VAFramesContext *hwctx = fctx->hwctx;
+
+        hwctx->BindFlags |= D3D11_BIND_DECODER | D3D11_BIND_SHADER_RESOURCE;
+    }
+}
+
+AVBufferRef *d3d11_wrap_device_ref(ID3D11Device *device)
+{
+    AVBufferRef *device_ref = av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_D3D11VA);
+    if (!device_ref)
+        return NULL;
+
+    AVHWDeviceContext *ctx = (void *)device_ref->data;
+    AVD3D11VADeviceContext *hwctx = ctx->hwctx;
+
+    ID3D11Device_AddRef(device);
+    hwctx->device = device;
+
+    if (av_hwdevice_ctx_init(device_ref) < 0)
+        av_buffer_unref(&device_ref);
+
+    return device_ref;
+}
+
+// Dummy for simpler compat.
+struct mp_image *d3d11_download_image(struct mp_hwdec_ctx *ctx,
+                                      struct mp_image *mpi,
+                                      struct mp_image_pool *swpool)
+{
+    return NULL;
+}
+
+#endif /* else !HAVE_D3D_HWACCEL_NEW */

@@ -105,20 +105,15 @@ static int create(struct gl_hwdec *hw)
 
     p->egl_display = egl_display;
 
-    if (!d3d11_dll) {
+    if (!d3d11_D3D11CreateDevice) {
         if (!hw->probing)
             MP_ERR(hw, "Failed to load D3D11 library\n");
         goto fail;
     }
 
-    PFN_D3D11_CREATE_DEVICE CreateDevice =
-        (void *)GetProcAddress(d3d11_dll, "D3D11CreateDevice");
-    if (!CreateDevice)
-        goto fail;
-
-    hr = CreateDevice(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL,
-                      D3D11_CREATE_DEVICE_VIDEO_SUPPORT, NULL, 0,
-                      D3D11_SDK_VERSION, &p->d3d11_device, NULL, NULL);
+    hr = d3d11_D3D11CreateDevice(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL,
+                                 D3D11_CREATE_DEVICE_VIDEO_SUPPORT, NULL, 0,
+                                 D3D11_SDK_VERSION, &p->d3d11_device, NULL, NULL);
     if (FAILED(hr)) {
         int lev = hw->probing ? MSGL_V : MSGL_ERR;
         mp_msg(hw->log, lev, "Failed to create D3D11 Device: %s\n",
@@ -164,6 +159,7 @@ static int create(struct gl_hwdec *hw)
         .type = HWDEC_D3D11VA,
         .driver_name = hw->driver->name,
         .ctx = p->d3d11_device,
+        .av_device_ref = d3d11_wrap_device_ref(p->d3d11_device),
     };
     hwdec_devices_add(hw->devs, &p->hwctx);
 
@@ -203,7 +199,7 @@ static int map_frame(struct gl_hwdec *hw, struct mp_image *hw_image,
     if (!p->gl_texture)
         return -1;
 
-    ID3D11Texture2D *d3d_tex = (void *)hw_image->planes[1];
+    ID3D11Texture2D *d3d_tex = (void *)hw_image->planes[0];
     if (!d3d_tex)
         return -1;
 

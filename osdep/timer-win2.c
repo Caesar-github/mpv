@@ -1,20 +1,18 @@
 /*
- * precise timer routines for Windows
- *
  * This file is part of mpv.
  *
- * mpv is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
+ * mpv is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
  *
  * mpv is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with mpv.  If not, see <http://www.gnu.org/licenses/>.
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <windows.h>
@@ -22,6 +20,8 @@
 #include <mmsystem.h>
 #include <stdlib.h>
 #include "timer.h"
+
+#include "config.h"
 
 static LARGE_INTEGER perf_freq;
 
@@ -52,5 +52,7 @@ uint64_t mp_raw_time_us(void)
 void mp_raw_time_init(void)
 {
     QueryPerformanceFrequency(&perf_freq);
+#if !HAVE_UWP
     timeBeginPeriod(1); // request 1ms timer resolution
+#endif
 }

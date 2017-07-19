@@ -24,6 +24,7 @@
 
 #include <va/va_drmcommon.h>
 
+#include <libavutil/common.h>
 #include <libavutil/hwcontext.h>
 #include <libavutil/hwcontext_vaapi.h>
 
@@ -31,7 +32,6 @@
 
 #include "hwdec.h"
 #include "video/vaapi.h"
-#include "video/img_fourcc.h"
 #include "video/mp_image_pool.h"
 #include "common.h"
 #include "formats.h"
@@ -56,7 +56,7 @@ typedef void *EGLImageKHR;
 
 static VADisplay *create_x11_va_display(GL *gl)
 {
-    Display *x11 = gl->MPGetNativeDisplay("x11");
+    Display *x11 = mpgl_get_native_display(gl, "x11");
     return x11 ? vaGetDisplay(x11) : NULL;
 }
 #endif
@@ -66,7 +66,7 @@ static VADisplay *create_x11_va_display(GL *gl)
 
 static VADisplay *create_wayland_va_display(GL *gl)
 {
-    struct wl_display *wl = gl->MPGetNativeDisplay("wl");
+    struct wl_display *wl = mpgl_get_native_display(gl, "wl");
     return wl ? vaGetDisplayWl(wl) : NULL;
 }
 #endif
@@ -76,7 +76,7 @@ static VADisplay *create_wayland_va_display(GL *gl)
 
 static VADisplay *create_drm_va_display(GL *gl)
 {
-    int drm_fd = (intptr_t)gl->MPGetNativeDisplay("drm");
+    int drm_fd = (intptr_t)mpgl_get_native_display(gl, "drm");
     // Note: yes, drm_fd==0 could be valid - but it's rare and doesn't fit with
     //       our slightly crappy way of passing it through, so consider 0 not
     //       valid.
@@ -103,8 +103,6 @@ static const struct va_create_native create_native_cbs[] = {
 
 static VADisplay *create_native_va_display(GL *gl, struct mp_log *log)
 {
-    if (!gl->MPGetNativeDisplay)
-        return NULL;
     for (int n = 0; n < MP_ARRAY_SIZE(create_native_cbs); n++) {
         const struct va_create_native *disp = &create_native_cbs[n];
         mp_verbose(log, "Trying to open a %s VA display...\n", disp->name);
@@ -327,13 +325,13 @@ static int map_frame(struct gl_hwdec *hw, struct mp_image *hw_image,
 
     int drm_fmts[8] = {
         // 1 bytes per component, 1-4 components
-        MP_FOURCC('R', '8', ' ', ' '),   // DRM_FORMAT_R8
-        MP_FOURCC('G', 'R', '8', '8'),   // DRM_FORMAT_GR88
+        MKTAG('R', '8', ' ', ' '),       // DRM_FORMAT_R8
+        MKTAG('G', 'R', '8', '8'),       // DRM_FORMAT_GR88
         0,                               // untested (DRM_FORMAT_RGB888?)
         0,                               // untested (DRM_FORMAT_RGBA8888?)
         // 2 bytes per component, 1-4 components
-        MP_FOURCC('R', '1', '6', ' '),   // proposed DRM_FORMAT_R16
-        MP_FOURCC('G', 'R', '3', '2'),   // proposed DRM_FORMAT_GR32
+        MKTAG('R', '1', '6', ' '),       // proposed DRM_FORMAT_R16
+        MKTAG('G', 'R', '3', '2'),       // proposed DRM_FORMAT_GR32
         0,                               // N/A
         0,                               // N/A
     };
@@ -383,8 +381,6 @@ static int map_frame(struct gl_hwdec *hw, struct mp_image *hw_image,
     if (va_image->format.fourcc == VA_FOURCC_YV12)
         MPSWAP(struct gl_hwdec_plane, out_frame->planes[1], out_frame->planes[2]);
 
-    snprintf(out_frame->swizzle, sizeof(out_frame->swizzle), "%s", desc.swizzle);
-
     return 0;
 
 err:
@@ -414,55 +410,42 @@ static void determine_working_formats(struct gl_hwdec *hw)
 
     p->probing_formats = true;
 
-    if (HAVE_VAAPI_HWACCEL_OLD) {
-        struct mp_image_pool *alloc = mp_image_pool_new(1);
-        va_pool_set_allocator(alloc, p->ctx, VA_RT_FORMAT_YUV420);
-        struct mp_image *s = mp_image_pool_get(alloc, IMGFMT_VAAPI, 64, 64);
-        if (s) {
-            va_surface_init_subformat(s);
-            if (try_format(hw, s))
-                MP_TARRAY_APPEND(p, formats, num_formats, IMGFMT_NV12);
-        }
-        talloc_free(s);
-        talloc_free(alloc);
-    } else {
-        AVHWFramesConstraints *fc =
+    AVHWFramesConstraints *fc =
             av_hwdevice_get_hwframe_constraints(p->ctx->av_device_ref, NULL);
-        if (!fc) {
-            MP_WARN(hw, "failed to retrieve libavutil frame constaints\n");
-            goto done;
-        }
-        for (int n = 0; fc->valid_sw_formats[n] != AV_PIX_FMT_NONE; n++) {
-            AVBufferRef *fref = NULL;
-            struct mp_image *s = NULL;
-            AVFrame *frame = NULL;
-            fref = av_hwframe_ctx_alloc(p->ctx->av_device_ref);
-            if (!fref)
-                goto err;
-            AVHWFramesContext *fctx = (void *)fref->data;
-            fctx->format = AV_PIX_FMT_VAAPI;
-            fctx->sw_format = fc->valid_sw_formats[n];
-            fctx->width = 128;
-            fctx->height = 128;
-            if (av_hwframe_ctx_init(fref) < 0)
-                goto err;
-            frame = av_frame_alloc();
-            if (!frame)
-                goto err;
-            if (av_hwframe_get_buffer(fref, frame, 0) < 0)
-                goto err;
-            s = mp_image_from_av_frame(frame);
-            if (!s || !mp_image_params_valid(&s->params))
-                goto err;
-            if (try_format(hw, s))
-                MP_TARRAY_APPEND(p, formats, num_formats, s->params.hw_subfmt);
-        err:
-            talloc_free(s);
-            av_frame_free(&frame);
-            av_buffer_unref(&fref);
-        }
-        av_hwframe_constraints_free(&fc);
+    if (!fc) {
+        MP_WARN(hw, "failed to retrieve libavutil frame constaints\n");
+        goto done;
     }
+    for (int n = 0; fc->valid_sw_formats[n] != AV_PIX_FMT_NONE; n++) {
+        AVBufferRef *fref = NULL;
+        struct mp_image *s = NULL;
+        AVFrame *frame = NULL;
+        fref = av_hwframe_ctx_alloc(p->ctx->av_device_ref);
+        if (!fref)
+            goto err;
+        AVHWFramesContext *fctx = (void *)fref->data;
+        fctx->format = AV_PIX_FMT_VAAPI;
+        fctx->sw_format = fc->valid_sw_formats[n];
+        fctx->width = 128;
+        fctx->height = 128;
+        if (av_hwframe_ctx_init(fref) < 0)
+            goto err;
+        frame = av_frame_alloc();
+        if (!frame)
+            goto err;
+        if (av_hwframe_get_buffer(fref, frame, 0) < 0)
+            goto err;
+        s = mp_image_from_av_frame(frame);
+        if (!s || !mp_image_params_valid(&s->params))
+            goto err;
+        if (try_format(hw, s))
+            MP_TARRAY_APPEND(p, formats, num_formats, s->params.hw_subfmt);
+    err:
+        talloc_free(s);
+        av_frame_free(&frame);
+        av_buffer_unref(&fref);
+    }
+    av_hwframe_constraints_free(&fc);
 
 done:
     MP_TARRAY_APPEND(p, formats, num_formats, 0); // terminate it

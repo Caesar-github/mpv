@@ -13,13 +13,10 @@
  *
  * You should have received a copy of the GNU General Public License along
  * with mpv.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ * Almost LGPL.
  */
 
-#include "config.h"
-
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <limits.h>
 #include <pthread.h>
 #include <assert.h>
@@ -33,7 +30,7 @@
 
 #include "mpv_talloc.h"
 
-#include "img_format.h"
+#include "common/common.h"
 #include "mp_image.h"
 #include "sws_utils.h"
 #include "fmt-conversion.h"
@@ -411,8 +408,8 @@ void mp_image_copy_attributes(struct mp_image *dst, struct mp_image *src)
     }
     dst->params.color.primaries = src->params.color.primaries;
     dst->params.color.gamma = src->params.color.gamma;
-    dst->params.color.nom_peak = src->params.color.nom_peak;
     dst->params.color.sig_peak = src->params.color.sig_peak;
+    dst->params.color.light = src->params.color.light;
     if ((dst->fmt.flags & MP_IMGFLAG_YUV) == (src->fmt.flags & MP_IMGFLAG_YUV)) {
         dst->params.color.space = src->params.color.space;
         dst->params.color.levels = src->params.color.levels;
@@ -464,9 +461,7 @@ void mp_image_clear(struct mp_image *img, int x0, int y0, int x1, int y1)
 
     uint32_t plane_clear[MP_MAX_PLANES] = {0};
 
-    if (area.imgfmt == IMGFMT_YUYV) {
-        plane_clear[0] = av_le2ne16(0x8000);
-    } else if (area.imgfmt == IMGFMT_UYVY) {
+    if (area.imgfmt == IMGFMT_UYVY) {
         plane_clear[0] = av_le2ne16(0x0080);
     } else if (area.fmt.flags & MP_IMGFLAG_YUV_NV) {
         plane_clear[1] = 0x8080;
@@ -534,8 +529,6 @@ char *mp_image_params_to_str_buf(char *b, size_t bs,
                         m_opt_choice_str(mp_csp_prim_names, p->color.primaries),
                         m_opt_choice_str(mp_csp_trc_names, p->color.gamma),
                         m_opt_choice_str(mp_csp_levels_names, p->color.levels));
-        if (p->color.nom_peak)
-            mp_snprintf_cat(b, bs, " NP=%f", p->color.nom_peak);
         if (p->color.sig_peak)
             mp_snprintf_cat(b, bs, " SP=%f", p->color.sig_peak);
         mp_snprintf_cat(b, bs, " CL=%s",
@@ -618,7 +611,9 @@ void mp_image_params_guess_csp(struct mp_image_params *params)
     struct mp_imgfmt_desc fmt = mp_imgfmt_get_desc(imgfmt);
     if (!fmt.id)
         return;
-    if (fmt.flags & MP_IMGFLAG_YUV) {
+
+    enum mp_csp forced_csp = mp_imgfmt_get_forced_csp(imgfmt);
+    if (forced_csp == MP_CSP_AUTO) { // YUV/other
         if (params->color.space != MP_CSP_BT_601 &&
             params->color.space != MP_CSP_BT_709 &&
             params->color.space != MP_CSP_BT_2020_NC &&
@@ -653,7 +648,7 @@ void mp_image_params_guess_csp(struct mp_image_params *params)
         }
         if (params->color.gamma == MP_CSP_TRC_AUTO)
             params->color.gamma = MP_CSP_TRC_BT_1886;
-    } else if (fmt.flags & MP_IMGFLAG_RGB) {
+    } else if (forced_csp == MP_CSP_RGB) {
         params->color.space = MP_CSP_RGB;
         params->color.levels = MP_CSP_LEVELS_PC;
 
@@ -666,7 +661,7 @@ void mp_image_params_guess_csp(struct mp_image_params *params)
             params->color.primaries = MP_CSP_PRIM_BT_709;
         if (params->color.gamma == MP_CSP_TRC_AUTO)
             params->color.gamma = MP_CSP_TRC_SRGB;
-    } else if (fmt.flags & MP_IMGFLAG_XYZ) {
+    } else if (forced_csp == MP_CSP_XYZ) {
         params->color.space = MP_CSP_XYZ;
         params->color.levels = MP_CSP_LEVELS_PC;
 
@@ -690,10 +685,24 @@ void mp_image_params_guess_csp(struct mp_image_params *params)
         params->color.gamma = MP_CSP_TRC_AUTO;
     }
 
-    // Guess the nominal peak (independent of the colorspace)
-    if (params->color.gamma == MP_CSP_TRC_SMPTE_ST2084) {
-        if (!params->color.nom_peak)
-            params->color.nom_peak = 10000; // As per the spec
+    if (!params->color.sig_peak) {
+        if (params->color.gamma == MP_CSP_TRC_HLG) {
+            params->color.sig_peak = 1000 / MP_REF_WHITE; // reference display
+        } else {
+            // If the signal peak is unknown, we're forced to pick the TRC's
+            // nominal range as the signal peak to prevent clipping
+            params->color.sig_peak = mp_trc_nom_peak(params->color.gamma);
+        }
+    }
+
+    if (params->color.light == MP_CSP_LIGHT_AUTO) {
+        // HLG is always scene-referred (using its own OOTF), everything else
+        // we assume is display-refered by default.
+        if (params->color.gamma == MP_CSP_TRC_HLG) {
+            params->color.light = MP_CSP_LIGHT_SCENE_HLG;
+        } else {
+            params->color.light = MP_CSP_LIGHT_DISPLAY;
+        }
     }
 }
 
@@ -817,6 +826,8 @@ struct AVFrame *mp_image_to_av_frame(struct mp_image *img)
     frame->hw_frames_ctx = new_ref->hwctx;
     *new_ref = (struct mp_image){0};
     talloc_free(new_ref);
+    if (frame->format == AV_PIX_FMT_NONE)
+        av_frame_free(&frame);
     return frame;
 }
 

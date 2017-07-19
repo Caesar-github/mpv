@@ -91,6 +91,8 @@ static void destroy(struct gl_hwdec *hw)
         IDirect3D9Ex_Release(p->d3d9ex);
 }
 
+static int reinit(struct gl_hwdec *hw, struct mp_image_params *params);
+
 static int create(struct gl_hwdec *hw)
 {
     if (!angle_load())
@@ -207,10 +209,21 @@ static int create(struct gl_hwdec *hw)
         goto fail;
     }
 
+
+    struct mp_image_params dummy_params = {
+        .imgfmt = IMGFMT_DXVA2,
+        .w = 256,
+        .h = 256,
+    };
+    if (reinit(hw, &dummy_params) < 0)
+        goto fail;
+    destroy_textures(hw);
+
     p->hwctx = (struct mp_hwdec_ctx){
         .type = HWDEC_DXVA2,
         .driver_name = hw->driver->name,
         .ctx = (IDirect3DDevice9 *)p->device9ex,
+        .av_device_ref = d3d9_wrap_device_ref((IDirect3DDevice9 *)p->device9ex),
     };
     hwdec_devices_add(hw->devs, &p->hwctx);
 

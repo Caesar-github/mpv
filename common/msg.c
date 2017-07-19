@@ -13,6 +13,8 @@
  *
  * You should have received a copy of the GNU General Public License along
  * with mpv.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ * Almost LGPL.
  */
 
 #include <stdio.h>
@@ -55,6 +57,7 @@ struct mp_log_root {
     int status_lines;   // number of current status lines
     bool color;
     int verbose;
+    bool really_quiet;
     bool force_stderr;
     struct mp_log_buffer **buffers;
     int num_buffers;
@@ -108,7 +111,9 @@ static void update_loglevel(struct mp_log *log)
 {
     struct mp_log_root *root = log->root;
     pthread_mutex_lock(&mp_msg_lock);
-    log->level = MSGL_STATUS + log->root->verbose; // default log level
+    log->level = MSGL_STATUS + root->verbose; // default log level
+    if (root->really_quiet)
+        log->level -= 10;
     for (int n = 0; root->msg_levels && root->msg_levels[n * 2 + 0]; n++) {
         if (match_mod(log->verbose_prefix, root->msg_levels[n * 2 + 0]))
             log->level = mp_msg_find_level(root->msg_levels[n * 2 + 1]);
@@ -509,6 +514,7 @@ void mp_msg_update_msglevels(struct mpv_global *global)
     pthread_mutex_lock(&mp_msg_lock);
 
     root->verbose = opts->verbose;
+    root->really_quiet = opts->msg_really_quiet;
     root->module = opts->msg_module;
     root->use_terminal = opts->use_terminal;
     root->show_time = opts->msg_time;
@@ -535,7 +541,20 @@ void mp_msg_force_stderr(struct mpv_global *global, bool force_stderr)
 {
     struct mp_log_root *root = global->log->root;
 
+    pthread_mutex_lock(&mp_msg_lock);
     root->force_stderr = force_stderr;
+    pthread_mutex_unlock(&mp_msg_lock);
+}
+
+bool mp_msg_has_log_file(struct mpv_global *global)
+{
+    struct mp_log_root *root = global->log->root;
+
+    pthread_mutex_lock(&mp_msg_lock);
+    bool res = !!root->log_file;
+    pthread_mutex_unlock(&mp_msg_lock);
+
+    return res;
 }
 
 void mp_msg_uninit(struct mpv_global *global)

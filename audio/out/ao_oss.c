@@ -42,13 +42,7 @@
 #include "osdep/timer.h"
 #include "osdep/endian.h"
 
-#if HAVE_SYS_SOUNDCARD_H
 #include <sys/soundcard.h>
-#else
-#if HAVE_SOUNDCARD_H
-#include <soundcard.h>
-#endif
-#endif
 
 #include "audio/format.h"
 
@@ -60,6 +54,9 @@
 // Define to 1 if SNDCTL_DSP_RESET should be used to reset without close.
 #define KEEP_DEVICE (defined(SNDCTL_DSP_RESET) && !defined(__NetBSD__))
 
+#define PATH_DEV_DSP "/dev/dsp"
+#define PATH_DEV_MIXER "/dev/mixer"
+
 struct priv {
     int audio_fd;
     int prepause_samples;
@@ -70,7 +67,6 @@ struct priv {
     bool device_failed;
     double audio_end;
 
-    char *dsp;
     char *oss_mixer_device;
     char *cfg_oss_mixer_channel;
 };
@@ -94,10 +90,6 @@ static const struct mp_chmap oss_layouts[MP_NUM_CHANNELS + 1] = {
 #define AFMT_S16_NE MP_SELECT_LE_BE(AFMT_S16_LE, AFMT_S16_BE)
 #endif
 
-#if !defined(AFMT_S24_NE) && defined(AFMT_S24_LE) && defined(AFMT_S24_BE)
-#define AFMT_S24_NE MP_SELECT_LE_BE(AFMT_S24_LE, AFMT_S24_BE)
-#endif
-
 #if !defined(AFMT_S32_NE) && defined(AFMT_S32_LE) && defined(AFMT_S32_BE)
 #define AFMT_S32_NE AFMT_S32MP_SELECT_LE_BE(AFMT_S32_LE, AFMT_S32_BE)
 #endif
@@ -105,9 +97,6 @@ static const struct mp_chmap oss_layouts[MP_NUM_CHANNELS + 1] = {
 static const int format_table[][2] = {
     {AFMT_U8,           AF_FORMAT_U8},
     {AFMT_S16_NE,       AF_FORMAT_S16},
-#ifdef AFMT_S24_NE
-    {AFMT_S24_NE,       AF_FORMAT_S24},
-#endif
 #ifdef AFMT_S32_NE
     {AFMT_S32_NE,       AF_FORMAT_S32},
 #endif
@@ -282,8 +271,6 @@ static int reopen_device(struct ao *ao, bool allow_format_changes)
     const char *device = PATH_DEV_DSP;
     if (ao->device)
         device = ao->device;
-    if (p->dsp && p->dsp[0])
-        device = p->dsp;
 
     MP_VERBOSE(ao, "using '%s' dsp device\n", device);
 #ifdef __linux__
@@ -400,7 +387,8 @@ static int reopen_device(struct ao *ao, bool allow_format_changes)
         }
     }
 
-    p->outburst -= p->outburst % (channels.num * af_fmt_to_bytes(format)); // round down
+    ao->period_size = channels.num * af_fmt_to_bytes(format);
+    p->outburst -= p->outburst % ao->period_size; // round down
 
     return 0;
 
@@ -652,7 +640,6 @@ const struct ao_driver audio_out_oss = {
         .oss_mixer_device = PATH_DEV_MIXER,
     },
     .options = (const struct m_option[]) {
-        OPT_STRING("device", dsp, 0, DEVICE_OPT_DEPRECATION),
         OPT_STRING("mixer-device", oss_mixer_device, 0),
         OPT_STRING("mixer-channel", cfg_oss_mixer_channel, 0),
         {0}

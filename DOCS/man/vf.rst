@@ -49,13 +49,14 @@ normal filter parameters.
 
 .. note::
 
-    To get a full list of available video filters, see ``--vf=help``.
+    To get a full list of available video filters, see ``--vf=help`` and
+    http://ffmpeg.org/ffmpeg-filters.html .
 
     Also, keep in mind that most actual filters are available via the ``lavfi``
     wrapper, which gives you access to most of libavfilter's filters. This
     includes all filters that have been ported from MPlayer to libavfilter.
 
-    Most filters are deprecated in some ways, unless they're only available
+    Most builtin filters are deprecated in some ways, unless they're only available
     in mpv (such as filters which deal with mpv specifics, or which are
     implemented in mpv only).
 
@@ -65,6 +66,11 @@ normal filter parameters.
     is rather similar to libavfilter's, it's not the same. (Which means not
     everything accepted by vf_lavfi's ``graph`` option will be accepted by
     ``--vf``.)
+
+    You can also prefix the filter name with ``lavfi-`` to force the wrapper.
+    This is helpful if the filter name collides with a deprecated mpv builtin
+    filter. For example ``--vf=lavfi-scale=args`` would use libavfilter's
+    ``scale`` filter over mpv's deprecated builtin one.
 
 Video filters are managed in lists. There are a few commands to manage the
 filter list.
@@ -92,7 +98,7 @@ With filters that support it, you can access parameters by their name.
     Sets a named parameter to the given value. Use on and off or yes and no to
     set flag parameters.
 
-Available filters are:
+Available mpv-only filters are:
 
 ``crop[=w:h:x:y]``
     Crops the given part of the image and discards the rest. Useful to remove
@@ -357,17 +363,34 @@ Available filters are:
        :gamma2.2:     Pure power curve (gamma 2.2)
        :gamma2.8:     Pure power curve (gamma 2.8)
        :prophoto:     ProPhoto RGB (ROMM) curve
-       :st2084:       SMPTE ST2084 (HDR) curve
-       :std-b67:      ARIB STD-B67 (Hybrid Log-gamma) curve
+       :pq:           ITU-R BT.2100 PQ (Perceptual quantizer) curve
+       :hlg:          ITU-R BT.2100 HLG (Hybrid Log-gamma) curve
        :v-log:        Panasonic V-Log transfer curve
+       :s-log1:       Sony S-Log1 transfer curve
+       :s-log2:       Sony S-Log2 transfer curve
 
-    ``<peak>``
-        Reference peak illumination for the video file. This is mostly
-        interesting for HDR, but it can also be used tone map SDR content
-        to a darker or brighter exposure.
+    ``<sig-peak>``
+        Reference peak illumination for the video file, relative to the
+        signal's reference white level. This is mostly interesting for HDR, but
+        it can also be used tone map SDR content to simulate a different
+        exposure. Normally inferred from tags such as MaxCLL or mastering
+        metadata.
 
-        The default of 0.0 will default to the display's reference brightness
-        for SDR and the source's reference brightness for HDR.
+        The default of 0.0 will default to the source's nominal peak luminance.
+
+    ``<light>``
+        Light type of the scene. This is mostly correctly inferred based on the
+        gamma function, but it can be useful to override this when viewing raw
+        camera footage (e.g. V-Log), which is normally scene-referred instead
+        of display-referred.
+
+        Available light types are:
+
+       :auto:         Automatic selection (default)
+       :display:      Display-referred light (most content)
+       :hlg:          Scene-referred using the HLG OOTF (e.g. HLG content)
+       :709-1886:     Scene-referred using the BT709+BT1886 interaction
+       :gamma1.2:     Scene-referred using a pure power OOTF (gamma=1.2)
 
     ``<stereo-in>``
         Set the stereo mode the video is assumed to be encoded in. Takes the
@@ -635,29 +658,6 @@ Available filters are:
     ``<size>``
         size of the filter in percent of the image diagonal size. This is
         used to calculate the final radius size (default: 1).
-
-
-``dlopen=dll[:a0[:a1[:a2[:a3]]]]``
-    Loads an external library to filter the image. The library interface
-    is the ``vf_dlopen`` interface specified using ``libmpcodecs/vf_dlopen.h``.
-
-    .. warning:: This filter is deprecated.
-
-    ``dll=<library>``
-        Specify the library to load. This may require a full file system path
-        in some cases. This argument is required.
-
-    ``a0=<string>``
-        Specify the first parameter to pass to the library.
-
-    ``a1=<string>``
-        Specify the second parameter to pass to the library.
-
-    ``a2=<string>``
-        Specify the third parameter to pass to the library.
-
-    ``a3=<string>``
-        Specify the fourth parameter to pass to the library.
 
 ``vapoursynth=file:buffered-frames:concurrent-frames``
     Loads a VapourSynth filter script. This is intended for streamed

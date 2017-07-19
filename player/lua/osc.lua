@@ -1851,9 +1851,9 @@ function osc_init()
     ne.eventresponder["mouse_btn0_up"] =
         function () mp.commandv("cycle", "mute") end
 
-    ne.eventresponder["mouse_btn3_press"] =
+    ne.eventresponder["mouse_wheel_up_press"] =
         function () mp.commandv("osd-auto", "add", "volume", 5) end
-    ne.eventresponder["mouse_btn4_press"] =
+    ne.eventresponder["mouse_wheel_down_press"] =
         function () mp.commandv("osd-auto", "add", "volume", -5) end
 
 
@@ -2202,7 +2202,7 @@ function tick()
         ass:new_event()
         ass:pos(320, icon_y+65)
         ass:an(8)
-        ass:append("Drop files to play here.")
+        ass:append("Drop files or URLs to play here.")
         mp.set_osd_ass(640, 360, ass.text)
 
         if state.showhide_enabled then
@@ -2302,8 +2302,10 @@ mp.set_key_bindings({
                                 function(e) process_event("shift+mouse_btn0", "down")  end},
     {"mouse_btn2",              function(e) process_event("mouse_btn2", "up") end,
                                 function(e) process_event("mouse_btn2", "down")  end},
-    {"mouse_btn3",              function(e) process_event("mouse_btn3", "press") end},
-    {"mouse_btn4",              function(e) process_event("mouse_btn4", "press") end},
+    {"mouse_btn3",              function(e) process_event("mouse_wheel_up", "press") end},
+    {"mouse_btn4",              function(e) process_event("mouse_wheel_down", "press") end},
+    {"axis_up",                 function(e) process_event("mouse_wheel_up", "press") end},
+    {"axis_down",               function(e) process_event("mouse_wheel_down", "press") end},
     {"mouse_btn0_dbl",          "ignore"},
     {"shift+mouse_btn0_dbl",    "ignore"},
     {"mouse_btn2_dbl",          "ignore"},

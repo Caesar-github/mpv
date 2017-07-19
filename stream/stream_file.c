@@ -3,18 +3,18 @@
  *
  * This file is part of mpv.
  *
- * mpv is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
+ * mpv is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
  *
  * mpv is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with mpv.  If not, see <http://www.gnu.org/licenses/>.
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include "config.h"
@@ -123,7 +123,7 @@ static int control(stream_t *s, int cmd, void *arg)
 static void s_close(stream_t *s)
 {
     struct priv *p = s->priv;
-    if (p->close && p->fd >= 0)
+    if (p->close)
         close(p->fd);
 }
 
@@ -246,14 +246,16 @@ static int open_f(stream_t *stream)
         filename = stream->path;
     }
 
-    if (strncmp(stream->url, "fd://", 5) == 0) {
-        char *end = NULL;
-        p->fd = strtol(stream->url + 5, &end, 0);
-        if (!end || end == stream->url + 5 || end[0]) {
+    bool is_fdclose = strncmp(stream->url, "fdclose://", 10) == 0;
+    if (strncmp(stream->url, "fd://", 5) == 0 || is_fdclose) {
+        char *begin = strstr(stream->url, "://") + 3, *end = NULL;
+        p->fd = strtol(begin, &end, 0);
+        if (!end || end == begin || end[0]) {
             MP_ERR(stream, "Invalid FD: %s\n", stream->url);
             return STREAM_ERROR;
         }
-        p->close = false;
+        if (is_fdclose)
+            p->close = true;
     } else if (!strcmp(filename, "-")) {
         if (!write) {
             MP_INFO(stream, "Reading from stdin...\n");
@@ -262,7 +264,6 @@ static int open_f(stream_t *stream)
             MP_INFO(stream, "Writing to stdout...\n");
             p->fd = 1;
         }
-        p->close = false;
     } else {
         mode_t openmode = S_IRUSR | S_IWUSR;
 #ifndef __MINGW32__
@@ -324,7 +325,7 @@ static int open_f(stream_t *stream)
 const stream_info_t stream_info_file = {
     .name = "file",
     .open = open_f,
-    .protocols = (const char*const[]){ "file", "", "fd", NULL },
+    .protocols = (const char*const[]){ "file", "", "fd", "fdclose", NULL },
     .can_write = true,
     .is_safe = true,
 };

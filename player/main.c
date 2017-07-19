@@ -1,18 +1,20 @@
 /*
  * This file is part of mpv.
  *
- * mpv is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
+ * mpv is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
  *
  * mpv is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with mpv.  If not, see <http://www.gnu.org/licenses/>.
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ * Parts under HAVE_GPL are licensed under GNU General Public License.
  */
 
 #include <stdio.h>
@@ -114,6 +116,8 @@ static bool cas_terminal_owner(struct MPContext *old, struct MPContext *new)
 
 void mp_update_logging(struct MPContext *mpctx, bool preinit)
 {
+    bool had_log_file = mp_msg_has_log_file(mpctx->global);
+
     mp_msg_update_msglevels(mpctx->global);
 
     bool enable = mpctx->opts->use_terminal;
@@ -127,6 +131,9 @@ void mp_update_logging(struct MPContext *mpctx, bool preinit)
             cas_terminal_owner(mpctx, NULL);
         }
     }
+
+    if (mp_msg_has_log_file(mpctx->global) && !had_log_file)
+        mp_print_version(mpctx->log, false); // for log-file=... in config files
 
     if (enabled && !preinit && mpctx->opts->consolecontrols)
         terminal_setup_getch(mpctx->input);
@@ -142,7 +149,10 @@ void mp_print_version(struct mp_log *log, int always)
     mp_msg(log, v, "\n");
     // Only in verbose mode.
     if (!always) {
+#if HAVE_GPL
+        // Possibly GPL due to 0810e42750fb2e2e0d602388cef1b8ea8015d935.
         mp_msg(log, MSGL_V, "Configuration: " CONFIGURATION "\n");
+#endif
         mp_msg(log, MSGL_V, "List of enabled features: %s\n", FULLCONFIG);
     }
 }
@@ -249,43 +259,42 @@ static bool handle_help_options(struct MPContext *mpctx)
 {
     struct MPOpts *opts = mpctx->opts;
     struct mp_log *log = mpctx->log;
-    int opt_exit = 0;
     if (opts->audio_decoders && strcmp(opts->audio_decoders, "help") == 0) {
         struct mp_decoder_list *list = audio_decoder_list();
         mp_print_decoders(log, MSGL_INFO, "Audio decoders:", list);
         talloc_free(list);
-        opt_exit = 1;
+        return true;
     }
     if (opts->audio_spdif && strcmp(opts->audio_spdif, "help") == 0) {
         MP_INFO(mpctx, "Choices: ac3,dts-hd,dts (and possibly more)\n");
-        opt_exit = 1;
+        return true;
     }
     if (opts->video_decoders && strcmp(opts->video_decoders, "help") == 0) {
         struct mp_decoder_list *list = video_decoder_list();
         mp_print_decoders(log, MSGL_INFO, "Video decoders:", list);
         talloc_free(list);
-        opt_exit = 1;
+        return true;
     }
     if ((opts->demuxer_name && strcmp(opts->demuxer_name, "help") == 0) ||
         (opts->audio_demuxer_name && strcmp(opts->audio_demuxer_name, "help") == 0) ||
         (opts->sub_demuxer_name && strcmp(opts->sub_demuxer_name, "help") == 0)) {
         demuxer_help(log);
         MP_INFO(mpctx, "\n");
-        opt_exit = 1;
+        return true;
     }
     if (opts->audio_device && strcmp(opts->audio_device, "help") == 0) {
         ao_print_devices(mpctx->global, log);
-        opt_exit = 1;
+        return true;
     }
     if (opts->property_print_help) {
         property_print_help(mpctx);
-        opt_exit = 1;
+        return true;
     }
 #if HAVE_ENCODING
     if (encode_lavc_showhelp(log, opts->encode_opts))
-        opt_exit = 1;
+        return true;
 #endif
-    return opt_exit;
+    return false;
 }
 
 static void handle_deprecated_options(struct MPContext *mpctx)

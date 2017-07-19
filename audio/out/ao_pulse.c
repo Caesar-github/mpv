@@ -5,18 +5,18 @@
  *
  * This file is part of mpv.
  *
- * mpv is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
+ * mpv is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
  *
  * mpv is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with mpv.  If not, see <http://www.gnu.org/licenses/>.
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <stdlib.h>
@@ -59,7 +59,6 @@ struct priv {
     int wakeup_status;
 
     char *cfg_host;
-    char *cfg_sink;
     int cfg_buffer;
     int cfg_latency_hacks;
 };
@@ -192,9 +191,9 @@ static const struct format_map {
     int mp_format;
     pa_sample_format_t pa_format;
 } format_maps[] = {
-    {AF_FORMAT_S16, PA_SAMPLE_S16NE},
-    {AF_FORMAT_S32, PA_SAMPLE_S32NE},
     {AF_FORMAT_FLOAT, PA_SAMPLE_FLOAT32NE},
+    {AF_FORMAT_S32, PA_SAMPLE_S32NE},
+    {AF_FORMAT_S16, PA_SAMPLE_S16NE},
     {AF_FORMAT_U8, PA_SAMPLE_U8},
     {AF_FORMAT_UNKNOWN, 0}
 };
@@ -415,7 +414,7 @@ static int init(struct ao *ao)
     pa_proplist *proplist = NULL;
     pa_format_info *format = NULL;
     struct priv *priv = ao->priv;
-    char *sink = priv->cfg_sink && priv->cfg_sink[0] ? priv->cfg_sink : ao->device;
+    char *sink = ao->device;
 
     if (pa_init_boilerplate(ao) < 0)
         return -1;
@@ -836,7 +835,6 @@ const struct ao_driver audio_out_pulse = {
     },
     .options = (const struct m_option[]) {
         OPT_STRING("host", cfg_host, 0),
-        OPT_STRING("sink", cfg_sink, 0, DEVICE_OPT_DEPRECATION),
         OPT_CHOICE_OR_INT("buffer", cfg_buffer, 0, 1, 2000, ({"native", 0})),
         OPT_FLAG("latency-hacks", cfg_latency_hacks, 0),
         {0}

@@ -52,6 +52,7 @@ struct af_info {
 // Linked list of audio filters
 struct af_instance {
     const struct af_info *info;
+    char *full_name;
     struct mp_log *log;
     struct MPOpts *opts;
     struct replaygain_data *replaygain_data;
@@ -113,7 +114,6 @@ enum af_control {
     AF_CONTROL_REINIT = 1,
     AF_CONTROL_RESET,
     AF_CONTROL_SET_VOLUME,
-    AF_CONTROL_GET_VOLUME,
     AF_CONTROL_SET_PAN_LEVEL,
     AF_CONTROL_SET_PAN_NOUT,
     AF_CONTROL_SET_PAN_BALANCE,
