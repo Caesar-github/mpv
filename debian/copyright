@@ -3,7 +3,7 @@ Upstream-Name: mpv
 Source: https://github.com/mpv-player/mpv/releases
 
 Files: *
-Copyright: 2000-2016, The mplayer, mplayer2 and mpv Developers
+Copyright: 2000-2017, The mplayer, mplayer2 and mpv Developers
 License: LGPL-2.1+
 
 Files: audio/out/ao_sndio.c
@@ -43,143 +43,51 @@ Files: osdep/win32-console-wrapper.c
 Copyright: 2013, Martin Herkt
 License: ISC
 
-Files: TOOLS/vf_dlopen/*
-Copyright: 2012, Rudolf Polzer <divVerent@xonotic.org>
-License: LGPL-2.1+
-
 Files:
  DOCS/man/*
- TOOLS/matroska.py
  audio/audio.c
  audio/audio.h
- audio/decode/ad.h
- audio/decode/ad_lavc.c
- audio/decode/ad_spdif.c
- audio/decode/dec_audio.c
- audio/decode/dec_audio.h
  audio/filter/af.c
  audio/filter/af.h
  audio/filter/af_channels.c
  audio/filter/af_equalizer.c
- audio/filter/af_format.c
- audio/filter/af_lavcac3enc.c
  audio/filter/af_lavrresample.c
  audio/filter/af_pan.c
- audio/filter/af_scaletempo.c
  audio/filter/af_volume.c
  audio/filter/equalizer.h
  audio/filter/tools.c
- audio/fmt-conversion.c
- audio/fmt-conversion.h
- audio/format.c
- audio/format.h
- audio/out/ao.c
- audio/out/ao.h
  audio/out/ao_alsa.c
- audio/out/ao_audiounit.m
- audio/out/ao_coreaudio.c
- audio/out/ao_coreaudio_exclusive.c
- audio/out/ao_coreaudio_properties.c
- audio/out/ao_coreaudio_properties.h
- audio/out/ao_coreaudio_utils.c
- audio/out/ao_coreaudio_utils.h
  audio/out/ao_jack.c
- audio/out/ao_lavc.c
- audio/out/ao_null.c
- audio/out/ao_openal.c
  audio/out/ao_oss.c
- audio/out/ao_pcm.c
- audio/out/ao_pulse.c
- audio/out/ao_rsound.c
- audio/out/internal.h
  common/av_log.c
- common/encode_lavc.c
- common/encode_lavc.h
  common/msg.c
- common/msg.h
- demux/demux.c
- demux/demux.h
  demux/demux_lavf.c
- demux/demux_mf.c
- demux/demux_raw.c
- demux/stheader.h
+ demux/demux_mkv.c
+ demux/demux_tv.c
  input/cmd_list.c
- input/cmd_list.h
- input/cmd_parse.c
- input/cmd_parse.h
- input/input.c
- input/input.h
- input/keycodes.c
- input/keycodes.h
- options/m_config.c
- options/m_config.h
  options/m_option.c
- options/m_option.h
- options/m_property.c
- options/m_property.h
  options/options.c
- options/parse_commandline.c
- options/parse_commandline.h
- options/parse_configfile.c
- options/parse_configfile.h
- options/path.c
- options/path.h
- osdep/macosx_application.h
- osdep/macosx_application.m
- osdep/macosx_application_objc.h
- osdep/macosx_compat.h
- osdep/macosx_events.h
- osdep/macosx_events.m
- osdep/macosx_events_objc.h
- osdep/macosx_touchbar.h
- osdep/macosx_touchbar.m
- osdep/macosx_versions.h
  osdep/mpv.rc
- osdep/terminal-unix.c
- osdep/terminal-win.c
- osdep/terminal.h
- osdep/timer-linux.c
- osdep/timer-win2.c
- osdep/timer.h
- osdep/w32_keyboard.c
- osdep/w32_keyboard.h
  player/audio.c
  player/command.c
  player/command.h
- player/configfiles.c
- player/core.h
- player/external_files.c
- player/external_files.h
- player/loadfile.c
  player/main.c
  player/osd.c
- player/playloop.c
- player/sub.c
  player/video.c
  stream/ai_alsa1x.c
  stream/ai_oss.c
  stream/audio_in.c
  stream/audio_in.h
- stream/cache.c
- stream/cookies.c
- stream/cookies.h
  stream/dvb_tune.c
  stream/dvb_tune.h
  stream/frequencies.c
  stream/frequencies.h
- stream/stream.c
- stream/stream.h
- stream/stream_bluray.c
  stream/stream_cdda.c
  stream/stream_dvb.c
  stream/stream_dvd.c
  stream/stream_dvd_common.c
  stream/stream_dvd_common.h
  stream/stream_dvdnav.c
- stream/stream_file.c
- stream/stream_lavf.c
- stream/stream_mf.c
- stream/stream_null.c
  stream/stream_smb.c
  stream/stream_tv.c
  stream/tv.c
@@ -189,10 +97,7 @@ Files:
  stream/tvi_v4l2.c
  video/decode/dec_video.c
  video/decode/dec_video.h
- video/decode/hw_vaapi_old.c
- video/decode/vd.h
  video/decode/vd_lavc.c
- video/filter/vf.c
  video/filter/vf.h
  video/filter/vf_crop.c
  video/filter/vf_dsize.c
@@ -209,43 +114,19 @@ Files:
  video/filter/vf_stereo3d.c
  video/filter/vf_sub.c
  video/filter/vf_yadif.c
- video/fmt-conversion.c
- video/fmt-conversion.h
  video/gpu_memcpy.c
- video/image_writer.c
- video/image_writer.h
- video/img_format.c
- video/img_format.h
  video/mp_image.c
  video/mp_image.h
- video/out/aspect.c
- video/out/aspect.h
- video/out/cocoa/events_view.h
- video/out/cocoa/events_view.m
- video/out/cocoa/mpvadapter.h
- video/out/cocoa/video_view.h
- video/out/cocoa/video_view.m
- video/out/cocoa/window.h
- video/out/cocoa/window.m
- video/out/cocoa_common.h
- video/out/cocoa_common.m
  video/out/opengl/hwdec_vaglx.c
- video/out/vo.c
- video/out/vo.h
  video/out/vo_caca.c
  video/out/vo_direct3d.c
- video/out/vo_image.c
- video/out/vo_lavc.c
- video/out/vo_null.c
  video/out/vo_vaapi.c
  video/out/vo_vdpau.c
  video/out/vo_x11.c
  video/out/vo_xv.c
- video/out/w32_common.c
- video/out/w32_common.h
- video/out/win_state.c
  video/out/x11_common.c
  video/out/x11_common.h
+ video/sws_utils.c
  video/vaapi.c
  video/vaapi.h
  video/vdpau.c
