@@ -3,3 +3,4 @@
 04_waf-pie.patch
 05_add-keywords.patch
 06_ffmpeg-abi.patch
+07_io-stdin-used.patch
