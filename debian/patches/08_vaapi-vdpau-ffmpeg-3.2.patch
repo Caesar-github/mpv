@@ -1,0 +1,853 @@
+Description: Revert removal old vaapi/vdpau hw decoding support
+ The new hw decoding video outputs require FFmpeg 3.3 which is not in Debian
+ yet. Remove this patch once FFmpeg 3.3 becomes available.
+ .
+ Reverts "video: drop vaapi/vdpau hw decoding support with FFmpeg 3.2"
+ Upstream Commit: f59371de2170141fc28540d03c4e7ecc62844ebf.
+Author: James Cowgill <jcowgill@debian.org>
+---
+This patch header follows DEP-3: http://dep.debian.net/deps/dep3/
+--- a/README.md
++++ b/README.md
+@@ -102,8 +102,6 @@ Essential dependencies (incomplete list)
+ - FFmpeg libraries (libavutil libavcodec libavformat libswscale libavfilter
+   and either libswresample or libavresample)
+   At least FFmpeg 3.2.2 or Libav 12 is required.
+-  For hardware decoding with vaapi and vdpau, FFmpeg 3.3 or Libav git is
+-  required.
+ - zlib
+ - iconv (normally provided by the system libc)
+ - libass (OSD, OSC, text subtitles)
+@@ -111,7 +109,6 @@ Essential dependencies (incomplete list)
+ - libjpeg (optional, used for screenshots only)
+ - uchardet (optional, for subtitle charset detection)
+ - vdpau and vaapi libraries for hardware decoding on Linux (optional)
+-  (FFmpeg 3.3 or Libav git is also required.)
+ 
+ Libass dependencies:
+ 
+--- /dev/null
++++ b/video/decode/hw_vaapi_old.c
+@@ -0,0 +1,424 @@
++/*
++ * This file is part of mpv.
++ *
++ * With some chunks from original MPlayer VAAPI patch:
++ * Copyright (C) 2008-2009 Splitted-Desktop Systems
++ *
++ * mpv is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * mpv is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License along
++ * with mpv.  If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#include <stddef.h>
++#include <assert.h>
++
++#include <libavcodec/avcodec.h>
++#include <libavcodec/vaapi.h>
++#include <libavutil/common.h>
++
++#include "config.h"
++
++#include "lavc.h"
++#include "common/common.h"
++#include "common/av_common.h"
++#include "video/fmt-conversion.h"
++#include "video/vaapi.h"
++#include "video/mp_image_pool.h"
++#include "video/hwdec.h"
++#include "video/filter/vf.h"
++
++/*
++ * The VAAPI decoder can work only with surfaces passed to the decoder at
++ * creation time. This means all surfaces have to be created in advance.
++ * So, additionally to the maximum number of reference frames, we need
++ * surfaces for all kinds of buffering between decoder and VO.
++ * Note that redundant additional surfaces also might allow for some
++ * buffering (i.e. not trying to reuse a surface while it's busy).
++ */
++#define ADDTIONAL_SURFACES HWDEC_EXTRA_SURFACES
++
++// Some upper bound.
++#define MAX_SURFACES 25
++
++struct priv {
++    struct mp_log *log;
++    struct mp_vaapi_ctx *ctx;
++    bool own_ctx;
++    VADisplay display;
++
++    // libavcodec shared struct
++    struct vaapi_context *va_context;
++    struct vaapi_context va_context_storage;
++
++    struct mp_image_pool *pool;
++    int rt_format;
++
++    struct mp_image_pool *sw_pool;
++};
++
++#define HAS_HEVC VA_CHECK_VERSION(0, 38, 0)
++#define HAS_VP9 (VA_CHECK_VERSION(0, 38, 1) && defined(FF_PROFILE_VP9_0))
++
++#define PE(av_codec_id, ff_profile, vdp_profile)                \
++    {AV_CODEC_ID_ ## av_codec_id, FF_PROFILE_ ## ff_profile,    \
++     VAProfile ## vdp_profile}
++
++static const struct hwdec_profile_entry profiles[] = {
++    PE(MPEG2VIDEO,  MPEG2_MAIN,         MPEG2Main),
++    PE(MPEG2VIDEO,  MPEG2_SIMPLE,       MPEG2Simple),
++    PE(MPEG4,       MPEG4_ADVANCED_SIMPLE, MPEG4AdvancedSimple),
++    PE(MPEG4,       MPEG4_MAIN,         MPEG4Main),
++    PE(MPEG4,       MPEG4_SIMPLE,       MPEG4Simple),
++    PE(H264,        H264_HIGH,          H264High),
++    PE(H264,        H264_MAIN,          H264Main),
++    PE(H264,        H264_BASELINE,      H264Baseline),
++    PE(VC1,         VC1_ADVANCED,       VC1Advanced),
++    PE(VC1,         VC1_MAIN,           VC1Main),
++    PE(VC1,         VC1_SIMPLE,         VC1Simple),
++    PE(WMV3,        VC1_ADVANCED,       VC1Advanced),
++    PE(WMV3,        VC1_MAIN,           VC1Main),
++    PE(WMV3,        VC1_SIMPLE,         VC1Simple),
++#if HAS_HEVC
++    PE(HEVC,        HEVC_MAIN,          HEVCMain),
++    PE(HEVC,        HEVC_MAIN_10,       HEVCMain10),
++#endif
++#if HAS_VP9
++    PE(VP9,         VP9_0,              VP9Profile0),
++#endif
++    {0}
++};
++
++static const char *str_va_profile(VAProfile profile)
++{
++    switch (profile) {
++#define PROFILE(profile) \
++        case VAProfile##profile: return "VAProfile" #profile
++        PROFILE(MPEG2Simple);
++        PROFILE(MPEG2Main);
++        PROFILE(MPEG4Simple);
++        PROFILE(MPEG4AdvancedSimple);
++        PROFILE(MPEG4Main);
++        PROFILE(H264Baseline);
++        PROFILE(H264Main);
++        PROFILE(H264High);
++        PROFILE(VC1Simple);
++        PROFILE(VC1Main);
++        PROFILE(VC1Advanced);
++#if HAS_HEVC
++        PROFILE(HEVCMain);
++        PROFILE(HEVCMain10);
++#endif
++#if HAS_VP9
++        PROFILE(VP9Profile0);
++#endif
++#undef PROFILE
++    }
++    return "<unknown>";
++}
++
++static int find_entrypoint(int format, VAEntrypoint *ep, int num_ep)
++{
++    int entrypoint = -1;
++    switch (format) {
++    case IMGFMT_VAAPI:              entrypoint = VAEntrypointVLD;    break;
++    }
++    for (int n = 0; n < num_ep; n++) {
++        if (ep[n] == entrypoint)
++            return entrypoint;
++    }
++    return -1;
++}
++
++// We must allocate only surfaces that were passed to the decoder on creation.
++// We achieve this by reserving surfaces in the pool as needed.
++// Releasing surfaces is necessary after filling the surface id list so
++// that reserved surfaces can be reused for decoding.
++static bool preallocate_surfaces(struct lavc_ctx *ctx, int num, int w, int h,
++                                 VASurfaceID out_surfaces[MAX_SURFACES])
++{
++    struct priv *p = ctx->hwdec_priv;
++    struct mp_image *reserve[MAX_SURFACES] = {0};
++    bool res = true;
++
++    if (num > MAX_SURFACES)
++        return false;
++
++    for (int n = 0; n < num; n++) {
++        reserve[n] = mp_image_pool_get(p->pool, IMGFMT_VAAPI, w, h);
++        out_surfaces[n] = va_surface_id(reserve[n]);
++        if (out_surfaces[n] == VA_INVALID_ID) {
++            MP_ERR(p, "Could not allocate surfaces.\n");
++            res = false;
++            break;
++        }
++    }
++    for (int i = 0; i < num; i++)
++        talloc_free(reserve[i]);
++    return res;
++}
++
++static void destroy_decoder(struct lavc_ctx *ctx)
++{
++    struct priv *p = ctx->hwdec_priv;
++
++    if (p->va_context->context_id != VA_INVALID_ID) {
++        vaDestroyContext(p->display, p->va_context->context_id);
++        p->va_context->context_id = VA_INVALID_ID;
++    }
++
++    if (p->va_context->config_id != VA_INVALID_ID) {
++        vaDestroyConfig(p->display, p->va_context->config_id);
++        p->va_context->config_id = VA_INVALID_ID;
++    }
++
++    mp_image_pool_clear(p->pool);
++}
++
++static bool has_profile(VAProfile *va_profiles, int num_profiles, VAProfile p)
++{
++    for (int i = 0; i < num_profiles; i++) {
++        if (va_profiles[i] == p)
++            return true;
++    }
++    return false;
++}
++
++static int init_decoder(struct lavc_ctx *ctx, int w, int h)
++{
++    void *tmp = talloc_new(NULL);
++
++    struct priv *p = ctx->hwdec_priv;
++    VAStatus status;
++    int res = -1;
++
++    destroy_decoder(ctx);
++
++    const struct hwdec_profile_entry *pe = hwdec_find_profile(ctx, profiles);
++    if (!pe) {
++        MP_ERR(p, "Unsupported codec or profile.\n");
++        goto error;
++    }
++
++    int num_profiles = vaMaxNumProfiles(p->display);
++    VAProfile *va_profiles = talloc_zero_array(tmp, VAProfile, num_profiles);
++    status = vaQueryConfigProfiles(p->display, va_profiles, &num_profiles);
++    if (!CHECK_VA_STATUS(p, "vaQueryConfigProfiles()"))
++        goto error;
++    MP_DBG(p, "%d profiles available:\n", num_profiles);
++    for (int i = 0; i < num_profiles; i++)
++        MP_DBG(p, "  %s\n", str_va_profile(va_profiles[i]));
++
++    VAProfile va_profile = pe->hw_profile;
++    if (!has_profile(va_profiles, num_profiles, va_profile)) {
++        MP_ERR(p, "Decoder profile '%s' not available.\n",
++               str_va_profile(va_profile));
++        goto error;
++    }
++
++    MP_VERBOSE(p, "Using profile '%s'.\n", str_va_profile(va_profile));
++
++    int num_surfaces = hwdec_get_max_refs(ctx) + ADDTIONAL_SURFACES;
++    if (num_surfaces > MAX_SURFACES) {
++        MP_ERR(p, "Internal error: too many surfaces.\n");
++        goto error;
++    }
++
++    VASurfaceID surfaces[MAX_SURFACES];
++    if (!preallocate_surfaces(ctx, num_surfaces, w, h, surfaces)) {
++        MP_ERR(p, "Could not allocate surfaces.\n");
++        goto error;
++    }
++
++    int num_ep = vaMaxNumEntrypoints(p->display);
++    VAEntrypoint *ep = talloc_zero_array(tmp, VAEntrypoint, num_ep);
++    status = vaQueryConfigEntrypoints(p->display, va_profile, ep, &num_ep);
++    if (!CHECK_VA_STATUS(p, "vaQueryConfigEntrypoints()"))
++        goto error;
++
++    int entrypoint = find_entrypoint(IMGFMT_VAAPI, ep, num_ep);
++    if (entrypoint < 0) {
++        MP_ERR(p, "Could not find VA entrypoint.\n");
++        goto error;
++    }
++
++    VAConfigAttrib attrib = {
++        .type = VAConfigAttribRTFormat,
++    };
++    status = vaGetConfigAttributes(p->display, va_profile, entrypoint,
++                                   &attrib, 1);
++    if (!CHECK_VA_STATUS(p, "vaGetConfigAttributes()"))
++        goto error;
++    if ((attrib.value & p->rt_format) == 0) {
++        MP_ERR(p, "Chroma format not supported.\n");
++        goto error;
++    }
++
++    status = vaCreateConfig(p->display, va_profile, entrypoint, &attrib, 1,
++                            &p->va_context->config_id);
++    if (!CHECK_VA_STATUS(p, "vaCreateConfig()"))
++        goto error;
++
++    status = vaCreateContext(p->display, p->va_context->config_id,
++                             w, h, VA_PROGRESSIVE,
++                             surfaces, num_surfaces,
++                             &p->va_context->context_id);
++    if (!CHECK_VA_STATUS(p, "vaCreateContext()"))
++        goto error;
++
++    res = 0;
++error:
++    talloc_free(tmp);
++    return res;
++}
++
++static struct mp_image *allocate_image(struct lavc_ctx *ctx, int w, int h)
++{
++    struct priv *p = ctx->hwdec_priv;
++
++    struct mp_image *img = mp_image_pool_get(p->pool, IMGFMT_VAAPI, w, h);
++    if (!img)
++        MP_ERR(p, "Failed to allocate additional VAAPI surface.\n");
++    return img;
++}
++
++static struct mp_image *update_format(struct lavc_ctx *ctx, struct mp_image *img)
++{
++    va_surface_init_subformat(img);
++    return img;
++}
++
++static void uninit(struct lavc_ctx *ctx)
++{
++    struct priv *p = ctx->hwdec_priv;
++
++    if (!p)
++        return;
++
++    destroy_decoder(ctx);
++
++    talloc_free(p->pool);
++    p->pool = NULL;
++
++    if (p->own_ctx)
++        va_destroy(p->ctx);
++
++    talloc_free(p);
++    ctx->hwdec_priv = NULL;
++}
++
++static int init(struct lavc_ctx *ctx, bool direct)
++{
++    struct priv *p = talloc_ptrtype(NULL, p);
++    *p = (struct priv) {
++        .log = mp_log_new(p, ctx->log, "vaapi"),
++        .va_context = &p->va_context_storage,
++        .rt_format = VA_RT_FORMAT_YUV420
++    };
++
++    if (direct) {
++        p->ctx = hwdec_devices_get(ctx->hwdec_devs, HWDEC_VAAPI)->ctx;
++    } else {
++        struct mp_hwdec_ctx *hwctx = va_create_standalone(NULL, ctx->log, false);
++        if (!hwctx) {
++            talloc_free(p);
++            return -1;
++        }
++        p->ctx = hwctx->ctx;
++        p->own_ctx = true;
++    }
++
++    p->display = p->ctx->display;
++    p->pool = talloc_steal(p, mp_image_pool_new(MAX_SURFACES));
++    va_pool_set_allocator(p->pool, p->ctx, p->rt_format);
++    p->sw_pool = talloc_steal(p, mp_image_pool_new(17));
++
++    p->va_context->display = p->display;
++    p->va_context->config_id = VA_INVALID_ID;
++    p->va_context->context_id = VA_INVALID_ID;
++
++    ctx->avctx->hwaccel_context = p->va_context;
++    ctx->hwdec_priv = p;
++
++    return 0;
++}
++
++static int init_direct(struct lavc_ctx *ctx)
++{
++    return init(ctx, true);
++}
++
++static int probe(struct lavc_ctx *ctx, struct vd_lavc_hwdec *hwdec,
++                 const char *codec)
++{
++    if (!hwdec_devices_load(ctx->hwdec_devs, HWDEC_VAAPI))
++        return HWDEC_ERR_NO_CTX;
++    if (!hwdec_check_codec_support(codec, profiles))
++        return HWDEC_ERR_NO_CODEC;
++    return 0;
++}
++
++static int probe_copy(struct lavc_ctx *ctx, struct vd_lavc_hwdec *hwdec,
++                      const char *codec)
++{
++    struct mp_hwdec_ctx *hwctx = va_create_standalone(NULL, ctx->log, true);
++    if (!hwctx)
++        return HWDEC_ERR_NO_CTX;
++    struct mp_vaapi_ctx *dummy = hwctx->ctx;
++    bool emulated = va_guess_if_emulated(dummy);
++    va_destroy(dummy);
++    if (!hwdec_check_codec_support(codec, profiles))
++        return HWDEC_ERR_NO_CODEC;
++    if (emulated)
++        return HWDEC_ERR_EMULATED;
++    return 0;
++}
++
++static int init_copy(struct lavc_ctx *ctx)
++{
++    return init(ctx, false);
++}
++
++static struct mp_image *copy_image(struct lavc_ctx *ctx, struct mp_image *img)
++{
++    struct priv *p = ctx->hwdec_priv;
++
++    struct mp_image *simg = va_surface_download(img, p->sw_pool);
++    if (simg) {
++        talloc_free(img);
++        return simg;
++    }
++    return img;
++}
++
++const struct vd_lavc_hwdec mp_vd_lavc_vaapi = {
++    .type = HWDEC_VAAPI,
++    .image_format = IMGFMT_VAAPI,
++    .probe = probe,
++    .init = init_direct,
++    .uninit = uninit,
++    .init_decoder = init_decoder,
++    .allocate_image = allocate_image,
++    .process_image = update_format,
++};
++
++const struct vd_lavc_hwdec mp_vd_lavc_vaapi_copy = {
++    .type = HWDEC_VAAPI_COPY,
++    .copying = true,
++    .image_format = IMGFMT_VAAPI,
++    .probe = probe_copy,
++    .init = init_copy,
++    .uninit = uninit,
++    .init_decoder = init_decoder,
++    .allocate_image = allocate_image,
++    .process_image = copy_image,
++    .delay_queue = HWDEC_DELAY_QUEUE_COUNT,
++};
+--- /dev/null
++++ b/video/decode/hw_vdpau.c
+@@ -0,0 +1,160 @@
++/*
++ * This file is part of mpv.
++ *
++ * mpv is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * mpv is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#include <libavcodec/avcodec.h>
++#include <libavcodec/vdpau.h>
++#include <libavutil/common.h>
++#include <libavutil/hwcontext.h>
++
++#include "lavc.h"
++#include "common/common.h"
++#include "video/mp_image_pool.h"
++#include "video/vdpau.h"
++#include "video/hwdec.h"
++
++struct priv {
++    struct mp_log              *log;
++    struct mp_vdpau_ctx        *mpvdp;
++    uint64_t                    preemption_counter;
++    // vdpau-copy
++    Display                    *display;
++};
++
++static int init_decoder(struct lavc_ctx *ctx, int w, int h)
++{
++    struct priv *p = ctx->hwdec_priv;
++    int sw_format = ctx->avctx->sw_pix_fmt;
++
++    if (sw_format != AV_PIX_FMT_YUV420P && sw_format != AV_PIX_FMT_NV12) {
++        MP_VERBOSE(ctx, "Rejecting non 4:2:0 8 bit decoding.\n");
++        return -1;
++    }
++
++    if (hwdec_setup_hw_frames_ctx(ctx, p->mpvdp->av_device_ref, sw_format, 0) < 0)
++        return -1;
++
++    // During preemption, pretend everything is ok.
++    if (mp_vdpau_handle_preemption(p->mpvdp, &p->preemption_counter) < 0)
++        return 0;
++
++    int r = av_vdpau_bind_context(ctx->avctx, p->mpvdp->vdp_device,
++                                  p->mpvdp->get_proc_address,
++                                  AV_HWACCEL_FLAG_IGNORE_LEVEL |
++                                  AV_HWACCEL_FLAG_ALLOW_HIGH_DEPTH);
++    if (r >= 0 && ctx->avctx->codec_id == AV_CODEC_ID_HEVC)
++        MP_WARN(ctx, "HEVC video output may be broken due to nVidia bugs.\n");
++    return r;
++}
++
++static void uninit(struct lavc_ctx *ctx)
++{
++    struct priv *p = ctx->hwdec_priv;
++
++    if (p->display) {
++        // for copy path: we own this stuff
++        mp_vdpau_destroy(p->mpvdp);
++        XCloseDisplay(p->display);
++    }
++
++    TA_FREEP(&ctx->hwdec_priv);
++
++    if (ctx->avctx)
++        av_freep(&ctx->avctx->hwaccel_context);
++}
++
++static int init(struct lavc_ctx *ctx)
++{
++    struct priv *p = talloc_ptrtype(NULL, p);
++    *p = (struct priv) {
++        .log = mp_log_new(p, ctx->log, "vdpau"),
++        .mpvdp = hwdec_devices_get(ctx->hwdec_devs, HWDEC_VDPAU)->ctx,
++    };
++    ctx->hwdec_priv = p;
++
++    mp_vdpau_handle_preemption(p->mpvdp, &p->preemption_counter);
++    return 0;
++}
++
++static int probe(struct lavc_ctx *ctx, struct vd_lavc_hwdec *hwdec,
++                 const char *codec)
++{
++    if (!hwdec_devices_load(ctx->hwdec_devs, HWDEC_VDPAU))
++        return HWDEC_ERR_NO_CTX;
++    return 0;
++}
++
++static int init_copy(struct lavc_ctx *ctx)
++{
++    struct priv *p = talloc_ptrtype(NULL, p);
++    *p = (struct priv) {
++        .log = mp_log_new(p, ctx->log, "vdpau"),
++    };
++
++    p->display = XOpenDisplay(NULL);
++    if (!p->display)
++        goto error;
++
++    p->mpvdp = mp_vdpau_create_device_x11(p->log, p->display, true);
++    if (!p->mpvdp)
++        goto error;
++
++    ctx->hwdec_priv = p;
++
++    mp_vdpau_handle_preemption(p->mpvdp, &p->preemption_counter);
++    return 0;
++
++error:
++    if (p->display)
++        XCloseDisplay(p->display);
++    talloc_free(p);
++    return -1;
++}
++
++static int probe_copy(struct lavc_ctx *ctx, struct vd_lavc_hwdec *hwdec,
++                      const char *codec)
++{
++    assert(!ctx->hwdec_priv);
++
++    int r = HWDEC_ERR_NO_CTX;
++    if (init_copy(ctx) >=0 ) {
++        struct priv *p = ctx->hwdec_priv;
++        r = mp_vdpau_guess_if_emulated(p->mpvdp) ? HWDEC_ERR_EMULATED : 0;
++        uninit(ctx);
++    }
++    return r;
++}
++
++const struct vd_lavc_hwdec mp_vd_lavc_vdpau = {
++    .type = HWDEC_VDPAU,
++    .image_format = IMGFMT_VDPAU,
++    .probe = probe,
++    .init = init,
++    .uninit = uninit,
++    .init_decoder = init_decoder,
++    .volatile_context = true,
++};
++
++const struct vd_lavc_hwdec mp_vd_lavc_vdpau_copy = {
++    .type = HWDEC_VDPAU_COPY,
++    .copying = true,
++    .image_format = IMGFMT_VDPAU,
++    .probe = probe_copy,
++    .init = init_copy,
++    .uninit = uninit,
++    .init_decoder = init_decoder,
++    .volatile_context = true,
++};
+--- a/video/decode/vd_lavc.c
++++ b/video/decode/vd_lavc.c
+@@ -187,6 +187,7 @@ static const struct vd_lavc_hwdec mp_vd_
+ };
+ 
+ #if HAVE_VAAPI_HWACCEL
++#if HAVE_VAAPI_HWACCEL_NEW
+ static const struct vd_lavc_hwdec mp_vd_lavc_vaapi = {
+     .type = HWDEC_VAAPI,
+     .image_format = IMGFMT_VAAPI,
+@@ -216,9 +217,14 @@ static const struct vd_lavc_hwdec mp_vd_
+         {AV_PIX_FMT_NONE}
+     },
+ };
++#else
++extern const struct vd_lavc_hwdec mp_vd_lavc_vaapi;
++extern const struct vd_lavc_hwdec mp_vd_lavc_vaapi_copy;
++#endif
+ #endif
+ 
+ #if HAVE_VDPAU_HWACCEL
++#if HAVE_VDPAU_HWACCEL_NEW
+ static const struct vd_lavc_hwdec mp_vd_lavc_vdpau = {
+     .type = HWDEC_VDPAU,
+     .image_format = IMGFMT_VDPAU,
+@@ -244,6 +250,10 @@ static const struct vd_lavc_hwdec mp_vd_
+         {AV_PIX_FMT_NONE}
+     },
+ };
++#else
++extern const struct vd_lavc_hwdec mp_vd_lavc_vdpau;
++extern const struct vd_lavc_hwdec mp_vd_lavc_vdpau_copy;
++#endif
+ #endif
+ 
+ static const struct vd_lavc_hwdec *const hwdec_list[] = {
+@@ -251,7 +261,7 @@ static const struct vd_lavc_hwdec *const
+     &mp_vd_lavc_rpi,
+     &mp_vd_lavc_rpi_copy,
+ #endif
+-#if HAVE_VDPAU_HWACCEL
++#if HAVE_VDPAU_HWACCEL_OLD || HAVE_VDPAU_HWACCEL_NEW
+     &mp_vd_lavc_vdpau,
+     &mp_vd_lavc_vdpau_copy,
+ #endif
+@@ -259,7 +269,7 @@ static const struct vd_lavc_hwdec *const
+     &mp_vd_lavc_videotoolbox,
+     &mp_vd_lavc_videotoolbox_copy,
+ #endif
+-#if HAVE_VAAPI_HWACCEL
++#if HAVE_VAAPI_HWACCEL_OLD || HAVE_VAAPI_HWACCEL_NEW
+     &mp_vd_lavc_vaapi,
+     &mp_vd_lavc_vaapi_copy,
+ #endif
+@@ -564,7 +574,7 @@ static void init_avctx(struct dec_video
+     if (ctx->hwdec) {
+         avctx->opaque = vd;
+         avctx->thread_count = 1;
+-#if HAVE_VDPAU_HWACCEL
++#if HAVE_VDPAU_HWACCEL_NEW
+         avctx->hwaccel_flags |= AV_HWACCEL_FLAG_IGNORE_LEVEL;
+ #endif
+ #ifdef AV_HWACCEL_FLAG_ALLOW_PROFILE_MISMATCH
+--- a/video/out/opengl/hwdec_vaegl.c
++++ b/video/out/opengl/hwdec_vaegl.c
+@@ -410,42 +410,55 @@ static void determine_working_formats(st
+ 
+     p->probing_formats = true;
+ 
+-    AVHWFramesConstraints *fc =
+-            av_hwdevice_get_hwframe_constraints(p->ctx->av_device_ref, NULL);
+-    if (!fc) {
+-        MP_WARN(hw, "failed to retrieve libavutil frame constaints\n");
+-        goto done;
+-    }
+-    for (int n = 0; fc->valid_sw_formats[n] != AV_PIX_FMT_NONE; n++) {
+-        AVBufferRef *fref = NULL;
+-        struct mp_image *s = NULL;
+-        AVFrame *frame = NULL;
+-        fref = av_hwframe_ctx_alloc(p->ctx->av_device_ref);
+-        if (!fref)
+-            goto err;
+-        AVHWFramesContext *fctx = (void *)fref->data;
+-        fctx->format = AV_PIX_FMT_VAAPI;
+-        fctx->sw_format = fc->valid_sw_formats[n];
+-        fctx->width = 128;
+-        fctx->height = 128;
+-        if (av_hwframe_ctx_init(fref) < 0)
+-            goto err;
+-        frame = av_frame_alloc();
+-        if (!frame)
+-            goto err;
+-        if (av_hwframe_get_buffer(fref, frame, 0) < 0)
+-            goto err;
+-        s = mp_image_from_av_frame(frame);
+-        if (!s || !mp_image_params_valid(&s->params))
+-            goto err;
+-        if (try_format(hw, s))
+-            MP_TARRAY_APPEND(p, formats, num_formats, s->params.hw_subfmt);
+-    err:
++    if (HAVE_VAAPI_HWACCEL_OLD) {
++        struct mp_image_pool *alloc = mp_image_pool_new(1);
++        va_pool_set_allocator(alloc, p->ctx, VA_RT_FORMAT_YUV420);
++        struct mp_image *s = mp_image_pool_get(alloc, IMGFMT_VAAPI, 64, 64);
++        if (s) {
++            va_surface_init_subformat(s);
++            if (try_format(hw, s))
++                MP_TARRAY_APPEND(p, formats, num_formats, IMGFMT_NV12);
++        }
+         talloc_free(s);
+-        av_frame_free(&frame);
+-        av_buffer_unref(&fref);
++        talloc_free(alloc);
++    } else {
++        AVHWFramesConstraints *fc =
++            av_hwdevice_get_hwframe_constraints(p->ctx->av_device_ref, NULL);
++        if (!fc) {
++            MP_WARN(hw, "failed to retrieve libavutil frame constaints\n");
++            goto done;
++        }
++        for (int n = 0; fc->valid_sw_formats[n] != AV_PIX_FMT_NONE; n++) {
++            AVBufferRef *fref = NULL;
++            struct mp_image *s = NULL;
++            AVFrame *frame = NULL;
++            fref = av_hwframe_ctx_alloc(p->ctx->av_device_ref);
++            if (!fref)
++                goto err;
++            AVHWFramesContext *fctx = (void *)fref->data;
++            fctx->format = AV_PIX_FMT_VAAPI;
++            fctx->sw_format = fc->valid_sw_formats[n];
++            fctx->width = 128;
++            fctx->height = 128;
++            if (av_hwframe_ctx_init(fref) < 0)
++                goto err;
++            frame = av_frame_alloc();
++            if (!frame)
++                goto err;
++            if (av_hwframe_get_buffer(fref, frame, 0) < 0)
++                goto err;
++            s = mp_image_from_av_frame(frame);
++            if (!s || !mp_image_params_valid(&s->params))
++                goto err;
++            if (try_format(hw, s))
++                MP_TARRAY_APPEND(p, formats, num_formats, s->params.hw_subfmt);
++        err:
++            talloc_free(s);
++            av_frame_free(&frame);
++            av_buffer_unref(&fref);
++        }
++        av_hwframe_constraints_free(&fc);
+     }
+-    av_hwframe_constraints_free(&fc);
+ 
+ done:
+     MP_TARRAY_APPEND(p, formats, num_formats, 0); // terminate it
+--- a/wscript
++++ b/wscript
+@@ -750,8 +750,13 @@ video_output_features = [
+ hwaccel_features = [
+     {
+         'name': '--vaapi-hwaccel',
+-        'desc': 'libavcodec VAAPI hwaccel (FFmpeg 3.3 API)',
++        'desc': 'libavcodec VAAPI hwaccel',
+         'deps': [ 'vaapi' ],
++        'func': check_true,
++    }, {
++        'name': '--vaapi-hwaccel-new',
++        'desc': 'libavcodec VAAPI hwaccel (new)',
++        'deps': [ 'vaapi-hwaccel' ],
+         'func': check_statement('libavcodec/version.h',
+             'int x[(LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(57, 26, 0) && '
+             '       LIBAVCODEC_VERSION_MICRO < 100) ||'
+@@ -760,6 +765,12 @@ hwaccel_features = [
+             '      ? 1 : -1]',
+             use='libav'),
+     }, {
++        'name': '--vaapi-hwaccel-old',
++        'desc': 'libavcodec VAAPI hwaccel (old)',
++        'deps': [ 'vaapi-hwaccel' ],
++        'deps_neg': [ 'vaapi-hwaccel-new' ],
++        'func': check_true,
++    }, {
+         'name': '--videotoolbox-hwaccel-new',
+         'desc': 'libavcodec videotoolbox hwaccel (new API)',
+         'deps': [ 'gl-cocoa' ],
+@@ -790,8 +801,13 @@ hwaccel_features = [
+         'func': check_true
+     }, {
+         'name': '--vdpau-hwaccel',
+-        'desc': 'libavcodec VDPAU hwaccel (FFmpeg 3.3 API)',
++        'desc': 'libavcodec VDPAU hwaccel',
+         'deps': [ 'vdpau' ],
++        'func': check_true,
++    }, {
++        'name': '--vdpau-hwaccel-new',
++        'desc': 'libavcodec VDPAU hwaccel (new)',
++        'deps': [ 'vdpau-hwaccel' ],
+         'func': check_statement('libavcodec/version.h',
+             'int x[(LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(57, 37, 1) && '
+             '       LIBAVCODEC_VERSION_MICRO < 100) ||'
+@@ -800,6 +816,14 @@ hwaccel_features = [
+             '      ? 1 : -1]',
+             use='libav'),
+     }, {
++        'name': '--vdpau-hwaccel-old',
++        'desc': 'libavcodec VDPAU hwaccel (old)',
++        'deps': [ 'vdpau' ],
++        'deps_neg': [ 'vdpau-hwaccel-new' ],
++        'func': check_statement('libavcodec/vdpau.h',
++                                'av_vdpau_bind_context(0,0,0,AV_HWACCEL_FLAG_ALLOW_HIGH_DEPTH)',
++                                use='libav'),
++    }, {
+         # (conflated with ANGLE for easier deps)
+         'name': '--d3d-hwaccel',
+         'desc': 'D3D11VA hwaccel (plus ANGLE)',
+@@ -836,7 +860,7 @@ hwaccel_features = [
+     }, {
+         'name': 'sse4-intrinsics',
+         'desc': 'GCC SSE4 intrinsics for GPU memcpy',
+-        'deps_any': [ 'd3d-hwaccel' ],
++        'deps_any': [ 'd3d-hwaccel', 'vaapi-hwaccel-old' ],
+         'deps_neg': [ 'd3d-hwaccel-new' ],
+         'func': check_cc(fragment=load_fragment('sse.c')),
+     }
+--- a/wscript_build.py
++++ b/wscript_build.py
+@@ -349,6 +349,8 @@ def build(ctx):
+         ( "video/decode/hw_cuda.c",              "cuda-hwaccel" ),
+         ( "video/decode/hw_dxva2.c",             "d3d9-hwaccel" ),
+         ( "video/decode/hw_d3d11va.c",           "d3d-hwaccel" ),
++        ( "video/decode/hw_vaapi_old.c",         "vaapi-hwaccel-old" ),
++        ( "video/decode/hw_vdpau.c",             "vdpau-hwaccel-old" ),
+         ( "video/decode/hw_videotoolbox.c",      "videotoolbox-hwaccel" ),
+         ( "video/decode/vd_lavc.c" ),
+         ( "video/filter/refqueue.c" ),
