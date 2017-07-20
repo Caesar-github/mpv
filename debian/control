@@ -35,7 +35,6 @@ Build-Depends:
  libsndio-dev (>= 1.0.1),
  libswscale-dev (>= 7:3.2.2),
  libuchardet-dev,
- libv4l-dev,
  libva-dev,
  libvdpau-dev,
  libwayland-dev [linux-any],
