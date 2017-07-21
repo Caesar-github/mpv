@@ -1,8 +1,13 @@
-mpv (0.26.0-2) UNRELEASED; urgency=medium
+mpv (0.26.0-2) unstable; urgency=medium
 
-  *
+  * debian/control, debian/rules:
+    - Remove --enable-tv option and drop libv4l-dev build dependency. This
+      functionality is now provided through ffmpeg.
+  * debian/patches/07_io-stdin-used.patch:
+    - Add _IO_stdin_used to mpv version script. Should fix FTBFS on alpha,
+      mips* and powerpc*.
 
- -- James Cowgill <jcowgill@debian.org>  Thu, 20 Jul 2017 13:47:40 +0100
+ -- James Cowgill <jcowgill@debian.org>  Fri, 21 Jul 2017 10:03:53 +0100
 
 mpv (0.26.0-1) unstable; urgency=medium
 
