@@ -1,8 +1,9 @@
-mpv (0.26.0-3) UNRELEASED; urgency=medium
+mpv (0.26.0-3) unstable; urgency=medium
 
-  *
+  * Bump ffmpeg build dependency to >= 3.3.
+    - Should fix hardware decoding in 0.26.0. (Closes: #869093)
 
- -- James Cowgill <jcowgill@debian.org>  Wed, 26 Jul 2017 22:53:58 +0100
+ -- James Cowgill <jcowgill@debian.org>  Wed, 26 Jul 2017 22:55:30 +0100
 
 mpv (0.26.0-2) unstable; urgency=medium
 
