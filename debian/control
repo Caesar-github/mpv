@@ -45,8 +45,8 @@ Build-Depends:
  libxss-dev,
  libxv-dev,
  pkg-config,
- python,
- python-docutils,
+ python3,
+ python3-docutils,
 Standards-Version: 4.0.0
 Homepage: https://mpv.io/
 Vcs-Git: https://anonscm.debian.org/git/pkg-multimedia/mpv.git

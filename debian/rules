@@ -12,7 +12,7 @@ endif
 	dh $@
 
 override_dh_auto_configure:
-	python ./waf configure						\
+	python3 ./waf configure						\
 			--prefix=/usr					\
 			--libdir=/usr/lib/$(DEB_HOST_MULTIARCH)		\
 			--confdir=/etc/mpv				\
@@ -30,14 +30,14 @@ override_dh_auto_configure:
 			$(ARCH_CONFIGURE)
 
 override_dh_auto_build:
-	python ./waf -v build
+	python3 ./waf -v build
 
 override_dh_auto_install:
-	python ./waf -v install --destdir=debian/tmp
+	python3 ./waf -v install --destdir=debian/tmp
 
 override_dh_installchangelogs:
 	dh_installchangelogs RELEASE_NOTES
 
 override_dh_auto_clean:
-	test -s ./waf && python ./waf -v distclean || true
+	test -s ./waf && python3 ./waf -v distclean || true
 	find . -name "*.pyc" -delete

@@ -318,7 +318,7 @@ Last-Update: 2017-07-19
 +				Node.Nod3=self.node_class
 +				try:
 +					data=cPickle.loads(data)
-+				except Exception ,e:
++				except Exception as e:
 +					Logs.debug('build: Could not pickle the build cache %s: %r',dbfn,e)
 +				else:
 +					for x in SAVED_ATTRS:
@@ -766,7 +766,7 @@ Last-Update: 2017-07-19
 +			pass
 +		try:
 +			self.copy_fun(src,tgt)
-+		except EnvironmentError ,e:
++		except EnvironmentError as e:
 +			if not os.path.exists(src):
 +				Logs.error('File %r does not exist',src)
 +			elif not os.path.isfile(src):
@@ -798,7 +798,7 @@ Last-Update: 2017-07-19
 +			Logs.info('- remove %s',tgt)
 +		try:
 +			os.remove(tgt)
-+		except OSError ,e:
++		except OSError as e:
 +			if e.errno!=errno.ENOENT:
 +				if not getattr(self,'uninstall_error',None):
 +					self.uninstall_error=True
@@ -1270,9 +1270,9 @@ Last-Update: 2017-07-19
 +			module=None
 +			try:
 +				module=Context.load_tool(tool,tooldir,ctx=self,with_sys_path=with_sys_path)
-+			except ImportError ,e:
++			except ImportError as e:
 +				self.fatal('Could not load the Waf tool %r from %r\n%s'%(tool,sys.path,e))
-+			except Exception ,e:
++			except Exception as e:
 +				self.to_log('imp %r (%r & %r)'%(tool,tooldir,funs))
 +				self.to_log(Utils.ex_stack())
 +				raise
@@ -1669,18 +1669,18 @@ Last-Update: 2017-07-19
 +				kw['cwd']=kw['cwd'].abspath()
 +		try:
 +			ret,out,err=Utils.run_process(cmd,kw,cargs)
-+		except Exception ,e:
-+			raise Errors.WafError('Execution failure: %s'%str(e),ex=e),None,sys.exc_info()[2]
++		except Exception as e:
++			raise Errors.WafError('Execution failure: %s'%str(e),ex=e)
 +		if out:
 +			if not isinstance(out,str):
-+				out=out
++				out=out.decode(sys.stdout.encoding or'iso8859-1',errors='replace')
 +			if self.logger:
 +				self.logger.debug('out: %s',out)
 +			else:
 +				Logs.info(out,extra={'stream':sys.stdout,'c1':''})
 +		if err:
 +			if not isinstance(err,str):
-+				err=err
++				err=err.decode(sys.stdout.encoding or'iso8859-1',errors='replace')
 +			if self.logger:
 +				self.logger.error('err: %s'%err)
 +			else:
@@ -1722,12 +1722,12 @@ Last-Update: 2017-07-19
 +				kw['cwd']=kw['cwd'].abspath()
 +		try:
 +			ret,out,err=Utils.run_process(cmd,kw,cargs)
-+		except Exception ,e:
-+			raise Errors.WafError('Execution failure: %s'%str(e),ex=e),None,sys.exc_info()[2]
++		except Exception as e:
++			raise Errors.WafError('Execution failure: %s'%str(e),ex=e)
 +		if not isinstance(out,str):
-+			out=out
++			out=out.decode(sys.stdout.encoding or'iso8859-1',errors='replace')
 +		if not isinstance(err,str):
-+			err=err
++			err=err.decode(sys.stdout.encoding or'iso8859-1',errors='replace')
 +		if out and quiet!=STDOUT and quiet!=BOTH:
 +			self.to_log('out: %s'%out)
 +		if err and quiet!=STDERR and quiet!=BOTH:
@@ -2465,7 +2465,7 @@ Last-Update: 2017-07-19
 +						k='^%s$'%k
 +						try:
 +							accu.append(re.compile(k,flags=reflags))
-+						except Exception ,e:
++						except Exception as e:
 +							raise Errors.WafError('Invalid pattern: %s'%k,e)
 +				ret.append(accu)
 +			return ret
@@ -2883,7 +2883,7 @@ Last-Update: 2017-07-19
 +				self.outstanding.extend(self.frozen)
 +				self.frozen.clear()
 +			elif not self.count:
-+				self.outstanding.extend(self.biter.next())
++				self.outstanding.extend(next(self.biter))
 +				self.total=self.bld.total()
 +				break
 +	def add_more_tasks(self,tsk):
@@ -3073,11 +3073,11 @@ Last-Update: 2017-07-19
 +		sys.exit(1)
 +	try:
 +		set_main_module(os.path.normpath(os.path.join(Context.run_dir,Context.WSCRIPT_FILE)))
-+	except Errors.WafError ,e:
++	except Errors.WafError as e:
 +		Logs.pprint('RED',e.verbose_msg)
 +		Logs.error(str(e))
 +		sys.exit(1)
-+	except Exception ,e:
++	except Exception as e:
 +		Logs.error('Waf: The wscript in %r is unreadable',Context.run_dir)
 +		traceback.print_exc(file=sys.stdout)
 +		sys.exit(2)
@@ -3089,14 +3089,14 @@ Last-Update: 2017-07-19
 +	else:
 +		try:
 +			run_commands()
-+		except Errors.WafError ,e:
++		except Errors.WafError as e:
 +			if Logs.verbose>1:
 +				Logs.pprint('RED',e.verbose_msg)
 +			Logs.error(e.msg)
 +			sys.exit(1)
 +		except SystemExit:
 +			raise
-+		except Exception ,e:
++		except Exception as e:
 +			traceback.print_exc(file=sys.stdout)
 +			sys.exit(2)
 +		except KeyboardInterrupt:
@@ -3183,7 +3183,7 @@ Last-Update: 2017-07-19
 +			if proj['out_dir']!=proj['top_dir']:
 +				try:
 +					shutil.rmtree(proj['out_dir'])
-+				except EnvironmentError ,e:
++				except EnvironmentError as e:
 +					if e.errno!=errno.ENOENT:
 +						Logs.warn('Could not remove %r',proj['out_dir'])
 +			else:
@@ -3192,7 +3192,7 @@ Last-Update: 2017-07-19
 +				p=os.path.join(k,Options.lockfile)
 +				try:
 +					os.remove(p)
-+				except OSError ,e:
++				except OSError as e:
 +					if e.errno!=errno.ENOENT:
 +						Logs.warn('Could not remove %r',p)
 +		if not Options.commands:
@@ -3491,7 +3491,7 @@ Last-Update: 2017-07-19
 +			cmd,args=self.split_argfile(cmd)
 +			try:
 +				(fd,tmp)=tempfile.mkstemp()
-+				os.write(fd,'\r\n'.join(args))
++				os.write(fd,'\r\n'.join(args).encode())
 +				os.close(fd)
 +				if Logs.verbose:
 +					Logs.debug('argfile: @%r -> %r',tmp,args)
@@ -4476,9 +4476,9 @@ Last-Update: 2017-07-19
 +		env=self.env
 +		upd=self.m.update
 +		if getattr(self.generator,'fun',None):
-+			upd(Utils.h_fun(self.generator.fun))
++			upd(Utils.h_fun(self.generator.fun).encode())
 +		if getattr(self.generator,'subst_fun',None):
-+			upd(Utils.h_fun(self.generator.subst_fun))
++			upd(Utils.h_fun(self.generator.subst_fun).encode())
 +		vars=self.generator.bld.raw_deps.get(self.uid(),[])
 +		act_sig=bld.hash_env_vars(env,vars)
 +		upd(act_sig)
@@ -5352,7 +5352,7 @@ Last-Update: 2017-07-19
 +	cmd=cc+['-dM','-E','-']
 +	env=conf.env.env or None
 +	try:
-+		out,err=conf.cmd_and_log(cmd,output=0,input='\n',env=env)
++		out,err=conf.cmd_and_log(cmd,output=0,input='\n'.encode(),env=env)
 +	except Exception:
 +		conf.fatal('Could not determine the compiler version %r'%cmd)
 +	if gcc:
@@ -5432,7 +5432,7 @@ Last-Update: 2017-07-19
 +	cmd=cc+['-V']
 +	try:
 +		out,err=conf.cmd_and_log(cmd,output=0)
-+	except Errors.WafError ,e:
++	except Errors.WafError as e:
 +		if not(hasattr(e,'returncode')and hasattr(e,'stdout')and hasattr(e,'stderr')):
 +			conf.fatal('Could not find suncc %r'%cmd)
 +		out=e.stdout
@@ -6290,7 +6290,7 @@ Last-Update: 2017-07-19
 +				elif token=='pragma':
 +					if re_pragma_once.match(line.lower()):
 +						self.ban_includes.add(self.current_file)
-+			except Exception ,e:
++			except Exception as e:
 +				if Logs.verbose:
 +					Logs.debug('preproc: line parsing failed (%s): %s %s',e,line,Utils.ex_stack())
 +	def define_name(self,line):
@@ -7014,7 +7014,7 @@ Last-Update: 2017-07-19
 +		conf.start_msg('Checking for %r (C compiler)'%compiler)
 +		try:
 +			conf.load(compiler)
-+		except conf.errors.ConfigurationError ,e:
++		except conf.errors.ConfigurationError as e:
 +			conf.env.revert()
 +			conf.end_msg(False)
 +			debug('compiler_c: %r',e)
@@ -7061,7 +7061,7 @@ Last-Update: 2017-07-19
 +		conf.start_msg('Checking for %r (C++ compiler)'%compiler)
 +		try:
 +			conf.load(compiler)
-+		except conf.errors.ConfigurationError ,e:
++		except conf.errors.ConfigurationError as e:
 +			conf.env.revert()
 +			conf.end_msg(False)
 +			debug('compiler_cxx: %r',e)
@@ -7106,7 +7106,7 @@ Last-Update: 2017-07-19
 +		conf.start_msg('Checking for %r (D compiler)'%compiler)
 +		try:
 +			conf.load(compiler)
-+		except conf.errors.ConfigurationError ,e:
++		except conf.errors.ConfigurationError as e:
 +			conf.env.revert()
 +			conf.end_msg(False)
 +			Logs.debug('compiler_d: %r',e)
@@ -7151,7 +7151,7 @@ Last-Update: 2017-07-19
 +		conf.start_msg('Checking for %r (Fortran compiler)'%compiler)
 +		try:
 +			conf.load(compiler)
-+		except conf.errors.ConfigurationError ,e:
++		except conf.errors.ConfigurationError as e:
 +			conf.env.revert()
 +			conf.end_msg(False)
 +			Logs.debug('compiler_fortran: %r',e)
@@ -8122,10 +8122,10 @@ Last-Update: 2017-07-19
 +	else:
 +		env=dict(os.environ)
 +		env['LANG']='C'
-+	input=stdin and'\n'or None
++	input=stdin and'\n'.encode()or None
 +	try:
 +		out,err=conf.cmd_and_log(cmd,env=env,output=0,input=input)
-+	except Errors.WafError ,e:
++	except Errors.WafError as e:
 +		if not(hasattr(e,'stderr')and hasattr(e,'stdout')):
 +			raise e
 +		else:
@@ -9257,7 +9257,7 @@ Last-Update: 2017-07-19
 +		if conf.logger:
 +			conf.logger.error(st)
 +		conf.fatal('ifort: Unicode error - check the code page?')
-+	except Exception ,e:
++	except Exception as e:
 +		Logs.debug('ifort: get_ifort_version: %r %r %r -> failure %s',compiler,version,target,str(e))
 +		conf.fatal('ifort: cannot run the compiler in get_ifort_version (run with -v to display errors)')
 +	else:
@@ -9903,7 +9903,7 @@ Last-Update: 2017-07-19
 +	else:
 +		if stat.S_ISDIR(st[stat.ST_MODE]):
 +			raise IOError('Not a file')
-+		ret=Utils.md5(str((st.st_mtime,st.st_size))).digest()
++		ret=Utils.md5(str((st.st_mtime,st.st_size)).encode()).digest()
 +	cache[filename]=(st.st_mtime,ret)
 +	return ret
 +h_file.__doc__=Node.Node.h_file.__doc__
@@ -10025,7 +10025,7 @@ Last-Update: 2017-07-19
 +		if conf.logger:
 +			conf.logger.error(st)
 +		conf.fatal('msvc: Unicode error - check the code page?')
-+	except Exception ,e:
++	except Exception as e:
 +		Logs.debug('msvc: get_msvc_version: %r %r %r -> failure %s',compiler,version,target,str(e))
 +		conf.fatal('msvc: cannot run the compiler in get_msvc_version (run with -v to display errors)')
 +	else:
@@ -12687,7 +12687,7 @@ Last-Update: 2017-07-19
 +		def release(self):
 +			pass
 +	threading.Lock=threading.Thread=Lock
-+SIG_NIL='SIG_NIL_SIG_NIL_'
++SIG_NIL='SIG_NIL_SIG_NIL_'.encode()
 +O644=420
 +O755=493
 +rot_chr=['\\','|','/','-']
@@ -12966,7 +12966,7 @@ Last-Update: 2017-07-19
 +	if not os.path.isdir(path):
 +		try:
 +			os.makedirs(path)
-+		except OSError ,e:
++		except OSError as e:
 +			if not os.path.isdir(path):
 +				raise Errors.WafError('Cannot create the folder %r'%path,ex=e)
 +def check_exe(name,env=None):
@@ -12995,7 +12995,7 @@ Last-Update: 2017-07-19
 +	fu=fu.upper()
 +	return fu
 +def h_list(lst):
-+	return md5(repr(lst)).digest()
++	return md5(repr(lst).encode()).digest()
 +def h_fun(fun):
 +	try:
 +		return fun.code
@@ -13144,7 +13144,7 @@ Last-Update: 2017-07-19
 +	if not proc:
 +		return run_regular_process(cmd,kwargs,cargs)
 +	proc.stdin.write(obj)
-+	proc.stdin.write('\n')
++	proc.stdin.write('\n'.encode())
 +	proc.stdin.flush()
 +	obj=proc.stdout.readline()
 +	if not obj:
@@ -13196,7 +13196,7 @@ Last-Update: 2017-07-19
 +		out,err=(None,None)
 +		try:
 +			status=proc.wait(**cargs)
-+		except TimeoutExpired ,e:
++		except TimeoutExpired as e:
 +			if kwargs.get('start_new_session')and hasattr(os,'killpg'):
 +				os.killpg(proc.pid,signal.SIGKILL)
 +			else:
@@ -13478,7 +13478,7 @@ Last-Update: 2017-07-19
 +			return struct.unpack("HHHH",fcntl.ioctl(FD,termios.TIOCGWINSZ,struct.pack("HHHH",0,0,0,0)))[1]
 +		try:
 +			fun()
-+		except Exception ,e:
++		except Exception as e:
 +			pass
 +		else:
 +			get_term_cols=fun
@@ -13542,7 +13542,7 @@ Last-Update: 2017-07-19
 +	try:
 +		p=Utils.subprocess.Popen(cmd,**kw)
 +		output=p.communicate()[0]
-+	except OSError ,e:
++	except OSError as e:
 +		raise ValueError(str(e))
 +	if p.returncode:
 +		if not silent:
@@ -13841,9 +13841,9 @@ Last-Update: 2017-07-19
 +	return do_subst
 +@subst('*')
 +def r1(code):
-+	code=code.replace(',e:',',e:')
-+	code=code.replace("",'')
-+	return code.replace('','')
++	code=code.replace('as e:',',e:')
++	code=code.replace(".decode(sys.stdout.encoding or'iso8859-1',errors='replace')",'')
++	return code.replace('.encode()','')
 +@subst('Runner.py')
 +def r4(code):
 +	return code.replace('next(self.biter)','self.biter.next()')
@@ -13893,7 +13893,7 @@ Last-Update: 2017-07-19
 +			exc.stderr=err
 +			raise exc
 +		ret=proc.returncode
-+	except Exception ,e:
++	except Exception as e:
 +		exc_type,exc_value,tb=sys.exc_info()
 +		exc_lines=traceback.format_exception(exc_type,exc_value,tb)
 +		trace=str(cmd)+'\n'+''.join(exc_lines)
