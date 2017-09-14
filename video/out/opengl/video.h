@@ -43,7 +43,8 @@ struct scaler_config {
     struct scaler_fun window;
     float radius;
     float antiring;
-    int clamp;
+    float cutoff;
+    float clamp;
 };
 
 struct scaler {
@@ -91,6 +92,7 @@ enum blend_subs_mode {
 
 enum tone_mapping {
     TONE_MAPPING_CLIP,
+    TONE_MAPPING_MOBIUS,
     TONE_MAPPING_REINHARD,
     TONE_MAPPING_HABLE,
     TONE_MAPPING_GAMMA,
@@ -108,6 +110,7 @@ struct gl_video_opts {
     int target_brightness;
     int hdr_tone_mapping;
     float tone_mapping_param;
+    float tone_mapping_desat;
     int linear_scaling;
     int correct_downscaling;
     int sigmoid_upscaling;
@@ -153,7 +156,7 @@ void gl_video_render_frame(struct gl_video *p, struct vo_frame *frame, int fbo);
 void gl_video_resize(struct gl_video *p, int vp_w, int vp_h,
                      struct mp_rect *src, struct mp_rect *dst,
                      struct mp_osd_res *osd);
-struct voctrl_performance_data gl_video_perfdata(struct gl_video *p);
+void gl_video_perfdata(struct gl_video *p, struct voctrl_performance_data *out);
 struct mp_csp_equalizer;
 struct mp_csp_equalizer *gl_video_eq_ptr(struct gl_video *p);
 void gl_video_eq_update(struct gl_video *p);

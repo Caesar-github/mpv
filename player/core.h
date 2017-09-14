@@ -1,18 +1,18 @@
 /*
  * This file is part of mpv.
  *
- * mpv is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
+ * mpv is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
  *
  * mpv is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with mpv.  If not, see <http://www.gnu.org/licenses/>.
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #ifndef MPLAYER_MP_CORE_H
@@ -58,7 +58,6 @@ enum mp_osd_seek_info {
 
 enum {
     // other constants
-    MAX_OSD_LEVEL = 3,
     OSD_LEVEL_INVISIBLE = 4,
     OSD_BAR_SEEK = 256,
 
@@ -595,6 +594,7 @@ struct mp_scripting {
 void mp_load_scripts(struct MPContext *mpctx);
 void mp_load_builtin_scripts(struct MPContext *mpctx);
 int mp_load_script(struct MPContext *mpctx, const char *fname);
+int mp_load_user_script(struct MPContext *mpctx, const char *fname);
 
 // sub.c
 void reset_subtitle_state(struct MPContext *mpctx);

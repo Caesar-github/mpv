@@ -6,18 +6,18 @@
  *
  * This file is part of mpv.
  *
- * mpv is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
+ * mpv is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
  *
  * mpv is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with mpv.  If not, see <http://www.gnu.org/licenses/>.
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #ifndef MPLAYER_VIDEO_OUT_H
@@ -90,9 +90,6 @@ enum mp_voctrl {
     VOCTRL_KILL_SCREENSAVER,
     VOCTRL_RESTORE_SCREENSAVER,
 
-    VOCTRL_SET_DEINTERLACE,
-    VOCTRL_GET_DEINTERLACE,
-
     // Return or set window size (not-fullscreen mode only - if fullscreened,
     // these must access the not-fullscreened window size only).
     VOCTRL_GET_UNFS_WINDOW_SIZE,        // int[2] (w/h)
@@ -146,13 +143,31 @@ struct voctrl_playback_state {
 };
 
 // VOCTRL_PERFORMANCE_DATA
-struct voctrl_performance_entry {
-    // Times are in microseconds
+#define PERF_SAMPLE_COUNT 256u
+
+struct mp_pass_perf {
+    // times are all in nanoseconds
     uint64_t last, avg, peak;
+    // this is a ring buffer, indices are relative to index and modulo
+    // PERF_SAMPLE_COUNT
+    uint64_t *samples;
+    int count;
+    int index;
+};
+
+#define VO_PASS_PERF_MAX 128
+
+struct mp_frame_perf {
+    int count;
+    struct mp_pass_perf perf[VO_PASS_PERF_MAX];
+    // The owner of this struct does not have ownership over the names, and
+    // they may change at any time - so this struct should not be stored
+    // anywhere or the results reused
+    char *desc[VO_PASS_PERF_MAX];
 };
 
 struct voctrl_performance_data {
-    struct voctrl_performance_entry upload, render, present;
+    struct mp_frame_perf fresh, redraw;
 };
 
 enum {

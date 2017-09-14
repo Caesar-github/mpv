@@ -1,6 +1,7 @@
 ### mpv version and platform
 
 If you're not using git master or the latest release, update.
+Releases are listed here: https://github.com/mpv-player/mpv/releases
 
 ### Reproduction steps
 
@@ -15,7 +16,8 @@ http://sprunge.us or a similar site, and replace this text with a link to it.
 
 Providing a log file is strongly encouraged. It is very helpful for reproducing
 bugs or getting important technical context. Without a log it might not be
-possible to analyze and fix certain bugs.
+possible to analyze and fix certain bugs, and your bug report will be closed
+or ignored.
 
 ### Sample files
 

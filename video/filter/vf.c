@@ -1,18 +1,18 @@
 /*
  * This file is part of mpv.
  *
- * mpv is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
+ * mpv is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
  *
  * mpv is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with mpv.  If not, see <http://www.gnu.org/licenses/>.
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <stdio.h>
@@ -54,7 +54,6 @@ extern const vf_info_t vf_info_pullup;
 extern const vf_info_t vf_info_sub;
 extern const vf_info_t vf_info_yadif;
 extern const vf_info_t vf_info_stereo3d;
-extern const vf_info_t vf_info_dlopen;
 extern const vf_info_t vf_info_lavfi;
 extern const vf_info_t vf_info_lavfi_bridge;
 extern const vf_info_t vf_info_vaapi;
@@ -86,9 +85,6 @@ static const vf_info_t *const filter_list[] = {
     &vf_info_dsize,
     &vf_info_sub,
     &vf_info_buffer,
-#if HAVE_DLOPEN
-    &vf_info_dlopen,
-#endif
 #if HAVE_VAPOURSYNTH_CORE && HAVE_VAPOURSYNTH
     &vf_info_vapoursynth,
 #endif
@@ -229,7 +225,7 @@ void vf_print_filter_chain(struct vf_chain *c, int msglevel,
 
     for (vf_instance_t *f = c->first; f; f = f->next) {
         char b[128] = {0};
-        mp_snprintf_cat(b, sizeof(b), "  [%s] ", f->info->name);
+        mp_snprintf_cat(b, sizeof(b), "  [%s] ", f->full_name);
         if (f->label)
             mp_snprintf_cat(b, sizeof(b), "\"%s\" ", f->label);
         mp_snprintf_cat(b, sizeof(b), "%s", mp_image_params_to_str(&f->fmt_out));
@@ -255,9 +251,12 @@ static struct vf_instance *vf_open(struct vf_chain *c, const char *name,
         lavfi_name = name;
         lavfi_args = args;
         args = NULL;
+        if (strncmp(lavfi_name, "lavfi-", 6) == 0)
+            lavfi_name += 6;
     }
     vf_instance_t *vf = talloc_zero(NULL, struct vf_instance);
     *vf = (vf_instance_t) {
+        .full_name = talloc_strdup(vf, name),
         .info = desc.p,
         .log = mp_log_new(vf, c->log, name),
         .hwdec_devs = c->hwdec_devs,
@@ -282,6 +281,7 @@ static struct vf_instance *vf_open(struct vf_chain *c, const char *name,
         assert(opts->opt->type == &m_option_type_keyvalue_list);
         if (m_config_set_option_raw(config, opts, &lavfi_args, 0) < 0)
             goto error;
+        vf->full_name = talloc_asprintf(vf, "%s (lavfi)", vf->full_name);
     }
     vf->priv = config->optstruct;
     int retcode = vf->info->open(vf);
@@ -792,6 +792,7 @@ struct vf_chain *vf_new(struct mpv_global *global)
     static const struct vf_info in = { .name = "in" };
     c->first = talloc(c, struct vf_instance);
     *c->first = (struct vf_instance) {
+        .full_name = "in",
         .log = c->log,
         .info = &in,
         .query_format = input_query_format,
@@ -799,6 +800,7 @@ struct vf_chain *vf_new(struct mpv_global *global)
     static const struct vf_info out = { .name = "out" };
     c->last = talloc(c, struct vf_instance);
     *c->last = (struct vf_instance) {
+        .full_name = "out",
         .log = c->log,
         .info = &out,
         .query_format = output_query_format,

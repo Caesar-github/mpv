@@ -13,6 +13,10 @@
  *
  * You should have received a copy of the GNU General Public License along
  * with mpv.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ * Almost LGPL.
+ *
+ * Parts under HAVE_GPL are licensed under GNU General Public License forever.
  */
 
 #include <stdio.h>
@@ -184,6 +188,11 @@ bool video_init_best_codec(struct dec_video *d_video)
     return !!d_video->vd_driver;
 }
 
+static bool is_valid_peak(float sig_peak)
+{
+    return !sig_peak || (sig_peak >= 1 && sig_peak <= 100);
+}
+
 static void fix_image_params(struct dec_video *d_video,
                              struct mp_image_params *params)
 {
@@ -197,12 +206,16 @@ static void fix_image_params(struct dec_video *d_video,
     // While mp_image_params normally always have to have d_w/d_h set, the
     // decoder signals unknown bitstream aspect ratio with both set to 0.
     float dec_aspect = p.p_w > 0 && p.p_h > 0 ? p.p_w / (float)p.p_h : 0;
+
+#if HAVE_GPL
     if (d_video->initial_decoder_aspect == 0)
         d_video->initial_decoder_aspect = dec_aspect;
+#endif
 
     bool use_container = true;
     switch (opts->aspect_method) {
     case 0:
+#if HAVE_GPL
         // We normally prefer the container aspect, unless the decoder aspect
         // changes at least once.
         if (dec_aspect > 0 && d_video->initial_decoder_aspect != dec_aspect) {
@@ -212,8 +225,14 @@ static void fix_image_params(struct dec_video *d_video,
             use_container = false;
         }
         break;
+#else
+        /* fall through, behave as "bitstream" */
+#endif
     case 1:
-        use_container = false;
+        if (dec_aspect) {
+            MP_VERBOSE(d_video, "Using bitstream aspect ratio.\n");
+            use_container = false;
+        }
         break;
     }
 
@@ -244,8 +263,16 @@ static void fix_image_params(struct dec_video *d_video,
     }
     p.stereo_out = opts->video_stereo_mode;
 
-    // Detect colorspace from resolution.
     mp_colorspace_merge(&p.color, &c->color);
+
+    // Sanitize the HDR peak. Sadly necessary
+    if (!is_valid_peak(p.color.sig_peak)) {
+        MP_WARN(d_video, "Invalid HDR peak in stream: %f\n", p.color.sig_peak);
+        p.color.sig_peak = 0.0;
+    }
+
+    // Guess missing colorspace fields from metadata. This guarantees all
+    // fields are at least set to legal values afterwards.
     mp_image_params_guess_csp(&p);
 
     d_video->last_format = *params;
@@ -300,12 +327,14 @@ static bool receive_frame(struct dec_video *d_video, struct mp_image **out_image
     if (!mpi)
         return progress;
 
+#if HAVE_GPL
     if (opts->field_dominance == 0) {
         mpi->fields |= MP_IMGFIELD_TOP_FIRST | MP_IMGFIELD_INTERLACED;
     } else if (opts->field_dominance == 1) {
         mpi->fields &= ~MP_IMGFIELD_TOP_FIRST;
         mpi->fields |= MP_IMGFIELD_INTERLACED;
     }
+#endif
 
     // Note: the PTS is reordered, but the DTS is not. Both should be monotonic.
     double pts = mpi->pts;

@@ -1,9 +1,16 @@
 local utils = require 'mp.utils'
 local msg = require 'mp.msg'
+local options = require 'mp.options'
+
+local o = {
+    exclude = ""
+}
+options.read_options(o)
 
 local ytdl = {
     path = "youtube-dl",
-    searched = false
+    searched = false,
+    blacklisted = {}
 }
 
 local chapter_list = {}
@@ -19,6 +26,11 @@ local function option_was_set(name)
                                 false)
 end
 
+-- return true if the option was set locally
+local function option_was_set_locally(name)
+    return mp.get_property_bool("option-info/" ..name.. "/set-locally", false)
+end
+
 -- youtube-dl may set special http headers for some sites (user-agent, cookies)
 local function set_http_headers(http_headers)
     if not http_headers then
@@ -29,7 +41,7 @@ local function set_http_headers(http_headers)
     if useragent and not option_was_set("user-agent") then
         mp.set_property("file-local-options/user-agent", useragent)
     end
-    local additional_fields = {"Cookie", "Referer"}
+    local additional_fields = {"Cookie", "Referer", "X-Forwarded-For"}
     for idx, item in pairs(additional_fields) do
         local field_value = http_headers[item]
         if field_value then
@@ -88,6 +100,28 @@ local function extract_chapters(data, video_length)
     return ret
 end
 
+local function is_blacklisted(url)
+    if o.exclude == "" then return false end
+    if #ytdl.blacklisted == 0 then
+        local joined = o.exclude
+        while joined:match('%|?[^|]+') do
+            local _, e, substring = joined:find('%|?([^|]+)')
+            table.insert(ytdl.blacklisted, substring)
+            joined = joined:sub(e+1)
+        end
+    end
+    if #ytdl.blacklisted > 0 then
+        url = url:match('https?://(.+)')
+        for _, exclude in ipairs(ytdl.blacklisted) do
+            if url:match(exclude) then
+                msg.verbose('URL matches excluded substring. Skipping.')
+                return true
+            end
+        end
+    end
+    return false
+end
+
 local function edl_track_joined(fragments, protocol, is_live)
     if not (type(fragments) == "table") or not fragments[1] then
         msg.debug("No fragments to join into EDL")
@@ -96,11 +130,13 @@ local function edl_track_joined(fragments, protocol, is_live)
 
     local edl = "edl://"
     local offset = 1
+    local parts = {}
 
     if (protocol == "http_dash_segments") and
         not fragments[1].duration and not is_live then
         -- assume MP4 DASH initialization segment
-        edl = edl .. "!mp4_dash,init=" .. edl_escape(fragments[1].url) .. ";"
+        table.insert(parts,
+            "!mp4_dash,init=" .. edl_escape(fragments[1].url))
         offset = 2
 
         -- Check remaining fragments for duration;
@@ -116,20 +152,129 @@ local function edl_track_joined(fragments, protocol, is_live)
 
     for i = offset, #fragments do
         local fragment = fragments[i]
-        edl = edl .. edl_escape(fragment.url)
+        table.insert(parts, edl_escape(fragment.url))
         if fragment.duration then
-            edl = edl..",length="..fragment.duration
+            parts[#parts] =
+                parts[#parts] .. ",length="..fragment.duration
         end
-        edl = edl .. ";"
     end
-    return edl
+    return edl .. table.concat(parts, ";") .. ";"
+end
+
+local function add_single_video(json)
+    local streamurl = ""
+
+    -- DASH/split tracks
+    if not (json["requested_formats"] == nil) then
+        for _, track in pairs(json.requested_formats) do
+            local edl_track = nil
+            edl_track = edl_track_joined(track.fragments,
+                track.protocol, json.is_live)
+            if track.acodec and track.acodec ~= "none" then
+                -- audio track
+                mp.commandv("audio-add",
+                    edl_track or track.url, "auto",
+                    track.format_note or "")
+            elseif track.vcodec and track.vcodec ~= "none" then
+                -- video track
+                streamurl = edl_track or track.url
+            end
+        end
+
+    elseif not (json.url == nil) then
+        local edl_track = nil
+        edl_track = edl_track_joined(json.fragments, json.protocol,
+            json.is_live)
+
+        -- normal video or single track
+        streamurl = edl_track or json.url
+        set_http_headers(json.http_headers)
+    else
+        msg.error("No URL found in JSON data.")
+        return
+    end
+
+    msg.debug("streamurl: " .. streamurl)
+
+    mp.set_property("stream-open-filename", streamurl:gsub("^data:", "data://", 1))
+
+    mp.set_property("file-local-options/force-media-title", json.title)
+
+    -- add subtitles
+    if not (json.requested_subtitles == nil) then
+        for lang, sub_info in pairs(json.requested_subtitles) do
+            msg.verbose("adding subtitle ["..lang.."]")
+
+            local sub = nil
+
+            if not (sub_info.data == nil) then
+                sub = "memory://"..sub_info.data
+            elseif not (sub_info.url == nil) then
+                sub = sub_info.url
+            end
+
+            if not (sub == nil) then
+                mp.commandv("sub-add", sub,
+                    "auto", sub_info.ext, lang)
+            else
+                msg.verbose("No subtitle data/url for ["..lang.."]")
+            end
+        end
+    end
+
+    -- add chapters
+    if json.chapters then
+        msg.debug("Adding pre-parsed chapters")
+        for i = 1, #json.chapters do
+            local chapter = json.chapters[i]
+            local title = chapter.title or ""
+            if title == "" then
+                title = string.format('Chapter %02d', i)
+            end
+            table.insert(chapter_list, {time=chapter.start_time, title=title})
+        end
+    elseif not (json.description == nil) and not (json.duration == nil) then
+        chapter_list = extract_chapters(json.description, json.duration)
+    end
+
+    -- set start time
+    if not (json.start_time == nil) and
+        not option_was_set("start") and
+        not option_was_set_locally("start") then
+        msg.debug("Setting start to: " .. json.start_time .. " secs")
+        mp.set_property("file-local-options/start", json.start_time)
+    end
+
+    -- set aspect ratio for anamorphic video
+    if not (json.stretched_ratio == nil) and
+        not option_was_set("video-aspect") then
+        mp.set_property('file-local-options/video-aspect', json.stretched_ratio)
+    end
+
+    -- for rtmp
+    if (json.protocol == "rtmp") then
+        local rtmp_prop = append_rtmp_prop(nil,
+            "rtmp_tcurl", streamurl)
+        rtmp_prop = append_rtmp_prop(rtmp_prop,
+            "rtmp_pageurl", json.page_url)
+        rtmp_prop = append_rtmp_prop(rtmp_prop,
+            "rtmp_playpath", json.play_path)
+        rtmp_prop = append_rtmp_prop(rtmp_prop,
+            "rtmp_swfverify", json.player_url)
+        rtmp_prop = append_rtmp_prop(rtmp_prop,
+            "rtmp_swfurl", json.player_url)
+        rtmp_prop = append_rtmp_prop(rtmp_prop,
+            "rtmp_app", json.app)
+
+        mp.set_property("file-local-options/stream-lavf-o", rtmp_prop)
+    end
 end
 
 mp.add_hook("on_load", 10, function ()
     local url = mp.get_property("stream-open-filename")
-
-    if (url:find("http://") == 1) or (url:find("https://") == 1)
-        or (url:find("ytdl://") == 1) then
+    local start_time = os.clock()
+    if (url:find("ytdl://") == 1) or
+        ((url:find("https?://") == 1) and not is_blacklisted(url)) then
 
         -- check for youtube-dl in mpv's config dir
         if not (ytdl.searched) then
@@ -203,6 +348,7 @@ mp.add_hook("on_load", 10, function ()
         end
 
         msg.verbose("youtube-dl succeeded!")
+        msg.debug('ytdl parsing took '..os.clock()-start_time..' seconds')
 
         -- what did we get?
         if not (json["direct"] == nil) and (json["direct"] == true) then
@@ -223,7 +369,8 @@ mp.add_hook("on_load", 10, function ()
             -- some funky guessing to detect multi-arc videos
             if (not (json.entries[1]["_type"] == "url_transparent")) and
                 (not (json.entries[1]["webpage_url"] == nil)
-                and (json.entries[1]["webpage_url"] == json["webpage_url"])) then
+                and (json.entries[1]["webpage_url"] == json["webpage_url"]))
+                and not (json.entries[1].url == nil) then
                 msg.verbose("multi-arc video detected, building EDL")
 
                 local playlist = edl_track_joined(json.entries)
@@ -268,6 +415,13 @@ mp.add_hook("on_load", 10, function ()
                     end
                 end
 
+            elseif (not (json.entries[1]["_type"] == "url_transparent")) and
+                (not (json.entries[1]["webpage_url"] == nil)
+                and (json.entries[1]["webpage_url"] == json["webpage_url"]))
+                and (#json.entries == 1) then
+
+                msg.verbose("Playlist with single entry detected.")
+                add_single_video(json.entries[1])
             else
 
                 local playlist = "#EXTM3U\n"
@@ -297,108 +451,16 @@ mp.add_hook("on_load", 10, function ()
             end
 
         else -- probably a video
-            local streamurl = ""
-
-            -- DASH/split tracks
-            if not (json["requested_formats"] == nil) then
-                for _, track in pairs(json.requested_formats) do
-                    local edl_track = nil
-                    edl_track = edl_track_joined(track.fragments,
-                        track.protocol, json.is_live)
-                    if track.acodec and track.acodec ~= "none" then
-                        -- audio track
-                        mp.commandv("audio-add",
-                            edl_track or track.url, "auto",
-                            track.format_note or "")
-                    elseif track.vcodec and track.vcodec ~= "none" then
-                        -- video track
-                        streamurl = edl_track or track.url
-                    end
-                end
-
-            elseif not (json.url == nil) then
-                local edl_track = nil
-                edl_track = edl_track_joined(json.fragments, json.protocol,
-                    json.is_live)
-
-                -- normal video or single track
-                streamurl = edl_track or json.url
-                set_http_headers(json.http_headers)
-            else
-                msg.error("No URL found in JSON data.")
-                return
-            end
-
-            msg.debug("streamurl: " .. streamurl)
-
-            mp.set_property("stream-open-filename", streamurl:gsub("^data:", "data://", 1))
-
-            mp.set_property("file-local-options/force-media-title", json.title)
-
-            -- add subtitles
-            if not (json.requested_subtitles == nil) then
-                for lang, sub_info in pairs(json.requested_subtitles) do
-                    msg.verbose("adding subtitle ["..lang.."]")
-
-                    local sub = nil
-
-                    if not (sub_info.data == nil) then
-                        sub = "memory://"..sub_info.data
-                    elseif not (sub_info.url == nil) then
-                        sub = sub_info.url
-                    end
-
-                    if not (sub == nil) then
-                        mp.commandv("sub-add", sub,
-                            "auto", sub_info.ext, lang)
-                    else
-                        msg.verbose("No subtitle data/url for ["..lang.."]")
-                    end
-                end
-            end
-
-            -- add chapters from description
-            if not (json.description == nil) and not (json.duration == nil) then
-                chapter_list = extract_chapters(json.description, json.duration)
-            end
-
-            -- set start time
-            if not (json.start_time == nil) then
-                msg.debug("Setting start to: " .. json.start_time .. " secs")
-                mp.set_property("file-local-options/start", json.start_time)
-            end
-
-            -- set aspect ratio for anamorphic video
-            if not (json.stretched_ratio == nil) and
-                not option_was_set("video-aspect") then
-                mp.set_property('file-local-options/video-aspect', json.stretched_ratio)
-            end
-
-            -- for rtmp
-            if (json.protocol == "rtmp") then
-                local rtmp_prop = append_rtmp_prop(nil,
-                    "rtmp_tcurl", streamurl)
-                rtmp_prop = append_rtmp_prop(rtmp_prop,
-                    "rtmp_pageurl", json.page_url)
-                rtmp_prop = append_rtmp_prop(rtmp_prop,
-                    "rtmp_playpath", json.play_path)
-                rtmp_prop = append_rtmp_prop(rtmp_prop,
-                    "rtmp_swfverify", json.player_url)
-                rtmp_prop = append_rtmp_prop(rtmp_prop,
-                    "rtmp_swfurl", json.player_url)
-                rtmp_prop = append_rtmp_prop(rtmp_prop,
-                    "rtmp_app", json.app)
-
-                mp.set_property("file-local-options/stream-lavf-o", rtmp_prop)
-            end
+            add_single_video(json)
         end
     end
+    msg.debug('script running time: '..os.clock()-start_time..' seconds')
 end)
 
 
 mp.add_hook("on_preloaded", 10, function ()
     if next(chapter_list) ~= nil then
-        msg.verbose("Setting chapters from video's description")
+        msg.verbose("Setting chapters")
 
         mp.set_property_native("chapter-list", chapter_list)
         chapter_list = {}

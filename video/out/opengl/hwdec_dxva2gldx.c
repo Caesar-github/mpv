@@ -22,6 +22,7 @@
 #include "osdep/windows_utils.h"
 #include "hwdec.h"
 #include "video/hwdec.h"
+#include "video/decode/d3d.h"
 
 // for  WGL_ACCESS_READ_ONLY_NV
 #include <GL/wglext.h>
@@ -82,7 +83,7 @@ static void destroy(struct gl_hwdec *hw)
 static int create(struct gl_hwdec *hw)
 {
     GL *gl = hw->gl;
-    if (!gl->MPGetNativeDisplay || !(gl->mpgl_caps & MPGL_CAP_DXINTEROP))
+    if (!(gl->mpgl_caps & MPGL_CAP_DXINTEROP))
         return -1;
 
     struct priv *p = talloc_zero(hw, struct priv);
@@ -90,12 +91,12 @@ static int create(struct gl_hwdec *hw)
 
     // AMD drivers won't open multiple dxinterop HANDLES on the same D3D device,
     // so we request the one already in use by context_dxinterop
-    p->device_h = gl->MPGetNativeDisplay("dxinterop_device_HANDLE");
+    p->device_h = mpgl_get_native_display(gl, "dxinterop_device_HANDLE");
     if (!p->device_h)
         return -1;
 
     // But we also still need the actual D3D device
-    p->device = gl->MPGetNativeDisplay("IDirect3DDevice9Ex");
+    p->device = mpgl_get_native_display(gl, "IDirect3DDevice9Ex");
     if (!p->device)
         return -1;
     IDirect3DDevice9Ex_AddRef(p->device);
@@ -104,6 +105,7 @@ static int create(struct gl_hwdec *hw)
         .type = HWDEC_DXVA2,
         .driver_name = hw->driver->name,
         .ctx = (IDirect3DDevice9 *)p->device,
+        .av_device_ref = d3d9_wrap_device_ref((IDirect3DDevice9 *)p->device),
     };
     hwdec_devices_add(hw->devs, &p->hwctx);
     return 0;

@@ -1,18 +1,18 @@
 /*
  * This file is part of mpv.
  *
- * mpv is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
+ * mpv is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
  *
  * mpv is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with mpv.  If not, see <http://www.gnu.org/licenses/>.
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #ifndef MP_COMMAND_LIST_H
@@ -32,6 +32,7 @@ struct mp_cmd_def {
     bool allow_auto_repeat; // react to repeated key events
     bool on_updown;     // always emit it on both up and down key events
     bool vararg;        // last argument can be given 0 to multiple times
+    bool scalable;
 };
 
 extern const struct mp_cmd_def mp_cmds[];
@@ -130,6 +131,8 @@ bool mp_input_is_maybe_abort_cmd(struct mp_cmd *cmd);
 bool mp_input_is_abort_cmd(struct mp_cmd *cmd);
 
 bool mp_input_is_repeatable_cmd(struct mp_cmd *cmd);
+
+bool mp_input_is_scalable_cmd(struct mp_cmd *cmd);
 
 struct bstr;
 bool mp_replace_legacy_cmd(void *talloc_ctx, struct bstr *s);

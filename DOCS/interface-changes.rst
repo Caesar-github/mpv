@@ -19,6 +19,46 @@ Interface changes
 
 ::
 
+ --- mpv 0.26.0 ---
+    - remove remaining deprecated audio device options, like --alsa-device
+      Some of them were removed in earlier releases.
+    - introduce --replaygain... options, which replace the same functionality
+      provided by the deprecated --af=volume:replaygain... mechanism.
+    - drop the internal "mp-rawvideo" codec (used by --demuxer=rawvideo)
+    - rename --sub-ass-style-override to --sub-ass-override, and rename the
+      `--sub-ass-override=signfs` setting to `--sub-ass-override=scale`.
+    - change default of --video-aspect-method to "bitstream". The "hybrid"
+      method (old default) is deprecated.
+    - remove property "video-params/nom-peak"
+    - remove option --target-brightness
+    - replace vf_format's `peak` suboption by `sig-peak`, which is relative to
+      the reference white level instead of in cd/m^2
+    - renamed the TRCs `st2084` and `std-b67` to `pq` and `hlg` respectively
+    - the "osd" command is deprecated (use "cycle osd-level")
+    - --field-dominance is deprecated (use --vf=setfield=bff or tff)
+    - --really-quiet subtle behavior change
+    - the deprecated handling of setting "no-" options via client API is dropped
+    - the following options change to append-by-default (and possibly separator):
+        --script
+      also, the following options are deprecated:
+        --sub-paths => --sub-file-paths
+      the following options are deprecated for setting via API:
+        "script" (use "scripts")
+        "sub-file" (use "sub-files")
+        "audio-file" (use "audio-files")
+        "external-file" (use "external-files")
+        (the compatibility hacks for this will be removed after this release)
+    - remove property `vo-performance`, and add `vo-passes` as a more general
+      replacement
+    - deprecate passing multiple arguments to -add/-pre options (affects the
+      vf/af commands too)
+    - remove --demuxer-lavf-cryptokey. Use --demux-lavf-o=cryptokey=<hex> or
+      --demux-lavf-o=decryption_key=<hex> instead (whatever fits your situation).
+    - rename --opengl-dumb-mode=no to --opengl-dumb-mode=auto, and make `no`
+      always disable it (unless forced on by hardware limitation).
+    - generalize --scale-clamp, --cscale-clamp etc. to accept a float between
+      0.0 and 1.0 instead of just being a flag. A value of 1.0 corresponds to
+      the old `yes`, and a value of 0.0 corresponds to the old `no`.
  --- mpv 0.25.0 ---
     - remove opengl-cb dxva2 dummy hwdec interop
       (see git "vo_opengl: remove dxva2 dummy hwdec backend")

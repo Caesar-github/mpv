@@ -1,18 +1,24 @@
 /*
  * This file is part of mpv.
  *
- * mpv is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
+ * mpv is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 3 of the License, or (at your option) any later version.
  *
  * mpv is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with mpv.  If not, see <http://www.gnu.org/licenses/>.
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ * The parts making this file LGPL v3 (instead of v2.1 or later) are:
+ *  0aa37a0db23c allow autodetection of pictures type when using mf://@fil...
+ * (iive agreed to LGPL v3+ only.)
+ * Once these changes are not relevant to for copyright anymore (e.g. because
+ * they have been removed), this file will change to LGPLv2.1+.
  */
 
 #include <stdio.h>
@@ -109,7 +115,6 @@ static mf_t *open_mf_pattern(void *talloc_ctx, struct mp_log *log, char *filenam
 
     char *fname = talloc_size(mf, strlen(filename) + 32);
 
-#if HAVE_GLOB || HAVE_GLOB_WIN32_REPLACEMENT
     if (!strchr(filename, '%')) {
         strcpy(fname, filename);
         if (!strchr(filename, '*'))
@@ -132,7 +137,6 @@ static mf_t *open_mf_pattern(void *talloc_ctx, struct mp_log *log, char *filenam
         globfree(&gg);
         goto exit_mf;
     }
-#endif
 
     mp_info(log, "search expr: %s\n", filename);
 
@@ -335,6 +339,7 @@ static int demux_open_mf(demuxer_t *demuxer, enum demux_check check)
     mf->sh = sh;
     demuxer->priv = (void *)mf;
     demuxer->seekable = true;
+    demuxer->duration = mf->nr_of_files / mf->sh->codec->fps;
 
     return 0;
 
@@ -346,20 +351,6 @@ static void demux_close_mf(demuxer_t *demuxer)
 {
 }
 
-static int demux_control_mf(demuxer_t *demuxer, int cmd, void *arg)
-{
-    mf_t *mf = demuxer->priv;
-
-    switch (cmd) {
-    case DEMUXER_CTRL_GET_TIME_LENGTH:
-        *((double *)arg) = (double)mf->nr_of_files / mf->sh->codec->fps;
-        return DEMUXER_CTRL_OK;
-
-    default:
-        return DEMUXER_CTRL_NOTIMPL;
-    }
-}
-
 const demuxer_desc_t demuxer_desc_mf = {
     .name = "mf",
     .desc = "image files (mf)",
@@ -367,5 +358,4 @@ const demuxer_desc_t demuxer_desc_mf = {
     .open = demux_open_mf,
     .close = demux_close_mf,
     .seek = demux_seek_mf,
-    .control = demux_control_mf,
 };

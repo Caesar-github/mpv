@@ -1,18 +1,18 @@
 /*
  * This file is part of mpv.
  *
- * mpv is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
+ * mpv is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
  *
  * mpv is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with mpv.  If not, see <http://www.gnu.org/licenses/>.
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <stddef.h>
@@ -800,7 +800,7 @@ static void load_per_file_options(m_config_t *conf,
                                   int params_count)
 {
     for (int n = 0; n < params_count; n++) {
-        m_config_set_option_ext(conf, params[n].name, params[n].value,
+        m_config_set_option_cli(conf, params[n].name, params[n].value,
                                 M_SETOPT_RUNTIME | M_SETOPT_BACKUP);
     }
 }
@@ -1117,7 +1117,10 @@ static void play_current_file(struct MPContext *mpctx)
     load_per_file_options(mpctx->mconfig, mpctx->playing->params,
                           mpctx->playing->num_params);
 
+#if HAVE_GPL
+    // Possibly GPL due to d8fd7131bbcde029ab41799fd3162050b43f6848.
     mpctx->max_frames = opts->play_frames;
+#endif
 
     handle_force_window(mpctx, false);
 
@@ -1247,12 +1250,15 @@ reopen_file:
     mp_notify(mpctx, MPV_EVENT_FILE_LOADED, NULL);
     update_screensaver_state(mpctx);
 
+#if HAVE_GPL
+    // Possibly GPL due to d8fd7131bbcde029ab41799fd3162050b43f6848.
     if (mpctx->max_frames == 0) {
         if (!mpctx->stop_play)
             mpctx->stop_play = PT_NEXT_ENTRY;
         mpctx->error_playing = 0;
         goto terminate_playback;
     }
+#endif
 
     double startpos = rel_time_to_abs(mpctx, opts->play_start);
     if (startpos == MP_NOPTS_VALUE && opts->chapterrange[0] > 0) {

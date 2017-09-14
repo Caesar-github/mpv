@@ -3,18 +3,18 @@
  *
  * This file is part of mpv.
  *
- * mpv is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
+ * mpv is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
  *
  * mpv is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with mpv.  If not, see <http://www.gnu.org/licenses/>.
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <string.h>
@@ -107,6 +107,10 @@ static void determine_codec_params(struct dec_audio *da, AVPacket *pkt,
         parser->flags |= PARSER_FLAG_COMPLETE_FRAMES;
 
         ctx = avcodec_alloc_context3(NULL);
+        if (!ctx) {
+            av_parser_close(parser);
+            goto done;
+        }
 
         uint8_t *d = NULL;
         int s = 0;
@@ -114,7 +118,7 @@ static void determine_codec_params(struct dec_audio *da, AVPacket *pkt,
         *out_profile = profile = ctx->profile;
         *out_rate = ctx->sample_rate;
 
-        av_free(ctx);
+        avcodec_free_context(&ctx);
         av_parser_close(parser);
     }
 
@@ -133,11 +137,8 @@ static void determine_codec_params(struct dec_audio *da, AVPacket *pkt,
     if (!ctx)
         goto done;
 
-    if (avcodec_open2(ctx, codec, NULL) < 0) {
-        av_free(ctx); // don't attempt to avcodec_close() an unopened ctx
-        ctx = NULL;
+    if (avcodec_open2(ctx, codec, NULL) < 0)
         goto done;
-    }
 
     if (avcodec_send_packet(ctx, pkt) < 0)
         goto done;
@@ -149,8 +150,6 @@ static void determine_codec_params(struct dec_audio *da, AVPacket *pkt,
 
 done:
     av_frame_free(&frame);
-    if (ctx)
-        avcodec_close(ctx);
     avcodec_free_context(&ctx);
 
     if (profile == FF_PROFILE_UNKNOWN)

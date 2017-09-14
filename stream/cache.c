@@ -1,18 +1,25 @@
 /*
  * This file is part of mpv.
  *
- * mpv is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
+ * mpv is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 3 of the License, or (at your option) any later version.
  *
  * mpv is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with mpv.  If not, see <http://www.gnu.org/licenses/>.
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ * The parts making this file LGPL v3 (instead of v2.1 or later) are:
+ *  84ec57750883 remove unused cache-prefill and create cache-seek-min that...
+ *  9b0d8c680f63 cache min fill adjustment, based on patch by Jeremy Huddleston
+ * (iive agreed to LGPL v3+ only. Jeremy agreed to LGPL v2.1 or later.)
+ * Once these changes are not relevant to for copyright anymore (e.g. because
+ * they have been removed), this file will change to LGPLv2.1+.
  */
 
 // Time in seconds the main thread waits for the cache thread. On wakeups, the
@@ -59,6 +66,33 @@
 #include "stream.h"
 #include "common/common.h"
 
+#define OPT_BASE_STRUCT struct mp_cache_opts
+
+const struct m_sub_options stream_cache_conf = {
+    .opts = (const struct m_option[]){
+        OPT_CHOICE_OR_INT("cache", size, 0, 32, 0x7fffffff,
+                          ({"no", 0},
+                           {"auto", -1},
+                           {"yes", -2})),
+        OPT_CHOICE_OR_INT("cache-default", def_size, 0, 32, 0x7fffffff,
+                          ({"no", 0})),
+        OPT_INTRANGE("cache-initial", initial, 0, 0, 0x7fffffff),
+        OPT_INTRANGE("cache-seek-min", seek_min, 0, 0, 0x7fffffff),
+        OPT_INTRANGE("cache-backbuffer", back_buffer, 0, 0, 0x7fffffff),
+        OPT_STRING("cache-file", file, M_OPT_FILE),
+        OPT_INTRANGE("cache-file-size", file_max, 0, 0, 0x7fffffff),
+        {0}
+    },
+    .size = sizeof(struct mp_cache_opts),
+    .defaults = &(const struct mp_cache_opts){
+        .size = -1,
+        .def_size = 75000,
+        .initial = 0,
+        .seek_min = 500,
+        .back_buffer = 75000,
+        .file_max = 1024 * 1024,
+    },
+};
 
 // Note: (struct priv*)(cache->priv)->cache == cache
 struct priv {
@@ -204,15 +238,21 @@ static size_t read_buffer(struct priv *s, unsigned char *dst,
     return read;
 }
 
+// Whether a seek will be needed to get to the position. This honors seek_limit,
+// which is a heuristic to prevent dropping the cache with small forward seeks.
+// This helps in situations where waiting for network a bit longer would quickly
+// reach the target position. Especially if the demuxer seeks back and forth,
+// not dropping the backwards cache will be a major performance win.
+static bool needs_seek(struct priv *s, int64_t pos)
+{
+    return pos < s->min_filepos || pos > s->max_filepos + s->seek_limit;
+}
+
 static bool cache_update_stream_position(struct priv *s)
 {
     int64_t read = s->read_filepos;
 
-    // drop cache contents only if seeking backward or too much fwd.
-    // This is also done for on-disk files, since it loses the backseek cache.
-    // That in turn can cause major bandwidth increase and performance
-    // issues with e.g. mov or badly interleaved files
-    if (read < s->min_filepos || read > s->max_filepos + s->seek_limit) {
+    if (needs_seek(s, read)) {
         MP_VERBOSE(s, "Dropping cache at pos %"PRId64", "
                    "cached range: %"PRId64"-%"PRId64".\n", read,
                    s->min_filepos, s->max_filepos);
@@ -595,16 +635,25 @@ static int cache_seek(stream_t *cache, int64_t pos)
         r = 0;
     } else {
         cache->pos = s->read_filepos = s->read_min = pos;
-        s->eof = false; // so that cache_read() will actually wait for new data
-        s->control = CACHE_CTRL_SEEK;
-        s->control_res = 0;
-        double retry = 0;
-        while (s->control != CACHE_CTRL_NONE) {
-            if (!cache_wakeup_and_wait(s, &retry))
-                break;
+        // Is this seek likely to cause a stream-level seek?
+        // If it is, wait until that is complete and return its result.
+        // This check is not quite exact - if the reader thread is blocked in
+        // a read, the read might advance file position enough that a seek
+        // forward is no longer needed.
+        if (needs_seek(s, pos)) {
+            s->eof = false;
+            s->control = CACHE_CTRL_SEEK;
+            s->control_res = 0;
+            double retry = 0;
+            while (s->control != CACHE_CTRL_NONE) {
+                if (!cache_wakeup_and_wait(s, &retry))
+                    break;
+            }
+            r = s->control_res;
+        } else {
+            pthread_cond_signal(&s->wakeup);
+            r = 1;
         }
-        r = s->control_res;
-        pthread_cond_signal(&s->wakeup);
     }
 
     pthread_mutex_unlock(&s->mutex);

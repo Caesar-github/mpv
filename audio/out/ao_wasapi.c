@@ -22,6 +22,7 @@
 #include <libavutil/mathematics.h>
 
 #include "options/m_option.h"
+#include "osdep/threads.h"
 #include "osdep/timer.h"
 #include "osdep/io.h"
 #include "misc/dispatch.h"
@@ -128,8 +129,9 @@ static bool thread_feed(struct ao *ao)
 
     BYTE *data[1] = {pData};
 
-    ao_read_data(ao, (void **)data, frame_count,
-                 mp_time_us() + (int64_t)llrint(delay_us));
+    ao_read_data_converted(ao, &state->convert_format,
+                           (void **)data, frame_count,
+                           mp_time_us() + (int64_t)llrint(delay_us));
 
     // note, we can't use ao_read_data return value here since we already
     // committed to frame_count above in the GetBuffer call
@@ -196,6 +198,7 @@ static DWORD __stdcall AudioThread(void *lpParameter)
 {
     struct ao *ao = lpParameter;
     struct wasapi_state *state = ao->priv;
+    mpthread_set_name("wasapi event");
     CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
 
     state->init_ret = wasapi_thread_init(ao);
@@ -277,13 +280,16 @@ static int init(struct ao *ao)
 
     state->opt_exclusive |= ao->init_flags & AO_INIT_EXCLUSIVE;
 
+#if !HAVE_UWP
     state->deviceID = wasapi_find_deviceID(ao);
     if (!state->deviceID) {
         uninit(ao);
         return -1;
     }
+#endif
 
-    wasapi_change_init(ao, false);
+    if (state->deviceID)
+        wasapi_change_init(ao, false);
 
     state->hInitDone = CreateEventW(NULL, FALSE, FALSE, NULL);
     state->hWake     = CreateEventW(NULL, FALSE, FALSE, NULL);
@@ -420,7 +426,7 @@ static int thread_control(struct ao *ao, enum aocontrol cmd, void *arg)
 
             SAFE_DESTROY(tmp, CoTaskMemFree(tmp));
             IAudioSessionControl_GetDisplayName(state->pSessionControl, &tmp);
-        } while (lstrcmpW(title, tmp));
+        } while (wcscmp(title, tmp));
         SAFE_DESTROY(tmp, CoTaskMemFree(tmp));
         talloc_free(title);
         return CONTROL_OK;

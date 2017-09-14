@@ -195,6 +195,7 @@ static int create(struct gl_hwdec *hw)
         .driver_name = hw->driver->name,
         .ctx = p->d3d11_device,
         .download_image = d3d11_download_image,
+        .av_device_ref = d3d11_wrap_device_ref(p->d3d11_device),
     };
     hwdec_devices_add(hw->devs, &p->hwctx);
 
@@ -279,8 +280,8 @@ static int map_frame(struct gl_hwdec *hw, struct mp_image *hw_image,
     if (!p->gl_textures[0])
         return -1;
 
-    ID3D11Texture2D *d3d_tex = (void *)hw_image->planes[1];
-    int d3d_subindex = (intptr_t)hw_image->planes[2];
+    ID3D11Texture2D *d3d_tex = (void *)hw_image->planes[0];
+    int d3d_subindex = (intptr_t)hw_image->planes[1];
     if (!d3d_tex)
         return -1;
 

@@ -30,17 +30,21 @@ extern const struct m_sub_options deband_conf;
 void sampler_prelude(struct gl_shader_cache *sc, int tex_num);
 void pass_sample_separated_gen(struct gl_shader_cache *sc, struct scaler *scaler,
                                int d_x, int d_y);
-void pass_sample_polar(struct gl_shader_cache *sc, struct scaler *scaler);
+void pass_sample_polar(struct gl_shader_cache *sc, struct scaler *scaler,
+                       int components, int glsl_version);
 void pass_sample_bicubic_fast(struct gl_shader_cache *sc);
 void pass_sample_oversample(struct gl_shader_cache *sc, struct scaler *scaler,
                             int w, int h);
 
 void pass_linearize(struct gl_shader_cache *sc, enum mp_csp_trc trc);
 void pass_delinearize(struct gl_shader_cache *sc, enum mp_csp_trc trc);
+void pass_ootf(struct gl_shader_cache *sc, enum mp_csp_light light, float peak);
+void pass_inverse_ootf(struct gl_shader_cache *sc, enum mp_csp_light light, float peak);
 
 void pass_color_map(struct gl_shader_cache *sc,
                     struct mp_colorspace src, struct mp_colorspace dst,
-                    enum tone_mapping algo, float tone_mapping_param);
+                    enum tone_mapping algo, float tone_mapping_param,
+                    float tone_mapping_desat, bool is_linear);
 
 void pass_sample_deband(struct gl_shader_cache *sc, struct deband_opts *opts,
                         AVLFG *lfg);

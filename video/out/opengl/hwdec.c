@@ -51,14 +51,14 @@ static const struct gl_hwdec_driver *const mpgl_hwdec_drivers[] = {
     &gl_hwdec_videotoolbox,
 #endif
 #if HAVE_D3D_HWACCEL
-#if HAVE_EGL_ANGLE
     &gl_hwdec_d3d11egl,
     &gl_hwdec_d3d11eglrgb,
+ #if HAVE_D3D9_HWACCEL
     &gl_hwdec_dxva2egl,
+ #endif
 #endif
-#if HAVE_GL_DXINTEROP
+#if HAVE_GL_DXINTEROP_D3D9
     &gl_hwdec_dxva2gldx,
-#endif
 #endif
 #if HAVE_CUDA_HWACCEL
     &gl_hwdec_cuda,
@@ -101,7 +101,7 @@ struct gl_hwdec *gl_hwdec_load_api(struct mp_log *log, GL *gl,
     bool is_auto = HWDEC_IS_AUTO(api);
     for (int n = 0; mpgl_hwdec_drivers[n]; n++) {
         const struct gl_hwdec_driver *drv = mpgl_hwdec_drivers[n];
-        if (is_auto || api == drv->api) {
+        if ((is_auto || api == drv->api) && !drv->testing_only) {
             struct gl_hwdec *r = load_hwdec_driver(log, gl, g, devs, drv, is_auto);
             if (r)
                 return r;

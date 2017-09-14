@@ -1,21 +1,25 @@
 /*
  * This file is part of mpv.
  *
- * mpv is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
+ * mpv is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
  *
  * mpv is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with mpv.  If not, see <http://www.gnu.org/licenses/>.
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ * Parts under HAVE_GPL are licensed under GNU General Public License.
  */
 
 #include <limits.h>
+
+#include "config.h"
 
 #include "common/common.h"
 #include "common/msg.h"
@@ -72,6 +76,7 @@ const struct mp_cmd_def mp_cmds[] = {
                       {"exact", 32|16})),
     },
     .allow_auto_repeat = true,
+    .scalable = true,
   },
   { MP_CMD_REVERT_SEEK, "revert-seek", {
       OARG_FLAGS(0, ({"mark", 1})),
@@ -93,16 +98,20 @@ const struct mp_cmd_def mp_cmds[] = {
   { MP_CMD_PLAYLIST_SHUFFLE, "playlist-shuffle", },
   { MP_CMD_SUB_STEP, "sub-step", { ARG_INT }, .allow_auto_repeat = true },
   { MP_CMD_SUB_SEEK, "sub-seek", { ARG_INT }, .allow_auto_repeat = true },
+#if HAVE_GPL
   { MP_CMD_OSD, "osd", { OARG_INT(-1) } },
+#endif
   { MP_CMD_PRINT_TEXT, "print-text", { ARG_STRING }, .allow_auto_repeat = true },
   { MP_CMD_SHOW_TEXT, "show-text", { ARG_STRING, OARG_INT(-1), OARG_INT(0) },
     .allow_auto_repeat = true},
   { MP_CMD_EXPAND_TEXT, "expand-text", { ARG_STRING } },
   { MP_CMD_SHOW_PROGRESS, "show-progress",  .allow_auto_repeat = true},
+#if HAVE_GPL
   { MP_CMD_SUB_ADD, "sub-add", { ARG_STRING,
       OARG_CHOICE(0, ({"select", 0}, {"auto", 1}, {"cached", 2})),
       OARG_STRING(""), OARG_STRING("") } },
   { MP_CMD_SUB_REMOVE, "sub-remove", { OARG_INT(-1) } },
+#endif
   { MP_CMD_SUB_RELOAD, "sub-reload", { OARG_INT(-1) } },
 
   { MP_CMD_TV_LAST_CHANNEL, "tv-last-channel", },
@@ -147,14 +156,19 @@ const struct mp_cmd_def mp_cmds[] = {
   { MP_CMD_RUN, "run", { ARG_STRING, ARG_STRING }, .vararg = true },
 
   { MP_CMD_SET, "set", { ARG_STRING,  ARG_STRING } },
+#if HAVE_GPL
   { MP_CMD_ADD, "add", { ARG_STRING, OARG_DOUBLE(1) },
-    .allow_auto_repeat = true},
+    .allow_auto_repeat = true,
+    .scalable = true,
+  },
   { MP_CMD_CYCLE, "cycle", {
       ARG_STRING,
       OARG_CYCLEDIR(1),
     },
-    .allow_auto_repeat = true
+    .allow_auto_repeat = true,
+    .scalable = true,
   },
+#endif
   { MP_CMD_MULTIPLY, "multiply", { ARG_STRING, ARG_DOUBLE },
     .allow_auto_repeat = true},
 
@@ -346,6 +360,11 @@ bool mp_input_is_repeatable_cmd(struct mp_cmd *cmd)
     return (cmd->def && cmd->def->allow_auto_repeat) ||
            cmd->id == MP_CMD_COMMAND_LIST ||
            (cmd->flags & MP_ALLOW_REPEAT);
+}
+
+bool mp_input_is_scalable_cmd(struct mp_cmd *cmd)
+{
+    return cmd->def && cmd->def->scalable;
 }
 
 void mp_print_cmd_list(struct mp_log *out)

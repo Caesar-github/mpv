@@ -283,7 +283,7 @@ static void decode(struct sd *sd, struct demux_packet *packet)
         int ass_len = packet->len;
         if (sd->opts->sub_filter_SDH) {
             ass_line = filter_SDH(sd, track->event_format, 1, ass_line, ass_len);
-            ass_len = strlen(ass_line);
+            ass_len = ass_line ? strlen(ass_line) : 0;
         }
         if (ass_line)
             ass_process_chunk(track, ass_line, ass_len,
@@ -313,7 +313,7 @@ static void configure_ass(struct sd *sd, struct mp_osd_res *dim,
     bool set_scale_by_window = true;
     bool total_override = false;
     // With forced overrides, apply the --sub-* specific options
-    if (converted || opts->ass_style_override == 3) {
+    if (converted || opts->ass_style_override == 3) { // 'force'
         set_scale_with_window = opts->sub_scale_with_window;
         set_use_margins = opts->sub_use_margins;
         set_scale_by_window = opts->sub_scale_by_window;
@@ -343,7 +343,7 @@ static void configure_ass(struct sd *sd, struct mp_osd_res *dim,
     int set_force_flags = 0;
     if (total_override)
         set_force_flags |= ASS_OVERRIDE_BIT_STYLE | ASS_OVERRIDE_BIT_FONT_SIZE;
-    if (opts->ass_style_override == 4)
+    if (opts->ass_style_override == 4) // 'scale'
         set_force_flags |= ASS_OVERRIDE_BIT_FONT_SIZE;
 #if LIBASS_VERSION >= 0x01201001
     if (converted)
