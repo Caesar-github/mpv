@@ -81,7 +81,7 @@ static const struct wasapi_sample_fmt wasapi_formats[] = {
     {AF_FORMAT_S32,     32, 32, &KSDATAFORMAT_SUBTYPE_PCM},
     // compatible, assume LSBs are ignored
     {AF_FORMAT_S32,     32, 24, &KSDATAFORMAT_SUBTYPE_PCM},
-    // aka S24 (with conversion) - untested, thus commented.
+    // aka S24 (with conversion on output)
     {AF_FORMAT_S32,     24, 24, &KSDATAFORMAT_SUBTYPE_PCM},
     {AF_FORMAT_FLOAT,   32, 32, &KSDATAFORMAT_SUBTYPE_IEEE_FLOAT},
     {AF_FORMAT_S_AC3,   16, 16, &mp_KSDATAFORMAT_SUBTYPE_IEC61937_DOLBY_DIGITAL},
@@ -94,6 +94,20 @@ static const struct wasapi_sample_fmt wasapi_formats[] = {
     {0},
 };
 
+static void wasapi_get_best_sample_formats(
+    int src_format, struct wasapi_sample_fmt *out_formats)
+{
+    int mp_formats[AF_FORMAT_COUNT];
+    af_get_best_sample_formats(src_format, mp_formats);
+    for (int n = 0; mp_formats[n]; n++) {
+        for (int i = 0; wasapi_formats[i].mp_format; i++) {
+            if (wasapi_formats[i].mp_format == mp_formats[n])
+                *out_formats++ = wasapi_formats[i];
+        }
+    }
+    *out_formats = (struct wasapi_sample_fmt) {0};
+}
+
 static const GUID *format_to_subtype(int format)
 {
     for (int i = 0; wasapi_formats[i].mp_format; i++) {
@@ -101,18 +115,6 @@ static const GUID *format_to_subtype(int format)
             return wasapi_formats[i].subtype;
     }
     return &KSDATAFORMAT_SPECIFIER_NONE;
-}
-
-// "solve" the under-determined inverse of format_to_subtype by assuming the
-// input subtype is "special" (i.e. IEC61937)
-static int special_subtype_to_format(const GUID *subtype)
-{
-    for (int i = 0; wasapi_formats[i].mp_format; i++) {
-        if (IsEqualGUID(subtype, wasapi_formats[i].subtype) &&
-            af_fmt_is_spdif(wasapi_formats[i].mp_format))
-            return wasapi_formats[i].mp_format;
-    }
-    return 0;
 }
 
 char *mp_PKEY_to_str_buf(char *buf, size_t buf_size, const PROPERTYKEY *pkey)
@@ -132,52 +134,19 @@ static void update_waveformat_datarate(WAVEFORMATEXTENSIBLE *wformat)
 }
 
 static void set_waveformat(WAVEFORMATEXTENSIBLE *wformat,
-                           struct wasapi_sample_fmt format,
+                           struct wasapi_sample_fmt *format,
                            DWORD samplerate, struct mp_chmap *channels)
 {
     wformat->Format.wFormatTag     = WAVE_FORMAT_EXTENSIBLE;
     wformat->Format.nChannels      = channels->num;
     wformat->Format.nSamplesPerSec = samplerate;
-    wformat->Format.wBitsPerSample = format.bits;
+    wformat->Format.wBitsPerSample = format->bits;
     wformat->Format.cbSize = sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX);
 
-    wformat->SubFormat                   = *format_to_subtype(format.mp_format);
-    wformat->Samples.wValidBitsPerSample = format.used_msb;
+    wformat->SubFormat                   = *format_to_subtype(format->mp_format);
+    wformat->Samples.wValidBitsPerSample = format->used_msb;
     wformat->dwChannelMask               = mp_chmap_to_waveext(channels);
     update_waveformat_datarate(wformat);
-}
-
-// This implicitly transforms all pcm formats to: interleaved / signed (except
-// 8-bit is unsigned) / waveext channel order.  "Special" formats should be
-// exempt as they should already satisfy these properties.
-static void set_waveformat_with_ao(WAVEFORMATEXTENSIBLE *wformat, struct ao *ao)
-{
-    struct mp_chmap channels = ao->channels;
-
-    if (mp_chmap_is_unknown(&channels))
-        mp_chmap_from_channels(&channels, channels.num);
-    mp_chmap_reorder_to_waveext(&channels);
-    if (!mp_chmap_is_valid(&channels))
-        mp_chmap_from_channels(&channels, 2);
-
-    // First find a format that is actually representable.
-    // (Notably excludes AF_FORMAT_DOUBLE.)
-    struct wasapi_sample_fmt format =
-        {AF_FORMAT_S16, 16, 16, &KSDATAFORMAT_SUBTYPE_PCM};
-
-    int alt_formats[AF_FORMAT_COUNT];
-    af_get_best_sample_formats(ao->format, alt_formats);
-    for (int n = 0; alt_formats[n]; n++) {
-        for (int i = 0; wasapi_formats[i].mp_format; i++) {
-            if (wasapi_formats[i].mp_format == alt_formats[n]) {
-                format = wasapi_formats[i];
-                goto found_format;
-            }
-        }
-    }
- found_format:
-
-    set_waveformat(wformat, format, ao->samplerate, &channels);
 }
 
 // other wformat parameters must already be set with set_waveformat
@@ -319,8 +288,19 @@ static bool set_ao_format(struct ao *ao, WAVEFORMATEX *wf,
     }
     waveformat_copy(&state->format, wf);
     state->share_mode = share_mode;
+
+    MP_VERBOSE(ao, "Accepted as %s %s @ %dhz -> %s (%s)\n",
+               mp_chmap_to_str(&ao->channels),
+               af_fmt_to_str(ao->format), ao->samplerate,
+               waveformat_to_str(wf),
+               state->share_mode == AUDCLNT_SHAREMODE_EXCLUSIVE
+               ? "exclusive" : "shared");
     return true;
 }
+
+#define mp_format_res_str(hres) \
+    (SUCCEEDED(hres) ? "ok" : ((hres) == AUDCLNT_E_UNSUPPORTED_FORMAT) \
+     ? "unsupported" : mp_HRESULT_to_str(hres))
 
 static bool try_format_exclusive(struct ao *ao, WAVEFORMATEXTENSIBLE *wformat)
 {
@@ -333,36 +313,15 @@ static bool try_format_exclusive(struct ao *ao, WAVEFORMATEXTENSIBLE *wformat)
     return SUCCEEDED(hr);
 }
 
-// This works like try_format_exclusive(), but will try to fallback to the AC3
-// format if the format is a non-AC3 passthrough format. *wformat will be
-// adjusted accordingly.
-static bool try_format_exclusive_with_spdif_fallback(struct ao *ao,
-                                                WAVEFORMATEXTENSIBLE *wformat)
-{
-    if (try_format_exclusive(ao, wformat))
-        return true;
-    int special_format = special_subtype_to_format(&wformat->SubFormat);
-    if (special_format && special_format != AF_FORMAT_S_AC3) {
-        MP_VERBOSE(ao, "Retrying as AC3.\n");
-        wformat->SubFormat = *format_to_subtype(AF_FORMAT_S_AC3);
-        return try_format_exclusive(ao, wformat);
-    }
-    return false;
-}
-
 static bool search_sample_formats(struct ao *ao, WAVEFORMATEXTENSIBLE *wformat,
                                   int samplerate, struct mp_chmap *channels)
 {
-    int alt_formats[AF_FORMAT_COUNT];
-    af_get_best_sample_formats(ao->format, alt_formats);
-    for (int n = 0; alt_formats[n]; n++) {
-        for (int i = 0; wasapi_formats[i].mp_format; i++) {
-            if (wasapi_formats[i].mp_format == alt_formats[n]) {
-                set_waveformat(wformat, wasapi_formats[i], samplerate, channels);
-                if (try_format_exclusive(ao, wformat))
-                    return true;
-            }
-        }
+    struct wasapi_sample_fmt alt_formats[MP_ARRAY_SIZE(wasapi_formats)];
+    wasapi_get_best_sample_formats(ao->format, alt_formats);
+    for (int n = 0; alt_formats[n].mp_format; n++) {
+        set_waveformat(wformat, &alt_formats[n], samplerate, channels);
+        if (try_format_exclusive(ao, wformat))
+            return true;
     }
 
     wformat->Format.wBitsPerSample = 0;
@@ -441,40 +400,39 @@ static bool search_channels(struct ao *ao, WAVEFORMATEXTENSIBLE *wformat)
     return false;
 }
 
-static bool find_formats_exclusive(struct ao *ao, bool do_search)
+static bool find_formats_exclusive(struct ao *ao, WAVEFORMATEXTENSIBLE *wformat)
 {
-    WAVEFORMATEXTENSIBLE wformat;
-    set_waveformat_with_ao(&wformat, ao);
+    // Try the specified format as is
+    if (try_format_exclusive(ao, wformat))
+        return true;
 
-    // Try the requested format as is. If that doesn't work, and the do_search
-    // argument is set, do the pcm format search.
-    if (!try_format_exclusive_with_spdif_fallback(ao, &wformat) &&
-        (!do_search || !search_channels(ao, &wformat)))
+    if (af_fmt_is_spdif(ao->format)) {
+        if (ao->format != AF_FORMAT_S_AC3) {
+            // If the requested format failed and it is passthrough, but not
+            // AC3, try lying and saying it is.
+            MP_VERBOSE(ao, "Retrying as AC3.\n");
+            wformat->SubFormat = *format_to_subtype(AF_FORMAT_S_AC3);
+            if (try_format_exclusive(ao, wformat))
+                return true;
+        }
         return false;
+    }
 
-    if (!set_ao_format(ao, &wformat.Format, AUDCLNT_SHAREMODE_EXCLUSIVE))
-        return false;
-
-    MP_VERBOSE(ao, "Accepted as %s %s @ %dhz (exclusive) -> %s\n",
-               mp_chmap_to_str(&ao->channels),
-               af_fmt_to_str(ao->format), ao->samplerate,
-               waveformat_to_str(&wformat.Format));
-    return true;
+    // Fallback on the PCM format search
+    return search_channels(ao, wformat);
 }
 
-static bool find_formats_shared(struct ao *ao)
+static bool find_formats_shared(struct ao *ao, WAVEFORMATEXTENSIBLE *wformat)
 {
     struct wasapi_state *state = ao->priv;
-
-    WAVEFORMATEXTENSIBLE wformat;
-    set_waveformat_with_ao(&wformat, ao);
 
     WAVEFORMATEX *closestMatch;
     HRESULT hr = IAudioClient_IsFormatSupported(state->pAudioClient,
                                                 AUDCLNT_SHAREMODE_SHARED,
-                                                &wformat.Format, &closestMatch);
+                                                &wformat->Format,
+                                                &closestMatch);
     MP_VERBOSE(ao, "Trying %s (shared) -> %s\n",
-               waveformat_to_str(&wformat.Format), mp_format_res_str(hr));
+               waveformat_to_str(&wformat->Format), mp_format_res_str(hr));
     if (hr != AUDCLNT_E_UNSUPPORTED_FORMAT)
         EXIT_ON_ERROR(hr);
 
@@ -482,27 +440,20 @@ static bool find_formats_shared(struct ao *ao)
     case S_OK:
         break;
     case S_FALSE:
-        waveformat_copy(&wformat, closestMatch);
+        waveformat_copy(wformat, closestMatch);
         CoTaskMemFree(closestMatch);
         MP_VERBOSE(ao, "Closest match is %s\n",
-                   waveformat_to_str(&wformat.Format));
+                   waveformat_to_str(&wformat->Format));
         break;
     default:
         hr = IAudioClient_GetMixFormat(state->pAudioClient, &closestMatch);
         EXIT_ON_ERROR(hr);
-        waveformat_copy(&wformat, closestMatch);
+        waveformat_copy(wformat, closestMatch);
         MP_VERBOSE(ao, "Fallback to mix format %s\n",
-                   waveformat_to_str(&wformat.Format));
+                   waveformat_to_str(&wformat->Format));
         CoTaskMemFree(closestMatch);
     }
 
-    if (!set_ao_format(ao, &wformat.Format, AUDCLNT_SHAREMODE_SHARED))
-        return false;
-
-    MP_VERBOSE(ao, "Accepted as %s %s @ %dhz (shared) -> %s\n",
-               mp_chmap_to_str(&ao->channels),
-               af_fmt_to_str(ao->format), ao->samplerate,
-               waveformat_to_str(&wformat.Format));
     return true;
 exit_label:
     MP_ERR(state, "Error finding shared mode format: %s\n",
@@ -513,22 +464,36 @@ exit_label:
 static bool find_formats(struct ao *ao)
 {
     struct wasapi_state *state = ao->priv;
+    struct mp_chmap channels = ao->channels;
 
-    if (state->opt_exclusive) {
-        // If exclusive is requested, try the requested format (which
-        // might be passthrough). If that fails, do a pcm format
-        // search.
-        return find_formats_exclusive(ao, true);
-    } else if (af_fmt_is_spdif(ao->format)) {
-        // If a passthrough format is requested, but exclusive mode
-        // was not explicitly set, try only the requested passthrough
-        // format in exclusive mode. Fall back on shared mode if that
-        // fails without doing the exclusive pcm format search.
-        if (find_formats_exclusive(ao, false))
-            return true;
+    if (mp_chmap_is_unknown(&channels))
+        mp_chmap_from_channels(&channels, channels.num);
+    mp_chmap_reorder_to_waveext(&channels);
+    if (!mp_chmap_is_valid(&channels))
+        mp_chmap_from_channels(&channels, 2);
+
+    struct wasapi_sample_fmt alt_formats[MP_ARRAY_SIZE(wasapi_formats)];
+    wasapi_get_best_sample_formats(ao->format, alt_formats);
+    struct wasapi_sample_fmt wasapi_format =
+        {AF_FORMAT_S16, 16, 16, &KSDATAFORMAT_SUBTYPE_PCM};;
+    if (alt_formats[0].mp_format)
+        wasapi_format = alt_formats[0];
+
+    AUDCLNT_SHAREMODE share_mode;
+    WAVEFORMATEXTENSIBLE wformat;
+    set_waveformat(&wformat, &wasapi_format, ao->samplerate, &channels);
+
+    if (state->opt_exclusive || af_fmt_is_spdif(ao->format)) {
+        share_mode = AUDCLNT_SHAREMODE_EXCLUSIVE;
+        if(!find_formats_exclusive(ao, &wformat))
+            return false;
+    } else {
+        share_mode = AUDCLNT_SHAREMODE_SHARED;
+        if(!find_formats_shared(ao, &wformat))
+            return false;
     }
-    // Default is to use shared mode
-    return find_formats_shared(ao);
+
+    return set_ao_format(ao, &wformat.Format, share_mode);
 }
 
 static HRESULT init_clock(struct wasapi_state *state) {
@@ -833,7 +798,7 @@ exit_label:
     destroy_enumerator(enumerator);
 }
 
-static HRESULT load_device(struct mp_log *l,
+static bool load_device(struct mp_log *l,
                            IMMDevice **ppDevice, LPWSTR deviceID)
 {
     IMMDeviceEnumerator *pEnumerator = NULL;
@@ -849,7 +814,7 @@ exit_label:
     if (FAILED(hr))
         mp_err(l, "Error loading selected device: %s\n", mp_HRESULT_to_str(hr));
     SAFE_RELEASE(pEnumerator);
-    return hr;
+    return SUCCEEDED(hr);
 }
 
 static LPWSTR select_device(struct mp_log *l, struct device_desc *d)
@@ -934,7 +899,7 @@ exit_label:
     return deviceID;
 }
 
-HRESULT wasapi_thread_init(struct ao *ao)
+bool wasapi_thread_init(struct ao *ao)
 {
     struct wasapi_state *state = ao->priv;
     MP_DBG(ao, "Init wasapi thread\n");
@@ -946,14 +911,18 @@ HRESULT wasapi_thread_init(struct ao *ao)
 
 retry:
     if (state->deviceID) {
-        hr = load_device(ao->log, &state->pDevice, state->deviceID);
-        EXIT_ON_ERROR(hr);
+        if (!load_device(ao->log, &state->pDevice, state->deviceID))
+            return false;
 
         MP_DBG(ao, "Activating pAudioClient interface\n");
         hr = IMMDeviceActivator_Activate(state->pDevice, &IID_IAudioClient,
                                          CLSCTX_ALL, NULL,
                                          (void **)&state->pAudioClient);
-        EXIT_ON_ERROR(hr);
+        if (FAILED(hr)) {
+            MP_FATAL(ao, "Error activating device: %s\n",
+                     mp_HRESULT_to_str(hr));
+            return false;
+        }
     } else {
         MP_VERBOSE(ao, "Trying UWP wrapper.\n");
 
@@ -961,67 +930,73 @@ retry:
         HANDLE lib = LoadLibraryW(L"wasapiuwp2.dll");
         if (!lib) {
             MP_ERR(ao, "Wrapper not found: %d\n", (int)GetLastError());
-            hr = E_FAIL;
-            EXIT_ON_ERROR(hr);
+            return false;
         }
-        if (lib) {
-            wuCreateDefaultAudioRenderer =
-                (void*)GetProcAddress(lib, "wuCreateDefaultAudioRenderer");
-        }
+
+        wuCreateDefaultAudioRenderer =
+            (void*)GetProcAddress(lib, "wuCreateDefaultAudioRenderer");
         if (!wuCreateDefaultAudioRenderer) {
             MP_ERR(ao, "Function not found.\n");
-            hr = E_FAIL;
-            EXIT_ON_ERROR(hr);
+            return false;
         }
         IUnknown *res = NULL;
         hr = wuCreateDefaultAudioRenderer(&res);
         MP_VERBOSE(ao, "Device: %s %p\n", mp_HRESULT_to_str(hr), res);
-        EXIT_ON_ERROR(hr);
+        if (FAILED(hr)) {
+            MP_FATAL(ao, "Error activating device: %s\n",
+                     mp_HRESULT_to_str(hr));
+            return false;
+        }
         hr = IUnknown_QueryInterface(res, &IID_IAudioClient,
                                      (void **)&state->pAudioClient);
         IUnknown_Release(res);
-        EXIT_ON_ERROR(hr);
+        if (FAILED(hr)) {
+            MP_FATAL(ao, "Failed to get UWP audio client: %s\n",
+                     mp_HRESULT_to_str(hr));
+            return false;
+        }
     }
 
     // In the event of an align hack, we've already done this.
     if (!align_hack) {
         MP_DBG(ao, "Probing formats\n");
-        if (!find_formats(ao)) {
-            hr = E_FAIL;
-            EXIT_ON_ERROR(hr);
-        }
+        if (!find_formats(ao))
+            return false;
     }
 
     MP_DBG(ao, "Fixing format\n");
     hr = fix_format(ao, align_hack);
     switch (hr) {
     case AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED:
-        if (align_hack)
+        if (align_hack) {
+            MP_FATAL(ao, "Align hack failed\n");
             break;
+        }
         // According to MSDN, we must use this as base after the failure.
-        IAudioClient_GetBufferSize(state->pAudioClient,
-                                   &state->bufferFrameCount);
+        hr = IAudioClient_GetBufferSize(state->pAudioClient,
+                                        &state->bufferFrameCount);
+        if (FAILED(hr)) {
+            MP_FATAL(ao, "Error getting buffer size for align hack: %s\n",
+                     mp_HRESULT_to_str(hr));
+            return false;
+        }
         wasapi_thread_uninit(ao);
         align_hack = true;
         MP_WARN(ao, "This appears to require a weird Windows 7 hack. Retrying.\n");
         goto retry;
     case AUDCLNT_E_DEVICE_IN_USE:
     case AUDCLNT_E_DEVICE_INVALIDATED:
-        if (retry_wait > 8)
-            break;
+        if (retry_wait > 8) {
+            MP_FATAL(ao, "Bad device retry failed\n");
+            return false;
+        }
         wasapi_thread_uninit(ao);
         MP_WARN(ao, "Retrying in %"PRId64" us\n", retry_wait);
         mp_sleep_us(retry_wait);
         retry_wait *= 2;
         goto retry;
     }
-    EXIT_ON_ERROR(hr);
-
-    MP_DBG(ao, "Init wasapi thread done\n");
-    return S_OK;
-exit_label:
-    MP_FATAL(state, "Error setting up audio thread: %s\n", mp_HRESULT_to_str(hr));
-    return hr;
+    return SUCCEEDED(hr);
 }
 
 void wasapi_thread_uninit(struct ao *ao)

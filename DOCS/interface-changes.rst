@@ -19,6 +19,53 @@ Interface changes
 
 ::
 
+ --- mpv 0.27.0 ---
+    - drop previously deprecated --field-dominance option
+    - drop previously deprecated "osd" command
+    - remove client API compatibility handling for "script", "sub-file",
+      "audio-file", "external-file" (these cases used to log a deprecation
+      warning)
+    - drop deprecated --video-aspect-method=hybrid option choice
+    - rename --hdr-tone-mapping to --tone-mapping (and generalize it)
+    - --opengl-fbo-format changes from a choice to a string. Also, its value
+      will be checked only on renderer initialization, rather than when the
+      option is set.
+    - Using opengl-cb now always assumes 8 bit per component depth, and dithers
+      to this size. Before, it tried to figure out the depth of the first
+      framebuffer that was ever passed to the renderer. Having GL framebuffers
+      with a size larger than 8 bit per component is quite rare. If you need
+      it, set the --dither-depth option instead.
+    - --lavfi-complex can now be set during runtime. If you set this in
+      expectation it would be applied only after a reload, you might observe
+      weird behavior.
+    - add --track-auto-selection to help with scripts/applications that
+      make exclusive use of --lavfi-complex.
+    - undeprecate --loop, and map it from --loop-playlist to --loop-file (the
+      deprecation was to make sure no API user gets broken by a sudden behavior
+      change)
+    - remove previously deprecated vf_eq
+    - remove that hardware deinterlace filters (vavpp, d3d11vpp, vdpaupp)
+      changed their deinterlacing-enabled setting depending on what the
+      --deinterlace option or property was set to. Now, a filter always does
+      what its filter options and defaults imply. The --deinterlace option and
+      property strictly add/remove its own filters. For example, if you run
+      "mpv --vf=vavpp --deinterlace=yes", this will insert another, redundant
+      filter, which is probably not what you want. For toggling a deinterlace
+      filter manually, use the "vf toggle" command, and do not set the
+      deinterlace option/property. To customize the filter that will be
+      inserted automatically, use --vf-defaults. Details how this works will
+      probably change in the future.
+    - remove deinterlace=auto (this was not deprecated, but had only a very
+      obscure use that stopped working with the change above. It was also
+      prone to be confused with a feature not implemented by it: auto did _not_
+      mean that deinterlacing was enabled on demand.)
+    - add shortened mnemonic names for mouse button bindings, eg. mbtn_left
+      the old numeric names (mouse_btn0) are deprecated
+    - remove mouse_btn3_dbl and up, since they are only generated for buttons
+      0-2 (these now print an error when sent from the 'mouse' command)
+    - rename the axis bindings to wheel_up/down/etc. axis scrolling and mouse
+      wheel scrolling are now conceptually the same thing
+      the old axis_up/down names remain as deprecated aliases
  --- mpv 0.26.0 ---
     - remove remaining deprecated audio device options, like --alsa-device
       Some of them were removed in earlier releases.

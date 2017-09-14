@@ -22,14 +22,17 @@
 - (void)setNeedsResize;
 - (void)signalMouseMovement:(NSPoint)point;
 - (void)putKey:(int)mpkey withModifiers:(int)modifiers;
-- (void)putAxis:(int)mpkey delta:(float)delta;
+- (void)putWheel:(int)mpkey delta:(float)delta;
 - (void)putCommand:(char*)cmd;
 - (void)handleFilesArray:(NSArray *)files;
 - (void)didChangeWindowedScreenProfile:(NSNotification *)notification;
 - (void)performAsyncResize:(NSSize)size;
 - (void)windowDidChangePhysicalScreen;
+- (void)windowDidEnterFullScreen;
+- (void)windowDidExitFullScreen;
 
 - (BOOL)isInFullScreenMode;
+- (BOOL)wantsNativeFullscreen;
 - (BOOL)keyboardEnabled;
 - (BOOL)mouseEnabled;
 

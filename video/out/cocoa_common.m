@@ -129,7 +129,6 @@ static void run_on_main_thread(struct vo *vo, void(^block)(void))
 static void queue_new_video_size(struct vo *vo, int w, int h)
 {
     struct vo_cocoa_state *s = vo->cocoa;
-    struct mp_vo_opts *opts  = vo->opts;
     id<MpvWindowUpdate> win = (id<MpvWindowUpdate>) s->window;
     NSRect r = NSMakeRect(0, 0, w, h);
     r = [s->current_screen convertRectFromBacking:r];
@@ -955,7 +954,6 @@ int vo_cocoa_control(struct vo *vo, int *events, int request, void *arg)
 
 - (void)performAsyncResize:(NSSize)size
 {
-    struct vo_cocoa_state *s = self.vout->cocoa;
     vo_cocoa_resize_redraw(self.vout, size.width, size.height);
 }
 
@@ -996,9 +994,9 @@ int vo_cocoa_control(struct vo *vo, int *events, int request, void *arg)
     cocoa_put_key_with_modifiers(mpkey, modifiers);
 }
 
-- (void)putAxis:(int)mpkey delta:(float)delta;
+- (void)putWheel:(int)mpkey delta:(float)delta;
 {
-    mp_input_put_axis(self.vout->input_ctx, mpkey, delta);
+    mp_input_put_wheel(self.vout->input_ctx, mpkey, delta);
 }
 
 - (void)putCommand:(char*)cmd
@@ -1012,6 +1010,11 @@ int vo_cocoa_control(struct vo *vo, int *events, int request, void *arg)
 - (BOOL)isInFullScreenMode
 {
     return self.vout->cocoa->fullscreen;
+}
+
+- (BOOL)wantsNativeFullscreen
+{
+    return self.vout->opts->native_fs;
 }
 
 - (NSScreen *)getTargetScreen
@@ -1039,7 +1042,7 @@ int vo_cocoa_control(struct vo *vo, int *events, int request, void *arg)
     flag_events(self.vout, VO_EVENT_WIN_STATE);
 }
 
-- (void)windowDidEnterFullScreen:(NSNotification *)notification
+- (void)windowDidEnterFullScreen
 {
     struct vo_cocoa_state *s = self.vout->cocoa;
     s->fullscreen = 1;
@@ -1047,7 +1050,7 @@ int vo_cocoa_control(struct vo *vo, int *events, int request, void *arg)
     vo_cocoa_anim_unlock(self.vout);
 }
 
-- (void)windowDidExitFullScreen:(NSNotification *)notification
+- (void)windowDidExitFullScreen
 {
     struct vo_cocoa_state *s = self.vout->cocoa;
     s->fullscreen = 0;

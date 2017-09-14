@@ -28,7 +28,7 @@
 #include "common/common.h"
 #include "options/options.h"
 #include "sub/osd.h"
-#include "audio/audio.h"
+#include "audio/aframe.h"
 #include "video/mp_image.h"
 #include "video/out/vo.h"
 
@@ -73,8 +73,8 @@ enum seek_type {
 };
 
 enum seek_precision {
-    MPSEEK_DEFAULT = 0,
     // The following values are numerically sorted by increasing precision
+    MPSEEK_DEFAULT = 0,
     MPSEEK_KEYFRAME,
     MPSEEK_EXACT,
     MPSEEK_VERY_EXACT,
@@ -83,6 +83,13 @@ enum seek_precision {
 enum seek_flags {
     MPSEEK_FLAG_DELAY = 1 << 0, // give player chance to coalesce multiple seeks
     MPSEEK_FLAG_NOFLUSH = 1 << 1, // keeping remaining data for seamless loops
+};
+
+struct seek_params {
+    enum seek_type type;
+    enum seek_precision exact;
+    double amount;
+    unsigned flags; // MPSEEK_FLAG_*
 };
 
 enum video_sync {
@@ -198,10 +205,10 @@ struct ao_chain {
     double ao_resume_time;
 
     // 1-element input frame queue.
-    struct mp_audio *input_frame;
+    struct mp_aframe *input_frame;
 
-    // Last known input_mpi format (so vf can be reinitialized any time).
-    struct mp_audio input_format;
+    // Last known input_mpi format (so af can be reinitialized any time).
+    struct mp_aframe *input_format;
 
     struct track *track;
     struct lavfi_pad *filter_src;
@@ -306,7 +313,7 @@ typedef struct MPContext {
     struct lavfi *lavfi;
 
     struct ao *ao;
-    struct mp_audio *ao_decoder_fmt; // for weak gapless audio check
+    struct mp_aframe *ao_decoder_fmt; // for weak gapless audio check
     struct ao_chain *ao_chain;
 
     struct vo_chain *vo_chain;
@@ -339,6 +346,7 @@ typedef struct MPContext {
     bool hrseek_lastframe;  // drop everything until last frame reached
     bool hrseek_backstep;   // go to frame before seek target
     double hrseek_pts;
+    struct seek_params current_seek;
     bool ab_loop_clip;      // clip to the "b" part of an A-B loop if available
     // AV sync: the next frame should be shown when the audio out has this
     // much (in seconds) buffered data left. Increased when more data is
@@ -396,13 +404,7 @@ typedef struct MPContext {
     // Used to turn a new time value to a delta from last time.
     int64_t last_time;
 
-    // Used to communicate the parameters of a seek between parts
-    struct seek_params {
-        enum seek_type type;
-        enum seek_precision exact;
-        double amount;
-        unsigned flags; // MPSEEK_FLAG_*
-    } seek;
+    struct seek_params seek;
 
     // Allow audio to issue a second seek if audio is too far ahead (for non-hr
     // seeks with external audio tracks).
@@ -478,7 +480,7 @@ void update_playback_speed(struct MPContext *mpctx);
 void uninit_audio_out(struct MPContext *mpctx);
 void uninit_audio_chain(struct MPContext *mpctx);
 int init_audio_decoder(struct MPContext *mpctx, struct track *track);
-void reinit_audio_chain_src(struct MPContext *mpctx, struct lavfi_pad *src);
+void reinit_audio_chain_src(struct MPContext *mpctx, struct track *track);
 void audio_update_volume(struct MPContext *mpctx);
 void audio_update_balance(struct MPContext *mpctx);
 void reload_audio_output(struct MPContext *mpctx);
@@ -522,6 +524,7 @@ void prefetch_next(struct MPContext *mpctx);
 void close_recorder(struct MPContext *mpctx);
 void close_recorder_and_error(struct MPContext *mpctx);
 void open_recorder(struct MPContext *mpctx, bool on_init);
+void update_lavfi_complex(struct MPContext *mpctx);
 
 // main.c
 int mp_initialize(struct MPContext *mpctx, char **argv);
@@ -529,6 +532,7 @@ struct MPContext *mp_create(void);
 void mp_destroy(struct MPContext *mpctx);
 void mp_print_version(struct mp_log *log, int always);
 void mp_update_logging(struct MPContext *mpctx, bool preinit);
+void issue_refresh_seek(struct MPContext *mpctx, enum seek_precision min_prec);
 
 // misc.c
 double rel_time_to_abs(struct MPContext *mpctx, struct m_rel_time t);
@@ -608,11 +612,10 @@ bool update_subtitles(struct MPContext *mpctx, double video_pts);
 // video.c
 int video_get_colors(struct vo_chain *vo_c, const char *item, int *value);
 int video_set_colors(struct vo_chain *vo_c, const char *item, int value);
-int video_vf_vo_control(struct vo_chain *vo_c, int vf_cmd, void *data);
 void reset_video_state(struct MPContext *mpctx);
 int init_video_decoder(struct MPContext *mpctx, struct track *track);
-int reinit_video_chain(struct MPContext *mpctx);
-int reinit_video_chain_src(struct MPContext *mpctx, struct lavfi_pad *src);
+void reinit_video_chain(struct MPContext *mpctx);
+void reinit_video_chain_src(struct MPContext *mpctx, struct track *track);
 int reinit_video_filters(struct MPContext *mpctx);
 void write_video(struct MPContext *mpctx);
 void mp_force_video_refresh(struct MPContext *mpctx);
@@ -620,8 +623,7 @@ void uninit_video_out(struct MPContext *mpctx);
 void uninit_video_chain(struct MPContext *mpctx);
 double calc_average_frame_duration(struct MPContext *mpctx);
 int init_video_decoder(struct MPContext *mpctx, struct track *track);
-int get_deinterlacing(struct MPContext *mpctx);
-void set_deinterlacing(struct MPContext *mpctx, int opt_val);
+void recreate_auto_filters(struct MPContext *mpctx);
 
 // Values of MPOpts.softvol
 enum {

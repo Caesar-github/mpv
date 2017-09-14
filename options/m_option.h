@@ -397,9 +397,8 @@ struct m_option {
 // The following are also part of the M_OPT_* flags, and are used to update
 // certain groups of options.
 #define UPDATE_OPT_FIRST        (1 << 7)
-#define UPDATE_TERM             (1 << 7) // terminal options
-#define UPDATE_RENDERER         (1 << 8) // mainly vo_opengl options
-#define UPDATE_VIDEOPOS         (1 << 9) // video position (panscan etc.)
+#define UPDATE_TERM             (1 << 7)  // terminal options
+#define UPDATE_DEINT            (1 << 8)  // --deinterlace
 #define UPDATE_OSD              (1 << 10) // related to OSD rendering
 #define UPDATE_BUILTIN_SCRIPTS  (1 << 11) // osc/ytdl
 #define UPDATE_IMGPAR           (1 << 12) // video image params overrides
@@ -408,7 +407,8 @@ struct m_option {
 #define UPDATE_PRIORITY         (1 << 15) // --priority (Windows-only)
 #define UPDATE_SCREENSAVER      (1 << 16) // --stop-screensaver
 #define UPDATE_VOL              (1 << 17) // softvol related options
-#define UPDATE_OPT_LAST         (1 << 17)
+#define UPDATE_LAVFI_COMPLEX    (1 << 18) // --lavfi-complex
+#define UPDATE_OPT_LAST         (1 << 18)
 
 // All bits between _FIRST and _LAST (inclusive)
 #define UPDATE_OPTS_MASK \

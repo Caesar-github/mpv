@@ -38,6 +38,10 @@
 #include <libavutil/display.h>
 #include <libavutil/opt.h>
 
+#if HAVE_AVUTIL_SPHERICAL
+#include <libavutil/spherical.h>
+#endif
+
 #include "common/msg.h"
 #include "common/tags.h"
 #include "common/av_common.h"
@@ -234,7 +238,7 @@ static int mp_read(void *opaque, uint8_t *buf, int size)
         memcpy(buf, priv->init_fragment.start + priv->stream_pos, ret);
         priv->stream_pos += ret;
     } else {
-        ret = stream_read(stream, buf, size);
+        ret = stream_read_partial(stream, buf, size);
         priv->stream_pos = priv->init_fragment.len + stream_tell(stream);
     }
 
@@ -640,6 +644,19 @@ static void handle_new_stream(demuxer_t *demuxer, int i)
             if (!isnan(r))
                 sh->codec->rotate = (((int)(-r) % 360) + 360) % 360;
         }
+
+#if HAVE_AVUTIL_SPHERICAL
+        sd = av_stream_get_side_data(st, AV_PKT_DATA_SPHERICAL, NULL);
+        if (sd) {
+            AVSphericalMapping *sp = (void *)sd;
+            struct mp_spherical_params *mpsp = &sh->codec->spherical;
+            mpsp->type = sp->projection == AV_SPHERICAL_EQUIRECTANGULAR ?
+                            MP_SPHERICAL_EQUIRECTANGULAR : MP_SPHERICAL_UNKNOWN;
+            mpsp->ref_angles[0] = sp->yaw / (float)(1 << 16);
+            mpsp->ref_angles[1] = sp->pitch / (float)(1 << 16);
+            mpsp->ref_angles[2] = sp->roll / (float)(1 << 16);
+        }
+#endif
 
         // This also applies to vfw-muxed mkv, but we can't detect these easily.
         sh->codec->avi_dts = matches_avinputformat_name(priv, "avi");
@@ -1146,8 +1163,6 @@ static void demux_close_lavf(demuxer_t *demuxer)
 {
     lavf_priv_t *priv = demuxer->priv;
     if (priv) {
-        if (priv->avfc)
-            av_freep(&priv->avfc->key);
         avformat_close_input(&priv->avfc);
         if (priv->pb)
             av_freep(&priv->pb->buffer);

@@ -142,26 +142,27 @@ static const m_option_t mp_vo_opt_list[] = {
     OPT_FLAG("force-window-position", force_window_position, 0),
     OPT_STRING("x11-name", winname, 0),
     OPT_FLOATRANGE("monitoraspect", force_monitor_aspect, 0, 0.0, 9.0),
-    OPT_FLOATRANGE("monitorpixelaspect", monitor_pixel_aspect, 0, 0.2, 9.0),
+    OPT_FLOATRANGE("monitorpixelaspect", monitor_pixel_aspect, 0, 1.0/32.0, 32.0),
     OPT_FLAG("fullscreen", fullscreen, 0),
     OPT_ALIAS("fs", "fullscreen"),
     OPT_FLAG("native-keyrepeat", native_keyrepeat, 0),
-    OPT_FLOATRANGE("panscan", panscan, UPDATE_VIDEOPOS, 0.0, 1.0),
-    OPT_FLOATRANGE("video-zoom", zoom, UPDATE_VIDEOPOS, -20.0, 20.0),
-    OPT_FLOATRANGE("video-pan-x", pan_x, UPDATE_VIDEOPOS, -3.0, 3.0),
-    OPT_FLOATRANGE("video-pan-y", pan_y, UPDATE_VIDEOPOS, -3.0, 3.0),
-    OPT_FLOATRANGE("video-align-x", align_x, UPDATE_VIDEOPOS, -1.0, 1.0),
-    OPT_FLOATRANGE("video-align-y", align_y, UPDATE_VIDEOPOS, -1.0, 1.0),
-    OPT_CHOICE("video-unscaled", unscaled, UPDATE_VIDEOPOS,
+    OPT_FLOATRANGE("panscan", panscan, 0, 0.0, 1.0),
+    OPT_FLOATRANGE("video-zoom", zoom, 0, -20.0, 20.0),
+    OPT_FLOATRANGE("video-pan-x", pan_x, 0, -3.0, 3.0),
+    OPT_FLOATRANGE("video-pan-y", pan_y, 0, -3.0, 3.0),
+    OPT_FLOATRANGE("video-align-x", align_x, 0, -1.0, 1.0),
+    OPT_FLOATRANGE("video-align-y", align_y, 0, -1.0, 1.0),
+    OPT_CHOICE("video-unscaled", unscaled, 0,
                ({"no", 0}, {"yes", 1}, {"downscale-big", 2})),
     OPT_INT64("wid", WinID, 0),
     OPT_CHOICE_OR_INT("screen", screen_id, 0, 0, 32,
                       ({"default", -1})),
     OPT_CHOICE_OR_INT("fs-screen", fsscreen_id, 0, 0, 32,
                       ({"all", -2}, {"current", -1})),
-    OPT_FLAG("keepaspect", keepaspect, UPDATE_VIDEOPOS),
+    OPT_FLAG("keepaspect", keepaspect, 0),
     OPT_FLAG("keepaspect-window", keepaspect_window, 0),
     OPT_FLAG("hidpi-window-scale", hidpi_window_scale, 0),
+    OPT_FLAG("native-fs", native_fs, 0),
 #if HAVE_X11
     OPT_CHOICE("x11-netwm", x11_netwm, 0,
                ({"auto", 0}, {"no", -1}, {"yes", 1})),
@@ -178,7 +179,7 @@ static const m_option_t mp_vo_opt_list[] = {
 #endif
 #if HAVE_GL
     OPT_STRING_VALIDATE("opengl-hwdec-interop", gl_hwdec_interop, 0,
-                        gl_hwdec_validate_opt),
+                        ra_hwdec_validate_opt),
     OPT_REPLACED("hwdec-preload", "opengl-hwdec-interop"),
 #endif
     {0}
@@ -196,6 +197,7 @@ const struct m_sub_options vo_sub_opts = {
         .keepaspect = 1,
         .keepaspect_window = 1,
         .hidpi_window_scale = 1,
+        .native_fs = 1,
         .taskbar_progress = 1,
         .snap_window = 0,
         .border = 1,
@@ -273,7 +275,7 @@ const m_option_t mp_opts[] = {
     OPT_STRING("log-file", log_file, CONF_PRE_PARSE | M_OPT_FILE | UPDATE_TERM),
     OPT_FLAG("msg-module", msg_module, UPDATE_TERM),
     OPT_FLAG("msg-time", msg_time, UPDATE_TERM),
-#if HAVE_WIN32_DESKTOP && HAVE_GPL
+#if HAVE_WIN32_DESKTOP
     OPT_CHOICE("priority", w32_priority, UPDATE_PRIORITY,
                ({"no",          0},
                 {"realtime",    REALTIME_PRIORITY_CLASS},
@@ -359,8 +361,9 @@ const m_option_t mp_opts[] = {
     OPT_ALIAS("audio", "aid"),
     OPT_STRINGLIST("alang", stream_lang[STREAM_AUDIO], 0),
     OPT_STRINGLIST("slang", stream_lang[STREAM_SUB], 0),
+    OPT_FLAG("track-auto-selection", stream_auto_sel, 0),
 
-    OPT_STRING("lavfi-complex", lavfi_complex, 0),
+    OPT_STRING("lavfi-complex", lavfi_complex, UPDATE_LAVFI_COMPLEX),
 
     OPT_CHOICE("audio-display", audio_display, 0,
                ({"no", 0}, {"attachment", 1})),
@@ -420,10 +423,7 @@ const m_option_t mp_opts[] = {
     OPT_SETTINGSLIST("vf-defaults", vf_defs, 0, &vf_obj_list, ),
     OPT_SETTINGSLIST("vf", vf_settings, 0, &vf_obj_list, ),
 
-    OPT_CHOICE("deinterlace", deinterlace, 0,
-               ({"auto", -1},
-                {"no", 0},
-                {"yes", 1})),
+    OPT_FLAG("deinterlace", deinterlace, UPDATE_DEINT),
 
     OPT_STRING("ad", audio_decoders, 0),
     OPT_STRING("vd", video_decoders, 0),
@@ -443,13 +443,7 @@ const m_option_t mp_opts[] = {
     //  0 means square pixels
     OPT_ASPECT("video-aspect", movie_aspect, UPDATE_IMGPAR, -1.0, 10.0),
     OPT_CHOICE("video-aspect-method", aspect_method, UPDATE_IMGPAR,
-               ({"hybrid", 0}, {"bitstream", 1}, {"container", 2})),
-
-#if HAVE_GPL
-    OPT_CHOICE("field-dominance", field_dominance, UPDATE_IMGPAR,
-               ({"auto", -1}, {"top", 0}, {"bottom", 1}),
-               .deprecation_message = "use --vf=setfield=bff or tff"),
-#endif
+               ({"bitstream", 1}, {"container", 2})),
 
     OPT_SUBSTRUCT("vd-lavc", vd_lavc_params, vd_lavc_conf, 0),
     OPT_SUBSTRUCT("ad-lavc", ad_lavc_params, ad_lavc_conf, 0),
@@ -466,7 +460,7 @@ const m_option_t mp_opts[] = {
     OPT_PATHLIST("sub-file-paths", sub_paths, 0),
     OPT_PATHLIST("audio-file-paths", audiofile_paths, 0),
     OPT_PATHLIST("external-files", external_files, 0),
-    OPT_CLI_ALIAS("external-file", "external-file-append"),
+    OPT_CLI_ALIAS("external-file", "external-files-append"),
     OPT_FLAG("autoload-files", autoload_files, 0),
     OPT_FLOAT("sub-delay", sub_delay, UPDATE_OSD),
     OPT_FLOAT("sub-fps", sub_fps, UPDATE_OSD),
@@ -575,15 +569,7 @@ const m_option_t mp_opts[] = {
                .deprecation_message = "use Lua scripting instead"),
     OPT_FLOAT("heartbeat-interval", heartbeat_interval, CONF_MIN, 0),
 
-#if HAVE_GPL
-    OPT_INTRANGE("brightness", gamma_brightness, 0, -100, 100),
-    OPT_INTRANGE("saturation", gamma_saturation, 0, -100, 100),
-    OPT_INTRANGE("contrast", gamma_contrast, 0, -100, 100),
-    OPT_INTRANGE("hue", gamma_hue, 0, -100, 100),
-    OPT_INTRANGE("gamma", gamma_gamma, 0, -100, 100),
-    OPT_CHOICE_C("video-output-levels", video_output_levels, 0,
-                 mp_csp_levels_names),
-#endif
+    OPT_SUBSTRUCT("", video_equalizer, mp_csp_equalizer_conf, 0),
 
     OPT_FLAG("use-filedir-conf", use_filedir_conf, 0),
     OPT_CHOICE("osd-level", osd_level, 0,
@@ -617,6 +603,7 @@ const m_option_t mp_opts[] = {
                       ({"no", 0},
                        {"yes", -1},
                        {"inf", -1})),
+    OPT_ALIAS("loop", "loop-file"),
 
     OPT_FLAG("resume-playback", position_resume, 0),
     OPT_FLAG("save-position-on-quit", position_save_on_quit, 0),
@@ -834,8 +821,6 @@ const m_option_t mp_opts[] = {
     OPT_REPLACED("ass-scale-with-window", "sub-ass-scale-with-window"),
     OPT_REPLACED("sub-ass-style-override", "sub-ass-override"),
     OPT_REMOVED("fs-black-out-screens", NULL),
-    OPT_REPLACED_MSG("loop", "loop-playlist", "--loop will be changed to map to"
-        " --loop-file in future releases."),
     OPT_REPLACED("sub-paths", "sub-file-paths"),
 
     {0}
@@ -847,7 +832,6 @@ const struct MPOpts mp_default_opts = {
     .audio_driver_list = NULL,
     .audio_decoders = NULL,
     .video_decoders = NULL,
-    .deinterlace = -1,
     .softvol = SOFTVOL_AUTO,
     .softvol_max = 130,
     .softvol_volume = 100,
@@ -860,11 +844,6 @@ const struct MPOpts mp_default_opts = {
     .heartbeat_interval = 30.0,
     .stop_screensaver = 1,
     .cursor_autohide_delay = 1000,
-    .gamma_gamma = 0,
-    .gamma_brightness = 0,
-    .gamma_contrast = 0,
-    .gamma_saturation = 0,
-    .gamma_hue = 0,
     .video_osd = 1,
     .osd_level = 1,
     .osd_duration = 1000,
@@ -925,6 +904,7 @@ const struct MPOpts mp_default_opts = {
     .stream_id_ff = { [STREAM_AUDIO] = -1,
                       [STREAM_VIDEO] = -1,
                       [STREAM_SUB] = -1, },
+    .stream_auto_sel = 1,
     .audio_display = 1,
     .sub_visibility = 1,
     .sub_pos = 100,
@@ -934,7 +914,6 @@ const struct MPOpts mp_default_opts = {
     .pitch_correction = 1,
     .movie_aspect = -1.,
     .aspect_method = 2,
-    .field_dominance = -1,
     .sub_auto = 0,
     .audiofile_auto = -1,
     .osd_bar_visible = 1,

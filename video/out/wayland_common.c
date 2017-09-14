@@ -403,7 +403,7 @@ static void pointer_handle_enter(void *data,
     /* Release the left button on pointer enter again
      * because after moving the shell surface no release event is sent */
     mp_input_put_key(wl->vo->input_ctx, MP_KEY_MOUSE_ENTER);
-    mp_input_put_key(wl->vo->input_ctx, MP_MOUSE_BTN0 | MP_KEY_STATE_UP);
+    mp_input_put_key(wl->vo->input_ctx, MP_MBTN_LEFT | MP_KEY_STATE_UP);
     show_cursor(wl);
 }
 
@@ -448,13 +448,13 @@ static void pointer_handle_button(void *data,
     state = state == WL_POINTER_BUTTON_STATE_PRESSED ? MP_KEY_STATE_DOWN
                                                      : MP_KEY_STATE_UP;
 
-    button = button == BTN_LEFT   ? MP_MOUSE_BTN0 :
-             button == BTN_MIDDLE ? MP_MOUSE_BTN1 : MP_MOUSE_BTN2;
+    button = button == BTN_LEFT   ? MP_MBTN_LEFT :
+             button == BTN_MIDDLE ? MP_MBTN_MID : MP_MBTN_RIGHT;
 
     mp_input_put_key(wl->vo->input_ctx, button | state);
 
     if (!mp_input_test_dragging(wl->vo->input_ctx, wl->window.mouse_x, wl->window.mouse_y) &&
-        (button == MP_MOUSE_BTN0) && (state == MP_KEY_STATE_DOWN))
+        (button == MP_MBTN_LEFT) && (state == MP_KEY_STATE_DOWN))
         window_move(wl, serial);
 }
 
@@ -470,18 +470,18 @@ static void pointer_handle_axis(void *data,
     // scale it down to 1.00 for multipliying it with the commands
     if (axis == WL_POINTER_AXIS_VERTICAL_SCROLL) {
         if (value > 0)
-            mp_input_put_axis(wl->vo->input_ctx, MP_AXIS_DOWN,
+            mp_input_put_wheel(wl->vo->input_ctx, MP_WHEEL_DOWN,
                     wl_fixed_to_double(value)*0.1);
         if (value < 0)
-            mp_input_put_axis(wl->vo->input_ctx, MP_AXIS_UP,
+            mp_input_put_wheel(wl->vo->input_ctx, MP_WHEEL_UP,
                     wl_fixed_to_double(value)*-0.1);
     }
     else if (axis == WL_POINTER_AXIS_HORIZONTAL_SCROLL) {
         if (value > 0)
-            mp_input_put_axis(wl->vo->input_ctx, MP_AXIS_RIGHT,
+            mp_input_put_wheel(wl->vo->input_ctx, MP_WHEEL_RIGHT,
                     wl_fixed_to_double(value)*0.1);
         if (value < 0)
-            mp_input_put_axis(wl->vo->input_ctx, MP_AXIS_LEFT,
+            mp_input_put_wheel(wl->vo->input_ctx, MP_WHEEL_LEFT,
                     wl_fixed_to_double(value)*-0.1);
     }
 }

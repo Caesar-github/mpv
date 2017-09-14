@@ -414,6 +414,16 @@ Available mpv-only filters are:
         but values such as ``[16:9]`` can be passed too (``[...]`` for quoting
         to prevent the option parser from interpreting the ``:`` character).
 
+    ``<spherical-type>``
+        Type of the spherical projection:
+
+        :auto:      As indicated by the file (default)
+        :none:      Normal video
+        :equirect:  Equirectangular
+        :unknown:   Unknown projection
+
+    ``<spherical-yaw>``, ``<spherical-pitch>``, ``<spherical-roll>``
+        Reference angle in degree, if spherical video is used.
 
 ``noformat[=fmt]``
     Restricts the color space for the next filter without doing any conversion.
@@ -473,32 +483,6 @@ Available mpv-only filters are:
 
             ``'--vf=lavfi=yadif:o="threads=2,thread_type=slice"'``
                 forces a specific threading configuration.
-
-``eq[=gamma:contrast:brightness:saturation:rg:gg:bg:weight]``
-    Software equalizer that uses lookup tables (slow), allowing gamma correction
-    in addition to simple brightness and contrast adjustment. The parameters are
-    given as floating point values.
-
-    ``<0.1-10>``
-        initial gamma value (default: 1.0)
-    ``<-2-2>``
-        initial contrast, where negative values result in a negative image
-        (default: 1.0)
-    ``<-1-1>``
-        initial brightness (default: 0.0)
-    ``<0-3>``
-        initial saturation (default: 1.0)
-    ``<0.1-10>``
-        gamma value for the red component (default: 1.0)
-    ``<0.1-10>``
-        gamma value for the green component (default: 1.0)
-    ``<0.1-10>``
-        gamma value for the blue component (default: 1.0)
-    ``<0-1>``
-        The weight parameter can be used to reduce the effect of a high gamma
-        value on bright image areas, e.g. keep them from getting overamplified
-        and just plain white. A value of 0.0 turns the gamma correction all
-        the way down while 1.0 leaves it at its full strength (default: 1.0).
 
 ``pullup[=jl:jr:jt:jb:sb:mp]``
     Pulldown reversal (inverse telecine) filter, capable of handling mixed
@@ -787,7 +771,7 @@ Available mpv-only filters are:
         no
             Don't perform deinterlacing.
         first-field
-            Show only first field (going by ``--field-dominance``).
+            Show only first field.
         bob
             bob deinterlacing (default).
         weave, motion-adaptive, motion-compensated
@@ -828,7 +812,6 @@ Available mpv-only filters are:
         the mode selected with ``deint-mode``.
     ``deint-mode=<first-field|bob|temporal|temporal-spatial>``
         Select deinterlacing mode (default: temporal).
-        All modes respect ``--field-dominance``.
 
         Note that there's currently a mechanism that allows the ``vdpau`` VO to
         change the ``deint-mode`` of auto-inserted ``vdpaupp`` filters. To avoid

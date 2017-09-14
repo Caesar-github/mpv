@@ -25,6 +25,11 @@
 #include "osdep/macosx_versions.h"
 
 #if (MAC_OS_X_VERSION_MAX_ALLOWED < MAC_OS_X_VERSION_10_12)
+
+@interface NSWindow (macOS10_12_SDK)
++ (void)setAllowsAutomaticWindowTabbing:(BOOL)allow;
+@end
+
 typedef NSUInteger NSWindowStyleMask;
 static const NSWindowStyleMask NSWindowStyleMaskClosable = NSClosableWindowMask;
 static const NSWindowStyleMask NSWindowStyleMaskTitled = NSTitledWindowMask;
@@ -45,7 +50,7 @@ typedef NSUInteger NSEventModifierFlags;
 
 static const NSEventModifierFlags NSEventModifierFlagShift = NSShiftKeyMask;
 static const NSEventModifierFlags NSEventModifierFlagControl = NSControlKeyMask;
-static const NSEventModifierFlags NSEventModifierFlagCommand =  NSCommandKeyMask;
+static const NSEventModifierFlags NSEventModifierFlagCommand = NSCommandKeyMask;
 static const NSEventModifierFlags NSEventModifierFlagOption = NSAlternateKeyMask;
 #endif
 

@@ -437,7 +437,7 @@ Suffix        Meaning
 -set          Set a list of items
 ============= ===============================================
 
-Although some operations allow specifiying multiple ``,``-separated items, using
+Although some operations allow specifying multiple ``,``-separated items, using
 this is strongly discouraged and deprecated, except for ``-set``.
 
 Without suffix, the action taken is normally ``-set``.
@@ -727,6 +727,11 @@ PROTOCOLS
     Play a Blu-ray disc. Currently, this does not accept ISO files. Instead,
     you must mount the ISO file as filesystem, and point ``--bluray-device``
     to the mounted directory directly.
+
+    ``title`` can be: ``longest`` or ``first`` (selects the default
+    playlist); ``mpls/<number>`` (selects <number>.mpls playlist);
+    ``<number>`` (select playlist with the same index). You can list
+    the available playlists with ``--msg-level=bd=v``.
 
 ``dvd://[title|[starttitle]-endtitle][/device]`` ``--dvd-device=PATH``
 

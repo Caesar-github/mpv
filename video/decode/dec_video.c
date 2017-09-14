@@ -15,8 +15,6 @@
  * with mpv.  If not, see <http://www.gnu.org/licenses/>.
  *
  * Almost LGPL.
- *
- * Parts under HAVE_GPL are licensed under GNU General Public License forever.
  */
 
 #include <stdio.h>
@@ -205,35 +203,10 @@ static void fix_image_params(struct dec_video *d_video,
 
     // While mp_image_params normally always have to have d_w/d_h set, the
     // decoder signals unknown bitstream aspect ratio with both set to 0.
-    float dec_aspect = p.p_w > 0 && p.p_h > 0 ? p.p_w / (float)p.p_h : 0;
-
-#if HAVE_GPL
-    if (d_video->initial_decoder_aspect == 0)
-        d_video->initial_decoder_aspect = dec_aspect;
-#endif
-
     bool use_container = true;
-    switch (opts->aspect_method) {
-    case 0:
-#if HAVE_GPL
-        // We normally prefer the container aspect, unless the decoder aspect
-        // changes at least once.
-        if (dec_aspect > 0 && d_video->initial_decoder_aspect != dec_aspect) {
-            MP_VERBOSE(d_video, "Using bitstream aspect ratio.\n");
-            // Even if the aspect switches back, don't use container aspect again.
-            d_video->initial_decoder_aspect = -1;
-            use_container = false;
-        }
-        break;
-#else
-        /* fall through, behave as "bitstream" */
-#endif
-    case 1:
-        if (dec_aspect) {
-            MP_VERBOSE(d_video, "Using bitstream aspect ratio.\n");
-            use_container = false;
-        }
-        break;
+    if (opts->aspect_method == 1 && p.p_w > 0 && p.p_h > 0) {
+        MP_VERBOSE(d_video, "Using bitstream aspect ratio.\n");
+        use_container = false;
     }
 
     if (use_container && c->par_w > 0 && c->par_h) {
@@ -270,6 +243,10 @@ static void fix_image_params(struct dec_video *d_video,
         MP_WARN(d_video, "Invalid HDR peak in stream: %f\n", p.color.sig_peak);
         p.color.sig_peak = 0.0;
     }
+
+    p.spherical = c->spherical;
+    if (p.spherical.type == MP_SPHERICAL_AUTO)
+        p.spherical.type = MP_SPHERICAL_NONE;
 
     // Guess missing colorspace fields from metadata. This guarantees all
     // fields are at least set to legal values afterwards.
@@ -326,15 +303,6 @@ static bool receive_frame(struct dec_video *d_video, struct mp_image **out_image
     // Error, EOF, discarded frame, dropped frame, or initial codec delay.
     if (!mpi)
         return progress;
-
-#if HAVE_GPL
-    if (opts->field_dominance == 0) {
-        mpi->fields |= MP_IMGFIELD_TOP_FIRST | MP_IMGFIELD_INTERLACED;
-    } else if (opts->field_dominance == 1) {
-        mpi->fields &= ~MP_IMGFIELD_TOP_FIRST;
-        mpi->fields |= MP_IMGFIELD_INTERLACED;
-    }
-#endif
 
     // Note: the PTS is reordered, but the DTS is not. Both should be monotonic.
     double pts = mpi->pts;

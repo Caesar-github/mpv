@@ -40,6 +40,7 @@ typedef struct mp_vo_opts {
     int keepaspect;
     int keepaspect_window;
     int hidpi_window_scale;
+    int native_fs;
 
     int64_t WinID;
 
@@ -118,13 +119,7 @@ typedef struct MPOpts {
     char *media_title;
     int force_rgba_osd;
 
-    // ranges -100 - 100, 1000 if the vo default should be used
-    int gamma_gamma;
-    int gamma_brightness;
-    int gamma_contrast;
-    int gamma_saturation;
-    int gamma_hue;
-    int video_output_levels;
+    struct mp_csp_equalizer_opts *video_equalizer;
 
     int stop_screensaver;
     int cursor_autohide_delay;
@@ -211,6 +206,7 @@ typedef struct MPOpts {
     int stream_id[2][STREAM_TYPE_COUNT];
     int stream_id_ff[STREAM_TYPE_COUNT];
     char **stream_lang[STREAM_TYPE_COUNT];
+    int stream_auto_sel;
     int audio_display;
     char **display_tags;
     int sub_visibility;
@@ -253,7 +249,6 @@ typedef struct MPOpts {
     int deinterlace;
     float movie_aspect;
     int aspect_method;
-    int field_dominance;
     char **sub_name;
     char **sub_paths;
     char **audiofile_paths;

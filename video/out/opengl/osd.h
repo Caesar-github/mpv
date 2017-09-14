@@ -5,19 +5,21 @@
 #include <inttypes.h>
 
 #include "utils.h"
+#include "shader_cache.h"
 #include "sub/osd.h"
 
-struct mpgl_osd *mpgl_osd_init(GL *gl, struct mp_log *log, struct osd_state *osd);
+struct mpgl_osd *mpgl_osd_init(struct ra *ra, struct mp_log *log,
+                               struct osd_state *osd);
 void mpgl_osd_destroy(struct mpgl_osd *ctx);
-
-void mpgl_osd_set_options(struct mpgl_osd *ctx, bool pbo);
 
 void mpgl_osd_generate(struct mpgl_osd *ctx, struct mp_osd_res res, double pts,
                        int stereo_mode, int draw_flags);
 void mpgl_osd_resize(struct mpgl_osd *ctx, struct mp_osd_res res, int stereo_mode);
-enum sub_bitmap_format mpgl_osd_get_part_format(struct mpgl_osd *ctx, int index);
-struct gl_vao *mpgl_osd_get_vao(struct mpgl_osd *ctx);
-void mpgl_osd_draw_part(struct mpgl_osd *ctx, int vp_w, int vp_h, int index);
-int64_t mpgl_get_change_counter(struct mpgl_osd *ctx);
+bool mpgl_osd_draw_prepare(struct mpgl_osd *ctx, int index,
+                           struct gl_shader_cache *sc);
+void mpgl_osd_draw_finish(struct mpgl_osd *ctx, int index,
+                          struct gl_shader_cache *sc, struct fbodst target);
+bool mpgl_osd_check_change(struct mpgl_osd *ctx, struct mp_osd_res *res,
+                           double pts);
 
 #endif
