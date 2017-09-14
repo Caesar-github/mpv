@@ -4,6 +4,10 @@ include /usr/share/dpkg/architecture.mk
 
 export DEB_BUILD_MAINT_OPTIONS := hardening=+all # #741439, #799738
 
+ifeq ($(DEB_HOST_ARCH_OS),linux)
+  ARCH_CONFIGURE = --enable-dvbin
+endif
+
 %:
 	dh $@
 
@@ -22,7 +26,8 @@ override_dh_auto_configure:
 			--enable-sdl2					\
 			--enable-sndio					\
 			--enable-zsh-comp				\
-			--disable-build-date
+			--disable-build-date				\
+			$(ARCH_CONFIGURE)
 
 override_dh_auto_build:
 	python ./waf -v build
