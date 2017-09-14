@@ -119,11 +119,12 @@ def build(ctx):
     ctx(features = "ebml_header", target = "ebml_types.h")
     ctx(features = "ebml_definitions", target = "ebml_defs.c")
 
-    main_fn_c = ctx.pick_first_matching_dep([
-        ( "osdep/main-fn-win.c",                 "win32-desktop" ),
-        ( "osdep/main-fn-cocoa.c",               "cocoa" ),
-        ( "osdep/main-fn-unix.c" ),
-    ])
+    if ctx.dependency_satisfied('cplayer'):
+        main_fn_c = ctx.pick_first_matching_dep([
+            ( "osdep/main-fn-cocoa.c",               "cocoa" ),
+            ( "osdep/main-fn-unix.c",                "posix" ),
+            ( "osdep/main-fn-win.c",                 "win32-desktop" ),
+        ])
 
     getch2_c = ctx.pick_first_matching_dep([
         ( "osdep/terminal-unix.c",               "posix" ),
@@ -157,6 +158,7 @@ def build(ctx):
         ( "audio/chmap_sel.c" ),
         ( "audio/fmt-conversion.c" ),
         ( "audio/format.c" ),
+        ( "audio/aframe.c" ),
         ( "audio/decode/ad_lavc.c" ),
         ( "audio/decode/ad_spdif.c" ),
         ( "audio/decode/dec_audio.c" ),
@@ -357,7 +359,6 @@ def build(ctx):
         ( "video/filter/vf_crop.c" ),
         ( "video/filter/vf_d3d11vpp.c",          "d3d-hwaccel" ),
         ( "video/filter/vf_dsize.c" ),
-        ( "video/filter/vf_eq.c" ),
         ( "video/filter/vf_expand.c" ),
         ( "video/filter/vf_flip.c" ),
         ( "video/filter/vf_format.c" ),
@@ -397,8 +398,10 @@ def build(ctx):
         ( "video/out/opengl/context_x11.c",      "gl-x11" ),
         ( "video/out/opengl/context_x11egl.c",   "egl-x11" ),
         ( "video/out/opengl/cuda_dynamic.c",     "cuda-hwaccel" ),
+        ( "video/out/opengl/d3d11_helpers.c",    "egl-angle-win32" ),
         ( "video/out/opengl/egl_helpers.c",      "egl-helpers" ),
         ( "video/out/opengl/formats.c",          "gl" ),
+        ( "video/out/opengl/gl_utils.c",         "gl" ),
         ( "video/out/opengl/hwdec.c",            "gl" ),
         ( "video/out/opengl/hwdec_cuda.c",       "cuda-hwaccel" ),
         ( "video/out/opengl/hwdec_d3d11egl.c",   "d3d-hwaccel" ),
@@ -413,6 +416,9 @@ def build(ctx):
         ( "video/out/opengl/hwdec_vdpau.c",      "vdpau-gl-x11" ),
         ( "video/out/opengl/lcms.c",             "gl" ),
         ( "video/out/opengl/osd.c",              "gl" ),
+        ( "video/out/opengl/ra.c",               "gl" ),
+        ( "video/out/opengl/ra_gl.c",            "gl" ),
+        ( "video/out/opengl/shader_cache.c",     "gl" ),
         ( "video/out/opengl/user_shaders.c",     "gl" ),
         ( "video/out/opengl/utils.c",            "gl" ),
         ( "video/out/opengl/video.c",            "gl" ),
@@ -455,6 +461,7 @@ def build(ctx):
         ( "osdep/ar/HIDRemote.m",                "apple-remote" ),
         ( "osdep/macosx_application.m",          "cocoa" ),
         ( "osdep/macosx_events.m",               "cocoa" ),
+        ( "osdep/macosx_menubar.m",              "cocoa" ),
         ( "osdep/macosx_touchbar.m",             "macos-touchbar" ),
         ( "osdep/semaphore_osx.c" ),
         ( "osdep/subprocess.c" ),
@@ -462,12 +469,12 @@ def build(ctx):
         ( "osdep/path-macosx.m",                 "cocoa" ),
         ( "osdep/path-unix.c"),
         ( "osdep/path-win.c",                    "win32-desktop" ),
-        ( "osdep/path-win.c",                    "os-cygwin" ),
         ( "osdep/path-uwp.c",                    "uwp" ),
         ( "osdep/glob-win.c",                    "glob-win32" ),
         ( "osdep/w32_keyboard.c",                "os-win32" ),
         ( "osdep/w32_keyboard.c",                "os-cygwin" ),
         ( "osdep/windows_utils.c",               "os-win32" ),
+        ( "osdep/windows_utils.c",               "os-cygwin" ),
         ( "osdep/mpv.rc",                        "win32-executable" ),
         ( "osdep/win32/pthread.c",               "win32-internal-pthreads"),
         ( "osdep/android/strnlen.c",             "android"),

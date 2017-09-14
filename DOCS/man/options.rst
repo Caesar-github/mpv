@@ -76,6 +76,18 @@ Track Selection
     to ``auto`` (the default), mpv will choose the first edition declared as a
     default, or if there is no default, the first edition defined.
 
+``--track-auto-selection=<yes|no>``
+    Enable the default track auto-selection (default: yes). Enabling this will
+    make the player select streams according to ``--aid``, ``--alang``, and
+    others. If it is disabled, no tracks are selected. In addition, the player
+    will not exit if no tracks are selected, and wait instead (this wait mode
+    is similar to pausing, but the pause option is not set).
+
+    This is useful with ``--lavfi-complex``: you can start playback in this
+    mode, and then set select tracks at runtime by setting the filter graph.
+    Note that if ``--lavfi-complex`` is set before playback is started, the
+    referenced tracks are always selected.
+
 
 Playback Control
 ----------------
@@ -287,11 +299,7 @@ Playback Control
     time trying to loop a file that doesn't exist. But it might be useful for
     playing webradios under very bad network conditions.
 
-``--loop``
-    Currently a deprecated alias to ``--loop-playlist``. After a deprecation
-    period, it will be undeprecated, but changed to alias ``--loop-file``.
-
-``--loop-file=<N|inf|no>``
+``--loop-file=<N|inf|no>``, ``--loop=<N|inf|no>``
     Loop a single file N times. ``inf`` means forever, ``no`` means normal
     playback. For compatibility, ``--loop-file`` and ``--loop-file=yes`` are
     also accepted, and are the same as ``--loop-file=inf``.
@@ -300,6 +308,8 @@ Playback Control
     just the file itself. If the playlist contains only a single file, the
     difference between the two option is that this option performs a seek on
     loop, instead of reloading the file.
+
+    ``--loop`` is an alias for this option.
 
 ``--ab-loop-a=<time>``, ``--ab-loop-b=<time>``
     Set loop points. If playback passes the ``b`` timestamp, it will seek to
@@ -712,7 +722,8 @@ Video
     The ``...-copy`` modes (e.g. ``dxva2-copy``) allow you to use hardware
     decoding with any VO, backend or filter. Because these copy the decoded
     video back to system RAM, they're likely less efficient than the direct
-    modes (like e.g. ``dxva2``).
+    modes (like e.g. ``dxva2``), and probably not more efficient than software
+    decoding except for some codecs (e.g. HEVC).
 
     .. note::
 
@@ -722,15 +733,19 @@ Video
 
     .. admonition:: Quality reduction with hardware decoding
 
-        Normally, hardware decoding does not reduce video quality (at least for
-        the codecs h264 and HEVC). However, due to restrictions in video output
-        APIs, there can be some loss, or blatantly incorrect results.
+        In theory, hardware decoding does not reduce video quality (at least
+        for the codecs h264 and HEVC). However, due to restrictions in video
+        output APIs, as well as bugs in the actual hardware decoders, there can
+        be some loss, or even blatantly incorrect results.
 
         In some cases, RGB conversion is forced, which means the RGB conversion
         is performed by the hardware decoding API, instead of the OpenGL code
-        used by ``--vo=opengl``. This means certain obscure colorspaces may
-        not display correctly, not certain filtering (such as debanding)
-        cannot be applied in an ideal way.
+        used by ``--vo=opengl``. This means certain colorspaces may not display
+        correctly, and certain filtering (such as debanding) cannot be applied
+        in an ideal way. This will also usually force the use of low quality
+        chroma scalers instead of the one specified by ``--cscale``. In other
+        cases, hardware decoding can also reduce the bit depth of the decoded
+        image, which can introduce banding or precision loss for 10-bit files.
 
         ``vdpau`` is usually safe. If deinterlacing enabled (or the ``vdpaupp``
         video filter is active in general), it forces RGB conversion. The latter
@@ -739,14 +754,15 @@ Video
         filter retrieves image data without RGB conversion and is safe (but
         precludes use of vdpau postprocessing).
 
-        ``vaapi`` is safe if the ``vaapi-egl`` backend is indicated in the logs.
-        If ``vaapi-glx`` is indicated, and the video colorspace is either BT.601
-        or BT.709, a forced but correct RGB conversion is performed. Otherwise,
-        the result will be incorrect.
+        ``vaapi`` is safe if the ``vaapi-egl`` backend is indicated in the
+        logs. If ``vaapi-glx`` is indicated, and the video colorspace is either
+        BT.601 or BT.709, a forced, low-quality but correct RGB conversion is
+        performed. Otherwise, the result will be totally incorrect.
 
         ``d3d11va`` is usually safe (if used with ANGLE builds that support
         ``EGL_KHR_stream path`` - otherwise, it converts to RGB), except that
-        10 bit input (HEVC main 10 profiles) will be rounded down to 8 bits.
+        10 bit input (HEVC main 10 profiles) will be rounded down to 8 bits,
+        which results in reduced quality.
 
         ``dxva2`` is not safe. It appears to always use BT.601 for forced RGB
         conversion, but actual behavior depends on the GPU drivers. Some drivers
@@ -758,17 +774,30 @@ Video
         ``rpi`` always uses the hardware overlay renderer, even with
         ``--vo=opengl``.
 
+        ``cuda`` should be safe, but it has been reported to corrupt the
+        timestamps causing glitched, flashing frames on some files. It can also
+        sometimes cause massive framedrops for unknown reasons. Caution is
+        advised.
+
         ``crystalhd`` is not safe. It always converts to 4:2:2 YUV, which
         may be lossy, depending on how chroma sub-sampling is done during
         conversion. It also discards the top left pixel of each frame for
         some reason.
 
         All other methods, in particular the copy-back methods (like
-        ``dxva2-copy`` etc.) are either fully safe, or not worse than software
-        decoding.
+        ``dxva2-copy`` etc.) should hopefully be safe, although they can still
+        cause random decoding issues. At the very least, they shouldn't affect
+        the colors of the image.
 
-        In particular, ``auto-copy`` will only select safe modes
-        (although potentially slower than other methods).
+        In particular, ``auto-copy`` will only select "safe" modes
+        (although potentially slower than other methods), but there's still no
+        guarantee the chosen hardware decoder will actually work correctly.
+
+        In general, it's very strongly advised to avoid hardware decoding
+        unless **absolutely** necessary, i.e. if your CPU is insufficient to
+        decode the file in questions. If you run into any weird decoding issues,
+        frame glitches or discoloration, and you have ``--hwdec`` turned on,
+        the first thing you should try is disabling it.
 
 ``--opengl-hwdec-interop=<name>``
     This is useful for the ``opengl`` and ``opengl-cb`` VOs for creating the
@@ -835,13 +864,10 @@ Video
         - ``--video-aspect=16:9`` or ``--video-aspect=1.7777``
         - ``--no-video-aspect`` or ``--video-aspect=no``
 
-``--video-aspect-method=<hybrid|bitstream|container>``
+``--video-aspect-method=<bitstream|container>``
     This sets the default video aspect determination method (if the aspect is
     _not_ overridden by the user with ``--video-aspect`` or others).
 
-    :hybrid:    Prefer the container aspect ratio. If the bitstream aspect
-                switches mid-stream, switch to preferring the bitstream aspect.
-                This was the default in older mpv and mplayer2. Deprecated.
     :container: Strictly prefer the container aspect ratio. This is apparently
                 the default behavior with VLC, at least with Matroska. Note that
                 if the container has no aspect ratio set, the behavior is the
@@ -940,8 +966,8 @@ Video
 
         Works in ``--no-correct-pts`` mode only.
 
-``--deinterlace=<yes|no|auto>``
-    Enable or disable interlacing (default: auto, which usually means no).
+``--deinterlace=<yes|no>``
+    Enable or disable interlacing (default: no).
     Interlaced video shows ugly comb-like artifacts, which are visible on
     fast movement. Enabling this typically inserts the yadif video filter in
     order to deinterlace the video, or lets the video output apply deinterlacing
@@ -950,22 +976,11 @@ Video
     This behaves exactly like the ``deinterlace`` input property (usually
     mapped to ``d``).
 
-    ``auto`` is a technicality. Strictly speaking, the default for this option
-    is deinterlacing disabled, but the ``auto`` case is needed if ``yadif`` was
-    added to the filter chain manually with ``--vf``. Then the core shouldn't
-    disable deinterlacing just because the ``--deinterlace`` was not set.
-
-``--field-dominance=<auto|top|bottom>``
-    Set first field for interlaced content.
-
-    :auto:    (default) If the decoder does not export the appropriate
-              information, it falls back on ``top`` (top field first).
-    :top:     top field first
-    :bottom:  bottom field first
-
-    .. note::
-
-        Setting either ``top`` or ``bottom`` will flag all frames as interlaced.
+    Keep in mind that this **will** conflict with manually inserted
+    deinterlacing filters, unless you take care. (Since mpv 0.27.0, even the
+    hardware deinterlace filters will conflict. Also since that version,
+    ``--deinterlace=auto`` was removed, which used to mean that the default
+    interlacing option of possibly inserted video filters was used.)
 
 ``--frames=<number>``
     Play/convert only first ``<number>`` video frames, then quit.
@@ -1027,6 +1042,23 @@ Video
     Fallback to software decoding if the hardware-accelerated decoder fails
     (default: 3). If this is a number, then fallback will be triggered if
     N frames fail to decode in a row. 1 is equivalent to ``yes``.
+
+``--vd-lavc-dr=<yes|no>``
+    Enable direct rendering (default: no). If this is set to ``yes``, the
+    video will be decoded directly to GPU video memory (or staging buffers).
+    This can speed up video upload, and may help with large resolutions or
+    slow hardware. This works only with the following VOs:
+
+        - ``opengl``: requires at least OpenGL 4.4.
+
+    (In particular, this can't be made work with ``opengl-cb``.)
+
+    Using video filters of any kind that write to the image data (or output
+    newly allocated frames) will silently disable the DR code path.
+
+    There are some corner cases that will result in undefined behavior (crashes
+    and other strange behavior) if this option is enabled. These are pending
+    towards being fixed properly at a later point.
 
 ``--vd-lavc-bitexact``
     Only use bit-exact algorithms in all decoding steps (for codec testing).
@@ -1450,13 +1482,12 @@ Audio
 
 ``--audio-file-auto=<no|exact|fuzzy|all>``, ``--no-audio-file-auto``
     Load additional audio files matching the video filename. The parameter
-    specifies how external audio files are matched. ``exact`` is enabled by
-    default.
+    specifies how external audio files are matched.
 
-    :no:    Don't automatically load external audio files.
-    :exact: Load the media filename with audio file extension (default).
+    :no:    Don't automatically load external audio files (default).
+    :exact: Load the media filename with audio file extension.
     :fuzzy: Load all audio files containing media filename.
-    :all:   Load all audio files in the current and ``--audio-file-path``
+    :all:   Load all audio files in the current and ``--audio-file-paths``
             directories.
 
 ``--audio-file-paths=<path1:path2:...>``
@@ -1811,7 +1842,7 @@ Subtitles
     :no:    Don't automatically load external subtitle files.
     :exact: Load the media filename with subtitle file extension (default).
     :fuzzy: Load all subs containing media filename.
-    :all:   Load all subs in the current and ``--sub-file-path`` directories.
+    :all:   Load all subs in the current and ``--sub-file-paths`` directories.
 
 ``--sub-codepage=<codepage>``
     You can use this option to specify the subtitle codepage. uchardet will be
@@ -2456,6 +2487,10 @@ Window
     as having the same size as on none-HiDPI resolutions. This is the default OS X
     behavior.
 
+``--native-fs``, ``--no-native-fs``
+    (OS X only)
+    Uses the native fullscreen mechanism of the OS (default: yes).
+
 ``--monitorpixelaspect=<ratio>``
     Set the aspect of a single pixel of your monitor or TV screen (default:
     1). A value of 1 means square pixels (correct for (almost?) all LCDs). See
@@ -2965,7 +3000,7 @@ Input
     Support depends on the VO in use.
 
 ``--input-media-keys=<yes|no>``
-    (OS X only)
+    (OS X and Windows only)
     Enable/disable media keys support. Enabled by default (except for libmpv).
 
 ``--input-right-alt-gr``, ``--no-input-right-alt-gr``
@@ -4089,7 +4124,8 @@ The following video options are currently all specific to ``--vo=opengl`` and
 
 ``--linear-scaling``
     Scale in linear light. It should only be used with a
-    ``--opengl-fbo-format`` that has at least 16 bit precision.
+    ``--opengl-fbo-format`` that has at least 16 bit precision. This option
+    has no effect on HDR content.
 
 ``--correct-downscaling``
     When using convolution based filters, extend the filter size when
@@ -4112,7 +4148,8 @@ The following video options are currently all specific to ``--vo=opengl`` and
     the ``--tscale`` setting.
 
     Note that this relies on vsync to work, see ``--opengl-swapinterval`` for
-    more information.
+    more information. It should also only be used with an ``--opengl-fbo-format``
+    that has at least 16 bit precision.
 
 ``--interpolation-threshold=<0..1,-1>``
     Threshold below which frame ratio interpolation gets disabled (default:
@@ -4216,24 +4253,61 @@ The following video options are currently all specific to ``--vo=opengl`` and
 
         ...
 
-    Each block of metadata, along with the non-metadata lines after it, defines
-    a single pass. Each pass can set the following metadata:
+    Each section of metadata, along with the non-metadata lines after it,
+    defines a single block. There are currently two types of blocks, HOOKs and
+    TEXTUREs.
 
-    DESC <title>
-        User-friendly description of the pass. This is the name used when
-        representing this shader in the list of passes for property
-        `vo-passes`.
+    A ``TEXTURE`` block can set the following options:
+
+    TEXTURE <name> (required)
+        The name of this texture. Hooks can then bind the texture under this
+        name using BIND. This must be the first option of the texture block.
+
+    SIZE <width> [<height>] [<depth>] (required)
+        The dimensions of the texture. The height and depth are optional. The
+        type of texture (1D, 2D or 3D) depends on the number of components
+        specified.
+
+    FORMAT <name> (required)
+        The texture format for the samples. Supported texture formats are listed
+        in debug logging when the ``opengl`` VO is initialized (look for
+        ``Texture formats:``). Usually, this follows OpenGL naming conventions.
+        For example, ``rgb16`` provides 3 channels with normalized 16 bit
+        components. One oddity are float formats: for example, ``rgba16f`` has
+        16 bit internal precision, but the texture data is provided as 32 bit
+        floats, and the driver converts the data on texture upload.
+
+        Although format names follow a common naming convention, not all of them
+        are available on all hardware, drivers, GL versions, and so on.
+
+    FILTER <LINEAR|NEAREST>
+        The min/magnification filter used when sampling from this texture.
+
+    BORDER <CLAMP|REPEAT|MIRROR>
+        The border wrapping mode used when sampling from this texture.
+
+    Following the metadata is a string of bytes in hexadecimal notation that
+    define the raw texture data, corresponding to the format specified by
+    `FORMAT`, on a single line with no extra whitespace.
+
+    A ``HOOK`` block can set the following options:
 
     HOOK <name> (required)
         The texture which to hook into. May occur multiple times within a
         metadata block, up to a predetermined limit. See below for a list of
         hookable textures.
 
+    DESC <title>
+        User-friendly description of the pass. This is the name used when
+        representing this shader in the list of passes for property
+        `vo-passes`.
+
     BIND <name>
-        Loads a texture and makes it available to the pass, and sets up macros
-        to enable accessing it. See below for a list of set macros. By default,
-        no textures are bound. The special name HOOKED can be used to refer to
-        the texture that triggered this pass.
+        Loads a texture (either coming from mpv or from a ``TEXTURE`` block)
+        and makes it available to the pass. When binding textures from mpv,
+        this will also set up macros to facilitate accessing it properly. See
+        below for a list. By default, no textures are bound. The special name
+        HOOKED can be used to refer to the texture that triggered this pass.
 
     SAVE <name>
         Gives the name of the texture to save the result of this pass into. By
@@ -4257,19 +4331,40 @@ The following video options are currently all specific to ``--vo=opengl`` and
         hook point can still cause that hook point to be saved, which has some
         minor overhead)
 
-    OFFSET ox oy
+    OFFSET <ox> <oy>
         Indicates a pixel shift (offset) introduced by this pass. These pixel
         offsets will be accumulated and corrected during the next scaling pass
         (``cscale`` or ``scale``). The default values are 0 0 which correspond
         to no shift. Note that offsets are ignored when not overwriting the
         hooked texture.
 
-    COMPONENTS n
+    COMPONENTS <n>
         Specifies how many components of this pass's output are relevant and
         should be stored in the texture, up to 4 (rgba). By default, this value
         is equal to the number of components in HOOKED.
 
-    Each bound texture (via ``BIND``) will make available the following
+    COMPUTE <bw> <bh> [<tw> <th>]
+        Specifies that this shader should be treated as a compute shader, with
+        the block size bw and bh. The compute shader will be dispatched with
+        however many blocks are necessary to completely tile over the output.
+        Within each block, there will bw tw*th threads, forming a single work
+        group. In other words: tw and th specify the work group size, which can
+        be different from the block size. So for example, a compute shader with
+        bw, bh = 32 and tw, th = 8 running on a 500x500 texture would dispatch
+        16x16 blocks (rounded up), each with 8x8 threads.
+
+        Compute shaders in mpv are treated a bit different from fragment
+        shaders. Instead of defining a ``vec4 hook`` that produces an output
+        sample, you directly define ``void hook`` which writes to a fixed
+        writeonly image unit named ``out_image`` (this is bound by mpv) using
+        `imageStore`. To help translate texture coordinates in the absence of
+        vertices, mpv provides a special function ``NAME_map(id)`` to map from
+        the texel space of the output image to the texture coordinates for all
+        bound textures. In particular, ``NAME_pos`` is equivalent to
+        ``NAME_map(gl_GlobalInvocationID)``, although using this only really
+        makes sense if (tw,th) == (bw,bh).
+
+    Each bound mpv texture (via ``BIND``) will make available the following
     definitions to that shader pass, where NAME is the name of the bound
     texture:
 
@@ -4696,9 +4791,11 @@ The following video options are currently all specific to ``--vo=opengl`` and
         The user should independently guarantee this before using these signal
         formats for display.
 
-``--hdr-tone-mapping=<value>``
-    Specifies the algorithm used for tone-mapping HDR images onto the target
-    display. Valid values are:
+``--tone-mapping=<value>``
+    Specifies the algorithm used for tone-mapping images onto the target
+    display. This is relevant for both HDR->SDR conversion as well as gamut
+    reduction (e.g. playing back BT.2020 content on a standard gamut display).
+    Valid values are:
 
     clip
         Hard-clip any out-of-range values. Use this when you care about
@@ -4717,10 +4814,10 @@ The following video options are currently all specific to ``--vo=opengl`` and
         results in flattening of details and degradation in color accuracy.
     hable
         Similar to ``reinhard`` but preserves both dark and bright details
-        better (slightly sigmoidal), at the cost of slightly darkening
-        everything. Developed by John Hable for use in video games. Use this
-        when you care about detail preservation more than color/brightness
-        accuracy. This is roughly equivalent to
+        better (slightly sigmoidal), at the cost of slightly darkening /
+        desaturating everything. Developed by John Hable for use in video
+        games. Use this when you care about detail preservation more than
+        color/brightness accuracy. This is roughly equivalent to
         ``--hdr-tone-mapping=reinhard --tone-mapping-param=0.24``.
     gamma
         Fits a logarithmic transfer between the tone curves.
@@ -4750,6 +4847,14 @@ The following video options are currently all specific to ``--vo=opengl`` and
     linear
         Specifies the scale factor to use while stretching. Defaults to 1.0.
 
+``--hdr-compute-peak``
+    Compute the HDR peak per-frame of relying on tagged metadata. These values
+    are averaged over local regions as well as over several frames to prevent
+    the value from jittering around too much. This option basically gives you
+    dynamic, per-scene tone mapping. Requires compute shaders, which is a
+    fairly recent OpenGL feature, and will probably also perform horribly on
+    some drivers, so enable at your own risk.
+
 ``--tone-mapping-desaturate=<value>``
     Apply desaturation for highlights that exceed this level of brightness. The
     higher the parameter, the more color information will be preserved. This
@@ -4759,6 +4864,24 @@ The following video options are currently all specific to ``--vo=opengl`` and
 
     The default of 2.0 is somewhat conservative and will mostly just apply to
     skies or directly sunlit surfaces. A setting of 0.0 disables this option.
+
+``--gamut-warning``
+    If enabled, mpv will mark all clipped/out-of-gamut pixels that exceed a
+    given threshold (currently hard-coded to 101%). The affected pixels will be
+    inverted to make them stand out. Note: This option applies after the
+    effects of all of mpv's color space transformation / tone mapping options,
+    so it's a good idea to combine this with ``--tone-mapping=clip`` and use
+    ``--target-gamut`` to set the gamut to simulate. For example,
+    ``--target-gamut=bt.709`` would make mpv highlight all pixels that exceed the
+    gamut of a standard gamut (sRGB) display. This option also does not work
+    well with ICC profiles, since the 3DLUTs are always generated against the
+    source color space and have chromatically-accurate clipping built in.
+
+``--use-embedded-icc-profile``
+    Load the embedded ICC profile contained in media files such as PNG images.
+    (Default: yes). Note that this option only works when also using a display
+    ICC profile (``--icc-profile`` or ``--icc-profile-auto``), and also
+    requires LittleCMS 2 support.
 
 ``--icc-profile=<file>``
     Load an ICC profile and use it to transform video RGB to screen output.
@@ -5122,11 +5245,14 @@ Miscellaneous
     video or audio outputs are not possible, but you can use filters to merge
     them into one.
 
-    The complex filter cannot be changed yet during playback. It's also not
-    possible to change the tracks connected to the filter at runtime. Other
-    tracks, as long as they're not connected to the filter, and the
+    It's not possible to change the tracks connected to the filter at runtime,
+    unless you explicitly change the ``lavfi-complex`` property and set new
+    track assignments. When the graph is changed, the track selection is changed
+    according to the used labels as well.
+
+    Other tracks, as long as they're not connected to the filter, and the
     corresponding output is not connected to the filter, can still be freely
-    changed.
+    changed with the normal methods.
 
     Note that the normal filter chains (``--af``, ``--vf``) are applied between
     the complex graphs (e.g. ``ao`` label) and the actual output.

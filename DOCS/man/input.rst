@@ -346,10 +346,6 @@ List of Input Commands
     events that have already been displayed, or are within a short prefetch
     range.
 
-``osd [<level>]``
-    Toggle OSD level. If ``<level>`` is specified, set the OSD mode
-    (see ``--osd-level`` for valid values).
-
 ``print-text "<string>"``
     Print text to stdout. The string can contain properties (see
     `Property Expansion`_).
@@ -2171,21 +2167,11 @@ caveats with some properties (due to historical reasons):
 
     Option changes at runtime are affected by this as well.
 
-``deinterlace``
-    While video is active, this behaves differently from the option. It will
-    never return the ``auto`` value (but the state as observed by the video
-    chain). If you set ``auto``, the property will set this as the option value,
-    and will return the actual video chain state as observed instead of auto.
-
 ``video-aspect``
     While video is active, always returns the effective aspect ratio. Setting
     a special value (like ``no``, values ``<= 0``) will make the property
     set this as option, and return whatever actual aspect was derived from the
     option setting.
-
-``brightness`` (and other color options)
-    If ``--vo=xv`` is used, these properties may return the adapter's current
-    values instead of the option values.
 
 ``display-fps``
     If a VO is created, this will return either the actual display FPS, or

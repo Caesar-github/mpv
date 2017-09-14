@@ -1,88 +1,10 @@
-/*
- * This file is part of mpv.
- * Parts based on MPlayer code by Reimar Döffinger.
- *
- * mpv is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * mpv is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
- */
+#pragma once
 
-#ifndef MP_GL_UTILS_
-#define MP_GL_UTILS_
+#include <stdbool.h>
+#include <math.h>
 
-#include "common.h"
-#include "math.h"
-
-struct mp_log;
-
-void gl_check_error(GL *gl, struct mp_log *log, const char *info);
-
-void gl_upload_tex(GL *gl, GLenum target, GLenum format, GLenum type,
-                   const void *dataptr, int stride,
-                   int x, int y, int w, int h);
-
-mp_image_t *gl_read_fbo_contents(GL *gl, int fbo, int w, int h);
-
-const char* mp_sampler_type(GLenum texture_target);
-
-// print a multi line string with line numbers (e.g. for shader sources)
-// log, lev: module and log level, as in mp_msg()
-void mp_log_source(struct mp_log *log, int lev, const char *src);
-
-struct gl_vao_entry {
-    // used for shader / glBindAttribLocation
-    const char *name;
-    // glVertexAttribPointer() arguments
-    int num_elems;      // size (number of elements)
-    GLenum type;
-    bool normalized;
-    int offset;
-};
-
-struct gl_vao {
-    GL *gl;
-    GLuint vao;     // the VAO object, or 0 if unsupported by driver
-    GLuint buffer;  // GL_ARRAY_BUFFER used for the data
-    int stride;     // size of each element (interleaved elements are assumed)
-    const struct gl_vao_entry *entries;
-};
-
-void gl_vao_init(struct gl_vao *vao, GL *gl, int stride,
-                 const struct gl_vao_entry *entries);
-void gl_vao_uninit(struct gl_vao *vao);
-void gl_vao_bind(struct gl_vao *vao);
-void gl_vao_unbind(struct gl_vao *vao);
-void gl_vao_draw_data(struct gl_vao *vao, GLenum prim, void *ptr, size_t num);
-
-struct fbotex {
-    GL *gl;
-    GLuint fbo;
-    GLuint texture;
-    GLenum iformat;
-    GLenum tex_filter;
-    int rw, rh; // real (texture) size
-    int lw, lh; // logical (configured) size
-};
-
-bool fbotex_init(struct fbotex *fbo, GL *gl, struct mp_log *log, int w, int h,
-                 GLenum iformat);
-void fbotex_uninit(struct fbotex *fbo);
-bool fbotex_change(struct fbotex *fbo, GL *gl, struct mp_log *log, int w, int h,
-                   GLenum iformat, int flags);
-#define FBOTEX_FUZZY_W 1
-#define FBOTEX_FUZZY_H 2
-#define FBOTEX_FUZZY (FBOTEX_FUZZY_W | FBOTEX_FUZZY_H)
-void fbotex_set_filter(struct fbotex *fbo, GLenum gl_filter);
-void fbotex_invalidate(struct fbotex *fbo);
+#include "video/out/vo.h"
+#include "ra.h"
 
 // A 3x2 matrix, with the translation part separate.
 struct gl_transform {
@@ -141,64 +63,59 @@ static inline bool gl_transform_eq(struct gl_transform a, struct gl_transform b)
 
 void gl_transform_trans(struct gl_transform t, struct gl_transform *x);
 
-void gl_set_debug_logger(GL *gl, struct mp_log *log);
-
-struct gl_shader_cache;
-
-struct gl_shader_cache *gl_sc_create(GL *gl, struct mp_log *log);
-void gl_sc_destroy(struct gl_shader_cache *sc);
-bool gl_sc_error_state(struct gl_shader_cache *sc);
-void gl_sc_reset_error(struct gl_shader_cache *sc);
-void gl_sc_add(struct gl_shader_cache *sc, const char *text);
-void gl_sc_addf(struct gl_shader_cache *sc, const char *textf, ...);
-void gl_sc_hadd(struct gl_shader_cache *sc, const char *text);
-void gl_sc_haddf(struct gl_shader_cache *sc, const char *textf, ...);
-void gl_sc_hadd_bstr(struct gl_shader_cache *sc, struct bstr text);
-void gl_sc_uniform_sampler(struct gl_shader_cache *sc, char *name, GLenum target,
-                           int unit);
-void gl_sc_uniform_tex(struct gl_shader_cache *sc, char *name, GLenum target,
-                       GLuint texture);
-void gl_sc_uniform_tex_ui(struct gl_shader_cache *sc, char *name, GLuint texture);
-void gl_sc_uniform_f(struct gl_shader_cache *sc, char *name, GLfloat f);
-void gl_sc_uniform_i(struct gl_shader_cache *sc, char *name, GLint f);
-void gl_sc_uniform_vec2(struct gl_shader_cache *sc, char *name, GLfloat f[2]);
-void gl_sc_uniform_vec3(struct gl_shader_cache *sc, char *name, GLfloat f[3]);
-void gl_sc_uniform_mat2(struct gl_shader_cache *sc, char *name,
-                        bool transpose, GLfloat *v);
-void gl_sc_uniform_mat3(struct gl_shader_cache *sc, char *name,
-                        bool transpose, GLfloat *v);
-void gl_sc_set_vao(struct gl_shader_cache *sc, struct gl_vao *vao);
-void gl_sc_enable_extension(struct gl_shader_cache *sc, char *name);
-struct mp_pass_perf gl_sc_generate(struct gl_shader_cache *sc);
-void gl_sc_reset(struct gl_shader_cache *sc);
-struct mpv_global;
-void gl_sc_set_cache_dir(struct gl_shader_cache *sc, struct mpv_global *global,
-                         const char *dir);
-
-struct gl_timer;
-
-struct gl_timer *gl_timer_create(GL *gl);
-void gl_timer_free(struct gl_timer *timer);
-void gl_timer_start(struct gl_timer *timer);
-void gl_timer_stop(GL *gl);
-struct mp_pass_perf gl_timer_measure(struct gl_timer *timer);
-
-#define NUM_PBO_BUFFERS 3
-
-struct gl_pbo_upload {
-    GL *gl;
-    int index;
-    GLuint buffer;
-    size_t buffer_size;
+struct fbodst {
+    struct ra_tex *tex;
+    bool flip; // mirror vertically
 };
 
-void gl_pbo_upload_tex(struct gl_pbo_upload *pbo, GL *gl, bool use_pbo,
-                       GLenum target, GLenum format,  GLenum type,
-                       int tex_w, int tex_h, const void *dataptr, int stride,
-                       int x, int y, int w, int h);
-void gl_pbo_upload_uninit(struct gl_pbo_upload *pbo);
+void gl_transform_ortho_fbodst(struct gl_transform *t, struct fbodst fbo);
 
-int gl_determine_16bit_tex_depth(GL *gl);
-int gl_get_fb_depth(GL *gl, int fbo);
+// A pool of buffers, which can grow as needed
+struct ra_buf_pool {
+    struct ra_buf_params current_params;
+    struct ra_buf **buffers;
+    int num_buffers;
+    int index;
+};
 
-#endif
+void ra_buf_pool_uninit(struct ra *ra, struct ra_buf_pool *pool);
+
+// Note: params->initial_data is *not* supported
+struct ra_buf *ra_buf_pool_get(struct ra *ra, struct ra_buf_pool *pool,
+                               const struct ra_buf_params *params);
+
+// Helper that wraps ra_tex_upload using texture upload buffers to ensure that
+// params->buf is always set. This is intended for RA-internal usage.
+bool ra_tex_upload_pbo(struct ra *ra, struct ra_buf_pool *pbo,
+                       const struct ra_tex_upload_params *params);
+
+// Layout rules for GLSL's packing modes
+struct ra_layout std140_layout(struct ra_renderpass_input *inp);
+struct ra_layout std430_layout(struct ra_renderpass_input *inp);
+
+struct fbotex {
+    struct ra *ra;
+    struct ra_tex *tex;
+    int lw, lh; // logical (configured) size, <= than texture size
+    struct fbodst fbo;
+};
+
+void fbotex_uninit(struct fbotex *fbo);
+bool fbotex_change(struct fbotex *fbo, struct ra *ra, struct mp_log *log,
+                   int w, int h, const struct ra_format *fmt, int flags);
+#define FBOTEX_FUZZY_W 1
+#define FBOTEX_FUZZY_H 2
+#define FBOTEX_FUZZY (FBOTEX_FUZZY_W | FBOTEX_FUZZY_H)
+
+// A wrapper around ra_timer that does result pooling, averaging etc.
+struct timer_pool;
+
+struct timer_pool *timer_pool_create(struct ra *ra);
+void timer_pool_destroy(struct timer_pool *pool);
+void timer_pool_start(struct timer_pool *pool);
+void timer_pool_stop(struct timer_pool *pool);
+struct mp_pass_perf timer_pool_measure(struct timer_pool *pool);
+
+// print a multi line string with line numbers (e.g. for shader sources)
+// log, lev: module and log level, as in mp_msg()
+void mp_log_source(struct mp_log *log, int lev, const char *src);

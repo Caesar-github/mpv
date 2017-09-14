@@ -5,7 +5,6 @@ os:
   #- osx
 env:
   matrix:
-    - LIBAV=libav-stable
     - LIBAV=libav-git
     - LIBAV=ffmpeg-stable
     - LIBAV=ffmpeg-git
@@ -27,8 +26,6 @@ branches:
 matrix:
   exclude:
     - os: osx
-      env: LIBAV=libav-stable
-    - os: osx
       env: LIBAV=libav-git
     - os: osx
       env: LIBAV=ffmpeg-git
@@ -44,6 +41,7 @@ script:
   - ./bootstrap.py
   - ./waf configure
   - ./waf build
+after_failure: cat ./build/config.log
 after_script: TOOLS/travis-rebuild-website
 
 notifications:

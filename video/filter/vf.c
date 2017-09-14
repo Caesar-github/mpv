@@ -47,7 +47,6 @@ extern const vf_info_t vf_info_noformat;
 extern const vf_info_t vf_info_flip;
 extern const vf_info_t vf_info_rotate;
 extern const vf_info_t vf_info_mirror;
-extern const vf_info_t vf_info_eq;
 extern const vf_info_t vf_info_gradfun;
 extern const vf_info_t vf_info_dsize;
 extern const vf_info_t vf_info_pullup;
@@ -81,7 +80,6 @@ static const vf_info_t *const filter_list[] = {
     &vf_info_yadif,
     &vf_info_stereo3d,
 
-    &vf_info_eq,
     &vf_info_dsize,
     &vf_info_sub,
     &vf_info_buffer,
@@ -224,7 +222,7 @@ void vf_print_filter_chain(struct vf_chain *c, int msglevel,
         return;
 
     for (vf_instance_t *f = c->first; f; f = f->next) {
-        char b[128] = {0};
+        char b[256] = {0};
         mp_snprintf_cat(b, sizeof(b), "  [%s] ", f->full_name);
         if (f->label)
             mp_snprintf_cat(b, sizeof(b), "\"%s\" ", f->label);

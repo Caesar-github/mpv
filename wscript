@@ -137,6 +137,10 @@ main_dependencies = [
         'func': check_statement(['poll.h', 'unistd.h', 'sys/mman.h'],
             'struct pollfd pfd; poll(&pfd, 1, 0); fork(); int f[2]; pipe(f); munmap(f,0)'),
     }, {
+        'name': '--android',
+        'desc': 'Android environment',
+        'func': check_statement('android/api-level.h', '(void)__ANDROID__'),  # arbitrary android-specific header
+    }, {
         'name': 'posix-or-mingw',
         'desc': 'development environment',
         'deps_any': [ 'posix', 'mingw' ],
@@ -230,11 +234,21 @@ iconv support use --disable-iconv.",
         'deps': [ 'win32-desktop' ],
         'deps_neg': [ 'posix' ],
     }, {
+        'name': 'glob-posix',
+        'desc': 'glob() POSIX support',
+        'deps_neg': [ 'os-win32', 'os-cygwin' ],
+        'func': check_statement('glob.h', 'glob("filename", 0, 0, 0)'),
+    }, {
         'name': 'glob-win32',
         'desc': 'glob() win32 replacement',
         'deps_neg': [ 'posix' ],
         'deps_any': [ 'os-win32', 'os-cygwin' ],
         'func': check_true
+    }, {
+        'name': 'glob',
+        'desc': 'any glob() support',
+        'deps_any': [ 'glob-posix', 'glob-win32' ],
+        'func': check_true,
     }, {
         'name': 'fchmod',
         'desc': 'fchmod()',
@@ -461,6 +475,18 @@ FFmpeg/Libav libraries. You need at least {0}. Aborting.".format(libav_versions_
         'func': check_statement('libavutil/frame.h',
                                 'AV_FRAME_DATA_CONTENT_LIGHT_LEVEL',
                                 use='libav'),
+    }, {
+        'name': 'avutil-icc-profile',
+        'desc': 'libavutil ICC profile side data',
+        'func': check_statement('libavutil/frame.h',
+                                'AV_FRAME_DATA_ICC_PROFILE',
+                                use='libav'),
+    }, {
+        'name': 'avutil-spherical',
+        'desc': 'libavutil spherical side data',
+        'func': check_statement('libavutil/spherical.h',
+                                'AV_SPHERICAL_EQUIRECTANGULAR',
+                                use='libav'),
     },
 ]
 
@@ -528,7 +554,7 @@ audio_output_features = [
     }, {
         'name': '--wasapi',
         'desc': 'WASAPI audio output',
-        'deps': ['os-win32'],
+        'deps_any': ['os-win32', 'os-cygwin'],
         'func': check_cc(fragment=load_fragment('wasapi.c')),
     }
 ]
@@ -706,9 +732,25 @@ video_output_features = [
         'desc': 'Android support',
         'func': check_statement('android/api-level.h', '(void)__ANDROID__'),  # arbitrary android-specific header
     }, {
+        # We need MMAL/bcm_host/dispmanx APIs. Also, most RPI distros require
+        # every project to hardcode the paths to the include directories. Also,
+        # these headers are so broken that they spam tons of warnings by merely
+        # including them (compensate with -isystem and -fgnu89-inline).
         'name': '--rpi',
         'desc': 'Raspberry Pi support',
-        'func': check_rpi,
+        'func': compose_checks(
+            check_cc(cflags="-isystem/opt/vc/include/ "+
+                            "-isystem/opt/vc/include/interface/vcos/pthreads " +
+                            "-isystem/opt/vc/include/interface/vmcs_host/linux " +
+                            "-fgnu89-inline",
+                     linkflags="-L/opt/vc/lib",
+                     header_name="bcm_host.h",
+                     lib=['mmal_core', 'mmal_util', 'mmal_vc_client', 'bcm_host']),
+            # We still need all OpenGL symbols, because the vo_opengl code is
+            # generic and supports anything from GLES2/OpenGL 2.1 to OpenGL 4 core.
+            check_cc(lib="EGL"),
+            check_cc(lib="GLESv2"),
+        ),
     } , {
         'name': '--ios-gl',
         'desc': 'iOS OpenGL ES hardware decoding interop support',
@@ -762,7 +804,7 @@ hwaccel_features = [
     }, {
         'name': '--videotoolbox-hwaccel-new',
         'desc': 'libavcodec videotoolbox hwaccel (new API)',
-        'deps': [ 'gl-cocoa' ],
+        'deps_any': [ 'gl-cocoa', 'ios-gl' ],
         'func': check_statement('libavcodec/version.h',
             'int x[(LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(57, 96, 100) && '
             '       LIBAVCODEC_VERSION_MICRO >= 100)'
@@ -771,7 +813,7 @@ hwaccel_features = [
     }, {
         'name': '--videotoolbox-hwaccel-old',
         'desc': 'libavcodec videotoolbox hwaccel (old API)',
-        'deps': [ 'gl-cocoa' ],
+        'deps_any': [ 'gl-cocoa', 'ios-gl' ],
         'deps_neg': [ 'videotoolbox-hwaccel-new' ],
         'func': compose_checks(
             check_headers('VideoToolbox/VideoToolbox.h'),

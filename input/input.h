@@ -143,7 +143,7 @@ void mp_input_put_key_utf8(struct input_ctx *ictx, int mods, struct bstr t);
 
 // Process scrolling input. Support for precise scrolling. Scales the given
 // scroll amount add multiplies it with the command (seeking, sub-delay, etc)
-void mp_input_put_axis(struct input_ctx *ictx, int direction, double value);
+void mp_input_put_wheel(struct input_ctx *ictx, int direction, double value);
 
 // Update mouse position (in window coordinates).
 void mp_input_set_mouse_pos(struct input_ctx *ictx, int x, int y);
@@ -249,6 +249,9 @@ void mp_input_set_cancel(struct input_ctx *ictx, void (*cb)(void *c), void *c);
 // If this returns true, use Right Alt key as Alt Gr to produce special
 // characters. If false, count Right Alt as the modifier Alt key.
 bool mp_input_use_alt_gr(struct input_ctx *ictx);
+
+// Return true if mpv should intercept keyboard media keys
+bool mp_input_use_media_keys(struct input_ctx *ictx);
 
 // Like mp_input_parse_cmd_strv, but also run the command.
 void mp_input_run_cmd(struct input_ctx *ictx, const char **cmd);

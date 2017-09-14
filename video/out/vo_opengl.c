@@ -45,6 +45,7 @@
 #include "filter_kernels.h"
 #include "video/hwdec.h"
 #include "opengl/video.h"
+#include "opengl/ra_gl.h"
 
 #define NUM_VSYNC_FENCES 10
 
@@ -65,12 +66,13 @@ struct gl_priv {
     struct mp_log *log;
     MPGLContext *glctx;
     GL *gl;
+    struct ra *ra;
 
     struct vo_opengl_opts opts;
 
     struct gl_video *renderer;
 
-    struct gl_hwdec *hwdec;
+    struct ra_hwdec *hwdec;
 
     int events;
 
@@ -95,8 +97,7 @@ static void resize(struct gl_priv *p)
     struct mp_osd_res osd;
     vo_get_src_dst_rects(vo, &src, &dst, &osd);
 
-    int height = p->glctx->flip_v ? vo->dheight : -vo->dheight;
-    gl_video_resize(p->renderer, vo->dwidth, height, &src, &dst, &osd);
+    gl_video_resize(p->renderer, &src, &dst, &osd);
 
     vo->want_redraw = true;
 }
@@ -130,7 +131,13 @@ static void draw_frame(struct vo *vo, struct vo_frame *frame)
             p->vsync_fences[p->num_vsync_fences++] = fence;
     }
 
-    gl_video_render_frame(p->renderer, frame, p->glctx->main_fb);
+    struct fbodst target = {
+        .tex = ra_create_wrapped_fb(p->ra, p->glctx->main_fb,
+                                    vo->dwidth, vo->dheight),
+        .flip = !p->glctx->flip_v,
+    };
+    gl_video_render_frame(p->renderer, frame, target);
+    ra_tex_free(p->ra, &target.tex);
 
     if (p->opts.use_glFinish)
         gl->Finish();
@@ -145,7 +152,7 @@ static void flip_page(struct vo *vo)
 
     p->frames_rendered++;
     if (p->frames_rendered > 5 && !p->opts.use_gl_debug)
-        gl_video_set_debug(p->renderer, false);
+        ra_gl_set_debug(p->ra, false);
 
     if (p->opts.use_glFinish)
         gl->Finish();
@@ -203,7 +210,7 @@ static void request_hwdec_api(struct vo *vo, void *api)
     if (p->hwdec)
         return;
 
-    p->hwdec = gl_hwdec_load_api(p->vo->log, p->gl, p->vo->global,
+    p->hwdec = ra_hwdec_load_api(p->vo->log, p->ra, p->vo->global,
                                  vo->hwdec_devs, (intptr_t)api);
     gl_video_set_hwdec(p->renderer, p->hwdec);
 }
@@ -255,22 +262,9 @@ static int control(struct vo *vo, uint32_t request, void *data)
     case VOCTRL_SET_PANSCAN:
         resize(p);
         return VO_TRUE;
-    case VOCTRL_GET_EQUALIZER: {
-        struct voctrl_get_equalizer_args *args = data;
-        struct mp_csp_equalizer *eq = gl_video_eq_ptr(p->renderer);
-        bool r = mp_csp_equalizer_get(eq, args->name, args->valueptr) >= 0;
-        return r ? VO_TRUE : VO_NOTIMPL;
-    }
-    case VOCTRL_SET_EQUALIZER: {
-        struct voctrl_set_equalizer_args *args = data;
-        struct mp_csp_equalizer *eq = gl_video_eq_ptr(p->renderer);
-        if (mp_csp_equalizer_set(eq, args->name, args->value) >= 0) {
-            gl_video_eq_update(p->renderer);
-            vo->want_redraw = true;
-            return VO_TRUE;
-        }
-        return VO_NOTIMPL;
-    }
+    case VOCTRL_SET_EQUALIZER:
+        vo->want_redraw = true;
+        return VO_TRUE;
     case VOCTRL_SCREENSHOT_WIN: {
         struct mp_image *screen = gl_read_fbo_contents(p->gl, p->glctx->main_fb,
                                                        vo->dwidth, vo->dheight);
@@ -343,16 +337,25 @@ static void wait_events(struct vo *vo, int64_t until_time_us)
     }
 }
 
+static struct mp_image *get_image(struct vo *vo, int imgfmt, int w, int h,
+                                  int stride_align)
+{
+    struct gl_priv *p = vo->priv;
+
+    return gl_video_get_image(p->renderer, imgfmt, w, h, stride_align);
+}
+
 static void uninit(struct vo *vo)
 {
     struct gl_priv *p = vo->priv;
 
     gl_video_uninit(p->renderer);
-    gl_hwdec_uninit(p->hwdec);
+    ra_hwdec_uninit(p->hwdec);
     if (vo->hwdec_devs) {
         hwdec_devices_set_loader(vo->hwdec_devs, NULL, NULL);
         hwdec_devices_destroy(vo->hwdec_devs);
     }
+    ra_free(&p->ra);
     mpgl_uninit(p->glctx);
 }
 
@@ -394,9 +397,11 @@ static int preinit(struct vo *vo)
         MP_VERBOSE(vo, "swap_control extension missing.\n");
     }
 
-    p->renderer = gl_video_init(p->gl, vo->log, vo->global);
-    if (!p->renderer)
+    p->ra = ra_create_gl(p->gl, vo->log);
+    if (!p->ra)
         goto err_out;
+
+    p->renderer = gl_video_init(p->ra, vo->log, vo->global);
     gl_video_set_osd_source(p->renderer, vo->osd);
     gl_video_configure_queue(p->renderer, vo);
 
@@ -406,9 +411,16 @@ static int preinit(struct vo *vo)
 
     hwdec_devices_set_loader(vo->hwdec_devs, call_request_hwdec_api, vo);
 
-    p->hwdec = gl_hwdec_load(p->vo->log, p->gl, vo->global,
+    p->hwdec = ra_hwdec_load(p->vo->log, p->ra, vo->global,
                              vo->hwdec_devs, vo->opts->gl_hwdec_interop);
     gl_video_set_hwdec(p->renderer, p->hwdec);
+
+    gl_check_error(p->gl, p->log, "before retrieving framebuffer depth");
+    int fb_depth = gl_get_fb_depth(p->gl, p->glctx->main_fb);
+    gl_check_error(p->gl, p->log, "retrieving framebuffer depth");
+    if (fb_depth)
+        MP_VERBOSE(p, "Reported display depth: %d\n", fb_depth);
+    gl_video_set_fb_depth(p->renderer, fb_depth);
 
     return 0;
 
@@ -427,6 +439,7 @@ const struct vo_driver video_out_opengl = {
     .query_format = query_format,
     .reconfig = reconfig,
     .control = control,
+    .get_image = get_image,
     .draw_frame = draw_frame,
     .flip_page = flip_page,
     .wait_events = wait_events,

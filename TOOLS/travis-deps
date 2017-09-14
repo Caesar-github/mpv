@@ -87,10 +87,6 @@ end
 class Libav < TravisDepsBuilder
   def build_map
     {
-      "libav-stable" => {
-        :action => :stable,
-        :url    => 'http://libav.org/releases/libav-12.tar.gz'
-      },
       "libav-git" => {
         :action => :git,
         :url    => "git://git.libav.org/libav.git"
@@ -133,7 +129,7 @@ end
 class Dependencies < TravisDepsBuilder
   def deps
     packages = {
-      'linux' => 'pkg-config fontconfig libfribidi-dev yasm',
+      'linux' => 'pkg-config fontconfig libfribidi-dev yasm libxinerama-dev libxrandr-dev',
       'osx'   => 'pkg-config fontconfig freetype fribidi yasm'
     }
     package_manager_update

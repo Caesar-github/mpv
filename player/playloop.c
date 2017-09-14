@@ -232,6 +232,7 @@ void reset_playback_state(struct MPContext *mpctx)
     mpctx->hrseek_framedrop = false;
     mpctx->hrseek_lastframe = false;
     mpctx->hrseek_backstep = false;
+    mpctx->current_seek = (struct seek_params){0};
     mpctx->playback_pts = MP_NOPTS_VALUE;
     mpctx->last_seek_pts = MP_NOPTS_VALUE;
     mpctx->cache_wait_time = 0;
@@ -376,6 +377,8 @@ static void mp_seek(MPContext *mpctx, struct seek_params seek)
         !hr_seek && !(demux_flags & SEEK_FORWARD);
 
     mpctx->ab_loop_clip = mpctx->last_seek_pts < opts->ab_loop[1];
+
+    mpctx->current_seek = seek;
 }
 
 // This combines consecutive seek requests.
@@ -989,6 +992,7 @@ static void handle_playback_restart(struct MPContext *mpctx)
     if (!mpctx->restart_complete) {
         mpctx->hrseek_active = false;
         mpctx->restart_complete = true;
+        mpctx->current_seek = (struct seek_params){0};
         mpctx->audio_allow_second_chance_seek = false;
         handle_playback_time(mpctx);
         mp_notify(mpctx, MPV_EVENT_PLAYBACK_RESTART, NULL);
@@ -1049,7 +1053,7 @@ static void handle_complex_filter_decoders(struct MPContext *mpctx)
             continue;
         if (track->d_audio) {
             audio_work(track->d_audio);
-            struct mp_audio *fr;
+            struct mp_aframe *fr;
             int res = audio_get_frame(track->d_audio, &fr);
             if (res == DATA_OK) {
                 lavfi_send_frame_a(track->sink, fr);
