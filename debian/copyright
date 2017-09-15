@@ -105,7 +105,6 @@ Files:
  video/filter/vf.h
  video/filter/vf_crop.c
  video/filter/vf_dsize.c
- video/filter/vf_eq.c
  video/filter/vf_expand.c
  video/filter/vf_flip.c
  video/filter/vf_format.c
