@@ -1,8 +1,18 @@
-mpv (0.27.0-1) UNRELEASED; urgency=medium
+mpv (0.27.0-1) unstable; urgency=medium
 
-  *
+  * New upstream release.
 
- -- James Cowgill <jcowgill@debian.org>  Thu, 14 Sep 2017 21:15:50 +0100
+  * debian/control:
+    - Bump standards version to 4.1.0 (no changes).
+  * debian/copyright:
+    - Update copyright.
+  * debian/patches:
+    - Refresh.
+  * debian/rules:
+    - Re-enable DVB. (Closes: #873294)
+    - Run waf using python3 instead of python2.
+
+ -- James Cowgill <jcowgill@debian.org>  Fri, 15 Sep 2017 09:37:24 +0100
 
 mpv (0.26.0-3) unstable; urgency=medium
 
