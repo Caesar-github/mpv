@@ -1,8 +1,11 @@
-mpv (0.27.0-2) UNRELEASED; urgency=medium
+mpv (0.27.0-2) unstable; urgency=medium
 
-  *
+  * debian/control:
+    - Bump standards version to 4.1.1 (no changes).
+  * debian/patches:
+    - Add upstream patch to fix FTBFS with libva 2.0. (Closes: #879057)
 
- -- James Cowgill <jcowgill@debian.org>  Sat, 21 Oct 2017 13:01:20 +0100
+ -- James Cowgill <jcowgill@debian.org>  Sat, 21 Oct 2017 13:35:54 +0100
 
 mpv (0.27.0-1) unstable; urgency=medium
 
