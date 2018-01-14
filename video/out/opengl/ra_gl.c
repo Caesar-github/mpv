@@ -96,20 +96,29 @@ static int ra_init_gl(struct ra *ra, GL *gl)
 
     static const int caps_map[][2] = {
         {RA_CAP_DIRECT_UPLOAD,      0},
-        {RA_CAP_SHARED_BINDING,     0},
         {RA_CAP_GLOBAL_UNIFORM,     0},
+        {RA_CAP_FRAGCOORD,          0},
         {RA_CAP_TEX_1D,             MPGL_CAP_1D_TEX},
         {RA_CAP_TEX_3D,             MPGL_CAP_3D_TEX},
         {RA_CAP_COMPUTE,            MPGL_CAP_COMPUTE_SHADER},
         {RA_CAP_NESTED_ARRAY,       MPGL_CAP_NESTED_ARRAY},
-        {RA_CAP_BUF_RO,             MPGL_CAP_UBO},
-        {RA_CAP_BUF_RW,             MPGL_CAP_SSBO},
     };
 
     for (int i = 0; i < MP_ARRAY_SIZE(caps_map); i++) {
         if ((gl->mpgl_caps & caps_map[i][1]) == caps_map[i][1])
             ra->caps |= caps_map[i][0];
     }
+
+    if (gl->BindBufferBase) {
+        if (gl->mpgl_caps & MPGL_CAP_UBO)
+            ra->caps |= RA_CAP_BUF_RO;
+        if (gl->mpgl_caps & MPGL_CAP_SSBO)
+            ra->caps |= RA_CAP_BUF_RW;
+    }
+
+    // textureGather is only supported in GLSL 400+
+    if (ra->glsl_version >= 400)
+        ra->caps |= RA_CAP_GATHER;
 
     if (gl->BlitFramebuffer)
         ra->caps |= RA_CAP_BLIT;
@@ -174,6 +183,8 @@ static int ra_init_gl(struct ra *ra, GL *gl)
             desc->components[0][2] = 2;
             desc->chroma_w = desc->chroma_h = 1;
         }
+
+        fmt->glsl_format = ra_fmt_glsl_format(fmt);
 
         MP_TARRAY_APPEND(ra, ra->formats, ra->num_formats, fmt);
     }
@@ -648,6 +659,11 @@ static void gl_blit(struct ra *ra, struct ra_tex *dst, struct ra_tex *src,
     gl->BindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
 }
 
+static int gl_desc_namespace(enum ra_vartype type)
+{
+    return type;
+}
+
 static void gl_renderpass_destroy(struct ra *ra, struct ra_renderpass *pass)
 {
     GL *gl = ra_gl_get(ra);
@@ -773,7 +789,7 @@ static GLuint load_program(struct ra *ra, const struct ra_renderpass_params *p,
         GLint status = 0;
         gl->GetProgramiv(prog, GL_LINK_STATUS, &status);
         if (status) {
-            MP_VERBOSE(ra, "Loading binary program succeeded.\n");
+            MP_DBG(ra, "Loading binary program succeeded.\n");
         } else {
             gl->DeleteProgram(prog);
             prog = 0;
@@ -811,7 +827,7 @@ static struct ra_renderpass *gl_renderpass_create(struct ra *ra,
     GL *gl = ra_gl_get(ra);
 
     struct ra_renderpass *pass = talloc_zero(NULL, struct ra_renderpass);
-    pass->params = *ra_render_pass_params_copy(pass, params);
+    pass->params = *ra_renderpass_params_copy(pass, params);
     pass->params.cached_program = (bstr){0};
     struct ra_renderpass_gl *pass_gl = pass->priv =
         talloc_zero(NULL, struct ra_renderpass_gl);
@@ -1097,12 +1113,6 @@ static uint64_t gl_timer_stop(struct ra *ra, ra_timer *ratimer)
     return timer->result;
 }
 
-static void gl_flush(struct ra *ra)
-{
-    GL *gl = ra_gl_get(ra);
-    gl->Flush();
-}
-
 static void gl_debug_marker(struct ra *ra, const char *msg)
 {
     struct ra_gl *p = ra->priv;
@@ -1123,6 +1133,7 @@ static struct ra_fns ra_fns_gl = {
     .clear                  = gl_clear,
     .blit                   = gl_blit,
     .uniform_layout         = std140_layout,
+    .desc_namespace         = gl_desc_namespace,
     .renderpass_create      = gl_renderpass_create,
     .renderpass_destroy     = gl_renderpass_destroy,
     .renderpass_run         = gl_renderpass_run,
@@ -1130,6 +1141,5 @@ static struct ra_fns ra_fns_gl = {
     .timer_destroy          = gl_timer_destroy,
     .timer_start            = gl_timer_start,
     .timer_stop             = gl_timer_stop,
-    .flush                  = gl_flush,
     .debug_marker           = gl_debug_marker,
 };

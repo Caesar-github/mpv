@@ -200,6 +200,7 @@ struct ao_chain {
     bool pts_reset;
 
     struct af_stream *af;
+    struct mp_aconverter *conv; // if af unavailable
     struct ao *ao;
     struct mp_audio_buffer *ao_buffer;
     double ao_resume_time;
@@ -207,8 +208,13 @@ struct ao_chain {
     // 1-element input frame queue.
     struct mp_aframe *input_frame;
 
+    // 1-element output frame queue.
+    struct mp_aframe *output_frame;
+
     // Last known input_mpi format (so af can be reinitialized any time).
     struct mp_aframe *input_format;
+
+    struct mp_aframe *filter_input_format;
 
     struct track *track;
     struct lavfi_pad *filter_src;
@@ -386,7 +392,6 @@ typedef struct MPContext {
     struct frame_info *past_frames;
     int num_past_frames;
 
-    double next_heartbeat;
     double last_idle_tick;
     double next_cache_update;
 
@@ -537,6 +542,8 @@ void issue_refresh_seek(struct MPContext *mpctx, enum seek_precision min_prec);
 // misc.c
 double rel_time_to_abs(struct MPContext *mpctx, struct m_rel_time t);
 double get_play_end_pts(struct MPContext *mpctx);
+double get_play_start_pts(struct MPContext *mpctx);
+double get_ab_loop_start_time(struct MPContext *mpctx);
 void merge_playlist_files(struct playlist *pl);
 float mp_get_cache_percent(struct MPContext *mpctx);
 bool mp_get_cache_idle(struct MPContext *mpctx);

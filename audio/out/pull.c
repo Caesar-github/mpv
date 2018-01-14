@@ -179,6 +179,8 @@ end:
     for (int n = 0; n < ao->num_planes; n++)
         af_fill_silence((char *)data[n] + bytes, full_bytes - bytes, ao->format);
 
+    ao_post_process_data(ao, data, samples);
+
     return bytes / ao->sstride;
 }
 
@@ -190,7 +192,7 @@ int ao_read_data_converted(struct ao *ao, struct ao_convert_fmt *fmt,
     assert(ao->api == &ao_api_pull);
 
     struct ao_pull_state *p = ao->api_priv;
-    void *ndata[MP_NUM_CHANNELS];
+    void *ndata[MP_NUM_CHANNELS] = {0};
 
     if (!ao_need_conversion(fmt))
         return ao_read_data(ao, data, samples, out_time_us);

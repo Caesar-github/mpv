@@ -1,14 +1,19 @@
 #include <pthread.h>
 #include <assert.h>
 
+#include <libavutil/hwcontext.h>
+
+#include "config.h"
+
 #include "hwdec.h"
 
 struct mp_hwdec_devices {
     pthread_mutex_t lock;
 
-    struct mp_hwdec_ctx *hwctx;
+    struct mp_hwdec_ctx **hwctxs;
+    int num_hwctxs;
 
-    void (*load_api)(void *ctx, enum hwdec_type type);
+    void (*load_api)(void *ctx);
     void *load_api_ctx;
 };
 
@@ -23,19 +28,28 @@ void hwdec_devices_destroy(struct mp_hwdec_devices *devs)
 {
     if (!devs)
         return;
-    assert(!devs->hwctx); // must have been hwdec_devices_remove()ed
+    assert(!devs->num_hwctxs); // must have been hwdec_devices_remove()ed
     assert(!devs->load_api); // must have been unset
     pthread_mutex_destroy(&devs->lock);
     talloc_free(devs);
 }
 
-struct mp_hwdec_ctx *hwdec_devices_get(struct mp_hwdec_devices *devs,
-                                       enum hwdec_type type)
+struct AVBufferRef *hwdec_devices_get_lavc(struct mp_hwdec_devices *devs,
+                                           int av_hwdevice_type)
 {
-    struct mp_hwdec_ctx *res = NULL;
+    AVBufferRef *res = NULL;
     pthread_mutex_lock(&devs->lock);
-    if (devs->hwctx && devs->hwctx->type == type)
-        res = devs->hwctx;
+    for (int n = 0; n < devs->num_hwctxs; n++) {
+        struct mp_hwdec_ctx *dev = devs->hwctxs[n];
+        if (dev->av_device_ref) {
+            AVHWDeviceContext *hwctx = (void *)dev->av_device_ref->data;
+            if (hwctx->type == av_hwdevice_type) {
+                if (dev->av_device_ref)
+                    res = av_buffer_ref(dev->av_device_ref);
+                break;
+            }
+        }
+    }
     pthread_mutex_unlock(&devs->lock);
     return res;
 }
@@ -43,7 +57,7 @@ struct mp_hwdec_ctx *hwdec_devices_get(struct mp_hwdec_devices *devs,
 struct mp_hwdec_ctx *hwdec_devices_get_first(struct mp_hwdec_devices *devs)
 {
     pthread_mutex_lock(&devs->lock);
-    struct mp_hwdec_ctx *res = devs->hwctx;
+    struct mp_hwdec_ctx *res = devs->num_hwctxs ? devs->hwctxs[0] : NULL;
     pthread_mutex_unlock(&devs->lock);
     return res;
 }
@@ -51,38 +65,67 @@ struct mp_hwdec_ctx *hwdec_devices_get_first(struct mp_hwdec_devices *devs)
 void hwdec_devices_add(struct mp_hwdec_devices *devs, struct mp_hwdec_ctx *ctx)
 {
     pthread_mutex_lock(&devs->lock);
-    // We support only 1 device; ignore the rest.
-    if (!devs->hwctx)
-        devs->hwctx = ctx;
+    MP_TARRAY_APPEND(devs, devs->hwctxs, devs->num_hwctxs, ctx);
     pthread_mutex_unlock(&devs->lock);
 }
 
 void hwdec_devices_remove(struct mp_hwdec_devices *devs, struct mp_hwdec_ctx *ctx)
 {
     pthread_mutex_lock(&devs->lock);
-    if (devs->hwctx == ctx)
-        devs->hwctx = NULL;
+    for (int n = 0; n < devs->num_hwctxs; n++) {
+        if (devs->hwctxs[n] == ctx) {
+            MP_TARRAY_REMOVE_AT(devs->hwctxs, devs->num_hwctxs, n);
+            break;
+        }
+    }
     pthread_mutex_unlock(&devs->lock);
 }
 
 void hwdec_devices_set_loader(struct mp_hwdec_devices *devs,
-    void (*load_api)(void *ctx, enum hwdec_type type), void *load_api_ctx)
+    void (*load_api)(void *ctx), void *load_api_ctx)
 {
     devs->load_api = load_api;
     devs->load_api_ctx = load_api_ctx;
 }
 
-void hwdec_devices_request(struct mp_hwdec_devices *devs, enum hwdec_type type)
+void hwdec_devices_request_all(struct mp_hwdec_devices *devs)
 {
     if (devs->load_api && !hwdec_devices_get_first(devs))
-        devs->load_api(devs->load_api_ctx, type);
+        devs->load_api(devs->load_api_ctx);
 }
 
-void *hwdec_devices_load(struct mp_hwdec_devices *devs, enum hwdec_type type)
+char *hwdec_devices_get_names(struct mp_hwdec_devices *devs)
 {
-    if (!devs)
-        return NULL;
-    hwdec_devices_request(devs, type);
-    struct mp_hwdec_ctx *hwctx = hwdec_devices_get(devs, type);
-    return hwctx ? hwctx->ctx : NULL;
+    char *res = NULL;
+    for (int n = 0; n < devs->num_hwctxs; n++) {
+        if (res)
+            ta_xstrdup_append(&res, ",");
+        ta_xstrdup_append(&res, devs->hwctxs[n]->driver_name);
+    }
+    return res;
+}
+
+static const struct hwcontext_fns *const hwcontext_fns[] = {
+#if HAVE_D3D_HWACCEL
+    &hwcontext_fns_d3d11,
+#endif
+#if HAVE_D3D9_HWACCEL
+    &hwcontext_fns_dxva2,
+#endif
+#if HAVE_VAAPI
+    &hwcontext_fns_vaapi,
+#endif
+#if HAVE_VDPAU
+    &hwcontext_fns_vdpau,
+#endif
+    NULL,
+};
+
+const struct hwcontext_fns *hwdec_get_hwcontext_fns(int av_hwdevice_type)
+{
+    for (int n = 0; hwcontext_fns[n]; n++) {
+        if (hwcontext_fns[n]->av_hwdevice_type == av_hwdevice_type)
+            return hwcontext_fns[n];
+    }
+    return NULL;
 }

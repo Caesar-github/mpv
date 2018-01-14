@@ -39,7 +39,10 @@ option. Some scripts are loaded internally (like ``--osc``). Each script runs in
 its own thread. Your script is first run "as is", and once that is done, the event loop
 is entered. This event loop will dispatch events received by mpv and call your
 own event handlers which you have registered with ``mp.register_event``, or
-timers added with ``mp.add_timeout`` or similar.
+timers added with ``mp.add_timeout`` or similar. Note that since the
+script starts execution concurrently with player initialization, some properties
+may not be populated with meaningful values until the relevant subsystems have
+initialized.
 
 When the player quits, all scripts will be asked to terminate. This happens via
 a ``shutdown`` event, which by default will make the event loop return. If your
@@ -484,16 +487,17 @@ with ``require 'mp.msg'``.
 
 ``msg.log(level, ...)``
     The level parameter is the message priority. It's a string and one of
-    ``fatal``, ``error``, ``warn``, ``info``, ``v``, ``debug``. The user's
-    settings will determine which of these messages will be visible. Normally,
-    all messages are visible, except ``v`` and ``debug``.
+    ``fatal``, ``error``, ``warn``, ``info``, ``v``, ``debug``, ``trace``. The
+    user's settings will determine which of these messages will be
+    visible. Normally, all messages are visible, except ``v``, ``debug`` and
+    ``trace``.
 
     The parameters after that are all converted to strings. Spaces are inserted
     to separate multiple parameters.
 
     You don't need to add newlines.
 
-``msg.fatal(...)``, ``msg.error(...)``, ``msg.warn(...)``, ``msg.info(...)``, ``msg.verbose(...)``, ``msg.debug(...)``
+``msg.fatal(...)``, ``msg.error(...)``, ``msg.warn(...)``, ``msg.info(...)``, ``msg.verbose(...)``, ``msg.debug(...)``, ``msg.trace(...)``
     All of these are shortcuts and equivalent to the corresponding
     ``msg.log(level, ...)`` call.
 
@@ -587,6 +591,34 @@ strictly part of the guaranteed API.
             ``.`` and ``..`` entries.
 
     On error, ``nil, error`` is returned.
+
+``utils.file_info(path)``
+    Stats the given path for information and returns a table with the
+    following entries:
+
+        ``mode``
+            protection bits (on Windows, always 755 (octal) for directories
+            and 644 (octal) for files)
+        ``size``
+            size in bytes
+        ``atime``
+            time of last access
+        ``mtime``
+            time of last modification
+        ``ctime``
+            time of last metadata change (Linux) / time of creation (Windows)
+        ``is_file``
+            Whether ``path`` is a regular file (boolean)
+        ``is_dir``
+            Whether ``path`` is a directory (boolean)
+
+    ``mode`` and ``size`` are integers.
+    Timestamps (``atime``, ``mtime`` and ``ctime``) are integer seconds since
+    the Unix epoch (Unix time).
+    The booleans ``is_file`` and ``is_dir`` are provided as a convenience;
+    they can be and are derived from ``mode``.
+
+    On error (eg. path does not exist), ``nil, error`` is returned.
 
 ``utils.split_path(path)``
     Split a path into directory component and filename component, and return

@@ -129,7 +129,7 @@ struct mp_imgfmt_desc mp_imgfmt_get_desc(int mpfmt)
         fmt == AV_PIX_FMT_UYYVYY411)
         return mp_only_imgfmt_desc(mpfmt);
     enum mp_component_type is_uint =
-        mp_imgfmt_get_component_type(fmt) == MP_COMPONENT_TYPE_UINT;
+        mp_imgfmt_get_component_type(mpfmt) == MP_COMPONENT_TYPE_UINT;
 
     struct mp_imgfmt_desc desc = {
         .id = mpfmt,
@@ -321,14 +321,17 @@ static bool validate_regular_imgfmt(const struct mp_regular_imgfmt *fmt)
 
 enum mp_csp mp_imgfmt_get_forced_csp(int imgfmt)
 {
-    const AVPixFmtDescriptor *pixdesc =
-        av_pix_fmt_desc_get(imgfmt2pixfmt(imgfmt));
+    enum AVPixelFormat pixfmt = imgfmt2pixfmt(imgfmt);
+    const AVPixFmtDescriptor *pixdesc = av_pix_fmt_desc_get(pixfmt);
 
     // FFmpeg does not provide a flag for XYZ, so this is the best we can do.
     if (pixdesc && strncmp(pixdesc->name, "xyz", 3) == 0)
         return MP_CSP_XYZ;
 
     if (pixdesc && (pixdesc->flags & AV_PIX_FMT_FLAG_RGB))
+        return MP_CSP_RGB;
+
+    if (pixfmt == AV_PIX_FMT_PAL8 || pixfmt == AV_PIX_FMT_MONOBLACK)
         return MP_CSP_RGB;
 
     return MP_CSP_AUTO;
@@ -342,7 +345,7 @@ enum mp_component_type mp_imgfmt_get_component_type(int imgfmt)
     if (!pixdesc)
         return MP_COMPONENT_TYPE_UNKNOWN;
 
-#ifdef AV_PIX_FMT_FLAG_FLOAT
+#if LIBAVUTIL_VERSION_MICRO >= 100
     if (pixdesc->flags & AV_PIX_FMT_FLAG_FLOAT)
         return MP_COMPONENT_TYPE_FLOAT;
 #endif
@@ -438,11 +441,8 @@ bool mp_get_regular_imgfmt(struct mp_regular_imgfmt *dst, int imgfmt)
     res.chroma_w = 1 << pixdesc->log2_chroma_w;
     res.chroma_h = 1 << pixdesc->log2_chroma_h;
 
-#ifdef AV_PIX_FMT_FLAG_BAYER
+#if LIBAVUTIL_VERSION_MICRO >= 100
     if (pixdesc->flags & AV_PIX_FMT_FLAG_BAYER)
-        return false; // it's satan himself
-#else
-    if (strncmp(pixdesc->name, "bayer_", 6) == 0)
         return false; // it's satan himself
 #endif
 

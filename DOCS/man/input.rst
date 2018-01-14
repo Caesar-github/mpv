@@ -913,8 +913,8 @@ Property list
 
 ``file-size``
     Length in bytes of the source file/stream. (This is the same as
-    ``${stream-end}``. For ordered chapters and such, the
-    size of the currently played segment is returned.)
+    ``${stream-end}``. For segmented/multi-part files, this will return the
+    size of the main or manifest file, whatever it is.)
 
 ``estimated-frame-count``
     Total number of frames in current file.
@@ -954,8 +954,7 @@ Property list
 
 ``stream-path``
     Filename (full path) of the stream layer filename. (This is probably
-    useless. It looks like this can be different from ``path`` only when
-    using e.g. ordered chapters.)
+    useless and is almost never different from ``path``.)
 
 ``stream-pos``
     Raw byte position in source stream. Technically, this returns the position
@@ -1259,6 +1258,58 @@ Property list
     Returns ``yes`` if the demuxer is idle, which means the demuxer cache is
     filled to the requested amount, and is currently not reading more data.
 
+``demuxer-cache-state``
+    Various undocumented or half-documented things.
+
+    Each entry in ``seekable-ranges`` represents a region in the demuxer cache
+    that can be seeked to. If there are multiple demuxers active, this only
+    returns information about the "main" demuxer, but might be changed in
+    future to return unified information about all demuxers. The ranges are in
+    arbitrary order. Often, ranges will overlap for a bit, before being joined.
+    In broken corner cases, ranges may overlap all over the place.
+
+    The end of a seek range is usually smaller than the value returned by the
+    ``demuxer-cache-time`` property, because that property returns the guessed
+    buffering amount, while the seek ranges represent the buffered data that
+    can actually be used for cached seeking.
+
+    ``fw-bytes`` is the number of bytes of packets buffered in the range
+    starting from the current decoding position.
+
+    When querying the property with the client API using ``MPV_FORMAT_NODE``,
+    or with Lua ``mp.get_property_native``, this will return a mpv_node with
+    the following contents:
+
+    ::
+
+        MPV_FORMAT_NODE_MAP
+            "seekable-ranges"   MPV_FORMAT_NODE_ARRAY
+                MPV_FORMAT_NODE_MAP
+                    "start"             MPV_FORMAT_DOUBLE
+                    "end"               MPV_FORMAT_DOUBLE
+            "fw-bytes"          MPV_FORMAT_INT64
+
+    Other fields (might be changed or removed in the future):
+
+    ``eof``
+        True if the reader thread has hit the end of the file.
+
+    ``underrun``
+        True if the reader thread could not satisfy a decoder's request for a
+        new packet.
+
+    ``idle``
+        True if the thread is currently not reading.
+
+    ``total-bytes``
+        Sum of packet bytes (plus some overhead estimation) of the entire packet
+        queue, including cached seekable ranges.
+
+    ``fw-bytes``
+        Sum of packet bytes (plus some overhead estimation) of the readahead
+        packet queue (packets between current decoder reader positions and
+        demuxer position).
+
 ``demuxer-via-network``
     Returns ``yes`` if the stream demuxed via the main demuxer is most likely
     played via network. What constitutes "network" is not always clear, might
@@ -1287,8 +1338,8 @@ Property list
 ``seeking``
     Returns ``yes`` if the player is currently seeking, or otherwise trying
     to restart playback. (It's possible that it returns ``yes`` while a file
-    is loaded, or when switching ordered chapter segments. This is because
-    the same underlying code is used for seeking and resyncing.)
+    is loadedThis is because the same underlying code is used for seeking and
+    resyncing.)
 
 ``mixer-active``
     Return ``yes`` if the audio mixer is active, ``no`` otherwise.
@@ -1386,7 +1437,7 @@ Property list
     This is known only once the VO has opened (and possibly later). With some
     VOs (like ``opengl``), this might be never known in advance, but only when
     the decoder attempted to create the hw decoder successfully. (Using
-    ``--opengl-hwdec-interop`` can load it eagerly.) If there are multiple
+    ``--gpu-hwdec-interop`` can load it eagerly.) If there are multiple
     drivers loaded, they will be separated by ``,``.
 
     If no VO is active or no interop driver is known, this property is
@@ -1395,9 +1446,6 @@ Property list
     This does not necessarily use the same values as ``hwdec``. There can be
     multiple interop drivers for the same hardware decoder, depending on
     platform and VO.
-
-    This is somewhat similar to the ``--opengl-hwdec-interop`` option, but
-    it returns the actually loaded backend, not the value of this option.
 
 ``video-format``
     Video format as string.
@@ -2016,10 +2064,6 @@ Property list
 
 ``current-ao``
     Current audio output driver (name as used with ``--ao``).
-
-``audio-out-detected-device``
-    Return the audio device selected by the AO driver (only implemented for
-    some drivers: currently only ``coreaudio``).
 
 ``working-directory``
     Return the working directory of the mpv process. Can be useful for JSON IPC

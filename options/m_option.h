@@ -400,7 +400,7 @@ struct m_option {
 #define UPDATE_TERM             (1 << 7)  // terminal options
 #define UPDATE_DEINT            (1 << 8)  // --deinterlace
 #define UPDATE_OSD              (1 << 10) // related to OSD rendering
-#define UPDATE_BUILTIN_SCRIPTS  (1 << 11) // osc/ytdl
+#define UPDATE_BUILTIN_SCRIPTS  (1 << 11) // osc/ytdl/stats
 #define UPDATE_IMGPAR           (1 << 12) // video image params overrides
 #define UPDATE_INPUT            (1 << 13) // mostly --input-* options
 #define UPDATE_AUDIO            (1 << 14) // --audio-channels etc.
@@ -638,10 +638,10 @@ extern const char m_option_path_separator;
 #define OPT_CHOICE_(optname, varname, flags, choices, ...) \
     OPT_GENERAL(int, optname, varname, flags, M_CHOICES(choices), __VA_ARGS__)
 // Variant which takes a pointer to struct m_opt_choice_alternatives directly
-#define OPT_CHOICE_C(optname, varname, flags, choices) \
+#define OPT_CHOICE_C(optname, varname, flags, choices, ...) \
     OPT_GENERAL(int, optname, varname, flags, .priv = (void *) \
                 MP_EXPECT_TYPE(const struct m_opt_choice_alternatives*, choices), \
-                .type = &m_option_type_choice)
+                .type = &m_option_type_choice, __VA_ARGS__)
 
 #define OPT_FLAGS(...) \
     OPT_CHOICE_(__VA_ARGS__, .type = &m_option_type_flags)
@@ -670,8 +670,9 @@ extern const char m_option_path_separator;
 #define OPT_SIZE_BOX(...) \
     OPT_GENERAL(struct m_geometry, __VA_ARGS__, .type = &m_option_type_size_box)
 
-#define OPT_TRACKCHOICE(name, var) \
-    OPT_CHOICE_OR_INT(name, var, 0, 0, 8190, ({"no", -2}, {"auto", -1}))
+#define OPT_TRACKCHOICE(name, var, ...) \
+    OPT_CHOICE_OR_INT(name, var, 0, 0, 8190, ({"no", -2}, {"auto", -1}), \
+    ## __VA_ARGS__)
 
 #define OPT_ASPECT(...) \
     OPT_GENERAL(float, __VA_ARGS__, .type = &m_option_type_aspect)

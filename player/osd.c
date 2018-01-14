@@ -13,8 +13,6 @@
  *
  * You should have received a copy of the GNU Lesser General Public
  * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
- *
- * Parts under HAVE_GPL are licensed under GNU General Public License.
  */
 
 #include <stddef.h>
@@ -55,14 +53,6 @@ static void sadd_hhmmssff(char **buf, double time, bool fractions)
     char *s = mp_format_time(time, fractions);
     *buf = talloc_strdup_append(*buf, s);
     talloc_free(s);
-}
-
-// If time unknown (MP_NOPTS_VALUE), use 0 instead.
-static void sadd_hhmmssff_u(char **buf, double time, bool fractions)
-{
-    if (time == MP_NOPTS_VALUE)
-        time = 0;
-    sadd_hhmmssff(buf, time, fractions);
 }
 
 static void sadd_percentage(char **buf, int percent) {
@@ -207,13 +197,9 @@ static void term_osd_print_status_lazy(struct MPContext *mpctx)
     saddf(&line, ": ");
 
     // Playback position
-    sadd_hhmmssff_u(&line, get_playback_time(mpctx), mpctx->opts->osd_fractions);
-
-    double len = get_time_length(mpctx);
-    if (len >= 0) {
-        saddf(&line, " / ");
-        sadd_hhmmssff(&line, len, mpctx->opts->osd_fractions);
-    }
+    sadd_hhmmssff(&line, get_playback_time(mpctx), mpctx->opts->osd_fractions);
+    saddf(&line, " / ");
+    sadd_hhmmssff(&line, get_time_length(mpctx), mpctx->opts->osd_fractions);
 
     sadd_percentage(&line, get_percent_pos(mpctx));
 
@@ -275,11 +261,12 @@ static void term_osd_print_status_lazy(struct MPContext *mpctx)
             } else {
                 saddf(&line, "%2ds", (int)s.ts_duration);
             }
-            if (info.size > 0) {
-                if (info.fill >= 1024 * 1024) {
-                    saddf(&line, "+%lldMB", (long long)(info.fill / 1024 / 1024));
+            int64_t cache_size = s.fw_bytes + info.fill;
+            if (cache_size > 0) {
+                if (cache_size >= 1024 * 1024) {
+                    saddf(&line, "+%lldMB", (long long)(cache_size / 1024 / 1024));
                 } else {
-                    saddf(&line, "+%lldKB", (long long)(info.fill / 1024));
+                    saddf(&line, "+%lldKB", (long long)(cache_size / 1024));
                 }
             }
         }
@@ -370,9 +357,13 @@ void set_osd_bar_chapters(struct MPContext *mpctx, int type)
     mpctx->osd_progbar.num_stops = 0;
     double len = get_time_length(mpctx);
     if (len > 0) {
-        if (opts->ab_loop[0] != MP_NOPTS_VALUE) {
+        double ab_loop_start_time = get_ab_loop_start_time(mpctx);
+        if (opts->ab_loop[0] != MP_NOPTS_VALUE ||
+            (ab_loop_start_time != MP_NOPTS_VALUE &&
+               opts->ab_loop[1] != MP_NOPTS_VALUE))
+        {
             MP_TARRAY_APPEND(mpctx, mpctx->osd_progbar.stops,
-                        mpctx->osd_progbar.num_stops, opts->ab_loop[0] / len);
+                        mpctx->osd_progbar.num_stops, ab_loop_start_time / len);
         }
         if (opts->ab_loop[1] != MP_NOPTS_VALUE) {
             MP_TARRAY_APPEND(mpctx, mpctx->osd_progbar.stops,
@@ -442,18 +433,12 @@ static void sadd_osd_status(char **buffer, struct MPContext *mpctx, int level)
             *buffer = talloc_strdup_append(*buffer, text);
             talloc_free(text);
         } else {
-            sadd_hhmmssff_u(buffer, get_playback_time(mpctx), fractions);
-#if HAVE_GPL
-            // Potentially GPL due to 8d190244d21a4d40bb9e8f7d51aa09ca1888de09.
+            sadd_hhmmssff(buffer, get_playback_time(mpctx), fractions);
             if (level == 3) {
-                double len = get_time_length(mpctx);
-                if (len >= 0) {
-                    saddf(buffer, " / ");
-                    sadd_hhmmssff(buffer, len, fractions);
-                }
+                saddf(buffer, " / ");
+                sadd_hhmmssff(buffer, get_time_length(mpctx), fractions);
                 sadd_percentage(buffer, get_percent_pos(mpctx));
             }
-#endif
         }
     }
 }

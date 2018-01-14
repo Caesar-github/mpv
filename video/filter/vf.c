@@ -39,50 +39,24 @@
 #include "video/mp_image_pool.h"
 #include "vf.h"
 
-extern const vf_info_t vf_info_crop;
-extern const vf_info_t vf_info_expand;
-extern const vf_info_t vf_info_scale;
 extern const vf_info_t vf_info_format;
-extern const vf_info_t vf_info_noformat;
-extern const vf_info_t vf_info_flip;
-extern const vf_info_t vf_info_rotate;
-extern const vf_info_t vf_info_mirror;
-extern const vf_info_t vf_info_gradfun;
-extern const vf_info_t vf_info_dsize;
-extern const vf_info_t vf_info_pullup;
 extern const vf_info_t vf_info_sub;
-extern const vf_info_t vf_info_yadif;
-extern const vf_info_t vf_info_stereo3d;
+extern const vf_info_t vf_info_convert;
 extern const vf_info_t vf_info_lavfi;
 extern const vf_info_t vf_info_lavfi_bridge;
 extern const vf_info_t vf_info_vaapi;
 extern const vf_info_t vf_info_vapoursynth;
 extern const vf_info_t vf_info_vapoursynth_lazy;
 extern const vf_info_t vf_info_vdpaupp;
-extern const vf_info_t vf_info_buffer;
 extern const vf_info_t vf_info_d3d11vpp;
 
 // list of available filters:
 static const vf_info_t *const filter_list[] = {
-    &vf_info_crop,
-    &vf_info_expand,
-    &vf_info_scale,
     &vf_info_format,
-    &vf_info_noformat,
-    &vf_info_flip,
-
-    &vf_info_mirror,
+    &vf_info_sub,
+    &vf_info_convert,
     &vf_info_lavfi,
     &vf_info_lavfi_bridge,
-    &vf_info_rotate,
-    &vf_info_gradfun,
-    &vf_info_pullup,
-    &vf_info_yadif,
-    &vf_info_stereo3d,
-
-    &vf_info_dsize,
-    &vf_info_sub,
-    &vf_info_buffer,
 #if HAVE_VAPOURSYNTH_CORE && HAVE_VAPOURSYNTH
     &vf_info_vapoursynth,
 #endif
@@ -552,7 +526,7 @@ static void query_formats(uint8_t *fmts, struct vf_instance *vf)
 
 static bool is_conv_filter(struct vf_instance *vf)
 {
-    return vf && (strcmp(vf->info->name, "scale") == 0 || vf->autoinserted);
+    return vf && (strcmp(vf->info->name, "convert") == 0 || vf->autoinserted);
 }
 
 static const char *find_conv_filter(uint8_t *fmts_in, uint8_t *fmts_out)
@@ -568,7 +542,7 @@ static const char *find_conv_filter(uint8_t *fmts_in, uint8_t *fmts_out)
             }
         }
     }
-    return "scale";
+    return "convert";
 }
 
 static void update_formats(struct vf_chain *c, struct vf_instance *vf,

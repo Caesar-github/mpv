@@ -11,6 +11,10 @@
 #include "config.h"
 #include "stream.h"
 
+#if !HAVE_GPL
+#error GPL only
+#endif
+
 #define SLOF (11700 * 1000UL)
 #define LOF1 (9750 * 1000UL)
 #define LOF2 (10600 * 1000UL)
@@ -21,6 +25,9 @@
 #include <linux/dvb/video.h>
 #include <linux/dvb/audio.h>
 #include <linux/dvb/version.h>
+
+#define MAX_ADAPTERS 16
+#define MAX_FRONTENDS 8
 
 #undef DVB_ATSC
 #if defined(DVB_API_VERSION_MINOR)
@@ -65,7 +72,8 @@ typedef struct {
     unsigned int freq, srate, diseqc;
     char pol;
     unsigned int tpid, dpid1, dpid2, progid, ca, pids[DMX_FILTER_SIZE], pids_cnt;
-    bool is_dvb_x2;
+    bool is_dvb_x2; /* Used only in dvb_get_channels() and parse_vdr_par_string(), use delsys. */
+    unsigned int frontend;
     unsigned int delsys;
     unsigned int stream_id;
     unsigned int service_id;
@@ -86,7 +94,7 @@ typedef struct {
 
 typedef struct {
     int devno;
-    unsigned int delsys_mask;
+    unsigned int delsys_mask[MAX_FRONTENDS];
     dvb_channels_list_t *list;
 } dvb_adapter_config_t;
 
@@ -94,6 +102,7 @@ typedef struct {
     unsigned int adapters_count;
     dvb_adapter_config_t *adapters;
     unsigned int cur_adapter;
+    unsigned int cur_frontend;
 
     int fe_fd;
     int dvr_fd;
@@ -124,6 +133,7 @@ typedef struct {
 /* Keep in sync with enum fe_delivery_system. */
 #ifndef DVB_USE_S2API
 #    define SYS_DVBC_ANNEX_A        1
+#    define SYS_DVBC_ANNEX_B        1
 #    define SYS_DVBT                3
 #    define SYS_DVBS                5
 #    define SYS_DVBS2               6
@@ -151,6 +161,7 @@ typedef struct {
         DELSYS_BIT(SYS_DVBS) |                                          \
         DELSYS_BIT(SYS_DVBS2) |                                         \
         DELSYS_BIT(SYS_ATSC) |                                          \
+        DELSYS_BIT(SYS_DVBC_ANNEX_B) |                                  \
         DELSYS_BIT(SYS_DVBT2) |                                         \
         DELSYS_BIT(SYS_DVBC_ANNEX_C)                                    \
     )

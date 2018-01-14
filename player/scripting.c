@@ -140,7 +140,7 @@ int mp_load_script(struct MPContext *mpctx, const char *fname)
     }
     arg->log = mp_client_get_log(arg->client);
 
-    MP_VERBOSE(arg, "Loading %s %s...\n", backend->name, fname);
+    MP_DBG(arg, "Loading %s %s...\n", backend->name, fname);
 
     pthread_t thread;
     if (pthread_create(&thread, NULL, script_thread, arg)) {
@@ -150,7 +150,7 @@ int mp_load_script(struct MPContext *mpctx, const char *fname)
     }
 
     wait_loaded(mpctx);
-    MP_VERBOSE(mpctx, "Done loading %s.\n", fname);
+    MP_DBG(mpctx, "Done loading %s.\n", fname);
 
     return 0;
 }
@@ -220,6 +220,7 @@ void mp_load_builtin_scripts(struct MPContext *mpctx)
 {
     load_builtin_script(mpctx, mpctx->opts->lua_load_osc, "@osc.lua");
     load_builtin_script(mpctx, mpctx->opts->lua_load_ytdl, "@ytdl_hook.lua");
+    load_builtin_script(mpctx, mpctx->opts->lua_load_stats, "@stats.lua");
 }
 
 void mp_load_scripts(struct MPContext *mpctx)
@@ -253,7 +254,7 @@ typedef int (*mpv_open_cplugin)(mpv_handle *handle);
 
 static int load_cplugin(struct mpv_handle *client, const char *fname)
 {
-    int r = -1;
+    MPContext *ctx = mp_client_get_core(client);
     void *lib = dlopen(fname, RTLD_NOW | RTLD_LOCAL);
     if (!lib)
         goto error;
@@ -262,9 +263,12 @@ static int load_cplugin(struct mpv_handle *client, const char *fname)
     mpv_open_cplugin sym = (mpv_open_cplugin)dlsym(lib, MPV_DLOPEN_FN);
     if (!sym)
         goto error;
-    r = sym(client) ? -1 : 0;
-error:
-    return r;
+    return sym(client) ? -1 : 0;
+error: ;
+    char *err = dlerror();
+    if (err)
+        MP_ERR(ctx, "C plugin error: '%s'\n", err);
+    return -1;
 }
 
 const struct mp_scripting mp_scripting_cplugin = {

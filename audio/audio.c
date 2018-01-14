@@ -358,8 +358,8 @@ struct mp_audio *mp_audio_from_avframe(struct AVFrame *avframe)
 
 #if LIBAVUTIL_VERSION_MICRO >= 100
     // FFmpeg being stupid POS again
-    if (lavc_chmap.num != av_frame_get_channels(avframe))
-        mp_chmap_from_channels(&lavc_chmap, av_frame_get_channels(avframe));
+    if (lavc_chmap.num != avframe->channels)
+        mp_chmap_from_channels(&lavc_chmap, avframe->channels);
 #endif
 
     new->rate = avframe->sample_rate;
@@ -406,6 +406,9 @@ fail:
 
 struct mp_audio *mp_audio_from_aframe(struct mp_aframe *aframe)
 {
+    if (!aframe)
+        return NULL;
+
     struct AVFrame *av = mp_aframe_get_raw_avframe(aframe);
     struct mp_audio *res = mp_audio_from_avframe(av);
     if (!res)
@@ -428,6 +431,34 @@ void mp_audio_config_from_aframe(struct mp_audio *dst, struct mp_aframe *src)
     dst->rate = mp_aframe_get_rate(src);
 }
 
+struct mp_aframe *mp_audio_to_aframe(struct mp_audio *mpa)
+{
+    if (!mpa)
+        return NULL;
+
+    struct mp_aframe *aframe = mp_aframe_create();
+    struct AVFrame *av = mp_aframe_get_raw_avframe(aframe);
+    mp_aframe_set_format(aframe, mpa->format);
+    mp_aframe_set_chmap(aframe, &mpa->channels);
+    mp_aframe_set_rate(aframe, mpa->rate);
+
+    // bullshit it into ffmpeg-compatible parameters
+    struct mp_audio mpb = *mpa;
+    struct mp_chmap chmap;
+    mp_chmap_set_unknown(&chmap, mpb.channels.num);
+    mp_audio_set_channels(&mpb, &chmap);
+    if (af_fmt_is_spdif(mpb.format))
+        mp_audio_set_format(&mpb, AF_FORMAT_S16);
+
+    // put the reference into av, which magically puts it into aframe
+    // aframe keeps its parameters, so the bullshit doesn't matter
+    if (mp_audio_to_avframe(&mpb, av) < 0) {
+        talloc_free(aframe);
+        return NULL;
+    }
+    return aframe;
+}
+
 int mp_audio_to_avframe(struct mp_audio *frame, struct AVFrame *avframe)
 {
     av_frame_unref(avframe);
@@ -442,7 +473,7 @@ int mp_audio_to_avframe(struct mp_audio *frame, struct AVFrame *avframe)
         goto fail;
 #if LIBAVUTIL_VERSION_MICRO >= 100
     // FFmpeg being a stupid POS again
-    av_frame_set_channels(avframe, frame->channels.num);
+    avframe->channels = frame->channels.num;
 #endif
     avframe->sample_rate = frame->rate;
 

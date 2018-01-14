@@ -39,7 +39,6 @@
 #include "osdep/timer.h"
 
 #include "audio/decode/dec_audio.h"
-#include "audio/filter/af.h"
 #include "audio/out/ao.h"
 #include "demux/demux.h"
 #include "stream/stream.h"
@@ -254,12 +253,6 @@ static void mp_seek(MPContext *mpctx, struct seek_params seek)
     if (!mpctx->demuxer || seek.type == MPSEEK_NONE || seek.amount == MP_NOPTS_VALUE)
         return;
 
-    if (!mpctx->demuxer->seekable) {
-        MP_ERR(mpctx, "Cannot seek in this file.\n");
-        MP_ERR(mpctx, "You can forcibly enable it with '--force-seekable=yes'.\n");
-        return;
-    }
-
     bool hr_seek_very_exact = seek.exact == MPSEEK_VERY_EXACT;
     double current_time = get_current_time(mpctx);
     if (current_time == MP_NOPTS_VALUE && seek.type == MPSEEK_RELATIVE)
@@ -278,14 +271,13 @@ static void mp_seek(MPContext *mpctx, struct seek_params seek)
         hr_seek_very_exact = true;
         break;
     case MPSEEK_RELATIVE:
-        demux_flags = seek.amount > 0 ? SEEK_FORWARD : SEEK_BACKWARD;
+        demux_flags = seek.amount > 0 ? SEEK_FORWARD : 0;
         seek_pts = current_time + seek.amount;
         break;
     case MPSEEK_FACTOR: ;
         double len = get_time_length(mpctx);
         if (len >= 0)
             seek_pts = seek.amount * len;
-        demux_flags = SEEK_BACKWARD;
         break;
     default: abort();
     }
@@ -324,10 +316,19 @@ static void mp_seek(MPContext *mpctx, struct seek_params seek)
             hr_seek_offset = MPMAX(hr_seek_offset, -offset);
         }
         demux_pts -= hr_seek_offset;
-        demux_flags = (demux_flags | SEEK_HR | SEEK_BACKWARD) & ~SEEK_FORWARD;
+        demux_flags = (demux_flags | SEEK_HR) & ~SEEK_FORWARD;
     }
 
-    demux_seek(mpctx->demuxer, demux_pts, demux_flags);
+    if (!mpctx->demuxer->seekable)
+        demux_flags |= SEEK_CACHED;
+
+    if (!demux_seek(mpctx->demuxer, demux_pts, demux_flags)) {
+        if (!mpctx->demuxer->seekable) {
+            MP_ERR(mpctx, "Cannot seek in this file.\n");
+            MP_ERR(mpctx, "You can force it with '--force-seekable=yes'.\n");
+        }
+        return;
+    }
 
     // Seek external, extra files too:
     for (int t = 0; t < mpctx->num_tracks; t++) {
@@ -440,11 +441,11 @@ void execute_queued_seek(struct MPContext *mpctx)
     }
 }
 
-// -1 if unknown
+// NOPTS (i.e. <0) if unknown
 double get_time_length(struct MPContext *mpctx)
 {
     struct demuxer *demuxer = mpctx->demuxer;
-    return demuxer ? demuxer->duration : -1;
+    return demuxer && demuxer->duration >= 0 ? demuxer->duration : MP_NOPTS_VALUE;
 }
 
 double get_current_time(struct MPContext *mpctx)
@@ -484,7 +485,7 @@ double get_current_pos_ratio(struct MPContext *mpctx, bool use_range)
     double start = 0;
     double len = get_time_length(mpctx);
     if (use_range) {
-        double startpos = rel_time_to_abs(mpctx, mpctx->opts->play_start);
+        double startpos = get_play_start_pts(mpctx);
         double endpos = get_play_end_pts(mpctx);
         if (endpos == MP_NOPTS_VALUE || endpos > MPMAX(0, len))
             endpos = MPMAX(0, len);
@@ -685,21 +686,6 @@ int get_cache_buffering_percentage(struct MPContext *mpctx)
     return mpctx->demuxer ? mpctx->cache_buffer : -1;
 }
 
-static void handle_heartbeat_cmd(struct MPContext *mpctx)
-{
-#if !HAVE_UWP
-    struct MPOpts *opts = mpctx->opts;
-    if (opts->heartbeat_cmd && !mpctx->paused && mpctx->video_out) {
-        double now = mp_time_sec();
-        if (mpctx->next_heartbeat <= now) {
-            mpctx->next_heartbeat = now + opts->heartbeat_interval;
-            (void)system(opts->heartbeat_cmd);
-        }
-        mp_set_timeout(mpctx, mpctx->next_heartbeat - now);
-    }
-#endif
-}
-
 static void handle_cursor_autohide(struct MPContext *mpctx)
 {
     struct MPOpts *opts = mpctx->opts;
@@ -785,20 +771,29 @@ static void handle_loop_file(struct MPContext *mpctx)
         // Assumes execute_queued_seek() happens before next audio/video is
         // attempted to be decoded or filtered.
         mpctx->stop_play = KEEP_PLAYING;
-        double start = 0;
-        if (opts->ab_loop[0] != MP_NOPTS_VALUE)
-            start = opts->ab_loop[0];
+        double start = get_ab_loop_start_time(mpctx);
+        if (start == MP_NOPTS_VALUE)
+            start = 0;
         mark_seek(mpctx);
         queue_seek(mpctx, MPSEEK_ABSOLUTE, start, MPSEEK_EXACT,
                    MPSEEK_FLAG_NOFLUSH);
     }
 
-    if (opts->loop_file && mpctx->stop_play == AT_END_OF_FILE) {
-        mpctx->stop_play = KEEP_PLAYING;
-        set_osd_function(mpctx, OSD_FFW);
-        queue_seek(mpctx, MPSEEK_ABSOLUTE, 0, MPSEEK_DEFAULT, MPSEEK_FLAG_NOFLUSH);
-        if (opts->loop_file > 0)
-            opts->loop_file--;
+    // Do not attempt to loop-file if --ab-loop is active.
+    else if (opts->loop_file && mpctx->stop_play == AT_END_OF_FILE) {
+        double play_start_pts = get_play_start_pts(mpctx);
+        if (play_start_pts == MP_NOPTS_VALUE)
+            play_start_pts = 0;
+        double play_end_pts = get_play_end_pts(mpctx);
+        if (play_end_pts == MP_NOPTS_VALUE || play_start_pts < play_end_pts){
+            mpctx->stop_play = KEEP_PLAYING;
+            set_osd_function(mpctx, OSD_FFW);
+            queue_seek(mpctx, MPSEEK_ABSOLUTE, play_start_pts, MPSEEK_EXACT,
+                        MPSEEK_FLAG_NOFLUSH);
+            if (opts->loop_file > 0)
+                opts->loop_file--;
+        }
+
     }
 }
 
@@ -1089,7 +1084,6 @@ void run_playloop(struct MPContext *mpctx)
 
     handle_cursor_autohide(mpctx);
     handle_vo_events(mpctx);
-    handle_heartbeat_cmd(mpctx);
     handle_command_updates(mpctx);
 
     if (mpctx->lavfi) {
