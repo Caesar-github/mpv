@@ -8,9 +8,9 @@ Bug-Debian: https://bugs.debian.org/831537
 This patch header follows DEP-3: http://dep.debian.net/deps/dep3/
 --- a/player/main.c
 +++ b/player/main.c
-@@ -447,18 +447,6 @@ int mp_initialize(struct MPContext *mpct
- 
-     handle_deprecated_options(mpctx);
+@@ -428,18 +428,6 @@ int mp_initialize(struct MPContext *mpct
+     if (handle_help_options(mpctx))
+         return -2;
  
 -    if (!print_libav_versions(mp_null_log, 0)) {
 -        // Using mismatched libraries can be legitimate, but even then it's
