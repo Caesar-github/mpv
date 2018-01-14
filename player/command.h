@@ -13,8 +13,6 @@
  *
  * You should have received a copy of the GNU Lesser General Public
  * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
- *
- * Parts under HAVE_GPL are licensed under GNU General Public License.
  */
 
 #ifndef MPLAYER_COMMAND_H
@@ -59,6 +57,7 @@ enum {
     MP_EVENT_WIN_STATE,
     MP_EVENT_CHANGE_PLAYLIST,
     MP_EVENT_CORE_IDLE,
+    MP_EVENT_DURATION_UPDATE,
 };
 
 bool mp_hook_test_completion(struct MPContext *mpctx, char *type);

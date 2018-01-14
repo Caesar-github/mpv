@@ -34,6 +34,7 @@
 #include "osdep/timer.h"
 
 #include "audio/out/ao.h"
+#include "audio/format.h"
 #include "demux/demux.h"
 #include "stream/stream.h"
 #include "sub/osd.h"
@@ -42,7 +43,6 @@
 #include "video/decode/dec_video.h"
 #include "video/decode/vd.h"
 #include "video/out/vo.h"
-#include "audio/filter/af.h"
 #include "audio/decode/dec_audio.h"
 
 #include "core.h"
@@ -116,7 +116,7 @@ static int probe_deint_filters(struct vo_chain *vo_c)
     if (check_output_format(vo_c, IMGFMT_D3D11VA) ||
         check_output_format(vo_c, IMGFMT_D3D11NV12))
         return try_filter(vo_c, "d3d11vpp", VF_DEINTERLACE_LABEL, NULL);
-    char *args[] = {"warn", "no", NULL};
+    char *args[] = {"mode", "send_field", "deint", "interlaced", NULL};
     return try_filter(vo_c, "yadif", VF_DEINTERLACE_LABEL, args);
 }
 
@@ -129,7 +129,7 @@ static void filter_reconfig(struct MPContext *mpctx, struct vo_chain *vo_c)
 
     set_allowed_vo_formats(vo_c);
 
-    char *filters[] = {"autorotate", "autostereo3d", "deinterlace", NULL};
+    char *filters[] = {"autorotate", "deinterlace", NULL};
     for (int n = 0; filters[n]; n++) {
         struct vf_instance *vf = vf_find_by_label(vo_c->vf, filters[n]);
         if (vf)
@@ -144,20 +144,13 @@ static void filter_reconfig(struct MPContext *mpctx, struct vo_chain *vo_c)
     if (params.rotate) {
         if (!(vo_c->vo->driver->caps & VO_CAP_ROTATE90) || params.rotate % 90) {
             // Try to insert a rotation filter.
-            char *args[] = {"angle", "auto", "warn", "no", NULL};
+            double angle = params.rotate / 360.0 * M_PI * 2;
+            char *args[] = {"angle", mp_tprintf(30, "%f", angle),
+                            "ow", mp_tprintf(30, "rotw(%f)", angle),
+                            "oh", mp_tprintf(30, "roth(%f)", angle),
+                            NULL};
             if (try_filter(vo_c, "rotate", "autorotate", args) < 0)
                 MP_ERR(vo_c, "Can't insert rotation filter.\n");
-        }
-    }
-
-    if (params.stereo_in != params.stereo_out &&
-        params.stereo_in > 0 && params.stereo_out >= 0)
-    {
-        char *to = (char *)MP_STEREO3D_NAME(params.stereo_out);
-        if (to) {
-            char *args[] = {"in", "auto", "out", to, "warn", "no", NULL, NULL};
-            if (try_filter(vo_c, "stereo3d", "autostereo3d", args) < 0)
-                MP_ERR(vo_c, "Can't insert 3D conversion filter.\n");
         }
     }
 
@@ -319,13 +312,14 @@ int init_video_decoder(struct MPContext *mpctx, struct track *track)
     d_video->header = track->stream;
     d_video->codec = track->stream->codec;
     d_video->fps = d_video->header->codec->fps;
-    d_video->vo = mpctx->vo_chain->vo;
 
     // Note: at least mpv_opengl_cb_uninit_gl() relies on being able to get
     //       rid of all references to the VO by destroying the VO chain. Thus,
     //       decoders not linked to vo_chain must not use the hwdec context.
-    if (mpctx->vo_chain)
+    if (mpctx->vo_chain) {
         d_video->hwdec_devs = mpctx->vo_chain->hwdec_devs;
+        d_video->vo = mpctx->vo_chain->vo;
+    }
 
     MP_VERBOSE(d_video, "Container reported FPS: %f\n", d_video->fps);
 
@@ -547,7 +541,7 @@ static int video_filter(struct MPContext *mpctx, bool eof)
             vf->initialized = 0;
             mp_image_unrefp(&vo_c->input_mpi);
             vo_c->input_format = (struct mp_image_params){0};
-            MP_VERBOSE(mpctx, "hwdec falback due to filters.\n");
+            MP_VERBOSE(mpctx, "hwdec fallback due to filters.\n");
             return VD_PROGRESS; // try again
         }
         if (vf->initialized < 1) {
@@ -559,6 +553,8 @@ static int video_filter(struct MPContext *mpctx, bool eof)
 
     // If something was decoded, and the filter chain is ready, filter it.
     if (!need_vf_reconfig && vo_c->input_mpi) {
+        if (osd_get_render_subs_in_filter(mpctx->osd))
+            update_subtitles(mpctx, vo_c->input_mpi->pts);
         vf_filter_frame(vf, vo_c->input_mpi);
         vo_c->input_mpi = NULL;
         return VD_PROGRESS;
@@ -1076,10 +1072,10 @@ static void handle_display_sync_frame(struct MPContext *mpctx,
     double prev_error = mpctx->display_sync_error;
     mpctx->display_sync_error += frame_duration - num_vsyncs * vsync;
 
-    MP_DBG(mpctx, "s=%f vsyncs=%d dur=%f ratio=%f err=%.20f (%f/%f)\n",
-           mpctx->speed_factor_v, num_vsyncs, adjusted_duration, ratio,
-           mpctx->display_sync_error, mpctx->display_sync_error / vsync,
-           mpctx->display_sync_error / frame_duration);
+    MP_TRACE(mpctx, "s=%f vsyncs=%d dur=%f ratio=%f err=%.20f (%f/%f)\n",
+            mpctx->speed_factor_v, num_vsyncs, adjusted_duration, ratio,
+            mpctx->display_sync_error, mpctx->display_sync_error / vsync,
+            mpctx->display_sync_error / frame_duration);
 
     MP_STATS(mpctx, "value %f avdiff", av_diff);
 
@@ -1327,7 +1323,7 @@ void write_video(struct MPContext *mpctx)
     osd_set_force_video_pts(mpctx->osd, MP_NOPTS_VALUE);
 
     if (!update_subtitles(mpctx, mpctx->next_frames[0]->pts)) {
-        MP_VERBOSE(mpctx, "Video frame delayed due waiting on subtitles.\n");
+        MP_VERBOSE(mpctx, "Video frame delayed due to waiting on subtitles.\n");
         return;
     }
 

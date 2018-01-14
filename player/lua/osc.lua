@@ -594,6 +594,16 @@ function render_elements(master_ass)
                 end
             end
 
+            -- seek ranges
+            local seekRanges = element.slider.seekRangesF()
+            if not (seekRanges == nil) then
+                for _,range in pairs(seekRanges) do
+                    local pstart = get_slider_ele_pos_for(element, range["start"])
+                    local pend = get_slider_ele_pos_for(element, range["end"])
+                    elem_ass:rect_ccw(pstart, (elem_geo.h/2)-1, pend, (elem_geo.h/2) + 1)
+                end
+            end
+
             elem_ass:draw_stop()
 
             -- add tooltip
@@ -1746,6 +1756,22 @@ function osc_init()
             return ""
         end
     end
+    ne.slider.seekRangesF = function()
+        local cache_state = mp.get_property_native("demuxer-cache-state", nil)
+        if not cache_state then
+            return nil
+        end
+        local duration = mp.get_property_number("duration", nil)
+        if (duration == nil) or duration <= 0 then
+            return nil
+        end
+        local ranges = cache_state["seekable-ranges"]
+        for _, range in pairs(ranges) do
+            range["start"] = 100 * range["start"] / duration
+            range["end"] = 100 * range["end"] / duration
+        end
+        return ranges
+    end
     ne.eventresponder["mouse_move"] = --keyframe seeking when mouse is dragged
         function (element)
             -- mouse move events may pile up during seeking and may still get
@@ -1809,12 +1835,16 @@ function osc_init()
 
     ne.content = function ()
         local dmx_cache = mp.get_property_number("demuxer-cache-duration")
-        local cache_used = mp.get_property_number("cache-used")
+        local cache_used = mp.get_property_number("cache-used", 0)
+        local dmx_cache_state = mp.get_property_native("demuxer-cache-state", {})
         local is_network = mp.get_property_native("demuxer-via-network")
         if dmx_cache then
             dmx_cache = string.format("%3.0fs", dmx_cache)
         end
-        if cache_used then
+        if dmx_cache_state["fw-bytes"] then
+            cache_used = cache_used + dmx_cache_state["fw-bytes"] / 1024
+        end
+        if cache_used > 0 then
             local suffix = " KiB"
             if (cache_used >= 1024) then
                 cache_used = cache_used/1024
@@ -1876,7 +1906,7 @@ function show_osc()
     -- show when disabled can happen (e.g. mouse_move) due to async/delayed unbinding
     if not state.enabled then return end
 
-    msg.debug("show_osc")
+    msg.trace("show_osc")
     --remember last time of invocation (mouse move)
     state.showtime = mp.get_time()
 
@@ -1888,13 +1918,13 @@ function show_osc()
 end
 
 function hide_osc()
-    msg.debug("hide_osc")
+    msg.trace("hide_osc")
     if not state.enabled then
         -- typically hide happens at render() from tick(), but now tick() is
         -- no-op and won't render again to remove the osc, so do that manually.
         state.osc_visible = false
         timer_stop()
-        render() -- state.osc_visible == false -> remove the osc from screen
+        render_wipe()
     elseif (user_opts.fadeduration > 0) then
         if not(state.osc_visible == false) then
             state.anitype = "out"
@@ -1932,7 +1962,7 @@ end
 
 function timer_start()
     if not (state.timer_active) then
-        msg.debug("timer start")
+        msg.trace("timer start")
 
         if (state.timer == nil) then
             -- create new timer
@@ -1948,7 +1978,7 @@ end
 
 function timer_stop()
     if (state.timer_active) then
-        msg.debug("timer stop")
+        msg.trace("timer stop")
 
         if not (state.timer == nil) then
             -- kill timer
@@ -1973,8 +2003,13 @@ function request_init()
     state.initREQ = true
 end
 
+function render_wipe()
+    msg.trace("render_wipe()")
+    mp.set_osd_ass(0, 0, "{}")
+end
+
 function render()
-    msg.debug("rendering")
+    msg.trace("rendering")
     local current_screen_sizeX, current_screen_sizeY, aspect = mp.get_osd_size()
     local mouseX, mouseY = get_virt_mouse_pos()
     local now = mp.get_time()
@@ -2177,7 +2212,7 @@ function tick()
     if (state.idle) then
 
         -- render idle message
-        msg.debug("idle message")
+        msg.trace("idle message")
         local icon_x, icon_y = 320 - 26, 140
 
         local ass = assdraw.ass_new()
@@ -2356,6 +2391,6 @@ end
 
 visibility_mode(user_opts.visibility, true)
 mp.register_script_message("osc-visibility", visibility_mode)
-mp.add_key_binding("del", function() visibility_mode("cycle") end)
+mp.add_key_binding(nil, "visibility", function() visibility_mode("cycle") end)
 
 set_virt_mouse_area(0, 0, 0, 0, "input")

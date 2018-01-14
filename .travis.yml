@@ -5,9 +5,8 @@ os:
   #- osx
 env:
   matrix:
-    - LIBAV=libav-git
-    - LIBAV=ffmpeg-stable
     - LIBAV=ffmpeg-git
+    - LIBAV=libav-git
   global:
     # Coverity token
     - secure: "H21mSRlMhk4BKS0xHZvCFGJxteCP0hRVUxTuNfM2Z9HBsyutuLEYMtViLO86VtM+Tqla3xXPzUdS4ozLwI72Ax/5ZUDXACROj73yW6QhFB5D6rLut12+FjqC7M33Qv2hl0xwgNBmR5dsm1ToP37+Wn+ecJQNvN8fkTXF+HVzOEw="
@@ -31,8 +30,6 @@ matrix:
       env: LIBAV=ffmpeg-git
     - os: osx
       compiler: gcc
-    - os: linux
-      env: LIBAV=ffmpeg-stable
     - os: linux
       compiler: clang
 

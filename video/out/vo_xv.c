@@ -35,12 +35,10 @@
 
 #include "config.h"
 
-#if HAVE_SHM
 #include <sys/types.h>
 #include <sys/ipc.h>
 #include <sys/shm.h>
 #include <X11/extensions/XShm.h>
-#endif
 
 // Note: depends on the inclusion of X11/extensions/XShm.h
 #include <X11/extensions/Xv.h>
@@ -111,10 +109,8 @@ struct xvctx {
     GC f_gc;    // used to paint background
     GC vo_gc;   // used to paint video
     int Shmem_Flag;
-#if HAVE_SHM
     XShmSegmentInfo Shminfo[MAX_BUFFERS];
     int Shm_Warned_Slow;
-#endif
 };
 
 #define MP_FOURCC(a,b,c,d) ((a) | ((b)<<8) | ((c)<<16) | ((unsigned)(d)<<24))
@@ -704,7 +700,6 @@ static bool allocate_xvimage(struct vo *vo, int foo)
     int aligned_w = FFALIGN(ctx->image_width, 32);
     // round up the height to next chroma boundary too
     int aligned_h = FFALIGN(ctx->image_height, 2);
-#if HAVE_SHM
     if (x11->display_is_local && XShmQueryExtension(x11->display)) {
         ctx->Shmem_Flag = 1;
         x11->ShmCompletionEvent = XShmGetEventBase(x11->display)
@@ -734,9 +729,7 @@ static bool allocate_xvimage(struct vo *vo, int foo)
         XShmAttach(x11->display, &ctx->Shminfo[foo]);
         XSync(x11->display, False);
         shmctl(ctx->Shminfo[foo].shmid, IPC_RMID, 0);
-    } else
-#endif
-    {
+    } else {
         ctx->xvimage[foo] =
             (XvImage *) XvCreateImage(x11->display, ctx->xv_port,
                                       ctx->xv_format, NULL, aligned_w,
@@ -766,22 +759,17 @@ static bool allocate_xvimage(struct vo *vo, int foo)
 static void deallocate_xvimage(struct vo *vo, int foo)
 {
     struct xvctx *ctx = vo->priv;
-#if HAVE_SHM
     if (ctx->Shmem_Flag) {
         XShmDetach(vo->x11->display, &ctx->Shminfo[foo]);
         shmdt(ctx->Shminfo[foo].shmaddr);
-    } else
-#endif
-    {
+    } else {
         av_free(ctx->xvimage[foo]->data);
     }
     if (ctx->xvimage[foo])
         XFree(ctx->xvimage[foo]);
 
     ctx->xvimage[foo] = NULL;
-#if HAVE_SHM
     ctx->Shminfo[foo] = (XShmSegmentInfo){0};
-#endif
 
     XSync(vo->x11->display, False);
     return;
@@ -795,16 +783,14 @@ static inline void put_xvimage(struct vo *vo, XvImage *xvi)
     struct mp_rect *dst = &ctx->dst_rect;
     int dw = dst->x1 - dst->x0, dh = dst->y1 - dst->y0;
     int sw = src->x1 - src->x0, sh = src->y1 - src->y0;
-#if HAVE_SHM
+
     if (ctx->Shmem_Flag) {
         XvShmPutImage(x11->display, ctx->xv_port, x11->window, ctx->vo_gc, xvi,
                       src->x0, src->y0, sw, sh,
                       dst->x0, dst->y0, dw, dh,
                       True);
         x11->ShmCompletionWaitCount++;
-    } else
-#endif
-    {
+    } else {
         XvPutImage(x11->display, ctx->xv_port, x11->window, ctx->vo_gc, xvi,
                    src->x0, src->y0, sw, sh,
                    dst->x0, dst->y0, dw, dh);
@@ -839,7 +825,6 @@ static struct mp_image get_xv_buffer(struct vo *vo, int buf_index)
 
 static void wait_for_completion(struct vo *vo, int max_outstanding)
 {
-#if HAVE_SHM
     struct xvctx *ctx = vo->priv;
     struct vo_x11_state *x11 = vo->x11;
     if (ctx->Shmem_Flag) {
@@ -853,7 +838,6 @@ static void wait_for_completion(struct vo *vo, int max_outstanding)
             vo_x11_check_events(vo);
         }
     }
-#endif
 }
 
 static void flip_page(struct vo *vo)

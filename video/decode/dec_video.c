@@ -1,20 +1,18 @@
 /*
  * This file is part of mpv.
  *
- * mpv is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
+ * mpv is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
  *
  * mpv is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * GNU Lesser General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License along
- * with mpv.  If not, see <http://www.gnu.org/licenses/>.
- *
- * Almost LGPL.
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <stdio.h>
@@ -229,6 +227,9 @@ static void fix_image_params(struct dec_video *d_video,
     if (p.p_w <= 0 || p.p_h <= 0)
         p.p_w = p.p_h = 1;
 
+    p.rotate = d_video->codec->rotate;
+    p.stereo_in = d_video->codec->stereo_mode;
+
     if (opts->video_rotate < 0) {
         p.rotate = 0;
     } else {
@@ -392,6 +393,13 @@ void video_set_start(struct dec_video *d_video, double start_pts)
     d_video->start_pts = start_pts;
 }
 
+static bool is_new_segment(struct dec_video *d_video, struct demux_packet *p)
+{
+    return p->segmented &&
+        (p->start != d_video->start || p->end != d_video->end ||
+         p->codec != d_video->codec);
+}
+
 void video_work(struct dec_video *d_video)
 {
     if (d_video->current_mpi || !d_video->vd_driver)
@@ -404,7 +412,7 @@ void video_work(struct dec_video *d_video)
         return;
     }
 
-    if (d_video->packet && d_video->packet->new_segment) {
+    if (d_video->packet && is_new_segment(d_video, d_video->packet)) {
         assert(!d_video->new_segment);
         d_video->new_segment = d_video->packet;
         d_video->packet = NULL;
@@ -473,8 +481,6 @@ void video_work(struct dec_video *d_video)
 
         d_video->start = new_segment->start;
         d_video->end = new_segment->end;
-
-        new_segment->new_segment = false;
 
         d_video->packet = new_segment;
         d_video->current_state = DATA_AGAIN;

@@ -47,10 +47,11 @@
 #include "osdep/io.h"
 #include "osdep/threads.h"
 
+extern const struct vo_driver video_out_mediacodec_embed;
 extern const struct vo_driver video_out_x11;
 extern const struct vo_driver video_out_vdpau;
 extern const struct vo_driver video_out_xv;
-extern const struct vo_driver video_out_opengl;
+extern const struct vo_driver video_out_gpu;
 extern const struct vo_driver video_out_opengl_cb;
 extern const struct vo_driver video_out_null;
 extern const struct vo_driver video_out_image;
@@ -60,26 +61,23 @@ extern const struct vo_driver video_out_drm;
 extern const struct vo_driver video_out_direct3d;
 extern const struct vo_driver video_out_sdl;
 extern const struct vo_driver video_out_vaapi;
-extern const struct vo_driver video_out_wayland;
 extern const struct vo_driver video_out_rpi;
 extern const struct vo_driver video_out_tct;
 
 const struct vo_driver *const video_out_drivers[] =
 {
+#if HAVE_ANDROID
+    &video_out_mediacodec_embed,
+#endif
 #if HAVE_RPI
     &video_out_rpi,
 #endif
-#if HAVE_GL
-    &video_out_opengl,
-#endif
+    &video_out_gpu,
 #if HAVE_VDPAU
     &video_out_vdpau,
 #endif
 #if HAVE_DIRECT3D
     &video_out_direct3d,
-#endif
-#if HAVE_WAYLAND
-    &video_out_wayland,
 #endif
 #if HAVE_XV
     &video_out_xv,
@@ -87,7 +85,7 @@ const struct vo_driver *const video_out_drivers[] =
 #if HAVE_SDL2
     &video_out_sdl,
 #endif
-#if HAVE_VAAPI_X11
+#if HAVE_VAAPI_X11 && HAVE_GPL
     &video_out_vaapi,
 #endif
 #if HAVE_X11
@@ -135,6 +133,8 @@ struct vo_internal {
     int internal_events;            // event mask for us
 
     int64_t nominal_vsync_interval;
+
+    bool external_renderloop_drive;
 
     int64_t vsync_interval;
     int64_t *vsync_samples;
@@ -196,8 +196,9 @@ const struct m_obj_list vo_obj_list = {
     .get_desc = get_desc,
     .description = "video outputs",
     .aliases = {
-        {"gl", "opengl"},
+        {"gl", "gpu"},
         {"direct3d_shaders", "direct3d"},
+        {"opengl", "gpu"},
         {0}
     },
     .allow_unknown_entries = true,
@@ -789,11 +790,12 @@ static void wait_until(struct vo *vo, int64_t target)
     pthread_mutex_unlock(&in->lock);
 }
 
-static bool render_frame(struct vo *vo)
+bool vo_render_frame_external(struct vo *vo)
 {
     struct vo_internal *in = vo->in;
     struct vo_frame *frame = NULL;
     bool got_frame = false;
+    bool flipped = false;
 
     update_display_fps(vo);
 
@@ -855,6 +857,7 @@ static bool render_frame(struct vo *vo)
     if (in->dropped_frame) {
         in->drop_count += 1;
     } else {
+        flipped = true;
         in->rendering = true;
         in->hasframe_rendered = true;
         int64_t prev_drop_count = vo->in->drop_count;
@@ -886,6 +889,11 @@ static bool render_frame(struct vo *vo)
         update_vsync_timing_after_swap(vo);
     }
 
+    if (vo->driver->caps & VO_CAP_NOREDRAW) {
+        talloc_free(in->current_frame);
+        in->current_frame = NULL;
+    }
+
     if (in->dropped_frame) {
         MP_STATS(vo, "drop-vo");
     } else {
@@ -900,6 +908,8 @@ static bool render_frame(struct vo *vo)
 done:
     talloc_free(frame);
     pthread_mutex_unlock(&in->lock);
+    if (in->external_renderloop_drive)
+        return flipped;
     return got_frame || (in->frame_queued && in->frame_queued->display_synced);
 }
 
@@ -907,7 +917,7 @@ static void do_redraw(struct vo *vo)
 {
     struct vo_internal *in = vo->in;
 
-    if (!vo->config_ok)
+    if (!vo->config_ok || (vo->driver->caps & VO_CAP_NOREDRAW))
         return;
 
     pthread_mutex_lock(&in->lock);
@@ -942,6 +952,44 @@ static void do_redraw(struct vo *vo)
         talloc_free(frame);
 }
 
+static void drop_unrendered_frame(struct vo *vo)
+{
+    struct vo_internal *in = vo->in;
+
+    pthread_mutex_lock(&in->lock);
+
+    if (!in->frame_queued)
+        goto end;
+
+    if ((in->frame_queued->pts + in->frame_queued->duration) > mp_time_us())
+        goto end;
+
+    MP_VERBOSE(vo, "Dropping unrendered frame (pts %"PRId64")\n", in->frame_queued->pts);
+
+    talloc_free(in->frame_queued);
+    in->frame_queued = NULL;
+    in->hasframe = false;
+    pthread_cond_broadcast(&in->wakeup);
+    wakeup_core(vo);
+
+end:
+    pthread_mutex_unlock(&in->lock);
+}
+
+void vo_enable_external_renderloop(struct vo *vo)
+{
+    struct vo_internal *in = vo->in;
+    MP_VERBOSE(vo, "Enabling event driven renderloop!\n");
+    in->external_renderloop_drive = true;
+}
+
+void vo_disable_external_renderloop(struct vo *vo)
+{
+    struct vo_internal *in = vo->in;
+    MP_VERBOSE(vo, "Disabling event driven renderloop!\n");
+    in->external_renderloop_drive = false;
+}
+
 static void *vo_thread(void *ptr)
 {
     struct vo *vo = ptr;
@@ -963,7 +1011,11 @@ static void *vo_thread(void *ptr)
         if (in->terminate)
             break;
         vo->driver->control(vo, VOCTRL_CHECK_EVENTS, NULL);
-        bool working = render_frame(vo);
+        bool working = false;
+        if (!in->external_renderloop_drive || !in->hasframe_rendered)
+            working = vo_render_frame_external(vo);
+        else
+            drop_unrendered_frame(vo);
         int64_t now = mp_time_us();
         int64_t wait_until = now + (working ? 0 : (int64_t)1e9);
 
@@ -976,7 +1028,7 @@ static void *vo_thread(void *ptr)
                 wakeup_core(vo);
             }
         }
-        if (vo->want_redraw && !in->want_redraw) {
+        if (vo->want_redraw) {
             vo->want_redraw = false;
             in->want_redraw = true;
             wakeup_core(vo);

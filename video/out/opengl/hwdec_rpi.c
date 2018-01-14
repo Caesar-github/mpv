@@ -33,8 +33,8 @@
 #include "common/common.h"
 #include "common/msg.h"
 #include "video/mp_image.h"
+#include "video/out/gpu/hwdec.h"
 
-#include "hwdec.h"
 #include "common.h"
 #include "ra_gl.h"
 
@@ -378,7 +378,6 @@ static int create(struct ra_hwdec *hw)
 
 const struct ra_hwdec_driver ra_hwdec_rpi_overlay = {
     .name = "rpi-overlay",
-    .api = HWDEC_RPI,
     .priv_size = sizeof(struct priv),
     .imgfmts = {IMGFMT_MMAL, IMGFMT_420P, 0},
     .init = create,

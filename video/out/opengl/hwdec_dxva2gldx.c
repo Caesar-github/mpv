@@ -20,10 +20,10 @@
 
 #include "common/common.h"
 #include "osdep/windows_utils.h"
-#include "hwdec.h"
+#include "video/out/gpu/hwdec.h"
 #include "ra_gl.h"
 #include "video/hwdec.h"
-#include "video/decode/d3d.h"
+#include "video/d3d.h"
 
 // for  WGL_ACCESS_READ_ONLY_NV
 #include <GL/wglext.h>
@@ -48,8 +48,8 @@ static void uninit(struct ra_hwdec *hw)
 {
     struct priv_owner *p = hw->priv;
 
-    if (p->hwctx.ctx)
-        hwdec_devices_remove(hw->devs, &p->hwctx);
+    hwdec_devices_remove(hw->devs, &p->hwctx);
+    av_buffer_unref(&p->hwctx.av_device_ref);
 
     if (p->device)
         IDirect3DDevice9Ex_Release(p->device);
@@ -78,9 +78,7 @@ static int init(struct ra_hwdec *hw)
     IDirect3DDevice9Ex_AddRef(p->device);
 
     p->hwctx = (struct mp_hwdec_ctx){
-        .type = HWDEC_DXVA2,
         .driver_name = hw->driver->name,
-        .ctx = (IDirect3DDevice9 *)p->device,
         .av_device_ref = d3d9_wrap_device_ref((IDirect3DDevice9 *)p->device),
     };
     hwdec_devices_add(hw->devs, &p->hwctx);
@@ -229,7 +227,6 @@ static int mapper_map(struct ra_hwdec_mapper *mapper)
 const struct ra_hwdec_driver ra_hwdec_dxva2gldx = {
     .name = "dxva2-dxinterop",
     .priv_size = sizeof(struct priv_owner),
-    .api = HWDEC_DXVA2,
     .imgfmts = {IMGFMT_DXVA2, 0},
     .init = init,
     .uninit = uninit,

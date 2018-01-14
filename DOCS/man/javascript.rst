@@ -164,9 +164,13 @@ Otherwise, where the Lua APIs return ``nil`` on error, JS returns ``undefined``.
 
 ``mp.msg.debug(...)``
 
+``mp.msg.trace(...)``
+
 ``mp.utils.getcwd()`` (LE)
 
 ``mp.utils.readdir(path [, filter])`` (LE)
+
+``mp.utils.file_info(path)`` (LE)
 
 ``mp.utils.split_path(path)``
 
@@ -222,7 +226,7 @@ Note: ``read_file`` and ``write_file`` throw on errors, allow text content only.
 
 ``exit()`` (global)
     Make the script exit at the end of the current event loop iteration.
-    Note: please reomve added key bindings before calling ``exit()``.
+    Note: please remove added key bindings before calling ``exit()``.
 
 ``mp.utils.compile_js(fname, content_str)``
     Compiles the JS code ``content_str`` as file name ``fname`` (without loading

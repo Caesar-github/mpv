@@ -13,8 +13,6 @@
  *
  * You should have received a copy of the GNU Lesser General Public
  * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
- *
- * Parts under HAVE_GPL are licensed under GNU General Public License.
  */
 
 #include <stdio.h>
@@ -149,11 +147,11 @@ void mp_print_version(struct mp_log *log, int always)
     mp_msg(log, v, "\n");
     // Only in verbose mode.
     if (!always) {
-#if HAVE_GPL
-        // Possibly GPL due to 0810e42750fb2e2e0d602388cef1b8ea8015d935.
         mp_msg(log, MSGL_V, "Configuration: " CONFIGURATION "\n");
-#endif
         mp_msg(log, MSGL_V, "List of enabled features: %s\n", FULLCONFIG);
+        #ifdef NDEBUGs
+            mp_msg(log, MSGL_V, "Built with NDEBUG.\n");
+        #endif
     }
 }
 
@@ -297,21 +295,6 @@ static bool handle_help_options(struct MPContext *mpctx)
     return false;
 }
 
-static void handle_deprecated_options(struct MPContext *mpctx)
-{
-    struct MPOpts *opts = mpctx->opts;
-    struct m_obj_settings *vo = opts->vo->video_driver_list;
-    if (vo && vo->name && strcmp(vo->name, "opengl-hq") == 0) {
-        MP_WARN(mpctx,
-            "--vo=opengl-hq is deprecated! Use --profile=opengl-hq instead.\n");
-        // Fudge it. This will replace the --vo option too, which is why we
-        // unset/safe it, and later restore it.
-        talloc_free(vo->name);
-        vo->name = talloc_strdup(NULL, "opengl");
-        m_config_set_profile(mpctx->mconfig, "opengl-hq", 0);
-    }
-}
-
 static int cfg_include(void *ctx, char *filename, int flags)
 {
     struct MPContext *mpctx = ctx;
@@ -444,8 +427,6 @@ int mp_initialize(struct MPContext *mpctx, char **options)
 
     if (handle_help_options(mpctx))
         return -2;
-
-    handle_deprecated_options(mpctx);
 
     if (!print_libav_versions(mp_null_log, 0)) {
         // Using mismatched libraries can be legitimate, but even then it's

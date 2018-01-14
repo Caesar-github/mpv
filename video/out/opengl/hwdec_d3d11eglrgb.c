@@ -27,10 +27,10 @@
 #include "common/common.h"
 #include "osdep/timer.h"
 #include "osdep/windows_utils.h"
-#include "hwdec.h"
+#include "video/out/gpu/hwdec.h"
 #include "ra_gl.h"
 #include "video/hwdec.h"
-#include "video/decode/d3d.h"
+#include "video/d3d.h"
 
 #ifndef EGL_D3D_TEXTURE_SUBRESOURCE_ID_ANGLE
 #define EGL_D3D_TEXTURE_SUBRESOURCE_ID_ANGLE 0x3AAB
@@ -54,8 +54,7 @@ static void uninit(struct ra_hwdec *hw)
 {
     struct priv_owner *p = hw->priv;
 
-    if (p->hwctx.ctx)
-        hwdec_devices_remove(hw->devs, &p->hwctx);
+    hwdec_devices_remove(hw->devs, &p->hwctx);
 
     if (p->d3d11_device)
         ID3D11Device_Release(p->d3d11_device);
@@ -137,9 +136,7 @@ static int init(struct ra_hwdec *hw)
     }
 
     p->hwctx = (struct mp_hwdec_ctx){
-        .type = HWDEC_D3D11VA,
         .driver_name = hw->driver->name,
-        .ctx = p->d3d11_device,
         .av_device_ref = d3d11_wrap_device_ref(p->d3d11_device),
     };
     hwdec_devices_add(hw->devs, &p->hwctx);
@@ -261,7 +258,6 @@ static int mapper_map(struct ra_hwdec_mapper *mapper)
 const struct ra_hwdec_driver ra_hwdec_d3d11eglrgb = {
     .name = "d3d11-egl-rgb",
     .priv_size = sizeof(struct priv_owner),
-    .api = HWDEC_D3D11VA,
     .imgfmts = {IMGFMT_D3D11RGB, 0},
     .init = init,
     .uninit = uninit,

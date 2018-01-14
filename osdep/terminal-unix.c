@@ -28,20 +28,12 @@
 #include <pthread.h>
 #include <assert.h>
 
-#if HAVE_TERMIOS
-#if HAVE_TERMIOS_H
 #include <termios.h>
-#endif
-#if HAVE_SYS_TERMIOS_H
-#include <sys/termios.h>
-#endif
-#endif
-
 #include <unistd.h>
-#include <poll.h>
 
 #include "osdep/io.h"
 #include "osdep/threads.h"
+#include "osdep/polldev.h"
 
 #include "common/common.h"
 #include "misc/bstr.h"
@@ -50,10 +42,10 @@
 #include "misc/ctype.h"
 #include "terminal.h"
 
-#if HAVE_TERMIOS
 static volatile struct termios tio_orig;
 static volatile int tio_orig_set;
-#endif
+
+static int tty_in = -1, tty_out = -1;
 
 struct key_entry {
     const char *seq;
@@ -181,7 +173,7 @@ static struct termbuf buf;
 
 static bool getch2(struct input_ctx *input_ctx)
 {
-    int retval = read(0, &buf.b[buf.len], BUF_LEN - buf.len);
+    int retval = read(tty_in, &buf.b[buf.len], BUF_LEN - buf.len);
     /* Return false on EOF to stop running select() on the FD, as it'd
      * trigger all the time. Note that it's possible to get temporary
      * EOF on terminal if the user presses ctrl-d, but that shouldn't
@@ -269,9 +261,9 @@ static void enable_kx(bool enable)
     // tty. Note that stderr being redirected away has no influence over mpv's
     // I/O handling except for disabling the terminal OSD, and thus stderr
     // shouldn't be relied on here either.
-    if (isatty(STDOUT_FILENO)) {
+    if (isatty(tty_out)) {
         char *cmd = enable ? "\033=" : "\033>";
-        (void)write(STDOUT_FILENO, cmd, strlen(cmd));
+        (void)write(tty_out, cmd, strlen(cmd));
     }
 }
 
@@ -282,9 +274,8 @@ static void do_activate_getch2(void)
 
     enable_kx(true);
 
-#if HAVE_TERMIOS
     struct termios tio_new;
-    tcgetattr(0,&tio_new);
+    tcgetattr(tty_in,&tio_new);
 
     if (!tio_orig_set) {
         tio_orig = tio_new;
@@ -294,8 +285,7 @@ static void do_activate_getch2(void)
     tio_new.c_lflag &= ~(ICANON|ECHO); /* Clear ICANON and ECHO. */
     tio_new.c_cc[VMIN] = 1;
     tio_new.c_cc[VTIME] = 0;
-    tcsetattr(0,TCSANOW,&tio_new);
-#endif
+    tcsetattr(tty_in,TCSANOW,&tio_new);
 
     getch2_active = 1;
 }
@@ -307,13 +297,11 @@ static void do_deactivate_getch2(void)
 
     enable_kx(false);
 
-#if HAVE_TERMIOS
     if (tio_orig_set) {
         // once set, it will never be set again
         // so we can cast away volatile here
-        tcsetattr(0, TCSANOW, (const struct termios *) &tio_orig);
+        tcsetattr(tty_in, TCSANOW, (const struct termios *) &tio_orig);
     }
-#endif
 
     getch2_active = 0;
 }
@@ -340,7 +328,7 @@ static void getch2_poll(void)
         return;
 
     // check if stdin is in the foreground process group
-    int newstatus = (tcgetpgrp(0) == getpgrp());
+    int newstatus = (tcgetpgrp(tty_in) == getpgrp());
 
     // and activate getch2 if it is, deactivate otherwise
     if (newstatus)
@@ -379,6 +367,14 @@ static void close_death_pipe(void)
     }
 }
 
+static void close_tty(void)
+{
+    if (tty_in >= 0 && tty_in != STDIN_FILENO)
+        close(tty_in);
+
+    tty_in = tty_out = -1;
+}
+
 static void quit_request_sighandler(int signum)
 {
     do_deactivate_getch2();
@@ -393,14 +389,14 @@ static void *terminal_thread(void *ptr)
     while (1) {
         getch2_poll();
         struct pollfd fds[2] = {
-            {.events = POLLIN, .fd = death_pipe[0]},
-            {.events = POLLIN, .fd = STDIN_FILENO},
+            { .events = POLLIN, .fd = death_pipe[0] },
+            { .events = POLLIN, .fd = tty_in }
         };
-        poll(fds, stdin_ok ? 2 : 1, -1);
+        polldev(fds, stdin_ok ? 2 : 1, -1);
         if (fds[0].revents)
             break;
         if (fds[1].revents)
-            stdin_ok = getch2(input_ctx);
+            getch2(input_ctx);
     }
     char c;
     bool quit = read(death_pipe[0], &c, 1) == 1 && c == 1;
@@ -424,13 +420,14 @@ void terminal_setup_getch(struct input_ctx *ictx)
     // Disable reading from the terminal even if stdout is not a tty, to make
     //   mpv ... | less
     // do the right thing.
-    read_terminal = isatty(STDIN_FILENO) && isatty(STDOUT_FILENO);
+    read_terminal = isatty(tty_in) && isatty(STDOUT_FILENO);
 
     input_ctx = ictx;
 
     if (pthread_create(&input_thread, NULL, terminal_thread, NULL)) {
         input_ctx = NULL;
         close_death_pipe();
+        close_tty();
         return;
     }
 
@@ -453,14 +450,15 @@ void terminal_uninit(void)
     setsigaction(SIGTTIN, SIG_DFL, 0, false);
     setsigaction(SIGTTOU, SIG_DFL, 0, false);
 
-    do_deactivate_getch2();
-
     if (input_ctx) {
         (void)write(death_pipe[1], &(char){0}, 1);
         pthread_join(input_thread, NULL);
         close_death_pipe();
         input_ctx = NULL;
     }
+
+    do_deactivate_getch2();
+    close_tty();
 
     getch2_enabled = 0;
     read_terminal = false;
@@ -474,7 +472,7 @@ bool terminal_in_background(void)
 void terminal_get_size(int *w, int *h)
 {
     struct winsize ws;
-    if (ioctl(0, TIOCGWINSZ, &ws) < 0 || !ws.ws_row || !ws.ws_col)
+    if (ioctl(tty_in, TIOCGWINSZ, &ws) < 0 || !ws.ws_row || !ws.ws_col)
         return;
 
     *w = ws.ws_col;
@@ -485,6 +483,12 @@ void terminal_init(void)
 {
     assert(!getch2_enabled);
     getch2_enabled = 1;
+
+    tty_in = tty_out = open("/dev/tty", O_RDWR | O_CLOEXEC);
+    if (tty_in < 0) {
+        tty_in = STDIN_FILENO;
+        tty_out = STDOUT_FILENO;
+    }
 
     // handlers to fix terminal settings
     setsigaction(SIGCONT, continue_sighandler, 0, true);
