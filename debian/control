@@ -14,7 +14,6 @@ Build-Depends:
  libavdevice-dev (>= 7:3.3),
  libavfilter-dev (>= 7:3.3),
  libavformat-dev (>= 7:3.3),
- libavresample-dev (>= 7:3.3),
  libavutil-dev (>= 7:3.3),
  libbluray-dev,
  libcaca-dev,
