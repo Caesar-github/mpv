@@ -13,8 +13,6 @@
  *
  * You should have received a copy of the GNU Lesser General Public
  * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
- *
- * Parts under HAVE_GPL are licensed under GNU General Public License.
  */
 
 #ifndef MPLAYER_CFG_MPLAYER_H
@@ -44,18 +42,17 @@
 #include "video/hwdec.h"
 #include "video/image_writer.h"
 #include "sub/osd.h"
-#include "audio/filter/af.h"
 #include "audio/decode/dec_audio.h"
 #include "player/core.h"
 #include "player/command.h"
 #include "stream/stream.h"
 
-#if HAVE_DRM
-#include "video/out/drm_common.h"
+#if HAVE_LIBAF
+#include "audio/filter/af.h"
 #endif
 
-#if HAVE_GL
-#include "video/out/opengl/hwdec.h"
+#if HAVE_DRM
+#include "video/out/drm_common.h"
 #endif
 
 static void print_version(struct mp_log *log)
@@ -69,6 +66,7 @@ extern const struct m_sub_options stream_dvb_conf;
 extern const struct m_sub_options stream_lavf_conf;
 extern const struct m_sub_options stream_cache_conf;
 extern const struct m_sub_options sws_conf;
+extern const struct m_sub_options drm_conf;
 extern const struct m_sub_options demux_rawaudio_conf;
 extern const struct m_sub_options demux_rawvideo_conf;
 extern const struct m_sub_options demux_lavf_conf;
@@ -87,32 +85,13 @@ extern const struct m_obj_list af_obj_list;
 extern const struct m_obj_list vo_obj_list;
 extern const struct m_obj_list ao_obj_list;
 
+extern const struct m_sub_options opengl_conf;
+extern const struct m_sub_options vulkan_conf;
+extern const struct m_sub_options spirv_conf;
+extern const struct m_sub_options d3d11_conf;
+extern const struct m_sub_options d3d11va_conf;
 extern const struct m_sub_options angle_conf;
 extern const struct m_sub_options cocoa_conf;
-
-const struct m_opt_choice_alternatives mp_hwdec_names[] = {
-    {"no",          HWDEC_NONE},
-    {"auto",        HWDEC_AUTO},
-    {"yes" ,        HWDEC_AUTO},
-    {"auto-copy",   HWDEC_AUTO_COPY},
-    {"vdpau",       HWDEC_VDPAU},
-    {"vdpau-copy",  HWDEC_VDPAU_COPY},
-    {"videotoolbox",HWDEC_VIDEOTOOLBOX},
-    {"videotoolbox-copy",HWDEC_VIDEOTOOLBOX_COPY},
-    {"vaapi",       HWDEC_VAAPI},
-    {"vaapi-copy",  HWDEC_VAAPI_COPY},
-    {"dxva2",       HWDEC_DXVA2},
-    {"dxva2-copy",  HWDEC_DXVA2_COPY},
-    {"d3d11va",     HWDEC_D3D11VA},
-    {"d3d11va-copy",HWDEC_D3D11VA_COPY},
-    {"rpi",         HWDEC_RPI},
-    {"rpi-copy",    HWDEC_RPI_COPY},
-    {"mediacodec",  HWDEC_MEDIACODEC},
-    {"cuda",        HWDEC_CUDA},
-    {"cuda-copy",   HWDEC_CUDA_COPY},
-    {"crystalhd",   HWDEC_CRYSTALHD},
-    {0}
-};
 
 static const struct m_sub_options screenshot_conf = {
     .opts = image_writer_opts,
@@ -173,14 +152,7 @@ static const m_option_t mp_vo_opt_list[] = {
     OPT_STRING("vo-mmcss-profile", mmcss_profile, 0),
 #endif
 #if HAVE_DRM
-    OPT_STRING_VALIDATE("drm-connector", drm_connector_spec,
-                        0, drm_validate_connector_opt),
-    OPT_INT("drm-mode", drm_mode_id, 0),
-#endif
-#if HAVE_GL
-    OPT_STRING_VALIDATE("opengl-hwdec-interop", gl_hwdec_interop, 0,
-                        ra_hwdec_validate_opt),
-    OPT_REPLACED("hwdec-preload", "opengl-hwdec-interop"),
+    OPT_SUBSTRUCT("", drm_opts, drm_conf, 0),
 #endif
     {0}
 };
@@ -301,6 +273,7 @@ const m_option_t mp_opts[] = {
     OPT_FLAG("ytdl", lua_load_ytdl, UPDATE_BUILTIN_SCRIPTS),
     OPT_STRING("ytdl-format", lua_ytdl_format, 0),
     OPT_KEYVALUELIST("ytdl-raw-options", lua_ytdl_raw_options, 0),
+    OPT_FLAG("load-stats-overlay", lua_load_stats, UPDATE_BUILTIN_SCRIPTS),
 #endif
 
 // ------------------------- stream options --------------------
@@ -320,10 +293,7 @@ const m_option_t mp_opts[] = {
 
 // ------------------------- demuxer options --------------------
 
-#if HAVE_GPL
-    // Possibly GPL due to d8fd7131bbcde029ab41799fd3162050b43f6848.
     OPT_CHOICE_OR_INT("frames", play_frames, 0, 0, INT_MAX, ({"all", -1})),
-#endif
 
     OPT_REL_TIME("start", play_start, 0),
     OPT_REL_TIME("end", play_end, 0),
@@ -353,14 +323,18 @@ const m_option_t mp_opts[] = {
     OPT_TRACKCHOICE("vid", stream_id[0][STREAM_VIDEO]),
     OPT_TRACKCHOICE("sid", stream_id[0][STREAM_SUB]),
     OPT_TRACKCHOICE("secondary-sid", stream_id[1][STREAM_SUB]),
-    OPT_TRACKCHOICE("ff-aid", stream_id_ff[STREAM_AUDIO]),
-    OPT_TRACKCHOICE("ff-vid", stream_id_ff[STREAM_VIDEO]),
-    OPT_TRACKCHOICE("ff-sid", stream_id_ff[STREAM_SUB]),
+    OPT_TRACKCHOICE("ff-aid", stream_id_ff[STREAM_AUDIO],
+                    .deprecation_message = "no replacement"),
+    OPT_TRACKCHOICE("ff-vid", stream_id_ff[STREAM_VIDEO],
+                    .deprecation_message = "no replacement"),
+    OPT_TRACKCHOICE("ff-sid", stream_id_ff[STREAM_SUB],
+                    .deprecation_message = "no replacement"),
     OPT_ALIAS("sub", "sid"),
     OPT_ALIAS("video", "vid"),
     OPT_ALIAS("audio", "aid"),
     OPT_STRINGLIST("alang", stream_lang[STREAM_AUDIO], 0),
     OPT_STRINGLIST("slang", stream_lang[STREAM_SUB], 0),
+    OPT_STRINGLIST("vlang", stream_lang[STREAM_VIDEO], 0),
     OPT_FLAG("track-auto-selection", stream_auto_sel, 0),
 
     OPT_STRING("lavfi-complex", lavfi_complex, UPDATE_LAVFI_COMPLEX),
@@ -418,8 +392,10 @@ const m_option_t mp_opts[] = {
 
 // ------------------------- codec/vfilter options --------------------
 
+#if HAVE_LIBAF
     OPT_SETTINGSLIST("af-defaults", af_defs, 0, &af_obj_list, ),
     OPT_SETTINGSLIST("af", af_settings, 0, &af_obj_list, ),
+#endif
     OPT_SETTINGSLIST("vf-defaults", vf_defs, 0, &vf_obj_list, ),
     OPT_SETTINGSLIST("vf", vf_settings, 0, &vf_obj_list, ),
 
@@ -433,11 +409,14 @@ const m_option_t mp_opts[] = {
     OPT_FLAG("ad-spdif-dtshd", dtshd, 0,
              .deprecation_message = "use --audio-spdif instead"),
 
-    OPT_CHOICE_C("hwdec", hwdec_api, 0, mp_hwdec_names),
+    OPT_STRING_VALIDATE("hwdec", hwdec_api, M_OPT_OPTIONAL_PARAM,
+                        hwdec_validate_opt),
     OPT_STRING("hwdec-codecs", hwdec_codecs, 0),
 #if HAVE_VIDEOTOOLBOX_HWACCEL
-    OPT_IMAGEFORMAT("videotoolbox-format", videotoolbox_format, 0, .min = -1),
+    OPT_IMAGEFORMAT("videotoolbox-format", videotoolbox_format, 0, .min = -1,
+                    .deprecation_message = "use --hwdec-image-format instead"),
 #endif
+    OPT_IMAGEFORMAT("hwdec-image-format", hwdec_image_format, 0, .min = -1),
 
     // -1 means auto aspect (prefer container size until aspect change)
     //  0 means square pixels
@@ -549,7 +528,6 @@ const m_option_t mp_opts[] = {
                 {"weak", -1})),
     OPT_DOUBLE("audio-buffer", audio_buffer, M_OPT_MIN | M_OPT_MAX,
                .min = 0, .max = 10),
-    OPT_FLOATRANGE("balance", balance, 0, -1, 1),
 
     OPT_STRING("title", wintitle, 0),
     OPT_STRING("force-media-title", media_title, 0),
@@ -558,16 +536,13 @@ const m_option_t mp_opts[] = {
     OPT_CHOICE_OR_INT("video-rotate", video_rotate, UPDATE_IMGPAR, 0, 359,
                       ({"no", -1})),
     OPT_CHOICE_C("video-stereo-mode", video_stereo_mode, UPDATE_IMGPAR,
-                 mp_stereo3d_names),
+                 mp_stereo3d_names,
+                 .deprecation_message = "mostly broken"),
 
     OPT_CHOICE_OR_INT("cursor-autohide", cursor_autohide_delay, 0,
                       0, 30000, ({"no", -1}, {"always", -2})),
     OPT_FLAG("cursor-autohide-fs-only", cursor_autohide_fs, 0),
     OPT_FLAG("stop-screensaver", stop_screensaver, UPDATE_SCREENSAVER),
-
-    OPT_STRING("heartbeat-cmd", heartbeat_cmd, 0,
-               .deprecation_message = "use Lua scripting instead"),
-    OPT_FLOAT("heartbeat-interval", heartbeat_interval, CONF_MIN, 0),
 
     OPT_SUBSTRUCT("", video_equalizer, mp_csp_equalizer_conf, 0),
 
@@ -686,8 +661,22 @@ const m_option_t mp_opts[] = {
     OPT_SUBSTRUCT("", vo, vo_sub_opts, 0),
     OPT_SUBSTRUCT("", demux_opts, demux_conf, 0),
 
-#if HAVE_GL
     OPT_SUBSTRUCT("", gl_video_opts, gl_video_conf, 0),
+    OPT_SUBSTRUCT("", spirv_opts, spirv_conf, 0),
+
+#if HAVE_GL
+    OPT_SUBSTRUCT("", opengl_opts, opengl_conf, 0),
+#endif
+
+#if HAVE_VULKAN
+    OPT_SUBSTRUCT("", vulkan_opts, vulkan_conf, 0),
+#endif
+
+#if HAVE_D3D11
+    OPT_SUBSTRUCT("", d3d11_opts, d3d11_conf, 0),
+#if HAVE_D3D_HWACCEL
+    OPT_SUBSTRUCT("", d3d11va_opts, d3d11va_conf, 0),
+#endif
 #endif
 
 #if HAVE_EGL_ANGLE_WIN32
@@ -822,6 +811,7 @@ const m_option_t mp_opts[] = {
     OPT_REPLACED("sub-ass-style-override", "sub-ass-override"),
     OPT_REMOVED("fs-black-out-screens", NULL),
     OPT_REPLACED("sub-paths", "sub-file-paths"),
+    OPT_REMOVED("heartbeat-cmd", "use Lua scripting instead"),
 
     {0}
 };
@@ -841,7 +831,6 @@ const struct MPOpts mp_default_opts = {
     .audio_device = "auto",
     .audio_client_name = "mpv",
     .wintitle = "${?media-title:${media-title}}${!media-title:No file} - mpv",
-    .heartbeat_interval = 30.0,
     .stop_screensaver = 1,
     .cursor_autohide_delay = 1000,
     .video_osd = 1,
@@ -863,6 +852,7 @@ const struct MPOpts mp_default_opts = {
     .lua_load_ytdl = 1,
     .lua_ytdl_format = NULL,
     .lua_ytdl_raw_options = NULL,
+    .lua_load_stats = 1,
 #endif
     .auto_load_scripts = 1,
     .loop_times = 1,
@@ -929,7 +919,7 @@ const struct MPOpts mp_default_opts = {
     .use_embedded_fonts = 1,
     .screenshot_template = "mpv-shot%n",
 
-    .hwdec_api = HAVE_RPI ? HWDEC_RPI : 0,
+    .hwdec_api = HAVE_RPI ? "mmal" : "no",
     .hwdec_codecs = "h264,vc1,wmv3,hevc,mpeg2video,vp9",
     .videotoolbox_format = IMGFMT_NV12,
 

@@ -50,13 +50,10 @@ typedef struct mp_vo_opts {
 
     char *mmcss_profile;
 
-    // vo_wayland, vo_drm
-    struct sws_opts *sws_opts;
-    // vo_opengl, vo_opengl_cb
-    char *gl_hwdec_interop;
     // vo_drm
-    char *drm_connector_spec;
-    int drm_mode_id;
+    struct sws_opts *sws_opts;
+    // vo_drm
+    struct drm_opts *drm_opts;
 } mp_vo_opts;
 
 struct mp_cache_opts {
@@ -90,6 +87,7 @@ typedef struct MPOpts {
     int lua_load_ytdl;
     char *lua_ytdl_format;
     char **lua_ytdl_raw_options;
+    int lua_load_stats;
 
     int auto_load_scripts;
 
@@ -107,7 +105,6 @@ typedef struct MPOpts {
     float rgain_preamp;         // Set replaygain pre-amplification
     int rgain_clip;             // Enable/disable clipping prevention
     float rgain_fallback;
-    float balance;
     int softvol_mute;
     float softvol_max;
     int gapless_audio;
@@ -181,8 +178,6 @@ typedef struct MPOpts {
     char *status_msg;
     char *osd_status_msg;
     char *osd_msg[3];
-    char *heartbeat_cmd;
-    float heartbeat_interval;
     int player_idle_mode;
     int consolecontrols;
     int playlist_pos;
@@ -290,9 +285,10 @@ typedef struct MPOpts {
     int sub_clear_on_seek;
     int teletext_page;
 
-    int hwdec_api;
+    char *hwdec_api;
     char *hwdec_codecs;
     int videotoolbox_format;
+    int hwdec_image_format;
 
     int w32_priority;
 
@@ -330,6 +326,11 @@ typedef struct MPOpts {
 
     struct gl_video_opts *gl_video_opts;
     struct angle_opts *angle_opts;
+    struct opengl_opts *opengl_opts;
+    struct vulkan_opts *vulkan_opts;
+    struct spirv_opts *spirv_opts;
+    struct d3d11_opts *d3d11_opts;
+    struct d3d11va_opts *d3d11va_opts;
     struct cocoa_opts *cocoa_opts;
     struct dvd_opts *dvd_opts;
 
@@ -347,5 +348,8 @@ extern const struct MPOpts mp_default_opts;
 extern const struct m_sub_options vo_sub_opts;
 extern const struct m_sub_options stream_cache_conf;
 extern const struct m_sub_options dvd_conf;
+
+int hwdec_validate_opt(struct mp_log *log, const m_option_t *opt,
+                       struct bstr name, struct bstr param);
 
 #endif

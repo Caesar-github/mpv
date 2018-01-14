@@ -66,6 +66,7 @@ const struct m_opt_choice_alternatives mp_csp_prim_names[] = {
     {"prophoto",    MP_CSP_PRIM_PRO_PHOTO},
     {"cie1931",     MP_CSP_PRIM_CIE_1931},
     {"dci-p3",      MP_CSP_PRIM_DCI_P3},
+    {"display-p3",  MP_CSP_PRIM_DISPLAY_P3},
     {"v-gamut",     MP_CSP_PRIM_V_GAMUT},
     {"s-gamut",     MP_CSP_PRIM_S_GAMUT},
     {0}
@@ -363,6 +364,7 @@ struct mp_csp_primaries mp_get_csp_primaries(enum mp_csp_prim spc)
         d50 = {0.34577, 0.35850},
         d65 = {0.31271, 0.32902},
         c   = {0.31006, 0.31616},
+        dci = {0.31400, 0.35100},
         e   = {1.0/3.0, 1.0/3.0};
 
     switch (spc) {
@@ -432,13 +434,14 @@ struct mp_csp_primaries mp_get_csp_primaries(enum mp_csp_prim spc)
             .blue  = {0.1666, 0.0089},
             .white = e
         };
-    // From SMPTE RP 431-2
+    // From SMPTE RP 431-2 and 432-1
     case MP_CSP_PRIM_DCI_P3:
+    case MP_CSP_PRIM_DISPLAY_P3:
         return (struct mp_csp_primaries) {
             .red   = {0.680, 0.320},
             .green = {0.265, 0.690},
             .blue  = {0.150, 0.060},
-            .white = d65
+            .white = spc == MP_CSP_PRIM_DCI_P3 ? dci : d65
         };
     // From Panasonic VARICAM reference manual
     case MP_CSP_PRIM_V_GAMUT:

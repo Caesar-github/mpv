@@ -61,9 +61,6 @@ struct ao {
     // default device should be used, this is set to NULL.
     char *device;
 
-    // Device actually chosen by the AO
-    char *detected_device;
-
     // Application name to report to the audio API.
     char *client_name;
 
@@ -72,6 +69,9 @@ struct ao {
 
     // Internal events (use ao_request_reload(), ao_hotplug_event())
     atomic_int events_;
+
+    // Float gain multiplicator
+    mp_atomic_float gain;
 
     int buffer;
     double def_buffer;
@@ -214,6 +214,8 @@ bool ao_chmap_sel_get_def(struct ao *ao, const struct mp_chmap_sel *s,
 // Call from ao_driver->list_devs callback only.
 void ao_device_list_add(struct ao_device_list *list, struct ao *ao,
                         struct ao_device_desc *e);
+
+void ao_post_process_data(struct ao *ao, void **data, int num_samples);
 
 struct ao_convert_fmt {
     int src_fmt;        // source AF_FORMAT_*

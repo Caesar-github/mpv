@@ -22,6 +22,11 @@
 #include <stdbool.h>
 #include <sys/types.h>
 
+#include "config.h"
+#if !(HAVE_LIBAF && HAVE_GPL)
+#error "libaf/GPL disabled"
+#endif
+
 #include "options/options.h"
 #include "audio/format.h"
 #include "audio/chmap.h"
@@ -55,7 +60,7 @@ struct af_instance {
     char *full_name;
     struct mp_log *log;
     struct MPOpts *opts;
-    struct replaygain_data *replaygain_data;
+    struct mpv_global *global;
     int (*control)(struct af_instance *af, int cmd, void *arg);
     void (*uninit)(struct af_instance *af);
     /* Feed a frame. The frame is NULL if EOF was reached, and the filter
@@ -98,7 +103,7 @@ struct af_stream {
 
     struct mp_log *log;
     struct MPOpts *opts;
-    struct replaygain_data *replaygain_data;
+    struct mpv_global *global;
 };
 
 // Return values
@@ -113,11 +118,6 @@ struct af_stream {
 enum af_control {
     AF_CONTROL_REINIT = 1,
     AF_CONTROL_RESET,
-    AF_CONTROL_SET_VOLUME,
-    AF_CONTROL_SET_PAN_LEVEL,
-    AF_CONTROL_SET_PAN_NOUT,
-    AF_CONTROL_SET_PAN_BALANCE,
-    AF_CONTROL_GET_PAN_BALANCE,
     AF_CONTROL_SET_PLAYBACK_SPEED,
     AF_CONTROL_SET_PLAYBACK_SPEED_RESAMPLE,
     AF_CONTROL_GET_METADATA,

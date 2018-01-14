@@ -19,6 +19,51 @@ Interface changes
 
 ::
 
+ --- mpv 0.28.0 ---
+    - rename --hwdec=mediacodec option to mediacodec-copy, to reflect
+      conventions followed by other hardware video decoding APIs
+    - drop previously deprecated --heartbeat-cmd and --heartbeat--interval
+      options
+    - rename --vo=opengl to --vo=gpu
+    - rename --opengl-backend to --gpu-context
+    - rename --opengl-shaders to --glsl-shaders
+    - rename --opengl-shader-cache-dir to --gpu-shader-cache-dir
+    - rename --opengl-tex-pad-x/y to --gpu-tex-pad-x/y
+    - rename --opengl-fbo-format to --fbo-format
+    - rename --opengl-gamma to --gamma-factor
+    - rename --opengl-debug to --gpu-debug
+    - rename --opengl-sw to --gpu-sw
+    - rename --opengl-vsync-fences to --swapchain-depth, and the interpretation
+      slightly changed. Now defaults to 3.
+    - rename the built-in profile `opengl-hq` to `gpu-hq`
+    - the semantics of --opengl-es=yes are slightly changed -> now requires GLES
+    - remove the (deprecated) alias --gpu-context=drm-egl
+    - remove the (deprecated) --vo=opengl-hq
+    - remove --opengl-es=force2 (use --opengl-es=yes --opengl-restrict=300)
+    - the --msg-level option now affects --log-file
+    - drop "audio-out-detected-device" property - this was unavailable on all
+      audio output drivers for quite a while (coreaudio used to provide it)
+    - deprecate --videotoolbox-format (use --hwdec-image-format, which affects
+      most other hwaccels)
+    - remove deprecated --demuxer-max-packets
+    - remove most of the deprecated audio and video filters
+    - remove the deprecated --balance option/property
+    - rename the --opengl-hwdec-interop option to --gpu-hwdec-interop, and
+      change some of its semantics: extend it take the strings "auto" and
+      "all". "all" loads all backends. "auto" behaves like "all" for
+      vo_opengl_cb, while on vo_gpu it loads nothing, but allows on demand
+      loading by the decoder. The empty string as option value behaves like
+      "auto". Old --hwdec values do not work anymore.
+      This option is hereby declared as unstable and may change any time - its
+      old use is deprecated, and it has very little use outside of debugging
+      now.
+    - change the --hwdec option from a choice to a plain string (affects
+      introspection of the option/property), also affects some properties
+    - rename --hwdec=rpi to --hwdec=mmal, sane for the -copy variant (no
+      backwards compatibility)
+    - deprecate the --ff-aid, --ff-vid, -ff-sid options and properties (there is
+      no replacement, but you can manually query the track property and use the
+      "ff-index" field to find the mpv track ID to imitate this behavior)
  --- mpv 0.27.0 ---
     - drop previously deprecated --field-dominance option
     - drop previously deprecated "osd" command

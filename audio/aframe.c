@@ -166,16 +166,30 @@ void mp_aframe_config_copy(struct mp_aframe *dst, struct mp_aframe *src)
 
     dst->chmap = src->chmap;
     dst->format = src->format;
-    dst->pts = src->pts;
 
-    if (av_frame_copy_props(dst->av_frame, src->av_frame) < 0)
-        abort();
+    mp_aframe_copy_attributes(dst, src);
+
+    dst->av_frame->sample_rate = src->av_frame->sample_rate;
     dst->av_frame->format = src->av_frame->format;
     dst->av_frame->channel_layout = src->av_frame->channel_layout;
 #if LIBAVUTIL_VERSION_MICRO >= 100
     // FFmpeg being a stupid POS again
     dst->av_frame->channels = src->av_frame->channels;
 #endif
+}
+
+// Copy "soft" attributes from src to dst, excluding things which affect
+// frame allocation and organization.
+void mp_aframe_copy_attributes(struct mp_aframe *dst, struct mp_aframe *src)
+{
+    dst->pts = src->pts;
+
+    int rate = dst->av_frame->sample_rate;
+
+    if (av_frame_copy_props(dst->av_frame, src->av_frame) < 0)
+        abort();
+
+    dst->av_frame->sample_rate = rate;
 }
 
 // Return whether a and b use the same physical audio format. Extra metadata
@@ -283,7 +297,7 @@ bool mp_aframe_set_chmap(struct mp_aframe *frame, struct mp_chmap *in)
 
 bool mp_aframe_set_rate(struct mp_aframe *frame, int rate)
 {
-    if (rate < 1 && rate > 10000000)
+    if (rate < 1 || rate > 10000000)
         return false;
     frame->av_frame->sample_rate = rate;
     return true;
@@ -315,6 +329,14 @@ size_t mp_aframe_get_sstride(struct mp_aframe *frame)
     int format = mp_aframe_get_format(frame);
     return af_fmt_to_bytes(format) *
            (af_fmt_is_planar(format) ? 1 : mp_aframe_get_channels(frame));
+}
+
+// Return total number of samples on each plane.
+int mp_aframe_get_total_plane_samples(struct mp_aframe *frame)
+{
+    return frame->av_frame->nb_samples *
+           (af_fmt_is_planar(mp_aframe_get_format(frame))
+            ? 1 : mp_aframe_get_channels(frame));
 }
 
 // Set data to the audio after the given number of samples (i.e. slice it).

@@ -27,10 +27,9 @@
 
 #include "config.h"
 
+#include "video/out/gpu/hwdec.h"
 #include "video/mp_image_pool.h"
-#include "video/vt.h"
 #include "ra_gl.h"
-#include "hwdec.h"
 
 struct priv_owner {
     struct mp_hwdec_ctx hwctx;
@@ -70,15 +69,11 @@ static int init(struct ra_hwdec *hw)
         return -1;
 
     p->hwctx = (struct mp_hwdec_ctx){
-        .type = HWDEC_VIDEOTOOLBOX,
-        .download_image = mp_vt_download_image,
-        .ctx = &p->hwctx,
+        .driver_name = hw->driver->name,
     };
 
-#if HAVE_VIDEOTOOLBOX_HWACCEL_NEW
     av_hwdevice_ctx_create(&p->hwctx.av_device_ref, AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
                            NULL, NULL, 0);
-#endif
 
     hwdec_devices_add(hw->devs, &p->hwctx);
 
@@ -89,8 +84,7 @@ static void uninit(struct ra_hwdec *hw)
 {
     struct priv_owner *p = hw->priv;
 
-    if (p->hwctx.ctx)
-        hwdec_devices_remove(hw->devs, &p->hwctx);
+    hwdec_devices_remove(hw->devs, &p->hwctx);
     av_buffer_unref(&p->hwctx.av_device_ref);
 }
 
@@ -132,7 +126,6 @@ static const struct ra_format *find_la_variant(struct ra *ra,
 static int mapper_init(struct ra_hwdec_mapper *mapper)
 {
     struct priv *p = mapper->priv;
-    GL *gl = ra_gl_get(mapper->ra);
 
     mapper->dst_params = mapper->src_params;
     mapper->dst_params.imgfmt = mapper->src_params.hw_subfmt;
@@ -243,8 +236,11 @@ static int mapper_map(struct ra_hwdec_mapper *mapper)
             .src_linear = true,
         };
 
-        mapper->tex[i] = ra_create_wrapped_tex(mapper->ra, &params,
-                                               p->gl_planes[i]);
+        mapper->tex[i] = ra_create_wrapped_tex(
+            mapper->ra,
+            &params,
+            CVOpenGLESTextureGetName(p->gl_planes[i])
+        );
         if (!mapper->tex[i])
             return -1;
     }
@@ -264,7 +260,6 @@ static void mapper_uninit(struct ra_hwdec_mapper *mapper)
 const struct ra_hwdec_driver ra_hwdec_videotoolbox = {
     .name = "videotoolbox",
     .priv_size = sizeof(struct priv_owner),
-    .api = HWDEC_VIDEOTOOLBOX,
     .imgfmts = {IMGFMT_VIDEOTOOLBOX, 0},
     .init = init,
     .uninit = uninit,

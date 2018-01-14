@@ -40,10 +40,23 @@ enum demux_ctrl {
     DEMUXER_CTRL_REPLACE_STREAM,
 };
 
+#define MAX_SEEK_RANGES 10
+
+struct demux_seek_range {
+    double start, end;
+};
+
 struct demux_ctrl_reader_state {
     bool eof, underrun, idle;
-    double ts_range[2]; // start, end
     double ts_duration;
+    double ts_reader; // approx. timerstamp of decoder position
+    double ts_end; // approx. timestamp of end of buffered range
+    int64_t total_bytes;
+    int64_t fw_bytes;
+    // Positions that can be seeked to without incurring the latency of a low
+    // level seek.
+    int num_seek_ranges;
+    struct demux_seek_range seek_ranges[MAX_SEEK_RANGES];
 };
 
 struct demux_ctrl_stream_ctrl {
@@ -54,7 +67,8 @@ struct demux_ctrl_stream_ctrl {
 
 #define SEEK_FACTOR   (1 << 1)      // argument is in range [0,1]
 #define SEEK_FORWARD  (1 << 2)      // prefer later time if not exact
-#define SEEK_BACKWARD (1 << 3)      // prefer earlier time if not exact
+                                    // (if unset, prefer earlier time)
+#define SEEK_CACHED   (1 << 3)      // allow packet cache seeks only
 #define SEEK_HR       (1 << 5)      // hr-seek (this is a weak hint only)
 
 // Strictness of the demuxer open format check.
@@ -77,6 +91,7 @@ enum demux_event {
     DEMUX_EVENT_INIT = 1 << 0,      // complete (re-)initialization
     DEMUX_EVENT_STREAMS = 1 << 1,   // a stream was added
     DEMUX_EVENT_METADATA = 1 << 2,  // metadata or stream_metadata changed
+    DEMUX_EVENT_DURATION = 1 << 3,  // duration updated
     DEMUX_EVENT_ALL = 0xFFFF,
 };
 
@@ -284,6 +299,8 @@ int demux_stream_control(demuxer_t *demuxer, int ctrl, void *arg);
 
 void demux_changed(demuxer_t *demuxer, int events);
 void demux_update(demuxer_t *demuxer);
+
+void demux_disable_cache(demuxer_t *demuxer);
 
 struct sh_stream *demuxer_stream_by_demuxer_id(struct demuxer *d,
                                                enum stream_type t, int id);

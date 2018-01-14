@@ -1,6 +1,15 @@
+#include <locale.h>
+#include "osdep/io.h"
+
+#ifdef __APPLE__
+# include <string.h>
+# include <xlocale.h>
+#endif
+
 struct mp_log;
 
 struct mp_archive {
+    locale_t locale;
     struct mp_log *log;
     struct archive *arch;
     struct stream *primary_src;

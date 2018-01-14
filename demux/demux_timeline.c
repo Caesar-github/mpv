@@ -46,7 +46,6 @@ struct segment {
 struct virtual_stream {
     struct sh_stream *sh;       // stream exported by demux_timeline
     bool selected;              // ==demux_stream_is_selected(sh)
-    bool new_segment;           // whether a new segment needs to be signaled
     int eos_packets;            // deal with b-frame delay
 };
 
@@ -61,7 +60,7 @@ struct priv {
     struct segment *current;
 
     // As the demuxer user sees it.
-    struct virtual_stream *streams;
+    struct virtual_stream **streams;
     int num_streams;
 
     // Total number of packets received past end of segment. Used
@@ -97,7 +96,7 @@ static void associate_streams(struct demuxer *demuxer, struct segment *seg)
         if (!other || !target_stream_used(seg, other->index)) {
             // Try to associate the first unused stream with matching media type.
             for (int i = 0; i < p->num_streams; i++) {
-                struct sh_stream *cur = p->streams[i].sh;
+                struct sh_stream *cur = p->streams[i]->sh;
                 if (cur->type == sh->type && !target_stream_used(seg, cur->index))
                 {
                     other = cur;
@@ -118,7 +117,7 @@ static void reselect_streams(struct demuxer *demuxer)
     struct priv *p = demuxer->priv;
 
     for (int n = 0; n < p->num_streams; n++) {
-        struct virtual_stream *vs = &p->streams[n];
+        struct virtual_stream *vs = p->streams[n];
         vs->selected = demux_stream_is_selected(vs->sh);
     }
 
@@ -131,7 +130,7 @@ static void reselect_streams(struct demuxer *demuxer)
             struct sh_stream *sh = demux_get_stream(seg->d, i);
             bool selected = false;
             if (seg->stream_map[i] >= 0)
-                selected = p->streams[seg->stream_map[i]].selected;
+                selected = p->streams[seg->stream_map[i]]->selected;
             // This stops demuxer readahead for inactive segments.
             if (!p->current || seg->d != p->current->d)
                 selected = false;
@@ -171,6 +170,8 @@ static void reopen_lazy_segments(struct demuxer *demuxer)
                                    demuxer->stream->cancel, demuxer->global);
     if (!p->current->d && !demux_cancel_test(demuxer))
         MP_ERR(demuxer, "failed to load segment\n");
+    if (p->current->d)
+        demux_disable_cache(p->current->d);
     associate_streams(demuxer, p->current);
 }
 
@@ -179,8 +180,8 @@ static void switch_segment(struct demuxer *demuxer, struct segment *new,
 {
     struct priv *p = demuxer->priv;
 
-    if (!(flags & (SEEK_FORWARD | SEEK_BACKWARD)))
-        flags |= SEEK_BACKWARD | SEEK_HR;
+    if (!(flags & SEEK_FORWARD))
+        flags |= SEEK_HR;
 
     MP_VERBOSE(demuxer, "switch to segment %d\n", new->index);
 
@@ -195,8 +196,7 @@ static void switch_segment(struct demuxer *demuxer, struct segment *new,
         demux_seek(new->d, start_pts, flags);
 
     for (int n = 0; n < p->num_streams; n++) {
-        struct virtual_stream *vs = &p->streams[n];
-        vs->new_segment = true;
+        struct virtual_stream *vs = p->streams[n];
         vs->eos_packets = 0;
     }
 
@@ -209,7 +209,7 @@ static void d_seek(struct demuxer *demuxer, double seek_pts, int flags)
 
     double pts = seek_pts * ((flags & SEEK_FACTOR) ? p->duration : 1);
 
-    flags &= SEEK_FORWARD | SEEK_BACKWARD | SEEK_HR;
+    flags &= SEEK_FORWARD | SEEK_HR;
 
     struct segment *new = p->segments[p->num_segments - 1];
     for (int n = 0; n < p->num_segments; n++) {
@@ -244,7 +244,7 @@ static int d_fill_buffer(struct demuxer *demuxer)
     bool eos_reached = p->eos_packets > 0;
     if (eos_reached && p->eos_packets < 100) {
         for (int n = 0; n < p->num_streams; n++) {
-            struct virtual_stream *vs = &p->streams[n];
+            struct virtual_stream *vs = p->streams[n];
             if (vs->selected) {
                 int max_packets = 0;
                 if (vs->sh->type == STREAM_AUDIO)
@@ -276,6 +276,7 @@ static int d_fill_buffer(struct demuxer *demuxer)
         goto drop;
 
     if (!p->dash) {
+        pkt->segmented = true;
         if (!pkt->codec)
             pkt->codec = demux_get_stream(seg->d, pkt->stream)->codec;
         if (pkt->start == MP_NOPTS_VALUE || pkt->start < seg->start)
@@ -293,7 +294,7 @@ static int d_fill_buffer(struct demuxer *demuxer)
     if (pkt->pos >= 0)
         pkt->pos |= (seg->index & 0x7FFFULL) << 48;
 
-    struct virtual_stream *vs = &p->streams[pkt->stream];
+    struct virtual_stream *vs = p->streams[pkt->stream];
 
     if (pkt->pts != MP_NOPTS_VALUE && pkt->pts >= seg->end) {
         // Trust the keyframe flag. Might not always be a good idea, but will
@@ -306,10 +307,6 @@ static int d_fill_buffer(struct demuxer *demuxer)
             vs->eos_packets += 1;
         }
     }
-
-    if (!p->dash)
-        pkt->new_segment |= vs->new_segment;
-    vs->new_segment = false;
 
     demux_add_packet(vs->sh, pkt);
     return 1;
@@ -377,8 +374,10 @@ static int d_open(struct demuxer *demuxer, enum demux_check check)
         new->forced_track = sh->forced_track;
         new->hls_bitrate = sh->hls_bitrate;
         new->missing_timestamps = sh->missing_timestamps;
+        new->attached_picture = sh->attached_picture;
         demux_add_sh_stream(demuxer, new);
-        struct virtual_stream vs = {
+        struct virtual_stream *vs = talloc_ptrtype(p, vs);
+        *vs = (struct virtual_stream){
             .sh = new,
         };
         MP_TARRAY_APPEND(p, p->streams, p->num_streams, vs);
@@ -387,6 +386,11 @@ static int d_open(struct demuxer *demuxer, enum demux_check check)
     for (int n = 0; n < p->tl->num_parts; n++) {
         struct timeline_part *part = &p->tl->parts[n];
         struct timeline_part *next = &p->tl->parts[n + 1];
+
+        // demux_timeline already does caching, doing it for the sub-demuxers
+        // would be pointless and wasteful.
+        if (part->source)
+            demux_disable_cache(part->source);
 
         struct segment *seg = talloc_ptrtype(p, seg);
         *seg = (struct segment){

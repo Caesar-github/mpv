@@ -20,7 +20,7 @@
 
 #include <GL/glx.h>
 
-#include "hwdec.h"
+#include "video/out/gpu/hwdec.h"
 #include "ra_gl.h"
 #include "video/vdpau.h"
 #include "video/vdpau_mixer.h"
@@ -304,7 +304,6 @@ static int mapper_map(struct ra_hwdec_mapper *mapper)
 const struct ra_hwdec_driver ra_hwdec_vdpau = {
     .name = "vdpau-glx",
     .priv_size = sizeof(struct priv_owner),
-    .api = HWDEC_VDPAU,
     .imgfmts = {IMGFMT_VDPAU, 0},
     .init = init,
     .uninit = uninit,
