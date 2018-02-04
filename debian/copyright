@@ -19,7 +19,7 @@ License: ISC
 Files: debian/*
 Copyright:
  2013 Alessandro Ghedini <ghedo@debian.org>
- 2016-2017 James Cowgill <jcowgill@debian.org>
+ 2016-2018 James Cowgill <jcowgill@debian.org>
 License: GPL-2+
 
 Files:
@@ -53,33 +53,16 @@ Files:
  audio/audio.h
  audio/filter/af.c
  audio/filter/af.h
- audio/filter/af_channels.c
- audio/filter/af_equalizer.c
  audio/filter/af_lavrresample.c
- audio/filter/af_pan.c
- audio/filter/af_volume.c
  audio/filter/equalizer.h
  audio/filter/tools.c
- audio/out/ao_alsa.c
  audio/out/ao_jack.c
  audio/out/ao_oss.c
- common/av_log.c
- common/msg.c
- demux/demux_lavf.c
- demux/demux_mkv.c
  demux/demux_tv.c
- input/cmd_list.c
- options/m_option.c
- options/options.c
- osdep/mpv.rc
  player/audio.c
- player/command.c
- player/command.h
- player/main.c
- player/osd.c
- player/video.c
  stream/ai_alsa1x.c
  stream/ai_oss.c
+ stream/ai_sndio.c
  stream/audio_in.c
  stream/audio_in.h
  stream/dvb_tune.c
@@ -99,28 +82,6 @@ Files:
  stream/tvi_def.h
  stream/tvi_dummy.c
  stream/tvi_v4l2.c
- video/decode/dec_video.c
- video/decode/dec_video.h
- video/decode/vd_lavc.c
- video/filter/vf.h
- video/filter/vf_crop.c
- video/filter/vf_dsize.c
- video/filter/vf_expand.c
- video/filter/vf_flip.c
- video/filter/vf_format.c
- video/filter/vf_gradfun.c
- video/filter/vf_mirror.c
- video/filter/vf_noformat.c
- video/filter/vf_pullup.c
- video/filter/vf_rotate.c
- video/filter/vf_scale.c
- video/filter/vf_stereo3d.c
- video/filter/vf_sub.c
- video/filter/vf_yadif.c
- video/gpu_memcpy.c
- video/mp_image.c
- video/mp_image.h
- video/out/opengl/hwdec_vaglx.c
  video/out/vo_caca.c
  video/out/vo_direct3d.c
  video/out/vo_vaapi.c
@@ -129,9 +90,6 @@ Files:
  video/out/vo_xv.c
  video/out/x11_common.c
  video/out/x11_common.h
- video/sws_utils.c
- video/vaapi.c
- video/vaapi.h
  video/vdpau.c
  video/vdpau_mixer.c
 Copyright: 2000-2017, The mplayer, mplayer2 and mpv Developers
