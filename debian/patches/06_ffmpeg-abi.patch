@@ -1,4 +1,4 @@
-Description: Surpress ffmpeg version mismatch error
+Description: Suppress ffmpeg version mismatch error
  Requiring an exact ffmpeg version isn't helpful in a distribution where all ABI
  issues should already be handled by package dependencies. Rebuilding every time
  ffmpeg is updated is also completely unmaintainable.
