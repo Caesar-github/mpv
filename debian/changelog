@@ -1,8 +1,15 @@
-mpv (0.28.2-1) UNRELEASED; urgency=medium
+mpv (0.28.2-1) experimental; urgency=medium
 
-  *
+  * New upstream bugfix release.
+    - Also whitelist subtitle URLs in youtube-dl hook. (Closes: #890410)
 
- -- James Cowgill <jcowgill@debian.org>  Sun, 06 May 2018 22:53:52 +0100
+  * debian/rules:
+    - Build-Depend on ffmpeg 4.0. (Closes: #898080)
+  * debian/patches:
+    - Drop patch for CVE-2018-6360 - fixed upstream.
+    - Fix typo in 06_ffmpeg-abi.patch description.
+
+ -- James Cowgill <jcowgill@debian.org>  Sun, 06 May 2018 23:20:25 +0100
 
 mpv (0.28.0-1) experimental; urgency=medium
 
