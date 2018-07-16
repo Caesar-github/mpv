@@ -1,0 +1,28 @@
+Description: Remove uses of StopIteration from waf
+ Fixes FTBFS with Python 3.7 as the default python3 version.
+Author: Thomas Nagy <tnagy@waf.io>
+Origin: backport, https://gitlab.com/ita1024/waf/commit/facdc0b173d933073832c768ec1917c553cb369c
+Bug: https://github.com/mpv-player/mpv/issues/5958
+Bug-Debian: https://bugs.debian.org/903610
+---
+This patch header follows DEP-3: http://dep.debian.net/deps/dep3/
+--- a/waflib/Node.py
++++ b/waflib/Node.py
+@@ -292,7 +292,6 @@ class Node(object):
+ 					if maxdepth:
+ 						for k in node.ant_iter(accept=accept,maxdepth=maxdepth-1,pats=npats,dir=dir,src=src,remove=remove):
+ 							yield k
+-		raise StopIteration
+ 	def ant_glob(self,*k,**kw):
+ 		src=kw.get('src',True)
+ 		dir=kw.get('dir',False)
+--- a/waflib/Tools/qt5.py
++++ b/waflib/Tools/qt5.py
+@@ -368,7 +368,6 @@ def find_single_qt5_lib(self,name,uselib
+ 			for k in('','5')if Utils.is_win32 else['']:
+ 				for p in('lib',''):
+ 					yield(p,name,k,x)
+-		raise StopIteration
+ 	for tup in lib_names():
+ 		k=''.join(tup)
+ 		path=os.path.join(qtlibs,k)
