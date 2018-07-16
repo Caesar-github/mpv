@@ -1,8 +1,14 @@
-mpv (0.28.2-2) UNRELEASED; urgency=medium
+mpv (0.28.2-2) experimental; urgency=medium
 
-  *
+  * debian/control:
+    - Add missing build-dependency on wayland-protocols.
+      Thanks to Laurent Bigonville for reporting! (Closes: #903887)
+    - Bump standards version to 4.1.5.
+  * debian/patches:
+    - Add patch to fix FTBFS with Python 3.7 as the default python3.
+      (Closes: #903610)
 
- -- James Cowgill <jcowgill@debian.org>  Mon, 16 Jul 2018 18:24:09 +0100
+ -- James Cowgill <jcowgill@debian.org>  Mon, 16 Jul 2018 22:13:05 +0100
 
 mpv (0.28.2-1) experimental; urgency=medium
 
