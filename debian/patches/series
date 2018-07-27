@@ -1,6 +1,5 @@
 02_fix-config-path.patch
 03_waf.patch
-04_waf-pie.patch
 05_add-keywords.patch
 06_ffmpeg-abi.patch
 07_io-stdin-used.patch
