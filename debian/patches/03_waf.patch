@@ -11,8 +11,8 @@ Last-Update: 2017-07-19
 +++ b/waf
 @@ -0,0 +1,166 @@
 +#!/usr/bin/env python
-+# encoding: ISO8859-1
-+# Thomas Nagy, 2005-2016
++# encoding: latin-1
++# Thomas Nagy, 2005-2018
 +#
 +"""
 +Redistribution and use in source and binary forms, with or without
@@ -44,13 +44,13 @@ Last-Update: 2017-07-19
 +
 +import os, sys, inspect
 +
-+VERSION="1.9.8"
-+REVISION="17756245c4cc550633dacf3b08eec42a"
-+GIT="a6109383bfb9e70f32efc3a9d189bf5a088140bf"
++VERSION="2.0.9"
++REVISION="10a533182bd85c3f45a157fb5d62db50"
++GIT="c543921e7de1e319d9d3e425484d5a4d0794bb00"
 +INSTALL=''
-+C1='#/'
-+C2='#-'
-+C3='#%'
++C1='#1'
++C2='#,'
++C3='#*'
 +cwd = os.getcwd()
 +join = os.path.join
 +
@@ -178,7 +178,7 @@ Last-Update: 2017-07-19
 +
 --- /dev/null
 +++ b/waflib/Build.py
-@@ -0,0 +1,785 @@
+@@ -0,0 +1,777 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
 +# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
@@ -236,7 +236,7 @@ Last-Update: 2017-07-19
 +	def get_variant_dir(self):
 +		if not self.variant:
 +			return self.out_dir
-+		return os.path.join(self.out_dir,self.variant)
++		return os.path.join(self.out_dir,os.path.normpath(self.variant))
 +	variant_dir=property(get_variant_dir,None)
 +	def __call__(self,*k,**kw):
 +		kw['bld']=self
@@ -244,12 +244,6 @@ Last-Update: 2017-07-19
 +		self.task_gen_cache_names={}
 +		self.add_to_group(ret,group=kw.get('group'))
 +		return ret
-+	def rule(self,*k,**kw):
-+		def f(rule):
-+			ret=self(*k,**kw)
-+			ret.rule=rule
-+			return ret
-+		return f
 +	def __copy__(self):
 +		raise Errors.WafError('build contexts cannot be copied')
 +	def load_envs(self):
@@ -353,19 +347,24 @@ Last-Update: 2017-07-19
 +		try:
 +			self.producer.start()
 +		except KeyboardInterrupt:
-+			self.store()
++			if self.is_dirty():
++				self.store()
 +			raise
 +		else:
-+			if self.producer.dirty:
++			if self.is_dirty():
 +				self.store()
 +		if self.producer.error:
 +			raise Errors.BuildError(self.producer.error)
++	def is_dirty(self):
++		return self.producer.dirty
 +	def setup(self,tool,tooldir=None,funs=None):
 +		if isinstance(tool,list):
-+			for i in tool:self.setup(i,tooldir)
++			for i in tool:
++				self.setup(i,tooldir)
 +			return
 +		module=Context.load_tool(tool,tooldir)
-+		if hasattr(module,"setup"):module.setup(self)
++		if hasattr(module,"setup"):
++			module.setup(self)
 +	def get_env(self):
 +		try:
 +			return self.all_envs[self.variant]
@@ -438,7 +437,8 @@ Last-Update: 2017-07-19
 +		left=fs%(idx,total,col1,pc,col2)
 +		right='][%s%s%s]'%(col1,self.timer,col2)
 +		cols=Logs.get_term_cols()-len(left)-len(right)+2*len(col1)+2*len(col2)
-+		if cols<7:cols=7
++		if cols<7:
++			cols=7
 +		ratio=((cols*idx)//total)-1
 +		bar=('='*ratio+'>').ljust(cols)
 +		msg=Logs.indicator%(left,bar,right)
@@ -470,7 +470,7 @@ Last-Update: 2017-07-19
 +			return self.group_names[x]
 +		return self.groups[x]
 +	def add_to_group(self,tgen,group=None):
-+		assert(isinstance(tgen,TaskGen.task_gen)or isinstance(tgen,Task.TaskBase))
++		assert(isinstance(tgen,TaskGen.task_gen)or isinstance(tgen,Task.Task))
 +		tgen.bld=self
 +		self.get_group(group).append(tgen)
 +	def get_group_name(self,g):
@@ -531,23 +531,20 @@ Last-Update: 2017-07-19
 +			lst.extend(g)
 +		return lst
 +	def post_group(self):
++		def tgpost(tg):
++			try:
++				f=tg.post
++			except AttributeError:
++				pass
++			else:
++				f()
 +		if self.targets=='*':
-+			for tg in self.groups[self.cur]:
-+				try:
-+					f=tg.post
-+				except AttributeError:
-+					pass
-+				else:
-+					f()
++			for tg in self.groups[self.current_group]:
++				tgpost(tg)
 +		elif self.targets:
-+			if self.cur<self._min_grp:
-+				for tg in self.groups[self.cur]:
-+					try:
-+						f=tg.post
-+					except AttributeError:
-+						pass
-+					else:
-+						f()
++			if self.current_group<self._min_grp:
++				for tg in self.groups[self.current_group]:
++					tgpost(tg)
 +			else:
 +				for tg in self._exact_tg:
 +					tg.post()
@@ -559,14 +556,14 @@ Last-Update: 2017-07-19
 +			elif not ln.is_child_of(self.srcnode):
 +				Logs.warn('CWD %s is not under %s, forcing --targets=* (run distclean?)',ln.abspath(),self.srcnode.abspath())
 +				ln=self.srcnode
-+			for tg in self.groups[self.cur]:
++			for tg in self.groups[self.current_group]:
 +				try:
-+					f=tg.post
++					p=tg.path
 +				except AttributeError:
 +					pass
 +				else:
-+					if tg.path.is_child_of(ln):
-+						f()
++					if p.is_child_of(ln):
++						tgpost(tg)
 +	def get_tasks_group(self,idx):
 +		tasks=[]
 +		for tg in self.groups[idx]:
@@ -576,26 +573,20 @@ Last-Update: 2017-07-19
 +				tasks.append(tg)
 +		return tasks
 +	def get_build_iterator(self):
-+		self.cur=0
 +		if self.targets and self.targets!='*':
 +			(self._min_grp,self._exact_tg)=self.get_targets()
-+		global lazy_post
 +		if self.post_mode!=POST_LAZY:
-+			while self.cur<len(self.groups):
++			for self.current_group,_ in enumerate(self.groups):
 +				self.post_group()
-+				self.cur+=1
-+			self.cur=0
-+		while self.cur<len(self.groups):
++		for self.current_group,_ in enumerate(self.groups):
 +			if self.post_mode!=POST_AT_ONCE:
 +				self.post_group()
-+			tasks=self.get_tasks_group(self.cur)
++			tasks=self.get_tasks_group(self.current_group)
 +			Task.set_file_constraints(tasks)
 +			Task.set_precedence_constraints(tasks)
 +			self.cur_tasks=tasks
-+			self.cur+=1
-+			if not tasks:
-+				continue
-+			yield tasks
++			if tasks:
++				yield tasks
 +		while 1:
 +			yield[]
 +	def install_files(self,dest,files,**kw):
@@ -826,15 +817,6 @@ Last-Update: 2017-07-19
 +	def __init__(self,**kw):
 +		super(UninstallContext,self).__init__(**kw)
 +		self.is_install=UNINSTALL
-+	def execute(self):
-+		try:
-+			def runnable_status(self):
-+				return Task.SKIP_ME
-+			setattr(Task.Task,'runnable_status_back',Task.Task.runnable_status)
-+			setattr(Task.Task,'runnable_status',runnable_status)
-+			super(UninstallContext,self).execute()
-+		finally:
-+			setattr(Task.Task,'runnable_status',Task.Task.runnable_status_back)
 +class CleanContext(BuildContext):
 +	'''cleans the project'''
 +	cmd='clean'
@@ -849,7 +831,10 @@ Last-Update: 2017-07-19
 +			self.store()
 +	def clean(self):
 +		Logs.debug('build: clean called')
-+		if self.bldnode!=self.srcnode:
++		if hasattr(self,'clean_files'):
++			for n in self.clean_files:
++				n.delete()
++		elif self.bldnode!=self.srcnode:
 +			lst=[]
 +			for env in self.all_envs.values():
 +				lst.extend(self.root.find_or_declare(f)for f in env[CFG_FILES])
@@ -884,8 +869,15 @@ Last-Update: 2017-07-19
 +			self.get_tgen_by_name('')
 +		except Errors.WafError:
 +			pass
-+		for k in sorted(self.task_gen_cache_names.keys()):
-+			Logs.pprint('GREEN',k)
++		targets=sorted(self.task_gen_cache_names)
++		line_just=max(len(t)for t in targets)if targets else 0
++		for target in targets:
++			tgen=self.task_gen_cache_names[target]
++			descript=getattr(tgen,'description','')
++			if descript:
++				target=target.ljust(line_just)
++				descript=': %s'%descript
++			Logs.pprint('GREEN',target,label=descript)
 +class StepContext(BuildContext):
 +	'''executes tasks in a step-by-step fashion, for debugging'''
 +	cmd='step'
@@ -913,17 +905,17 @@ Last-Update: 2017-07-19
 +			for pat in self.files.split(','):
 +				matcher=self.get_matcher(pat)
 +				for tg in g:
-+					if isinstance(tg,Task.TaskBase):
++					if isinstance(tg,Task.Task):
 +						lst=[tg]
 +					else:
 +						lst=tg.tasks
 +					for tsk in lst:
 +						do_exec=False
-+						for node in getattr(tsk,'inputs',[]):
++						for node in tsk.inputs:
 +							if matcher(node,output=False):
 +								do_exec=True
 +								break
-+						for node in getattr(tsk,'outputs',[]):
++						for node in tsk.outputs:
 +							if matcher(node,output=True):
 +								do_exec=True
 +								break
@@ -948,9 +940,9 @@ Last-Update: 2017-07-19
 +				pat='%s$'%pat
 +			pattern=re.compile(pat)
 +		def match(node,output):
-+			if output==True and not out:
++			if output and not out:
 +				return False
-+			if output==False and not inn:
++			if not output and not inn:
 +				return False
 +			if anode:
 +				return anode==node
@@ -966,7 +958,7 @@ Last-Update: 2017-07-19
 +		self.recurse([self.run_dir])
 --- /dev/null
 +++ b/waflib/ConfigSet.py
-@@ -0,0 +1,159 @@
+@@ -0,0 +1,165 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
 +# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
@@ -981,9 +973,12 @@ Last-Update: 2017-07-19
 +		if filename:
 +			self.load(filename)
 +	def __contains__(self,key):
-+		if key in self.table:return True
-+		try:return self.parent.__contains__(key)
-+		except AttributeError:return False
++		if key in self.table:
++			return True
++		try:
++			return self.parent.__contains__(key)
++		except AttributeError:
++			return False
 +	def keys(self):
 +		keys=set()
 +		cur=self
@@ -1012,7 +1007,7 @@ Last-Update: 2017-07-19
 +		self[key]=[]
 +	def __getattr__(self,name):
 +		if name in self.__slots__:
-+			return object.__getattr__(self,name)
++			return object.__getattribute__(self,name)
 +		else:
 +			return self[name]
 +	def __setattr__(self,name,value):
@@ -1043,7 +1038,8 @@ Last-Update: 2017-07-19
 +		return self
 +	def get_flat(self,key):
 +		s=self[key]
-+		if isinstance(s,str):return s
++		if isinstance(s,str):
++			return s
 +		return' '.join(s)
 +	def _get_list_value_for_modification(self,key):
 +		try:
@@ -1084,8 +1080,10 @@ Last-Update: 2017-07-19
 +		env=self
 +		while 1:
 +			table_list.insert(0,env.table)
-+			try:env=env.parent
-+			except AttributeError:break
++			try:
++				env=env.parent
++			except AttributeError:
++				break
 +		merged_table={}
 +		for table in table_list:
 +			merged_table.update(table)
@@ -1133,7 +1131,7 @@ Last-Update: 2017-07-19
 +# encoding: utf-8
 +# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
-+import os,shlex,sys,time,re,shutil
++import os,re,shlex,shutil,sys,time,traceback
 +from waflib import ConfigSet,Utils,Options,Logs,Context,Build,Errors
 +WAF_CONFIG_LOG='config.log'
 +autoconfig=False
@@ -1227,26 +1225,26 @@ Last-Update: 2017-07-19
 +		env.hash=self.hash
 +		env.files=self.files
 +		env.environ=dict(self.environ)
-+		if not self.env.NO_LOCK_IN_RUN and not getattr(Options.options,'no_lock_in_run'):
++		if not(self.env.NO_LOCK_IN_RUN or env.environ.get('NO_LOCK_IN_RUN')or getattr(Options.options,'no_lock_in_run')):
 +			env.store(os.path.join(Context.run_dir,Options.lockfile))
-+		if not self.env.NO_LOCK_IN_TOP and not getattr(Options.options,'no_lock_in_top'):
++		if not(self.env.NO_LOCK_IN_TOP or env.environ.get('NO_LOCK_IN_TOP')or getattr(Options.options,'no_lock_in_top')):
 +			env.store(os.path.join(Context.top_dir,Options.lockfile))
-+		if not self.env.NO_LOCK_IN_OUT and not getattr(Options.options,'no_lock_in_out'):
++		if not(self.env.NO_LOCK_IN_OUT or env.environ.get('NO_LOCK_IN_OUT')or getattr(Options.options,'no_lock_in_out')):
 +			env.store(os.path.join(Context.out_dir,Options.lockfile))
 +	def prepare_env(self,env):
 +		if not env.PREFIX:
 +			if Options.options.prefix or Utils.is_win32:
-+				env.PREFIX=Utils.sane_path(Options.options.prefix)
++				env.PREFIX=Options.options.prefix
 +			else:
-+				env.PREFIX=''
++				env.PREFIX='/'
 +		if not env.BINDIR:
 +			if Options.options.bindir:
-+				env.BINDIR=Utils.sane_path(Options.options.bindir)
++				env.BINDIR=Options.options.bindir
 +			else:
 +				env.BINDIR=Utils.subst_vars('${PREFIX}/bin',env)
 +		if not env.LIBDIR:
 +			if Options.options.libdir:
-+				env.LIBDIR=Utils.sane_path(Options.options.libdir)
++				env.LIBDIR=Options.options.libdir
 +			else:
 +				env.LIBDIR=Utils.subst_vars('${PREFIX}/lib%s'%Utils.lib64(),env)
 +	def store(self):
@@ -1257,9 +1255,10 @@ Last-Update: 2017-07-19
 +		for key in self.all_envs:
 +			tmpenv=self.all_envs[key]
 +			tmpenv.store(os.path.join(self.cachedir.abspath(),key+Build.CACHE_SUFFIX))
-+	def load(self,input,tooldir=None,funs=None,with_sys_path=True,cache=False):
-+		tools=Utils.to_list(input)
-+		if tooldir:tooldir=Utils.to_list(tooldir)
++	def load(self,tool_list,tooldir=None,funs=None,with_sys_path=True,cache=False):
++		tools=Utils.to_list(tool_list)
++		if tooldir:
++			tooldir=Utils.to_list(tooldir)
 +		for tool in tools:
 +			if cache:
 +				mag=(tool,id(self.env),tooldir,funs)
@@ -1271,18 +1270,20 @@ Last-Update: 2017-07-19
 +			try:
 +				module=Context.load_tool(tool,tooldir,ctx=self,with_sys_path=with_sys_path)
 +			except ImportError as e:
-+				self.fatal('Could not load the Waf tool %r from %r\n%s'%(tool,sys.path,e))
++				self.fatal('Could not load the Waf tool %r from %r\n%s'%(tool,getattr(e,'waf_sys_path',sys.path),e))
 +			except Exception as e:
 +				self.to_log('imp %r (%r & %r)'%(tool,tooldir,funs))
-+				self.to_log(Utils.ex_stack())
++				self.to_log(traceback.format_exc())
 +				raise
 +			if funs is not None:
 +				self.eval_rules(funs)
 +			else:
 +				func=getattr(module,'configure',None)
 +				if func:
-+					if type(func)is type(Utils.readf):func(self)
-+					else:self.eval_rules(func)
++					if type(func)is type(Utils.readf):
++						func(self)
++					else:
++						self.eval_rules(func)
 +			self.tools.append({'tool':tool,'tooldir':tooldir,'funs':funs})
 +	def post_recurse(self,node):
 +		super(ConfigurationContext,self).post_recurse(node)
@@ -1297,10 +1298,7 @@ Last-Update: 2017-07-19
 +			f()
 +def conf(f):
 +	def fun(*k,**kw):
-+		mandatory=True
-+		if'mandatory'in kw:
-+			mandatory=kw['mandatory']
-+			del kw['mandatory']
++		mandatory=kw.pop('mandatory',True)
 +		try:
 +			return f(*k,**kw)
 +		except Errors.ConfigurationError:
@@ -1332,7 +1330,7 @@ Last-Update: 2017-07-19
 +				return shlex.split(cmd)
 +	return cmd
 +@conf
-+def check_waf_version(self,mini='1.8.99',maxi='2.0.0',**kw):
++def check_waf_version(self,mini='1.9.99',maxi='2.1.0',**kw):
 +	self.start_msg('Checking for waf version in %s-%s'%(str(mini),str(maxi)),**kw)
 +	ver=Context.HEXVERSION
 +	if Utils.num2ver(mini)>ver:
@@ -1365,7 +1363,7 @@ Last-Update: 2017-07-19
 +		path_list=environ.get('PATH','').split(os.pathsep)
 +	if kw.get('value'):
 +		ret=self.cmd_to_list(kw['value'])
-+	elif var in environ:
++	elif environ.get(var):
 +		ret=self.cmd_to_list(environ[var])
 +	elif self.env[var]:
 +		ret=self.cmd_to_list(self.env[var])
@@ -1438,7 +1436,7 @@ Last-Update: 2017-07-19
 +	bdir=os.path.join(dir,'testbuild')
 +	if not os.path.exists(bdir):
 +		os.makedirs(bdir)
-+	cls_name=getattr(self,'run_build_cls','build')
++	cls_name=kw.get('run_build_cls')or getattr(self,'run_build_cls','build')
 +	self.test_bld=bld=Context.create_context(cls_name,top_dir=dir,out_dir=bdir)
 +	bld.init_dirs()
 +	bld.progress_bar=0
@@ -1454,7 +1452,7 @@ Last-Update: 2017-07-19
 +		try:
 +			bld.compile()
 +		except Errors.WafError:
-+			ret='Test does not build: %s'%Utils.ex_stack()
++			ret='Test does not build: %s'%traceback.format_exc()
 +			self.fatal(ret)
 +		else:
 +			ret=getattr(bld,'retval',0)
@@ -1499,7 +1497,7 @@ Last-Update: 2017-07-19
 +	return ret
 --- /dev/null
 +++ b/waflib/Context.py
-@@ -0,0 +1,396 @@
+@@ -0,0 +1,406 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
 +# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
@@ -1507,10 +1505,10 @@ Last-Update: 2017-07-19
 +import os,re,imp,sys
 +from waflib import Utils,Errors,Logs
 +import waflib.Node
-+HEXVERSION=0x1090800
-+WAFVERSION="1.9.8"
-+WAFREVISION="ffcbf5d4020624dcd1b9338005e3e10dcbebf8f1"
-+ABI=99
++HEXVERSION=0x2000900
++WAFVERSION="2.0.9"
++WAFREVISION="8a950e7bca9a3a9b1ae62aae039ef76e2adc4177"
++ABI=20
 +DBFILE='.wafpickle-%s-%d-%d'%(sys.platform,sys.hexversion,ABI)
 +APPNAME='APPNAME'
 +VERSION='VERSION'
@@ -1522,13 +1520,13 @@ Last-Update: 2017-07-19
 +top_dir=''
 +out_dir=''
 +waf_dir=''
++default_encoding=Utils.console_encoding()
 +g_module=None
 +STDOUT=1
 +STDERR=-1
 +BOTH=0
 +classes=[]
 +def create_context(cmd_name,*k,**kw):
-+	global classes
 +	for x in classes:
 +		if x.cmd==cmd_name:
 +			return x(*k,**kw)
@@ -1536,8 +1534,8 @@ Last-Update: 2017-07-19
 +	ctx.fun=cmd_name
 +	return ctx
 +class store_context(type):
-+	def __init__(cls,name,bases,dict):
-+		super(store_context,cls).__init__(name,bases,dict)
++	def __init__(cls,name,bases,dct):
++		super(store_context,cls).__init__(name,bases,dct)
 +		name=cls.__name__
 +		if name in('ctx','Context'):
 +			return
@@ -1547,7 +1545,6 @@ Last-Update: 2017-07-19
 +			raise Errors.WafError('Missing command for the context class %r (cmd)'%name)
 +		if not getattr(cls,'fun',None):
 +			cls.fun=cls.cmd
-+		global classes
 +		classes.insert(0,cls)
 +ctx=store_context('ctx',(object,),{})
 +class Context(ctx):
@@ -1557,7 +1554,6 @@ Last-Update: 2017-07-19
 +		try:
 +			rd=kw['run_dir']
 +		except KeyError:
-+			global run_dir
 +			rd=run_dir
 +		self.node_class=type('Nod3',(waflib.Node.Node,),{})
 +		self.node_class.__module__='waflib.Node'
@@ -1586,7 +1582,6 @@ Last-Update: 2017-07-19
 +			if fun:
 +				fun(self)
 +	def execute(self):
-+		global g_module
 +		self.recurse([os.path.dirname(g_module.root_path)])
 +	def pre_recurse(self,node):
 +		self.stack_path.append(self.cur_script)
@@ -1639,11 +1634,18 @@ Last-Update: 2017-07-19
 +					except OSError:
 +						raise Errors.WafError('Cannot read the folder %r'%d)
 +					raise Errors.WafError('No wscript file in directory %s'%d)
++	def log_command(self,cmd,kw):
++		if Logs.verbose:
++			fmt=os.environ.get('WAF_CMD_FORMAT')
++			if fmt=='string':
++				if not isinstance(cmd,str):
++					cmd=Utils.shell_escape(cmd)
++			Logs.debug('runner: %r',cmd)
++			Logs.debug('runner_env: kw=%s',kw)
 +	def exec_command(self,cmd,**kw):
 +		subprocess=Utils.subprocess
 +		kw['shell']=isinstance(cmd,str)
-+		Logs.debug('runner: %r',cmd)
-+		Logs.debug('runner_env: kw=%s',kw)
++		self.log_command(cmd,kw)
 +		if self.logger:
 +			self.logger.info(cmd)
 +		if'stdout'not in kw:
@@ -1667,20 +1669,21 @@ Last-Update: 2017-07-19
 +		if'cwd'in kw:
 +			if not isinstance(kw['cwd'],str):
 +				kw['cwd']=kw['cwd'].abspath()
++		encoding=kw.pop('decode_as',default_encoding)
 +		try:
 +			ret,out,err=Utils.run_process(cmd,kw,cargs)
 +		except Exception as e:
 +			raise Errors.WafError('Execution failure: %s'%str(e),ex=e)
 +		if out:
 +			if not isinstance(out,str):
-+				out=out.decode(sys.stdout.encoding or'iso8859-1',errors='replace')
++				out=out.decode(encoding,errors='replace')
 +			if self.logger:
 +				self.logger.debug('out: %s',out)
 +			else:
 +				Logs.info(out,extra={'stream':sys.stdout,'c1':''})
 +		if err:
 +			if not isinstance(err,str):
-+				err=err.decode(sys.stdout.encoding or'iso8859-1',errors='replace')
++				err=err.decode(encoding,errors='replace')
 +			if self.logger:
 +				self.logger.error('err: %s'%err)
 +			else:
@@ -1689,17 +1692,9 @@ Last-Update: 2017-07-19
 +	def cmd_and_log(self,cmd,**kw):
 +		subprocess=Utils.subprocess
 +		kw['shell']=isinstance(cmd,str)
-+		Logs.debug('runner: %r',cmd)
-+		if'quiet'in kw:
-+			quiet=kw['quiet']
-+			del kw['quiet']
-+		else:
-+			quiet=None
-+		if'output'in kw:
-+			to_ret=kw['output']
-+			del kw['output']
-+		else:
-+			to_ret=STDOUT
++		self.log_command(cmd,kw)
++		quiet=kw.pop('quiet',None)
++		to_ret=kw.pop('output',STDOUT)
 +		if Logs.verbose and not kw['shell']and not Utils.check_exe(cmd[0]):
 +			raise Errors.WafError('Program %r not found!'%cmd[0])
 +		kw['stdout']=kw['stderr']=subprocess.PIPE
@@ -1720,14 +1715,15 @@ Last-Update: 2017-07-19
 +		if'cwd'in kw:
 +			if not isinstance(kw['cwd'],str):
 +				kw['cwd']=kw['cwd'].abspath()
++		encoding=kw.pop('decode_as',default_encoding)
 +		try:
 +			ret,out,err=Utils.run_process(cmd,kw,cargs)
 +		except Exception as e:
 +			raise Errors.WafError('Execution failure: %s'%str(e),ex=e)
 +		if not isinstance(out,str):
-+			out=out.decode(sys.stdout.encoding or'iso8859-1',errors='replace')
++			out=out.decode(encoding,errors='replace')
 +		if not isinstance(err,str):
-+			err=err.decode(sys.stdout.encoding or'iso8859-1',errors='replace')
++			err=err.decode(encoding,errors='replace')
 +		if out and quiet!=STDOUT and quiet!=BOTH:
 +			self.to_log('out: %s'%out)
 +		if err and quiet!=STDERR and quiet!=BOTH:
@@ -1747,9 +1743,14 @@ Last-Update: 2017-07-19
 +		if self.logger:
 +			self.logger.info('from %s: %s'%(self.path.abspath(),msg))
 +		try:
-+			msg='%s\n(complete log in %s)'%(msg,self.logger.handlers[0].baseFilename)
++			logfile=self.logger.handlers[0].baseFilename
 +		except AttributeError:
 +			pass
++		else:
++			if os.environ.get('WAF_PRINT_FAILURE_LOG'):
++				msg='Log from (%s):\n%s\n'%(logfile,Utils.readf(logfile))
++			else:
++				msg='%s\n(complete log in %s)'%(msg,logfile)
 +		raise self.errors.ConfigurationError(msg,ex=ex)
 +	def to_log(self,msg):
 +		if not msg:
@@ -1799,9 +1800,9 @@ Last-Update: 2017-07-19
 +			return
 +		result=kw.get('result')or k[0]
 +		defcolor='GREEN'
-+		if result==True:
++		if result is True:
 +			msg='ok'
-+		elif result==False:
++		elif not result:
 +			msg='not found'
 +			defcolor='YELLOW'
 +		else:
@@ -1816,7 +1817,6 @@ Last-Update: 2017-07-19
 +				color=defcolor
 +		Logs.pprint(color,msg)
 +	def load_special_tools(self,var,ban=[]):
-+		global waf_dir
 +		if os.path.isdir(waf_dir):
 +			lst=self.root.find_node(waf_dir).find_node('waflib/extras').ant_glob(var)
 +			for x in lst:
@@ -1871,6 +1871,9 @@ Last-Update: 2017-07-19
 +			sys.path=tooldir+sys.path
 +			try:
 +				__import__(tool)
++			except ImportError as e:
++				e.waf_sys_path=list(sys.path)
++				raise
 +			finally:
 +				for d in tooldir:
 +					sys.path.remove(d)
@@ -1878,7 +1881,8 @@ Last-Update: 2017-07-19
 +			Context.tools[tool]=ret
 +			return ret
 +		else:
-+			if not with_sys_path:sys.path.insert(0,waf_dir)
++			if not with_sys_path:
++				sys.path.insert(0,waf_dir)
 +			try:
 +				for x in('waflib.Tools.%s','waflib.extras.%s','waflib.%s','%s'):
 +					try:
@@ -1888,8 +1892,12 @@ Last-Update: 2017-07-19
 +						x=None
 +				else:
 +					__import__(tool)
++			except ImportError as e:
++				e.waf_sys_path=list(sys.path)
++				raise
 +			finally:
-+				if not with_sys_path:sys.path.remove(waf_dir)
++				if not with_sys_path:
++					sys.path.remove(waf_dir)
 +			ret=sys.modules[x%tool]
 +			Context.tools[tool]=ret
 +			return ret
@@ -1898,7 +1906,7 @@ Last-Update: 2017-07-19
 +			sys.path+=back_path
 --- /dev/null
 +++ b/waflib/Errors.py
-@@ -0,0 +1,37 @@
+@@ -0,0 +1,39 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
 +# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
@@ -1906,6 +1914,7 @@ Last-Update: 2017-07-19
 +import traceback,sys
 +class WafError(Exception):
 +	def __init__(self,msg='',ex=None):
++		Exception.__init__(self)
 +		self.msg=msg
 +		assert not isinstance(msg,Exception)
 +		self.stack=[]
@@ -1928,7 +1937,8 @@ Last-Update: 2017-07-19
 +		lst=['Build failed']
 +		for tsk in self.tasks:
 +			txt=tsk.format_error()
-+			if txt:lst.append(txt)
++			if txt:
++				lst.append(txt)
 +		return'\n'.join(lst)
 +class ConfigurationError(WafError):
 +	pass
@@ -1938,7 +1948,7 @@ Last-Update: 2017-07-19
 +	pass
 --- /dev/null
 +++ b/waflib/Logs.py
-@@ -0,0 +1,205 @@
+@@ -0,0 +1,203 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
 +# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
@@ -2000,7 +2010,6 @@ Last-Update: 2017-07-19
 +	def __init__(self,name=''):
 +		logging.Filter.__init__(self,name)
 +	def filter(self,rec):
-+		global verbose
 +		rec.zone=rec.module
 +		if rec.levelno>=logging.INFO:
 +			return True
@@ -2081,14 +2090,11 @@ Last-Update: 2017-07-19
 +		return logging.Formatter.format(self,rec)
 +log=None
 +def debug(*k,**kw):
-+	global verbose
 +	if verbose:
 +		k=list(k)
 +		k[0]=k[0].replace('\n',' ')
-+		global log
 +		log.debug(*k,**kw)
 +def error(*k,**kw):
-+	global log,verbose
 +	log.error(*k,**kw)
 +	if verbose>2:
 +		st=traceback.extract_stack()
@@ -2099,12 +2105,11 @@ Last-Update: 2017-07-19
 +				buf.append('  File %r, line %d, in %s'%(filename,lineno,name))
 +				if line:
 +					buf.append('	%s'%line.strip())
-+			if buf:log.error('\n'.join(buf))
++			if buf:
++				log.error('\n'.join(buf))
 +def warn(*k,**kw):
-+	global log
 +	log.warn(*k,**kw)
 +def info(*k,**kw):
-+	global log
 +	log.info(*k,**kw)
 +def init_log():
 +	global log
@@ -2118,7 +2123,11 @@ Last-Update: 2017-07-19
 +	log.setLevel(logging.DEBUG)
 +def make_logger(path,name):
 +	logger=logging.getLogger(name)
-+	hdlr=logging.FileHandler(path,'w')
++	if sys.hexversion>0x3000000:
++		encoding=sys.stdout.encoding
++	else:
++		encoding=None
++	hdlr=logging.FileHandler(path,'w',encoding=encoding)
 +	formatter=logging.Formatter('%(message)s')
 +	hdlr.setFormatter(formatter)
 +	logger.addHandler(hdlr)
@@ -2142,11 +2151,10 @@ Last-Update: 2017-07-19
 +	except Exception:
 +		pass
 +def pprint(col,msg,label='',sep='\n'):
-+	global info
 +	info('%s%s%s %s',colors(col),msg,colors.NORMAL,label,extra={'terminator':sep})
 --- /dev/null
 +++ b/waflib/Node.py
-@@ -0,0 +1,485 @@
+@@ -0,0 +1,478 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
 +# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
@@ -2159,6 +2167,7 @@ Last-Update: 2017-07-19
 +**/.#*
 +**/%*%
 +**/._*
++**/*.swp
 +**/CVS
 +**/CVS/**
 +**/.cvsignore
@@ -2184,6 +2193,49 @@ Last-Update: 2017-07-19
 +**/_darcs/**
 +**/.intlcache
 +**/.DS_Store'''
++def ant_matcher(s,ignorecase):
++	reflags=re.I if ignorecase else 0
++	ret=[]
++	for x in Utils.to_list(s):
++		x=x.replace('\\','/').replace('//','/')
++		if x.endswith('/'):
++			x+='**'
++		accu=[]
++		for k in x.split('/'):
++			if k=='**':
++				accu.append(k)
++			else:
++				k=k.replace('.','[.]').replace('*','.*').replace('?','.').replace('+','\\+')
++				k='^%s$'%k
++				try:
++					exp=re.compile(k,flags=reflags)
++				except Exception as e:
++					raise Errors.WafError('Invalid pattern: %s'%k,e)
++				else:
++					accu.append(exp)
++		ret.append(accu)
++	return ret
++def ant_sub_filter(name,nn):
++	ret=[]
++	for lst in nn:
++		if not lst:
++			pass
++		elif lst[0]=='**':
++			ret.append(lst)
++			if len(lst)>1:
++				if lst[1].match(name):
++					ret.append(lst[2:])
++			else:
++				ret.append([])
++		elif lst[0].match(name):
++			ret.append(lst[1:])
++	return ret
++def ant_sub_matcher(name,pats):
++	nacc=ant_sub_filter(name,pats[0])
++	nrej=ant_sub_filter(name,pats[1])
++	if[]in nrej:
++		nacc=[]
++	return[nacc,nrej]
 +class Node(object):
 +	dict_class=dict
 +	__slots__=('name','parent','children','cache_abspath','cache_isdir')
@@ -2207,9 +2259,9 @@ Last-Update: 2017-07-19
 +		return self.abspath()
 +	def __copy__(self):
 +		raise Errors.WafError('nodes are not supposed to be copied')
-+	def read(self,flags='r',encoding='ISO8859-1'):
++	def read(self,flags='r',encoding='latin-1'):
 +		return Utils.readf(self.abspath(),flags,encoding)
-+	def write(self,data,flags='w',encoding='ISO8859-1'):
++	def write(self,data,flags='w',encoding='latin-1'):
 +		Utils.writef(self.abspath(),data,flags,encoding)
 +	def read_json(self,convert=True,encoding='utf-8'):
 +		import json
@@ -2298,6 +2350,10 @@ Last-Update: 2017-07-19
 +	def find_node(self,lst):
 +		if isinstance(lst,str):
 +			lst=[x for x in Utils.split_path(lst)if x and x!='.']
++		if lst and lst[0].startswith('\\\\')and not self.parent:
++			node=self.ctx.root.make_node(lst[0])
++			node.cache_isdir=True
++			return node.find_node(lst[1:])
 +		cur=self
 +		for x in lst:
 +			if x=='..':
@@ -2412,7 +2468,7 @@ Last-Update: 2017-07-19
 +			diff-=1
 +			p=p.parent
 +		return p is node
-+	def ant_iter(self,accept=None,maxdepth=25,pats=[],dir=False,src=True,remove=True):
++	def ant_iter(self,accept=None,maxdepth=25,pats=[],dir=False,src=True,remove=True,quiet=False):
 +		dircont=self.listdir()
 +		dircont.sort()
 +		try:
@@ -2433,67 +2489,29 @@ Last-Update: 2017-07-19
 +					if isdir:
 +						if dir:
 +							yield node
-+					else:
-+						if src:
-+							yield node
++					elif src:
++						yield node
 +				if isdir:
 +					node.cache_isdir=True
 +					if maxdepth:
-+						for k in node.ant_iter(accept=accept,maxdepth=maxdepth-1,pats=npats,dir=dir,src=src,remove=remove):
++						for k in node.ant_iter(accept=accept,maxdepth=maxdepth-1,pats=npats,dir=dir,src=src,remove=remove,quiet=quiet):
 +							yield k
-+		raise StopIteration
 +	def ant_glob(self,*k,**kw):
 +		src=kw.get('src',True)
-+		dir=kw.get('dir',False)
++		dir=kw.get('dir')
 +		excl=kw.get('excl',exclude_regs)
 +		incl=k and k[0]or kw.get('incl','**')
-+		reflags=kw.get('ignorecase',0)and re.I
-+		def to_pat(s):
-+			lst=Utils.to_list(s)
-+			ret=[]
-+			for x in lst:
-+				x=x.replace('\\','/').replace('//','/')
-+				if x.endswith('/'):
-+					x+='**'
-+				lst2=x.split('/')
-+				accu=[]
-+				for k in lst2:
-+					if k=='**':
-+						accu.append(k)
-+					else:
-+						k=k.replace('.','[.]').replace('*','.*').replace('?','.').replace('+','\\+')
-+						k='^%s$'%k
-+						try:
-+							accu.append(re.compile(k,flags=reflags))
-+						except Exception as e:
-+							raise Errors.WafError('Invalid pattern: %s'%k,e)
-+				ret.append(accu)
-+			return ret
-+		def filtre(name,nn):
-+			ret=[]
-+			for lst in nn:
-+				if not lst:
-+					pass
-+				elif lst[0]=='**':
-+					ret.append(lst)
-+					if len(lst)>1:
-+						if lst[1].match(name):
-+							ret.append(lst[2:])
-+					else:
-+						ret.append([])
-+				elif lst[0].match(name):
-+					ret.append(lst[1:])
-+			return ret
-+		def accept(name,pats):
-+			nacc=filtre(name,pats[0])
-+			nrej=filtre(name,pats[1])
-+			if[]in nrej:
-+				nacc=[]
-+			return[nacc,nrej]
-+		ret=[x for x in self.ant_iter(accept=accept,pats=[to_pat(incl),to_pat(excl)],maxdepth=kw.get('maxdepth',25),dir=dir,src=src,remove=kw.get('remove',True))]
-+		if kw.get('flat',False):
-+			return' '.join([x.path_from(self)for x in ret])
-+		return ret
++		remove=kw.get('remove',True)
++		maxdepth=kw.get('maxdepth',25)
++		ignorecase=kw.get('ignorecase',False)
++		quiet=kw.get('quiet',False)
++		pats=(ant_matcher(incl,ignorecase),ant_matcher(excl,ignorecase))
++		if kw.get('generator'):
++			return Utils.lazy_generator(self.ant_iter,(ant_sub_matcher,maxdepth,pats,dir,src,remove,quiet))
++		it=self.ant_iter(ant_sub_matcher,maxdepth,pats,dir,src,remove,quiet)
++		if kw.get('flat'):
++			return' '.join(x.path_from(self)for x in it)
++		return list(it)
 +	def is_src(self):
 +		cur=self
 +		x=self.ctx.srcnode
@@ -2554,18 +2572,10 @@ Last-Update: 2017-07-19
 +			return None
 +		return node
 +	def find_or_declare(self,lst):
-+		if isinstance(lst,str):
-+			lst=[x for x in Utils.split_path(lst)if x and x!='.']
-+		node=self.get_bld().search_node(lst)
-+		if node:
-+			if not os.path.isfile(node.abspath()):
-+				node.parent.mkdir()
-+			return node
-+		self=self.get_src()
-+		node=self.find_node(lst)
-+		if node:
-+			return node
-+		node=self.get_bld().make_node(lst)
++		if isinstance(lst,str)and os.path.isabs(lst):
++			node=self.ctx.root.make_node(lst)
++		else:
++			node=self.get_bld().make_node(lst)
 +		node.parent.mkdir()
 +		return node
 +	def find_dir(self,lst):
@@ -2620,36 +2630,37 @@ Last-Update: 2017-07-19
 +					return ret
 +				raise
 +		return ret
-+	def get_sig(self):
-+		return self.h_file()
-+	def set_sig(self,val):
-+		try:
-+			del self.get_bld_sig.__cache__[(self,)]
-+		except(AttributeError,KeyError):
-+			pass
-+	sig=property(get_sig,set_sig)
-+	cache_sig=property(get_sig,set_sig)
 +pickle_lock=Utils.threading.Lock()
 +class Nod3(Node):
 +	pass
 --- /dev/null
 +++ b/waflib/Options.py
-@@ -0,0 +1,147 @@
+@@ -0,0 +1,200 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
 +# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import os,tempfile,optparse,sys,re
 +from waflib import Logs,Utils,Context,Errors
-+options={}
++options=optparse.Values()
 +commands=[]
 +envvars=[]
 +lockfile=os.environ.get('WAFLOCK','.lock-waf_%s_build'%sys.platform)
 +class opt_parser(optparse.OptionParser):
-+	def __init__(self,ctx):
-+		optparse.OptionParser.__init__(self,conflict_handler="resolve",version='waf %s (%s)'%(Context.WAFVERSION,Context.WAFREVISION))
++	def __init__(self,ctx,allow_unknown=False):
++		optparse.OptionParser.__init__(self,conflict_handler='resolve',add_help_option=False,version='waf %s (%s)'%(Context.WAFVERSION,Context.WAFREVISION))
 +		self.formatter.width=Logs.get_term_cols()
 +		self.ctx=ctx
++		self.allow_unknown=allow_unknown
++	def _process_args(self,largs,rargs,values):
++		while rargs:
++			try:
++				optparse.OptionParser._process_args(self,largs,rargs,values)
++			except(optparse.BadOptionError,optparse.AmbiguousOptionError)as e:
++				if self.allow_unknown:
++					largs.append(e.opt_str)
++				else:
++					self.error(str(e))
 +	def print_usage(self,file=None):
 +		return self.print_help(file)
 +	def get_usage(self):
@@ -2687,12 +2698,18 @@ Last-Update: 2017-07-19
 +		jobs=self.jobs()
 +		p=self.add_option
 +		color=os.environ.get('NOCOLOR','')and'no'or'auto'
++		if os.environ.get('CLICOLOR','')=='0':
++			color='no'
++		elif os.environ.get('CLICOLOR_FORCE','')=='1':
++			color='yes'
 +		p('-c','--color',dest='colors',default=color,action='store',help='whether to use colors (yes/no/auto) [default: auto]',choices=('yes','no','auto'))
 +		p('-j','--jobs',dest='jobs',default=jobs,type='int',help='amount of parallel jobs (%r)'%jobs)
 +		p('-k','--keep',dest='keep',default=0,action='count',help='continue despite errors (-kk to try harder)')
 +		p('-v','--verbose',dest='verbose',default=0,action='count',help='verbosity level -v -vv or -vvv [default: 0]')
 +		p('--zones',dest='zones',default='',action='store',help='debugging zones (task_gen, deps, tasks, etc)')
-+		p('--profile',dest='profile',default='',action='store_true',help=optparse.SUPPRESS_HELP)
++		p('--profile',dest='profile',default=0,action='store_true',help=optparse.SUPPRESS_HELP)
++		p('--pdb',dest='pdb',default=0,action='store_true',help=optparse.SUPPRESS_HELP)
++		p('-h','--help',dest='whelp',default=0,action='store_true',help="show this help message and exit")
 +		gr=self.add_option_group('Configuration options')
 +		self.option_groups['configure options']=gr
 +		gr.add_option('-o','--out',action='store',default='',help='build dir for the project',dest='out')
@@ -2764,38 +2781,111 @@ Last-Update: 2017-07-19
 +				if group.title==opt_str:
 +					return group
 +			return None
-+	def parse_args(self,_args=None):
-+		global options,commands,envvars
++	def sanitize_path(self,path,cwd=None):
++		if not cwd:
++			cwd=Context.launch_dir
++		p=os.path.expanduser(path)
++		p=os.path.join(cwd,p)
++		p=os.path.normpath(p)
++		p=os.path.abspath(p)
++		return p
++	def parse_cmd_args(self,_args=None,cwd=None,allow_unknown=False):
++		self.parser.allow_unknown=allow_unknown
 +		(options,leftover_args)=self.parser.parse_args(args=_args)
++		envvars=[]
++		commands=[]
 +		for arg in leftover_args:
 +			if'='in arg:
 +				envvars.append(arg)
-+			else:
++			elif arg!='options':
 +				commands.append(arg)
-+		if options.destdir:
-+			options.destdir=Utils.sane_path(options.destdir)
++		for name in'top out destdir prefix bindir libdir'.split():
++			if getattr(options,name,None):
++				path=self.sanitize_path(getattr(options,name),cwd)
++				setattr(options,name,path)
++		return options,commands,envvars
++	def init_module_vars(self,arg_options,arg_commands,arg_envvars):
++		options.__dict__.clear()
++		del commands[:]
++		del envvars[:]
++		options.__dict__.update(arg_options.__dict__)
++		commands.extend(arg_commands)
++		envvars.extend(arg_envvars)
++		for var in envvars:
++			(name,value)=var.split('=',1)
++			os.environ[name.strip()]=value
++	def init_logs(self,options,commands,envvars):
++		Logs.verbose=options.verbose
 +		if options.verbose>=1:
 +			self.load('errcheck')
 +		colors={'yes':2,'auto':1,'no':0}[options.colors]
 +		Logs.enable_colors(colors)
++		if options.zones:
++			Logs.zones=options.zones.split(',')
++			if not Logs.verbose:
++				Logs.verbose=1
++		elif Logs.verbose>0:
++			Logs.zones=['runner']
++		if Logs.verbose>2:
++			Logs.zones=['*']
++	def parse_args(self,_args=None):
++		options,commands,envvars=self.parse_cmd_args()
++		self.init_logs(options,commands,envvars)
++		self.init_module_vars(options,commands,envvars)
 +	def execute(self):
 +		super(OptionsContext,self).execute()
 +		self.parse_args()
 +		Utils.alloc_process_pool(options.jobs)
 --- /dev/null
 +++ b/waflib/Runner.py
-@@ -0,0 +1,181 @@
+@@ -0,0 +1,350 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
 +# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
-+import random
++import heapq,traceback
 +try:
-+	from queue import Queue
++	from queue import Queue,PriorityQueue
 +except ImportError:
 +	from Queue import Queue
++	try:
++		from Queue import PriorityQueue
++	except ImportError:
++		class PriorityQueue(Queue):
++			def _init(self,maxsize):
++				self.maxsize=maxsize
++				self.queue=[]
++			def _put(self,item):
++				heapq.heappush(self.queue,item)
++			def _get(self):
++				return heapq.heappop(self.queue)
 +from waflib import Utils,Task,Errors,Logs
-+GAP=20
++GAP=5
++class PriorityTasks(object):
++	def __init__(self):
++		self.lst=[]
++	def __len__(self):
++		return len(self.lst)
++	def __iter__(self):
++		return iter(self.lst)
++	def clear(self):
++		self.lst=[]
++	def append(self,task):
++		heapq.heappush(self.lst,task)
++	def appendleft(self,task):
++		heapq.heappush(self.lst,task)
++	def pop(self):
++		return heapq.heappop(self.lst)
++	def extend(self,lst):
++		if self.lst:
++			for x in lst:
++				self.append(x)
++		else:
++			if isinstance(lst,list):
++				self.lst=lst
++				heapq.heapify(lst)
++			else:
++				self.lst=lst.lst
 +class Consumer(Utils.threading.Thread):
 +	def __init__(self,spawner,task):
 +		Utils.threading.Thread.__init__(self)
@@ -2806,7 +2896,7 @@ Last-Update: 2017-07-19
 +	def run(self):
 +		try:
 +			if not self.spawner.master.stop:
-+				self.task.process()
++				self.spawner.master.process_task(self.task)
 +		finally:
 +			self.spawner.sem.release()
 +			self.spawner.master.out.put(self.task)
@@ -2836,77 +2926,134 @@ Last-Update: 2017-07-19
 +	def __init__(self,bld,j=2):
 +		self.numjobs=j
 +		self.bld=bld
-+		self.outstanding=Utils.deque()
-+		self.frozen=Utils.deque()
-+		self.ready=Queue(0)
++		self.outstanding=PriorityTasks()
++		self.postponed=PriorityTasks()
++		self.incomplete=set()
++		self.ready=PriorityQueue(0)
 +		self.out=Queue(0)
 +		self.count=0
-+		self.processed=1
++		self.processed=0
 +		self.stop=False
 +		self.error=[]
 +		self.biter=None
 +		self.dirty=False
++		self.revdeps=Utils.defaultdict(set)
 +		self.spawner=Spawner(self)
 +	def get_next_task(self):
 +		if not self.outstanding:
 +			return None
-+		return self.outstanding.popleft()
++		return self.outstanding.pop()
 +	def postpone(self,tsk):
-+		if random.randint(0,1):
-+			self.frozen.appendleft(tsk)
-+		else:
-+			self.frozen.append(tsk)
++		self.postponed.append(tsk)
 +	def refill_task_list(self):
 +		while self.count>self.numjobs*GAP:
 +			self.get_out()
 +		while not self.outstanding:
 +			if self.count:
 +				self.get_out()
-+			elif self.frozen:
++				if self.outstanding:
++					break
++			elif self.postponed:
 +				try:
 +					cond=self.deadlock==self.processed
 +				except AttributeError:
 +					pass
 +				else:
 +					if cond:
-+						msg='check the build order for the tasks'
-+						for tsk in self.frozen:
-+							if not tsk.run_after:
-+								msg='check the methods runnable_status'
-+								break
 +						lst=[]
-+						for tsk in self.frozen:
-+							lst.append('%s\t-> %r'%(repr(tsk),[id(x)for x in tsk.run_after]))
-+						raise Errors.WafError('Deadlock detected: %s%s'%(msg,''.join(lst)))
++						for tsk in self.postponed:
++							deps=[id(x)for x in tsk.run_after if not x.hasrun]
++							lst.append('%s\t-> %r'%(repr(tsk),deps))
++							if not deps:
++								lst.append('\n  task %r dependencies are done, check its *runnable_status*?'%id(tsk))
++						raise Errors.WafError('Deadlock detected: check the task build order%s'%''.join(lst))
 +				self.deadlock=self.processed
-+			if self.frozen:
-+				self.outstanding.extend(self.frozen)
-+				self.frozen.clear()
++			if self.postponed:
++				self.outstanding.extend(self.postponed)
++				self.postponed.clear()
 +			elif not self.count:
-+				self.outstanding.extend(next(self.biter))
-+				self.total=self.bld.total()
-+				break
++				if self.incomplete:
++					for x in self.incomplete:
++						for k in x.run_after:
++							if not k.hasrun:
++								break
++						else:
++							self.incomplete.remove(x)
++							self.outstanding.append(x)
++							break
++					else:
++						raise Errors.WafError('Broken revdeps detected on %r'%self.incomplete)
++				else:
++					tasks=next(self.biter)
++					ready,waiting=self.prio_and_split(tasks)
++					self.outstanding.extend(ready)
++					self.incomplete.update(waiting)
++					self.total=self.bld.total()
++					break
 +	def add_more_tasks(self,tsk):
 +		if getattr(tsk,'more_tasks',None):
-+			self.outstanding.extend(tsk.more_tasks)
++			more=set(tsk.more_tasks)
++			groups_done=set()
++			def iteri(a,b):
++				for x in a:
++					yield x
++				for x in b:
++					yield x
++			for x in iteri(self.outstanding,self.incomplete):
++				for k in x.run_after:
++					if isinstance(k,Task.TaskGroup):
++						if k not in groups_done:
++							groups_done.add(k)
++							for j in k.prev&more:
++								self.revdeps[j].add(k)
++					elif k in more:
++						self.revdeps[k].add(x)
++			ready,waiting=self.prio_and_split(tsk.more_tasks)
++			self.outstanding.extend(ready)
++			self.incomplete.update(waiting)
 +			self.total+=len(tsk.more_tasks)
++	def mark_finished(self,tsk):
++		def try_unfreeze(x):
++			if x in self.incomplete:
++				for k in x.run_after:
++					if not k.hasrun:
++						break
++				else:
++					self.incomplete.remove(x)
++					self.outstanding.append(x)
++		if tsk in self.revdeps:
++			for x in self.revdeps[tsk]:
++				if isinstance(x,Task.TaskGroup):
++					x.prev.remove(tsk)
++					if not x.prev:
++						for k in x.next:
++							k.run_after.remove(x)
++							try_unfreeze(k)
++						x.next=[]
++				else:
++					try_unfreeze(x)
++			del self.revdeps[tsk]
 +	def get_out(self):
 +		tsk=self.out.get()
 +		if not self.stop:
 +			self.add_more_tasks(tsk)
++		self.mark_finished(tsk)
 +		self.count-=1
 +		self.dirty=True
 +		return tsk
 +	def add_task(self,tsk):
 +		self.ready.put(tsk)
++	def process_task(self,tsk):
++		tsk.process()
++		if tsk.hasrun!=Task.SUCCESS:
++			self.error_handler(tsk)
 +	def skip(self,tsk):
 +		tsk.hasrun=Task.SKIPPED
++		self.mark_finished(tsk)
++	def cancel(self,tsk):
++		tsk.hasrun=Task.CANCELED
++		self.mark_finished(tsk)
 +	def error_handler(self,tsk):
-+		if hasattr(tsk,'scan')and hasattr(tsk,'uid'):
-+			try:
-+				del self.bld.imp_sigs[tsk.uid()]
-+			except KeyError:
-+				pass
 +		if not self.bld.keep:
 +			self.stop=True
 +		self.error.append(tsk)
@@ -2915,7 +3062,7 @@ Last-Update: 2017-07-19
 +			return tsk.runnable_status()
 +		except Exception:
 +			self.processed+=1
-+			tsk.err_msg=Utils.ex_stack()
++			tsk.err_msg=traceback.format_exc()
 +			if not self.stop and self.bld.keep:
 +				self.skip(tsk)
 +				if self.bld.keep==1:
@@ -2951,28 +3098,105 @@ Last-Update: 2017-07-19
 +				if self.numjobs==1:
 +					tsk.log_display(tsk.generator.bld)
 +					try:
-+						tsk.process()
++						self.process_task(tsk)
 +					finally:
 +						self.out.put(tsk)
 +				else:
 +					self.add_task(tsk)
-+			if st==Task.ASK_LATER:
++			elif st==Task.ASK_LATER:
 +				self.postpone(tsk)
 +			elif st==Task.SKIP_ME:
 +				self.processed+=1
 +				self.skip(tsk)
 +				self.add_more_tasks(tsk)
++			elif st==Task.CANCEL_ME:
++				if Logs.verbose>1:
++					self.error.append(tsk)
++				self.processed+=1
++				self.cancel(tsk)
 +		while self.error and self.count:
 +			self.get_out()
 +		self.ready.put(None)
-+		assert(self.count==0 or self.stop)
++		if not self.stop:
++			assert not self.count
++			assert not self.postponed
++			assert not self.incomplete
++	def prio_and_split(self,tasks):
++		for x in tasks:
++			x.visited=0
++		reverse=self.revdeps
++		groups_done=set()
++		for x in tasks:
++			for k in x.run_after:
++				if isinstance(k,Task.TaskGroup):
++					if k not in groups_done:
++						groups_done.add(k)
++						for j in k.prev:
++							reverse[j].add(k)
++				else:
++					reverse[k].add(x)
++		def visit(n):
++			if isinstance(n,Task.TaskGroup):
++				return sum(visit(k)for k in n.next)
++			if n.visited==0:
++				n.visited=1
++				if n in reverse:
++					rev=reverse[n]
++					n.prio_order=n.tree_weight+len(rev)+sum(visit(k)for k in rev)
++				else:
++					n.prio_order=n.tree_weight
++				n.visited=2
++			elif n.visited==1:
++				raise Errors.WafError('Dependency cycle found!')
++			return n.prio_order
++		for x in tasks:
++			if x.visited!=0:
++				continue
++			try:
++				visit(x)
++			except Errors.WafError:
++				self.debug_cycles(tasks,reverse)
++		ready=[]
++		waiting=[]
++		for x in tasks:
++			for k in x.run_after:
++				if not k.hasrun:
++					waiting.append(x)
++					break
++			else:
++				ready.append(x)
++		return(ready,waiting)
++	def debug_cycles(self,tasks,reverse):
++		tmp={}
++		for x in tasks:
++			tmp[x]=0
++		def visit(n,acc):
++			if isinstance(n,Task.TaskGroup):
++				for k in n.next:
++					visit(k,acc)
++				return
++			if tmp[n]==0:
++				tmp[n]=1
++				for k in reverse.get(n,[]):
++					visit(k,[n]+acc)
++				tmp[n]=2
++			elif tmp[n]==1:
++				lst=[]
++				for tsk in acc:
++					lst.append(repr(tsk))
++					if tsk is n:
++						break
++				raise Errors.WafError('Task dependency cycle in "run_after" constraints: %s'%''.join(lst))
++		for x in tasks:
++			visit(x,[])
 --- /dev/null
 +++ b/waflib/Scripting.py
-@@ -0,0 +1,398 @@
+@@ -0,0 +1,403 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
 +# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
++from __future__ import with_statement
 +import os,shlex,shutil,traceback,errno,sys,stat
 +from waflib import Utils,Configure,Logs,Options,ConfigSet,Context,Errors,Build,Node
 +build_dir_override=None
@@ -2983,35 +3207,32 @@ Last-Update: 2017-07-19
 +	if Context.WAFVERSION!=version:
 +		Logs.error('Waf script %r and library %r do not match (directory %r)',version,Context.WAFVERSION,wafdir)
 +		sys.exit(1)
-+	if'--version'in sys.argv:
-+		Context.run_dir=current_directory
-+		ctx=Context.create_context('options')
-+		ctx.curdir=current_directory
-+		ctx.parse_args()
-+		sys.exit(0)
++	Context.waf_dir=wafdir
++	Context.run_dir=Context.launch_dir=current_directory
++	start_dir=current_directory
++	no_climb=os.environ.get('NOCLIMB')
 +	if len(sys.argv)>1:
 +		potential_wscript=os.path.join(current_directory,sys.argv[1])
-+		if os.path.basename(potential_wscript)=='wscript'and os.path.isfile(potential_wscript):
-+			current_directory=os.path.normpath(os.path.dirname(potential_wscript))
++		if os.path.basename(potential_wscript)==Context.WSCRIPT_FILE and os.path.isfile(potential_wscript):
++			path=os.path.normpath(os.path.dirname(potential_wscript))
++			start_dir=os.path.abspath(path)
++			no_climb=True
 +			sys.argv.pop(1)
-+	Context.waf_dir=wafdir
-+	Context.launch_dir=current_directory
-+	no_climb=os.environ.get('NOCLIMB')
++	ctx=Context.create_context('options')
++	(options,commands,env)=ctx.parse_cmd_args(allow_unknown=True)
++	if options.top:
++		start_dir=Context.run_dir=Context.top_dir=options.top
++		no_climb=True
++	if options.out:
++		Context.out_dir=options.out
 +	if not no_climb:
 +		for k in no_climb_commands:
-+			for y in sys.argv:
++			for y in commands:
 +				if y.startswith(k):
 +					no_climb=True
 +					break
-+	for i,x in enumerate(sys.argv):
-+		if x.startswith('--top='):
-+			Context.run_dir=Context.top_dir=Utils.sane_path(x[6:])
-+			sys.argv[i]='--top='+Context.run_dir
-+		if x.startswith('--out='):
-+			Context.out_dir=Utils.sane_path(x[6:])
-+			sys.argv[i]='--out='+Context.out_dir
-+	cur=current_directory
-+	while cur and not Context.top_dir:
++	cur=start_dir
++	while cur:
 +		try:
 +			lst=os.listdir(cur)
 +		except OSError:
@@ -3026,6 +3247,8 @@ Last-Update: 2017-07-19
 +				pass
 +			else:
 +				for x in(env.run_dir,env.top_dir,env.out_dir):
++					if not x:
++						continue
 +					if Utils.is_win32:
 +						if cur==x:
 +							load=True
@@ -3057,14 +3280,11 @@ Last-Update: 2017-07-19
 +		if no_climb:
 +			break
 +	if not Context.run_dir:
-+		if'-h'in sys.argv or'--help'in sys.argv:
-+			Logs.warn('No wscript file found: the help message may be incomplete')
-+			Context.run_dir=current_directory
-+			ctx=Context.create_context('options')
-+			ctx.curdir=current_directory
-+			ctx.parse_args()
++		if options.whelp:
++			Logs.warn('These are the generic options (no wscript/project found)')
++			ctx.parser.print_help()
 +			sys.exit(0)
-+		Logs.error('Waf: Run from a directory containing a file named %r',Context.WSCRIPT_FILE)
++		Logs.error('Waf: Run from a folder containing a %r file (or try -h for the generic options)',Context.WSCRIPT_FILE)
 +		sys.exit(1)
 +	try:
 +		os.chdir(Context.run_dir)
@@ -3081,14 +3301,23 @@ Last-Update: 2017-07-19
 +		Logs.error('Waf: The wscript in %r is unreadable',Context.run_dir)
 +		traceback.print_exc(file=sys.stdout)
 +		sys.exit(2)
-+	if'--profile'in sys.argv:
++	if options.profile:
 +		import cProfile,pstats
 +		cProfile.runctx('from waflib import Scripting; Scripting.run_commands()',{},{},'profi.txt')
 +		p=pstats.Stats('profi.txt')
 +		p.sort_stats('time').print_stats(75)
 +	else:
 +		try:
-+			run_commands()
++			try:
++				run_commands()
++			except:
++				if options.pdb:
++					import pdb
++					type,value,tb=sys.exc_info()
++					traceback.print_exc()
++					pdb.post_mortem(tb)
++				else:
++					raise
 +		except Errors.WafError as e:
 +			if Logs.verbose>1:
 +				Logs.pprint('RED',e.verbose_msg)
@@ -3118,22 +3347,13 @@ Last-Update: 2017-07-19
 +	if not'options'in Context.g_module.__dict__:
 +		Context.g_module.options=Utils.nada
 +def parse_options():
-+	Context.create_context('options').execute()
-+	for var in Options.envvars:
-+		(name,value)=var.split('=',1)
-+		os.environ[name.strip()]=value
++	ctx=Context.create_context('options')
++	ctx.execute()
 +	if not Options.commands:
-+		Options.commands=[default_cmd]
-+	Options.commands=[x for x in Options.commands if x!='options']
-+	Logs.verbose=Options.options.verbose
-+	if Options.options.zones:
-+		Logs.zones=Options.options.zones.split(',')
-+		if not Logs.verbose:
-+			Logs.verbose=1
-+	elif Logs.verbose>0:
-+		Logs.zones=['runner']
-+	if Logs.verbose>2:
-+		Logs.zones=['*']
++		Options.commands.append(default_cmd)
++	if Options.options.whelp:
++		ctx.parser.print_help()
++		sys.exit(0)
 +def run_command(cmd_name):
 +	ctx=Context.create_context(cmd_name)
 +	ctx.log_timer=Utils.Timer()
@@ -3171,34 +3391,43 @@ Last-Update: 2017-07-19
 +	except OSError:
 +		pass
 +def distclean(ctx):
-+	'''removes the build directory'''
-+	lst=os.listdir('.')
-+	for f in lst:
-+		if f==Options.lockfile:
-+			try:
-+				proj=ConfigSet.ConfigSet(f)
-+			except IOError:
-+				Logs.warn('Could not read %r',f)
-+				continue
-+			if proj['out_dir']!=proj['top_dir']:
-+				try:
-+					shutil.rmtree(proj['out_dir'])
-+				except EnvironmentError as e:
-+					if e.errno!=errno.ENOENT:
-+						Logs.warn('Could not remove %r',proj['out_dir'])
-+			else:
-+				distclean_dir(proj['out_dir'])
-+			for k in(proj['out_dir'],proj['top_dir'],proj['run_dir']):
-+				p=os.path.join(k,Options.lockfile)
-+				try:
-+					os.remove(p)
-+				except OSError as e:
-+					if e.errno!=errno.ENOENT:
-+						Logs.warn('Could not remove %r',p)
-+		if not Options.commands:
-+			for x in'.waf-1. waf-1. .waf3-1. waf3-1.'.split():
-+				if f.startswith(x):
-+					shutil.rmtree(f,ignore_errors=True)
++	'''removes build folders and data'''
++	def remove_and_log(k,fun):
++		try:
++			fun(k)
++		except EnvironmentError as e:
++			if e.errno!=errno.ENOENT:
++				Logs.warn('Could not remove %r',k)
++	if not Options.commands:
++		for k in os.listdir('.'):
++			for x in'.waf-2 waf-2 .waf3-2 waf3-2'.split():
++				if k.startswith(x):
++					remove_and_log(k,shutil.rmtree)
++	cur='.'
++	if ctx.options.no_lock_in_top:
++		cur=ctx.options.out
++	try:
++		lst=os.listdir(cur)
++	except OSError:
++		Logs.warn('Could not read %r',cur)
++		return
++	if Options.lockfile in lst:
++		f=os.path.join(cur,Options.lockfile)
++		try:
++			env=ConfigSet.ConfigSet(f)
++		except EnvironmentError:
++			Logs.warn('Could not read %r',f)
++			return
++		if not env.out_dir or not env.top_dir:
++			Logs.warn('Invalid lock file %r',f)
++			return
++		if env.out_dir==env.top_dir:
++			distclean_dir(env.out_dir)
++		else:
++			remove_and_log(env.out_dir,shutil.rmtree)
++		for k in(env.out_dir,env.top_dir,env.run_dir):
++			p=os.path.join(k,Options.lockfile)
++			remove_and_log(p,os.remove)
 +class Dist(Context.Context):
 +	'''creates an archive containing the project source code'''
 +	cmd='dist'
@@ -3236,11 +3465,11 @@ Last-Update: 2017-07-19
 +		else:
 +			self.fatal('Valid algo types are tar.bz2, tar.gz, tar.xz or zip')
 +		try:
-+			from hashlib import sha1
++			from hashlib import sha256
 +		except ImportError:
 +			digest=''
 +		else:
-+			digest=' (sha=%r)'%sha1(node.read(flags='rb')).hexdigest()
++			digest=' (sha256=%r)'%sha256(node.read(flags='rb')).hexdigest()
 +		Logs.info('New archive created: %s%s',self.arch_name,digest)
 +	def get_tar_path(self,node):
 +		return node.abspath()
@@ -3252,11 +3481,8 @@ Last-Update: 2017-07-19
 +		tinfo.uname='root'
 +		tinfo.gname='root'
 +		if os.path.isfile(p):
-+			fu=open(p,'rb')
-+			try:
-+				tar.addfile(tinfo,fileobj=fu)
-+			finally:
-+				fu.close()
++			with open(p,'rb')as f:
++				tar.addfile(tinfo,fileobj=f)
 +		else:
 +			tar.addfile(tinfo)
 +	def get_tar_prefix(self):
@@ -3282,7 +3508,7 @@ Last-Update: 2017-07-19
 +		try:
 +			return self.excl
 +		except AttributeError:
-+			self.excl=Node.exclude_regs+' **/waf-1.8.* **/.waf-1.8* **/waf3-1.8.* **/.waf3-1.8* **/*~ **/*.rej **/*.orig **/*.pyc **/*.pyo **/*.bak **/*.swp **/.lock-w*'
++			self.excl=Node.exclude_regs+' **/waf-2.* **/.waf-2.* **/waf3-2.* **/.waf3-2.* **/*~ **/*.rej **/*.orig **/*.pyc **/*.pyo **/*.bak **/*.swp **/.lock-w*'
 +			if Context.out_dir:
 +				nd=self.root.find_node(Context.out_dir)
 +				if nd:
@@ -3304,21 +3530,22 @@ Last-Update: 2017-07-19
 +		self.recurse([os.path.dirname(Context.g_module.root_path)])
 +		self.archive()
 +		self.check()
-+	def check(self):
-+		import tempfile,tarfile
-+		try:
-+			t=tarfile.open(self.get_arch_name())
-+			for x in t:
-+				t.extract(x)
-+		finally:
-+			t.close()
++	def make_distcheck_cmd(self,tmpdir):
 +		cfg=[]
 +		if Options.options.distcheck_args:
 +			cfg=shlex.split(Options.options.distcheck_args)
 +		else:
 +			cfg=[x for x in sys.argv if x.startswith('-')]
++		cmd=[sys.executable,sys.argv[0],'configure','build','install','uninstall','--destdir='+tmpdir]+cfg
++		return cmd
++	def check(self):
++		import tempfile,tarfile
++		with tarfile.open(self.get_arch_name())as t:
++			for x in t:
++				t.extract(x)
 +		instdir=tempfile.mkdtemp('.inst',self.get_base_name())
-+		ret=Utils.subprocess.Popen([sys.executable,sys.argv[0],'configure','install','uninstall','--destdir='+instdir]+cfg,cwd=self.get_base_name()).wait()
++		cmd=self.make_distcheck_cmd(instdir)
++		ret=Utils.subprocess.Popen(cmd,cwd=self.get_base_name()).wait()
 +		if ret:
 +			raise Errors.WafError('distcheck failed with code %r'%ret)
 +		if os.path.exists(instdir):
@@ -3355,7 +3582,8 @@ Last-Update: 2017-07-19
 +			cmd=env.config_cmd or'configure'
 +			if Configure.autoconfig=='clobber':
 +				tmp=Options.options.__dict__
-+				Options.options.__dict__=env.options
++				if env.options:
++					Options.options.__dict__=env.options
 +				try:
 +					run_command(cmd)
 +				finally:
@@ -3369,22 +3597,24 @@ Last-Update: 2017-07-19
 +Build.BuildContext.execute=autoconfigure(Build.BuildContext.execute)
 --- /dev/null
 +++ b/waflib/Task.py
-@@ -0,0 +1,708 @@
+@@ -0,0 +1,771 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
 +# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
-+import os,re,sys,tempfile
++import os,re,sys,tempfile,traceback
 +from waflib import Utils,Logs,Errors
 +NOT_RUN=0
 +MISSING=1
 +CRASHED=2
 +EXCEPTION=3
++CANCELED=4
 +SKIPPED=8
 +SUCCESS=9
 +ASK_LATER=-1
 +SKIP_ME=-2
 +RUN_ME=-3
++CANCEL_ME=-4
 +COMPILE_TEMPLATE_SHELL='''
 +def f(tsk):
 +	env = tsk.env
@@ -3415,13 +3645,24 @@ Last-Update: 2017-07-19
 +	tsk.last_cmd = lst
 +	return tsk.exec_command(lst, cwd=cwdx, env=env.env or None)
 +'''
++COMPILE_TEMPLATE_SIG_VARS='''
++def f(tsk):
++	super(tsk.__class__, tsk).sig_vars()
++	env = tsk.env
++	gen = tsk.generator
++	bld = gen.bld
++	cwdx = tsk.get_cwd()
++	p = env.get_flat
++	buf = []
++	%s
++	tsk.m.update(repr(buf).encode())
++'''
 +classes={}
 +class store_task_type(type):
 +	def __init__(cls,name,bases,dict):
 +		super(store_task_type,cls).__init__(name,bases,dict)
 +		name=cls.__name__
-+		if name!='evil'and name!='TaskBase':
-+			global classes
++		if name!='evil'and name!='Task':
 +			if getattr(cls,'run_str',None):
 +				(f,dvars)=compile_fun(cls.run_str,cls.shell)
 +				cls.hcode=Utils.h_cmd(cls.run_str)
@@ -3430,35 +3671,48 @@ Last-Update: 2017-07-19
 +				cls.run=f
 +				cls.vars=list(set(cls.vars+dvars))
 +				cls.vars.sort()
++				if cls.vars:
++					fun=compile_sig_vars(cls.vars)
++					if fun:
++						cls.sig_vars=fun
 +			elif getattr(cls,'run',None)and not'hcode'in cls.__dict__:
 +				cls.hcode=Utils.h_cmd(cls.run)
 +			getattr(cls,'register',classes)[name]=cls
 +evil=store_task_type('evil',(object,),{})
-+class TaskBase(evil):
++class Task(evil):
++	vars=[]
++	always_run=False
++	shell=False
 +	color='GREEN'
 +	ext_in=[]
 +	ext_out=[]
 +	before=[]
 +	after=[]
-+	hcode=''
++	hcode=Utils.SIG_NIL
 +	keep_last_cmd=False
-+	__slots__=('hasrun','generator')
++	weight=0
++	tree_weight=0
++	prio_order=0
++	__slots__=('hasrun','generator','env','inputs','outputs','dep_nodes','run_after')
 +	def __init__(self,*k,**kw):
 +		self.hasrun=NOT_RUN
 +		try:
 +			self.generator=kw['generator']
 +		except KeyError:
 +			self.generator=self
-+	def __repr__(self):
-+		return'\n\t{task %r: %s %s}'%(self.__class__.__name__,id(self),str(getattr(self,'fun','')))
-+	def __str__(self):
-+		if hasattr(self,'fun'):
-+			return self.fun.__name__
-+		return self.__class__.__name__
-+	def keyword(self):
-+		if hasattr(self,'fun'):
-+			return'Function'
-+		return'Processing'
++		self.env=kw['env']
++		self.inputs=[]
++		self.outputs=[]
++		self.dep_nodes=[]
++		self.run_after=set()
++	def __lt__(self,other):
++		return self.priority()>other.priority()
++	def __le__(self,other):
++		return self.priority()>=other.priority()
++	def __gt__(self,other):
++		return self.priority()<other.priority()
++	def __ge__(self,other):
++		return self.priority()<=other.priority()
 +	def get_cwd(self):
 +		bld=self.generator.bld
 +		ret=getattr(self,'cwd',None)or getattr(bld,'cwd',bld.bldnode)
@@ -3477,6 +3731,8 @@ Last-Update: 2017-07-19
 +		if old!=x or' 'in x or'\t'in x or"'"in x:
 +			x='"%s"'%x
 +		return x
++	def priority(self):
++		return(self.weight+self.prio_order,-getattr(self.generator,'tg_idx_count',0))
 +	def split_argfile(self,cmd):
 +		return([cmd[0]],[self.quote_flag(x)for x in cmd[1:]])
 +	def exec_command(self,cmd,**kw):
@@ -3487,6 +3743,10 @@ Last-Update: 2017-07-19
 +		if self.env.PATH:
 +			env=kw['env']=dict(kw.get('env')or self.env.env or os.environ)
 +			env['PATH']=self.env.PATH if isinstance(self.env.PATH,str)else os.pathsep.join(self.env.PATH)
++		if hasattr(self,'stdout'):
++			kw['stdout']=self.stdout
++		if hasattr(self,'stderr'):
++			kw['stderr']=self.stderr
 +		if not isinstance(cmd,str)and(len(repr(cmd))>=8192 if Utils.is_win32 else len(cmd)>200000):
 +			cmd,args=self.split_argfile(cmd)
 +			try:
@@ -3503,12 +3763,7 @@ Last-Update: 2017-07-19
 +					pass
 +		else:
 +			return self.generator.bld.exec_command(cmd,**kw)
-+	def runnable_status(self):
-+		return RUN_ME
-+	def uid(self):
-+		return Utils.SIG_NIL
 +	def process(self):
-+		m=self.generator.bld.producer
 +		try:
 +			del self.generator.bld.task_sigs[self.uid()]
 +		except KeyError:
@@ -3516,31 +3771,27 @@ Last-Update: 2017-07-19
 +		try:
 +			ret=self.run()
 +		except Exception:
-+			self.err_msg=Utils.ex_stack()
++			self.err_msg=traceback.format_exc()
 +			self.hasrun=EXCEPTION
-+			m.error_handler(self)
-+			return
-+		if ret:
-+			self.err_code=ret
-+			self.hasrun=CRASHED
 +		else:
-+			try:
-+				self.post_run()
-+			except Errors.WafError:
-+				pass
-+			except Exception:
-+				self.err_msg=Utils.ex_stack()
-+				self.hasrun=EXCEPTION
++			if ret:
++				self.err_code=ret
++				self.hasrun=CRASHED
 +			else:
-+				self.hasrun=SUCCESS
-+		if self.hasrun!=SUCCESS:
-+			m.error_handler(self)
-+	def run(self):
-+		if hasattr(self,'fun'):
-+			return self.fun(self)
-+		return 0
-+	def post_run(self):
-+		pass
++				try:
++					self.post_run()
++				except Errors.WafError:
++					pass
++				except Exception:
++					self.err_msg=traceback.format_exc()
++					self.hasrun=EXCEPTION
++				else:
++					self.hasrun=SUCCESS
++		if self.hasrun!=SUCCESS and self.scan:
++			try:
++				del self.generator.bld.imp_sigs[self.uid()]
++			except KeyError:
++				pass
 +	def log_display(self,bld):
 +		if self.generator.bld.progress_bar==3:
 +			return
@@ -3561,10 +3812,7 @@ Last-Update: 2017-07-19
 +		col2=Logs.colors.NORMAL
 +		master=self.generator.bld.producer
 +		def cur():
-+			tmp=-1
-+			if hasattr(master,'ready'):
-+				tmp-=master.ready.qsize()
-+			return master.processed+tmp
++			return master.processed-master.ready.qsize()
 +		if self.generator.bld.progress_bar==1:
 +			return self.generator.bld.progress_line(cur(),master.total,col1,col2)
 +		if self.generator.bld.progress_bar==2:
@@ -3589,9 +3837,7 @@ Last-Update: 2017-07-19
 +			kw+=' '
 +		return fs%(cur(),total,kw,col1,s,col2)
 +	def hash_constraints(self):
-+		cls=self.__class__
-+		tup=(str(cls.before),str(cls.after),str(cls.ext_in),str(cls.ext_out),cls.__name__,cls.hcode)
-+		return hash(tup)
++		return(tuple(self.before),tuple(self.after),tuple(self.ext_in),tuple(self.ext_out),self.__class__.__name__,self.hcode)
 +	def format_error(self):
 +		if Logs.verbose:
 +			msg=': %r\n%r'%(self,getattr(self,'last_cmd',''))
@@ -3609,6 +3855,8 @@ Last-Update: 2017-07-19
 +				return' -> task in %r failed%s'%(name,msg)
 +		elif self.hasrun==MISSING:
 +			return' -> missing files in %r%s'%(name,msg)
++		elif self.hasrun==CANCELED:
++			return' -> %r canceled because of missing dependencies'%name
 +		else:
 +			return'invalid status for task in %r: %r'%(name,self.hasrun)
 +	def colon(self,var1,var2):
@@ -3627,17 +3875,6 @@ Last-Update: 2017-07-19
 +				lst.extend(tmp)
 +				lst.append(y)
 +			return lst
-+class Task(TaskBase):
-+	vars=[]
-+	always_run=False
-+	shell=False
-+	def __init__(self,*k,**kw):
-+		TaskBase.__init__(self,*k,**kw)
-+		self.env=kw['env']
-+		self.inputs=[]
-+		self.outputs=[]
-+		self.dep_nodes=[]
-+		self.run_after=set()
 +	def __str__(self):
 +		name=self.__class__.__name__
 +		if self.outputs:
@@ -3651,8 +3888,10 @@ Last-Update: 2017-07-19
 +			return node.path_from(node.ctx.launch_node())
 +		src_str=' '.join([a.path_from(a.ctx.launch_node())for a in self.inputs])
 +		tgt_str=' '.join([a.path_from(a.ctx.launch_node())for a in self.outputs])
-+		if self.outputs:sep=' -> '
-+		else:sep=''
++		if self.outputs:
++			sep=' -> '
++		else:
++			sep=''
 +		return'%s: %s%s%s'%(self.__class__.__name__,src_str,sep,tgt_str)
 +	def keyword(self):
 +		name=self.__class__.__name__
@@ -3685,13 +3924,17 @@ Last-Update: 2017-07-19
 +			self.uid_=m.digest()
 +			return self.uid_
 +	def set_inputs(self,inp):
-+		if isinstance(inp,list):self.inputs+=inp
-+		else:self.inputs.append(inp)
++		if isinstance(inp,list):
++			self.inputs+=inp
++		else:
++			self.inputs.append(inp)
 +	def set_outputs(self,out):
-+		if isinstance(out,list):self.outputs+=out
-+		else:self.outputs.append(out)
++		if isinstance(out,list):
++			self.outputs+=out
++		else:
++			self.outputs.append(out)
 +	def set_run_after(self,task):
-+		assert isinstance(task,TaskBase)
++		assert isinstance(task,Task)
 +		self.run_after.add(task)
 +	def signature(self):
 +		try:
@@ -3709,14 +3952,18 @@ Last-Update: 2017-07-19
 +		ret=self.cache_sig=self.m.digest()
 +		return ret
 +	def runnable_status(self):
++		bld=self.generator.bld
++		if bld.is_install<0:
++			return SKIP_ME
 +		for t in self.run_after:
 +			if not t.hasrun:
 +				return ASK_LATER
++			elif t.hasrun<SKIPPED:
++				return CANCEL_ME
 +		try:
 +			new_sig=self.signature()
 +		except Errors.TaskNotReady:
 +			return ASK_LATER
-+		bld=self.generator.bld
 +		key=self.uid()
 +		try:
 +			prev_sig=bld.task_sigs[key]
@@ -3765,11 +4012,16 @@ Last-Update: 2017-07-19
 +				except KeyError:
 +					continue
 +				for v in d:
-+					if isinstance(v,bld.root.__class__):
++					try:
 +						v=v.get_bld_sig()
-+					elif hasattr(v,'__call__'):
-+						v=v()
++					except AttributeError:
++						if hasattr(v,'__call__'):
++							v=v()
 +					upd(v)
++	def sig_deep_inputs(self):
++		bld=self.generator.bld
++		lst=[bld.task_sigs[bld.node_sigs[node]]for node in(self.inputs+self.dep_nodes)if node.is_bld()]
++		self.m.update(Utils.h_list(lst))
 +	def sig_vars(self):
 +		sig=self.generator.bld.hash_env_vars(self.env,self.vars)
 +		self.m.update(sig)
@@ -3816,9 +4068,9 @@ Last-Update: 2017-07-19
 +		except AttributeError:
 +			bld.dct_implicit_nodes=cache={}
 +		try:
-+			dct=cache[bld.cur]
++			dct=cache[bld.current_group]
 +		except KeyError:
-+			dct=cache[bld.cur]={}
++			dct=cache[bld.current_group]={}
 +			for tsk in bld.cur_tasks:
 +				for x in tsk.outputs:
 +					dct[x]=tsk
@@ -3836,10 +4088,10 @@ Last-Update: 2017-07-19
 +		try:
 +			return self.uid_
 +		except AttributeError:
-+			m=Utils.md5(self.__class__.__name__.encode('iso8859-1','xmlcharrefreplace'))
++			m=Utils.md5(self.__class__.__name__.encode('latin-1','xmlcharrefreplace'))
 +			up=m.update
 +			for x in self.inputs+self.outputs:
-+				up(x.abspath().encode('iso8859-1','xmlcharrefreplace'))
++				up(x.abspath().encode('latin-1','xmlcharrefreplace'))
 +			self.uid_=m.digest()
 +			return self.uid_
 +	uid.__doc__=Task.uid.__doc__
@@ -3858,14 +4110,27 @@ Last-Update: 2017-07-19
 +	ins=Utils.defaultdict(set)
 +	outs=Utils.defaultdict(set)
 +	for x in tasks:
-+		for a in getattr(x,'inputs',[])+getattr(x,'dep_nodes',[]):
-+			ins[id(a)].add(x)
-+		for a in getattr(x,'outputs',[]):
-+			outs[id(a)].add(x)
++		for a in x.inputs:
++			ins[a].add(x)
++		for a in x.dep_nodes:
++			ins[a].add(x)
++		for a in x.outputs:
++			outs[a].add(x)
 +	links=set(ins.keys()).intersection(outs.keys())
 +	for k in links:
 +		for a in ins[k]:
 +			a.run_after.update(outs[k])
++class TaskGroup(object):
++	def __init__(self,prev,next):
++		self.prev=prev
++		self.next=next
++		self.done=False
++	def get_hasrun(self):
++		for k in self.prev:
++			if not k.hasrun:
++				return NOT_RUN
++		return SUCCESS
++	hasrun=property(get_hasrun,None)
 +def set_precedence_constraints(tasks):
 +	cstr_groups=Utils.defaultdict(list)
 +	for x in tasks:
@@ -3885,9 +4150,15 @@ Last-Update: 2017-07-19
 +				b=i
 +			else:
 +				continue
-+			aval=set(cstr_groups[keys[a]])
-+			for x in cstr_groups[keys[b]]:
-+				x.run_after.update(aval)
++			a=cstr_groups[keys[a]]
++			b=cstr_groups[keys[b]]
++			if len(a)<2 or len(b)<2:
++				for x in b:
++					x.run_after.update(a)
++			else:
++				group=TaskGroup(set(a),set(b))
++				for x in b:
++					x.run_after.add(group)
 +def funex(c):
 +	dc={}
 +	exec(c,dc)
@@ -3909,6 +4180,9 @@ Last-Update: 2017-07-19
 +		return None
 +	line=reg_act.sub(repl,line)or line
 +	dvars=[]
++	def add_dvar(x):
++		if x not in dvars:
++			dvars.append(x)
 +	def replc(m):
 +		if m.group('and'):
 +			return' and '
@@ -3916,22 +4190,24 @@ Last-Update: 2017-07-19
 +			return' or '
 +		else:
 +			x=m.group('var')
-+			if x not in dvars:
-+				dvars.append(x)
++			add_dvar(x)
 +			return'env[%r]'%x
 +	parm=[]
 +	app=parm.append
 +	for(var,meth)in extr:
 +		if var=='SRC':
-+			if meth:app('tsk.inputs%s'%meth)
-+			else:app('" ".join([a.path_from(cwdx) for a in tsk.inputs])')
++			if meth:
++				app('tsk.inputs%s'%meth)
++			else:
++				app('" ".join([a.path_from(cwdx) for a in tsk.inputs])')
 +		elif var=='TGT':
-+			if meth:app('tsk.outputs%s'%meth)
-+			else:app('" ".join([a.path_from(cwdx) for a in tsk.outputs])')
++			if meth:
++				app('tsk.outputs%s'%meth)
++			else:
++				app('" ".join([a.path_from(cwdx) for a in tsk.outputs])')
 +		elif meth:
 +			if meth.startswith(':'):
-+				if var not in dvars:
-+					dvars.append(var)
++				add_dvar(var)
 +				m=meth[1:]
 +				if m=='SRC':
 +					m='[a.path_from(cwdx) for a in tsk.inputs]'
@@ -3941,21 +4217,25 @@ Last-Update: 2017-07-19
 +					m='[tsk.inputs%s]'%m[3:]
 +				elif re_novar.match(m):
 +					m='[tsk.outputs%s]'%m[3:]
-+				elif m[:3]not in('tsk','gen','bld'):
-+					dvars.append(meth[1:])
-+					m='%r'%m
++				else:
++					add_dvar(m)
++					if m[:3]not in('tsk','gen','bld'):
++						m='%r'%m
 +				app('" ".join(tsk.colon(%r, %s))'%(var,m))
 +			elif meth.startswith('?'):
 +				expr=re_cond.sub(replc,meth[1:])
 +				app('p(%r) if (%s) else ""'%(var,expr))
 +			else:
-+				app('%s%s'%(var,meth))
++				call='%s%s'%(var,meth)
++				add_dvar(call)
++				app(call)
 +		else:
-+			if var not in dvars:
-+				dvars.append(var)
++			add_dvar(var)
 +			app("p('%s')"%var)
-+	if parm:parm="%% (%s) "%(',\n\t\t'.join(parm))
-+	else:parm=''
++	if parm:
++		parm="%% (%s) "%(',\n\t\t'.join(parm))
++	else:
++		parm=''
 +	c=COMPILE_TEMPLATE_SHELL%(line,parm)
 +	Logs.debug('action: %s',c.strip().splitlines())
 +	return(funex(c),dvars)
@@ -3965,6 +4245,9 @@ Last-Update: 2017-07-19
 +	dvars=[]
 +	merge=False
 +	app=buf.append
++	def add_dvar(x):
++		if x not in dvars:
++			dvars.append(x)
 +	def replc(m):
 +		if m.group('and'):
 +			return' and '
@@ -3972,8 +4255,7 @@ Last-Update: 2017-07-19
 +			return' or '
 +		else:
 +			x=m.group('var')
-+			if x not in dvars:
-+				dvars.append(x)
++			add_dvar(x)
 +			return'env[%r]'%x
 +	for m in reg_act_noshell.finditer(line):
 +		if m.group('space'):
@@ -3996,8 +4278,7 @@ Last-Update: 2017-07-19
 +					app('[a.path_from(cwdx) for a in tsk.outputs]')
 +			elif code:
 +				if code.startswith(':'):
-+					if not var in dvars:
-+						dvars.append(var)
++					add_dvar(var)
 +					m=code[1:]
 +					if m=='SRC':
 +						m='[a.path_from(cwdx) for a in tsk.inputs]'
@@ -4007,19 +4288,21 @@ Last-Update: 2017-07-19
 +						m='[tsk.inputs%s]'%m[3:]
 +					elif re_novar.match(m):
 +						m='[tsk.outputs%s]'%m[3:]
-+					elif m[:3]not in('tsk','gen','bld'):
-+						dvars.append(m)
-+						m='%r'%m
++					else:
++						add_dvar(m)
++						if m[:3]not in('tsk','gen','bld'):
++							m='%r'%m
 +					app('tsk.colon(%r, %s)'%(var,m))
 +				elif code.startswith('?'):
 +					expr=re_cond.sub(replc,code[1:])
 +					app('to_list(env[%r] if (%s) else [])'%(var,expr))
 +				else:
-+					app('gen.to_list(%s%s)'%(var,code))
++					call='%s%s'%(var,code)
++					add_dvar(call)
++					app('gen.to_list(%s)'%call)
 +			else:
 +				app('to_list(env[%r])'%var)
-+				if not var in dvars:
-+					dvars.append(var)
++				add_dvar(var)
 +		if merge:
 +			tmp='merge(%s, %s)'%(buf[-2],buf[-1])
 +			del buf[-1]
@@ -4054,6 +4337,14 @@ Last-Update: 2017-07-19
 +		return compile_fun_shell(line)
 +	else:
 +		return compile_fun_noshell(line)
++def compile_sig_vars(vars):
++	buf=[]
++	for x in sorted(vars):
++		if x[:3]in('tsk','gen','bld'):
++			buf.append('buf.append(%s)'%x)
++	if buf:
++		return funex(COMPILE_TEMPLATE_SIG_VARS%'\n\t'.join(buf))
++	return None
 +def task_factory(name,func=None,vars=None,color='GREEN',ext_in=[],ext_out=[],before=[],after=[],shell=False,scan=None):
 +	params={'vars':vars or[],'color':color,'name':name,'shell':shell,'scan':scan,}
 +	if isinstance(func,str)or isinstance(func,tuple):
@@ -4061,7 +4352,6 @@ Last-Update: 2017-07-19
 +	else:
 +		params['run']=func
 +	cls=type(Task)(name,(Task,),params)
-+	global classes
 +	classes[name]=cls
 +	if ext_in:
 +		cls.ext_in=Utils.to_list(ext_in)
@@ -4072,15 +4362,16 @@ Last-Update: 2017-07-19
 +	if after:
 +		cls.after=Utils.to_list(after)
 +	return cls
-+def always_run(cls):
-+	Logs.warn('This decorator is deprecated, set always_run on the task class instead!')
-+	cls.always_run=True
++def deep_inputs(cls):
++	def sig_explicit_deps(self):
++		Task.sig_explicit_deps(self)
++		Task.sig_deep_inputs(self)
++	cls.sig_explicit_deps=sig_explicit_deps
 +	return cls
-+def update_outputs(cls):
-+	return cls
++TaskBase=Task
 --- /dev/null
 +++ b/waflib/TaskGen.py
-@@ -0,0 +1,458 @@
+@@ -0,0 +1,471 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
 +# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
@@ -4091,9 +4382,9 @@ Last-Update: 2017-07-19
 +HEADER_EXTS=['.h','.hpp','.hxx','.hh']
 +class task_gen(object):
 +	mappings=Utils.ordered_iter_dict()
-+	prec=Utils.defaultdict(list)
++	prec=Utils.defaultdict(set)
 +	def __init__(self,*k,**kw):
-+		self.source=''
++		self.source=[]
 +		self.target=''
 +		self.meths=[]
 +		self.features=[]
@@ -4106,11 +4397,16 @@ Last-Update: 2017-07-19
 +			self.bld=kw['bld']
 +			self.env=self.bld.env.derive()
 +			self.path=self.bld.path
++			path=self.path.abspath()
 +			try:
-+				self.idx=self.bld.idx[self.path]=self.bld.idx.get(self.path,0)+1
++				self.idx=self.bld.idx[path]=self.bld.idx.get(path,0)+1
 +			except AttributeError:
 +				self.bld.idx={}
-+				self.idx=self.bld.idx[self.path]=1
++				self.idx=self.bld.idx[path]=1
++			try:
++				self.tg_idx_count=self.bld.tg_idx_count=self.bld.tg_idx_count+1
++			except AttributeError:
++				self.tg_idx_count=self.bld.tg_idx_count=1
 +		for key,val in kw.items():
 +			setattr(self,key,val)
 +	def __str__(self):
@@ -4162,10 +4458,11 @@ Last-Update: 2017-07-19
 +		tmp=[]
 +		for a in keys:
 +			for x in prec.values():
-+				if a in x:break
++				if a in x:
++					break
 +			else:
 +				tmp.append(a)
-+		tmp.sort()
++		tmp.sort(reverse=True)
 +		out=[]
 +		while tmp:
 +			e=tmp.pop()
@@ -4183,12 +4480,12 @@ Last-Update: 2017-07-19
 +							break
 +					else:
 +						tmp.append(x)
++						tmp.sort(reverse=True)
 +		if prec:
 +			buf=['Cycle detected in the method execution:']
 +			for k,v in prec.items():
 +				buf.append('- %s after %s'%(k,[x for x in v if x in prec]))
 +			raise Errors.WafError('\n'.join(buf))
-+		out.reverse()
 +		self.meths=out
 +		Logs.debug('task_gen: posting %s %d',self,id(self))
 +		for x in out:
@@ -4279,8 +4576,7 @@ Last-Update: 2017-07-19
 +	def deco(func):
 +		setattr(task_gen,func.__name__,func)
 +		for fun_name in k:
-+			if not func.__name__ in task_gen.prec[fun_name]:
-+				task_gen.prec[fun_name].append(func.__name__)
++			task_gen.prec[func.__name__].add(fun_name)
 +		return func
 +	return deco
 +before=before_method
@@ -4288,8 +4584,7 @@ Last-Update: 2017-07-19
 +	def deco(func):
 +		setattr(task_gen,func.__name__,func)
 +		for fun_name in k:
-+			if not fun_name in task_gen.prec[func.__name__]:
-+				task_gen.prec[func.__name__].append(fun_name)
++			task_gen.prec[fun_name].add(func.__name__)
 +		return func
 +	return deco
 +after=after_method
@@ -4310,10 +4605,13 @@ Last-Update: 2017-07-19
 +	for x in Utils.to_list(lst):
 +		if isinstance(x,str):
 +			node=find(x)
-+		else:
++		elif hasattr(x,'name'):
 +			node=x
++		else:
++			tmp.extend(self.to_nodes(x))
++			continue
 +		if not node:
-+			raise Errors.WafError("source not found: %r in %r"%(x,self))
++			raise Errors.WafError('source not found: %r in %r'%(x,self))
 +		tmp.append(node)
 +	return tmp
 +@feature('*')
@@ -4339,10 +4637,11 @@ Last-Update: 2017-07-19
 +	cls_str=getattr(self,'cls_str',None)
 +	cls_keyword=getattr(self,'cls_keyword',None)
 +	use_cache=getattr(self,'cache_rule','True')
++	deep_inputs=getattr(self,'deep_inputs',False)
 +	scan_val=has_deps=hasattr(self,'deps')
 +	if scan:
 +		scan_val=id(scan)
-+	key=Utils.h_list((name,self.rule,chmod,shell,color,cls_str,cls_keyword,scan_val,_vars))
++	key=Utils.h_list((name,self.rule,chmod,shell,color,cls_str,cls_keyword,scan_val,_vars,deep_inputs))
 +	cls=None
 +	if use_cache:
 +		try:
@@ -4366,6 +4665,8 @@ Last-Update: 2017-07-19
 +			setattr(cls,'__str__',self.cls_str)
 +		if cls_keyword:
 +			setattr(cls,'keyword',self.cls_keyword)
++		if deep_inputs:
++			Task.deep_inputs(cls)
 +		if scan:
 +			cls.scan=self.scan
 +		elif has_deps:
@@ -4378,11 +4679,15 @@ Last-Update: 2017-07-19
 +					nodes.append(node)
 +				return[nodes,[]]
 +			cls.scan=scan
-+		for x in('after','before','ext_in','ext_out'):
-+			setattr(cls,x,getattr(self,x,[]))
 +		if use_cache:
 +			cache[key]=cls
 +	tsk=self.create_task(name)
++	for x in('after','before','ext_in','ext_out'):
++		setattr(tsk,x,getattr(self,x,[]))
++	if hasattr(self,'stdout'):
++		tsk.stdout=self.stdout
++	if hasattr(self,'stderr'):
++		tsk.stderr=self.stderr
 +	if getattr(self,'timeout',None):
 +		tsk.timeout=self.timeout
 +	if getattr(self,'always',None):
@@ -4430,6 +4735,8 @@ Last-Update: 2017-07-19
 +		if getattr(self.generator,'is_copy',None):
 +			for i,x in enumerate(self.outputs):
 +				x.write(self.inputs[i].read('rb'),'wb')
++				stat=os.stat(self.inputs[i].abspath())
++				os.utime(self.outputs[i].abspath(),(stat.st_atime,stat.st_mtime))
 +			self.force_permissions()
 +			return None
 +		if getattr(self.generator,'fun',None):
@@ -4437,11 +4744,11 @@ Last-Update: 2017-07-19
 +			if not ret:
 +				self.force_permissions()
 +			return ret
-+		code=self.inputs[0].read(encoding=getattr(self.generator,'encoding','ISO8859-1'))
++		code=self.inputs[0].read(encoding=getattr(self.generator,'encoding','latin-1'))
 +		if getattr(self.generator,'subst_fun',None):
 +			code=self.generator.subst_fun(self,code)
 +			if code is not None:
-+				self.outputs[0].write(code,encoding=getattr(self.generator,'encoding','ISO8859-1'))
++				self.outputs[0].write(code,encoding=getattr(self.generator,'encoding','latin-1'))
 +			self.force_permissions()
 +			return None
 +		code=code.replace('%','%%')
@@ -4452,7 +4759,6 @@ Last-Update: 2017-07-19
 +				lst.append(g(1))
 +				return"%%(%s)s"%g(1)
 +			return''
-+		global re_m4
 +		code=getattr(self.generator,'re_m4',re_m4).sub(repl,code)
 +		try:
 +			d=self.generator.dct
@@ -4466,10 +4772,12 @@ Last-Update: 2017-07-19
 +					tmp=str(tmp)
 +				d[x]=tmp
 +		code=code%d
-+		self.outputs[0].write(code,encoding=getattr(self.generator,'encoding','ISO8859-1'))
++		self.outputs[0].write(code,encoding=getattr(self.generator,'encoding','latin-1'))
 +		self.generator.bld.raw_deps[self.uid()]=lst
-+		try:delattr(self,'cache_sig')
-+		except AttributeError:pass
++		try:
++			delattr(self,'cache_sig')
++		except AttributeError:
++			pass
 +		self.force_permissions()
 +	def sig_vars(self):
 +		bld=self.generator.bld
@@ -4522,19 +4830,15 @@ Last-Update: 2017-07-19
 +				b=y
 +		if not a:
 +			raise Errors.WafError('could not find %r for %r'%(x,self))
-+		has_constraints=False
 +		tsk=self.create_task('subst',a,b)
 +		for k in('after','before','ext_in','ext_out'):
 +			val=getattr(self,k,None)
 +			if val:
-+				has_constraints=True
 +				setattr(tsk,k,val)
-+		if not has_constraints:
-+			global HEADER_EXTS
-+			for xt in HEADER_EXTS:
-+				if b.name.endswith(xt):
-+					tsk.before=[k for k in('c','cxx')if k in Task.classes]
-+					break
++		for xt in HEADER_EXTS:
++			if b.name.endswith(xt):
++				tsk.ext_in=tsk.ext_in+['.h']
++				break
 +		inst_to=getattr(self,'install_path',None)
 +		if inst_to:
 +			self.install_task=self.add_install_files(install_to=inst_to,install_from=b,chmod=getattr(self,'chmod',Utils.O644))
@@ -4713,7 +5017,7 @@ Last-Update: 2017-07-19
 +	return bld(*k,**kw)
 --- /dev/null
 +++ b/waflib/Tools/c_config.py
-@@ -0,0 +1,851 @@
+@@ -0,0 +1,805 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
 +# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
@@ -4726,35 +5030,10 @@ Last-Update: 2017-07-19
 +WAF_CONFIG_H='config.h'
 +DEFKEYS='define_key'
 +INCKEYS='include_key'
-+cfg_ver={'atleast-version':'>=','exact-version':'==','max-version':'<=',}
-+SNIP_FUNCTION='''
-+int main(int argc, char **argv) {
-+	void (*p)();
-+	(void)argc; (void)argv;
-+	p=(void(*)())(%s);
-+	return !p;
-+}
-+'''
-+SNIP_TYPE='''
-+int main(int argc, char **argv) {
-+	(void)argc; (void)argv;
-+	if ((%(type_name)s *) 0) return 0;
-+	if (sizeof (%(type_name)s)) return 0;
-+	return 1;
-+}
-+'''
 +SNIP_EMPTY_PROGRAM='''
 +int main(int argc, char **argv) {
 +	(void)argc; (void)argv;
 +	return 0;
-+}
-+'''
-+SNIP_FIELD='''
-+int main(int argc, char **argv) {
-+	char *off;
-+	(void)argc; (void)argv;
-+	off = (char*) &((%(type_name)s*)0)->%(field_name)s;
-+	return (size_t) off < sizeof(%(type_name)s);
 +}
 +'''
 +MACRO_TO_DESTOS={'__linux__':'linux','__GNU__':'gnu','__FreeBSD__':'freebsd','__NetBSD__':'netbsd','__OpenBSD__':'openbsd','__sun':'sunos','__hpux':'hpux','__sgi':'irix','_AIX':'aix','__CYGWIN__':'cygwin','__MSYS__':'cygwin','_UWIN':'uwin','_WIN64':'win32','_WIN32':'win32','__ENVIRONMENT_MAC_OS_X_VERSION_MIN_REQUIRED__':'darwin','__ENVIRONMENT_IPHONE_OS_VERSION_MIN_REQUIRED__':'darwin','__QNX__':'qnx','__native_client__':'nacl'}
@@ -4809,7 +5088,7 @@ Last-Update: 2017-07-19
 +		elif x.startswith('-std='):
 +			prefix='CXXFLAGS'if'++'in x else'CFLAGS'
 +			app(prefix,x)
-+		elif x=='-pthread'or x.startswith('+'):
++		elif x.startswith('+')or x in('-pthread','-fPIC','-fpic','-fPIE','-fpie'):
 +			app('CFLAGS',x)
 +			app('CXXFLAGS',x)
 +			app('LINKFLAGS',x)
@@ -4829,9 +5108,9 @@ Last-Update: 2017-07-19
 +			static=True
 +		elif x=='-Wl,-Bdynamic'or x=='-Bdynamic':
 +			static=False
-+		elif x.startswith('-Wl'):
++		elif x.startswith('-Wl')or x in('-rdynamic','-pie'):
 +			app('LINKFLAGS',x)
-+		elif x.startswith(('-m','-f','-dynamic','-O')):
++		elif x.startswith(('-m','-f','-dynamic','-O','-g')):
 +			app('CFLAGS',x)
 +			app('CXXFLAGS',x)
 +		elif x.startswith('-bundle'):
@@ -4846,46 +5125,40 @@ Last-Update: 2017-07-19
 +			app('LINKFLAGS',tmp)
 +		elif x.endswith(('.a','.so','.dylib','.lib')):
 +			appu('LINKFLAGS',x)
++		else:
++			self.to_log('Unhandled flag %r'%x)
 +@conf
 +def validate_cfg(self,kw):
 +	if not'path'in kw:
 +		if not self.env.PKGCONFIG:
 +			self.find_program('pkg-config',var='PKGCONFIG')
 +		kw['path']=self.env.PKGCONFIG
-+	if'atleast_pkgconfig_version'in kw:
-+		if not'msg'in kw:
++	s=('atleast_pkgconfig_version'in kw)+('modversion'in kw)+('package'in kw)
++	if s!=1:
++		raise ValueError('exactly one of atleast_pkgconfig_version, modversion and package must be set')
++	if not'msg'in kw:
++		if'atleast_pkgconfig_version'in kw:
 +			kw['msg']='Checking for pkg-config version >= %r'%kw['atleast_pkgconfig_version']
-+		return
-+	if not'okmsg'in kw:
++		elif'modversion'in kw:
++			kw['msg']='Checking for %r version'%kw['modversion']
++		else:
++			kw['msg']='Checking for %r'%(kw['package'])
++	if not'okmsg'in kw and not'modversion'in kw:
 +		kw['okmsg']='yes'
 +	if not'errmsg'in kw:
 +		kw['errmsg']='not found'
-+	if'modversion'in kw:
-+		if not'msg'in kw:
-+			kw['msg']='Checking for %r version'%kw['modversion']
++	if'atleast_pkgconfig_version'in kw:
++		pass
++	elif'modversion'in kw:
 +		if not'uselib_store'in kw:
 +			kw['uselib_store']=kw['modversion']
 +		if not'define_name'in kw:
 +			kw['define_name']='%s_VERSION'%Utils.quote_define_name(kw['uselib_store'])
-+		return
-+	if not'package'in kw:
-+		raise ValueError('a package name is required')
-+	if not'uselib_store'in kw:
-+		kw['uselib_store']=kw['package'].upper()
-+	if not'define_name'in kw:
-+		kw['define_name']=self.have_define(kw['uselib_store'])
-+	if not'msg'in kw:
-+		kw['msg']='Checking for %r'%(kw['package']or kw['path'])
-+	for x in cfg_ver:
-+		y=x.replace('-','_')
-+		if y in kw:
-+			package=kw['package']
-+			if Logs.verbose:
-+				Logs.warn('Passing %r to conf.check_cfg() is obsolete, pass parameters directly, eg:',y)
-+				Logs.warn(" conf.check_cfg(package='%s', args=['--libs', '--cflags', '%s >= 1.6'])",package,package)
-+			if not'msg'in kw:
-+				kw['msg']='Checking for %r %s %s'%(package,cfg_ver[x],kw[y])
-+			break
++	else:
++		if not'uselib_store'in kw:
++			kw['uselib_store']=Utils.to_list(kw['package'])[0].upper()
++		if not'define_name'in kw:
++			kw['define_name']=self.have_define(kw['uselib_store'])
 +@conf
 +def exec_cfg(self,kw):
 +	path=Utils.to_list(kw['path'])
@@ -4905,19 +5178,11 @@ Last-Update: 2017-07-19
 +	if'atleast_pkgconfig_version'in kw:
 +		cmd=path+['--atleast-pkgconfig-version=%s'%kw['atleast_pkgconfig_version']]
 +		self.cmd_and_log(cmd,env=env)
-+		if not'okmsg'in kw:
-+			kw['okmsg']='yes'
 +		return
-+	for x in cfg_ver:
-+		y=x.replace('-','_')
-+		if y in kw:
-+			self.cmd_and_log(path+['--%s=%s'%(x,kw[y]),kw['package']],env=env)
-+			if not'okmsg'in kw:
-+				kw['okmsg']='yes'
-+			define_it()
-+			break
 +	if'modversion'in kw:
 +		version=self.cmd_and_log(path+['--modversion',kw['modversion']],env=env).strip()
++		if not'okmsg'in kw:
++			kw['okmsg']=version
 +		self.define(kw['define_name'],version)
 +		return version
 +	lst=[]+path
@@ -4940,21 +5205,13 @@ Last-Update: 2017-07-19
 +			val=self.cmd_and_log(lst+['--variable='+v],env=env).strip()
 +			var='%s_%s'%(kw['uselib_store'],v)
 +			v_env[var]=val
-+		if not'okmsg'in kw:
-+			kw['okmsg']='yes'
 +		return
 +	ret=self.cmd_and_log(lst,env=env)
-+	if not'okmsg'in kw:
-+		kw['okmsg']='yes'
 +	define_it()
 +	self.parse_flags(ret,kw['uselib_store'],kw.get('env',self.env),force_static=static,posix=kw.get('posix'))
 +	return ret
 +@conf
 +def check_cfg(self,*k,**kw):
-+	if k:
-+		lst=k[0].split()
-+		kw['package']=lst[0]
-+		kw['args']=' '.join(lst[1:])
 +	self.validate_cfg(kw)
 +	if'msg'in kw:
 +		self.start_msg(kw['msg'],**kw)
@@ -4986,6 +5243,9 @@ Last-Update: 2017-07-19
 +		bld.conf.to_log("==>\n%s\n<=="%bld.kw['code'])
 +@conf
 +def validate_c(self,kw):
++	for x in('type_name','field_name','function_name'):
++		if x in kw:
++			Logs.warn('Invalid argument %r in test'%x)
 +	if not'build_fun'in kw:
 +		kw['build_fun']=build_fun
 +	if not'env'in kw:
@@ -5002,7 +5262,7 @@ Last-Update: 2017-07-19
 +				self.fatal('a c compiler is required')
 +	if not'compile_mode'in kw:
 +		kw['compile_mode']='c'
-+		if'cxx'in Utils.to_list(kw.get('features',[]))or kw.get('compiler','')=='cxx':
++		if'cxx'in Utils.to_list(kw.get('features',[]))or kw.get('compiler')=='cxx':
 +			kw['compile_mode']='cxx'
 +	if not'type'in kw:
 +		kw['type']='cprogram'
@@ -5024,41 +5284,14 @@ Last-Update: 2017-07-19
 +		fwkname=kw['framework_name']
 +		if not'uselib_store'in kw:
 +			kw['uselib_store']=fwkname.upper()
-+		if not kw.get('no_header',False):
-+			if not'header_name'in kw:
-+				kw['header_name']=[]
++		if not kw.get('no_header'):
 +			fwk='%s/%s.h'%(fwkname,fwkname)
 +			if kw.get('remove_dot_h'):
 +				fwk=fwk[:-2]
-+			kw['header_name']=Utils.to_list(kw['header_name'])+[fwk]
++			val=kw.get('header_name',[])
++			kw['header_name']=Utils.to_list(val)+[fwk]
 +		kw['msg']='Checking for framework %s'%fwkname
 +		kw['framework']=fwkname
-+	if'function_name'in kw:
-+		fu=kw['function_name']
-+		if not'msg'in kw:
-+			kw['msg']='Checking for function %s'%fu
-+		kw['code']=to_header(kw)+SNIP_FUNCTION%fu
-+		if not'uselib_store'in kw:
-+			kw['uselib_store']=fu.upper()
-+		if not'define_name'in kw:
-+			kw['define_name']=self.have_define(fu)
-+	elif'type_name'in kw:
-+		tu=kw['type_name']
-+		if not'header_name'in kw:
-+			kw['header_name']='stdint.h'
-+		if'field_name'in kw:
-+			field=kw['field_name']
-+			kw['code']=to_header(kw)+SNIP_FIELD%{'type_name':tu,'field_name':field}
-+			if not'msg'in kw:
-+				kw['msg']='Checking for field %s in %s'%(field,tu)
-+			if not'define_name'in kw:
-+				kw['define_name']=self.have_define((tu+'_'+field).upper())
-+		else:
-+			kw['code']=to_header(kw)+SNIP_TYPE%{'type_name':tu}
-+			if not'msg'in kw:
-+				kw['msg']='Checking for type %s'%tu
-+			if not'define_name'in kw:
-+				kw['define_name']=self.have_define(tu.upper())
 +	elif'header_name'in kw:
 +		if not'msg'in kw:
 +			kw['msg']='Checking for header %s'%kw['header_name']
@@ -5104,10 +5337,11 @@ Last-Update: 2017-07-19
 +		kw['code']=SNIP_EMPTY_PROGRAM
 +	if self.env[INCKEYS]:
 +		kw['code']='\n'.join(['#include <%s>'%x for x in self.env[INCKEYS]])+'\n'+kw['code']
-+	if kw.get('merge_config_header',False)or env.merge_config_header:
++	if kw.get('merge_config_header')or env.merge_config_header:
 +		kw['code']='%s\n\n%s'%(self.get_config_header(),kw['code'])
 +		env.DEFINES=[]
-+	if not kw.get('success'):kw['success']=None
++	if not kw.get('success'):
++		kw['success']=None
 +	if'define_name'in kw:
 +		self.undefine(kw['define_name'])
 +	if not'msg'in kw:
@@ -5117,7 +5351,7 @@ Last-Update: 2017-07-19
 +	is_success=0
 +	if kw['execute']:
 +		if kw['success']is not None:
-+			if kw.get('define_ret',False):
++			if kw.get('define_ret'):
 +				is_success=kw['success']
 +			else:
 +				is_success=(kw['success']==0)
@@ -5146,10 +5380,12 @@ Last-Update: 2017-07-19
 +		if kw.get('add_have_to_env',1):
 +			if kw.get('uselib_store'):
 +				self.env[self.have_define(kw['uselib_store'])]=1
++			elif kw['execute']and kw.get('define_ret'):
++				self.env[define_name]=is_success
 +			else:
 +				self.env[define_name]=int(is_success)
 +	if'header_name'in kw:
-+		if kw.get('auto_add_header_name',False):
++		if kw.get('auto_add_header_name'):
 +			self.env.append_value(INCKEYS,Utils.to_list(kw['header_name']))
 +	if is_success and'uselib_store'in kw:
 +		from waflib.Tools import ccroot
@@ -5287,7 +5523,8 @@ Last-Update: 2017-07-19
 +	return(self.env.HAVE_PAT or'HAVE_%s')%Utils.quote_define_name(key)
 +@conf
 +def write_config_header(self,configfile='',guard='',top=False,defines=True,headers=False,remove=True,define_prefix=''):
-+	if not configfile:configfile=WAF_CONFIG_H
++	if not configfile:
++		configfile=WAF_CONFIG_H
 +	waf_guard=guard or'W_%s_WAF'%Utils.quote_define_name(configfile)
 +	node=top and self.bldnode or self.path.get_bld()
 +	node=node.make_node(configfile)
@@ -5353,7 +5590,7 @@ Last-Update: 2017-07-19
 +	env=conf.env.env or None
 +	try:
 +		out,err=conf.cmd_and_log(cmd,output=0,input='\n'.encode(),env=env)
-+	except Exception:
++	except Errors.WafError:
 +		conf.fatal('Could not determine the compiler version %r'%cmd)
 +	if gcc:
 +		if out.find('__INTEL_COMPILER')>=0:
@@ -5392,6 +5629,8 @@ Last-Update: 2017-07-19
 +			conf.env.DEST_BINFMT='elf'
 +		elif isD('__WINNT__')or isD('__CYGWIN__')or isD('_WIN32'):
 +			conf.env.DEST_BINFMT='pe'
++			if not conf.env.IMPLIBDIR:
++				conf.env.IMPLIBDIR=conf.env.LIBDIR
 +			conf.env.LIBDIR=conf.env.BINDIR
 +		elif isD('__APPLE__'):
 +			conf.env.DEST_BINFMT='mac-o'
@@ -5450,9 +5689,9 @@ Last-Update: 2017-07-19
 +def add_as_needed(self):
 +	if self.env.DEST_BINFMT=='elf'and'gcc'in(self.env.CXX_NAME,self.env.CC_NAME):
 +		self.env.append_unique('LINKFLAGS','-Wl,--as-needed')
-+class cfgtask(Task.TaskBase):
++class cfgtask(Task.Task):
 +	def __init__(self,*k,**kw):
-+		Task.TaskBase.__init__(self,*k,**kw)
++		Task.Task.__init__(self,*k,**kw)
 +		self.run_after=set()
 +	def display(self):
 +		return''
@@ -5462,6 +5701,8 @@ Last-Update: 2017-07-19
 +				return Task.ASK_LATER
 +		return Task.RUN_ME
 +	def uid(self):
++		return Utils.SIG_NIL
++	def signature(self):
 +		return Utils.SIG_NIL
 +	def run(self):
 +		conf=self.conf
@@ -5485,7 +5726,7 @@ Last-Update: 2017-07-19
 +		except Exception:
 +			return 1
 +	def process(self):
-+		Task.TaskBase.process(self)
++		Task.Task.process(self)
 +		if'msg'in self.args:
 +			with self.generator.bld.multicheck_lock:
 +				self.conf.start_msg(self.args['msg'])
@@ -5512,10 +5753,11 @@ Last-Update: 2017-07-19
 +			return
 +	bld=par()
 +	bld.keep=kw.get('run_all_tests',True)
++	bld.imp_sigs={}
 +	tasks=[]
 +	id_to_task={}
 +	for dct in k:
-+		x=Task.classes['cfgtask'](bld=bld)
++		x=Task.classes['cfgtask'](bld=bld,env=None)
 +		tasks.append(x)
 +		x.args=dct
 +		x.bld=bld
@@ -5565,6 +5807,22 @@ Last-Update: 2017-07-19
 +		if x.hasrun!=Task.SUCCESS:
 +			if x.args.get('mandatory',True):
 +				self.fatal(kw.get('fatalmsg')or'One of the tests has failed, read config.log for more information')
++@conf
++def check_gcc_o_space(self,mode='c'):
++	if int(self.env.CC_VERSION[0])>4:
++		return
++	self.env.stash()
++	if mode=='c':
++		self.env.CCLNK_TGT_F=['-o','']
++	elif mode=='cxx':
++		self.env.CXXLNK_TGT_F=['-o','']
++	features='%s %sshlib'%(mode,mode)
++	try:
++		self.check(msg='Checking if the -o link must be split from arguments',fragment=SNIP_EMPTY_PROGRAM,features=features)
++	except self.errors.ConfigurationError:
++		self.env.revert()
++	else:
++		self.env.commit()
 --- /dev/null
 +++ b/waflib/Tools/c_osx.py
 @@ -0,0 +1,121 @@
@@ -5637,7 +5895,7 @@ Last-Update: 2017-07-19
 +			for node in self.to_nodes(self.mac_files):
 +				relpath=node.path_from(mac_files_root or node.parent)
 +				self.create_task('macapp',node,res_dir.make_node(relpath))
-+				self.add_install_as(install_to=os.path.join(inst_to,relpath),install_source=node)
++				self.add_install_as(install_to=os.path.join(inst_to,relpath),install_from=node)
 +		if getattr(self.bld,'is_install',None):
 +			self.install_task.hasrun=Task.SKIP_ME
 +@feature('cprogram','cxxprogram')
@@ -5691,7 +5949,7 @@ Last-Update: 2017-07-19
 +		self.outputs[0].write(txt)
 --- /dev/null
 +++ b/waflib/Tools/c_preproc.py
-@@ -0,0 +1,616 @@
+@@ -0,0 +1,672 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
 +# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
@@ -5705,7 +5963,7 @@ Last-Update: 2017-07-19
 +POPFILE='-'
 +recursion_limit=150
 +go_absolute=False
-+standard_includes=['/usr/include']
++standard_includes=['/usr/local/include','/usr/include']
 +if Utils.is_win32:
 +	standard_includes=[]
 +use_trigraphs=0
@@ -5741,40 +5999,60 @@ Last-Update: 2017-07-19
 +for x,syms in enumerate(ops):
 +	for u in syms.split():
 +		prec[u]=x
-+def trimquotes(s):
-+	if not s:return''
-+	s=s.rstrip()
-+	if s[0]=="'"and s[-1]=="'":return s[1:-1]
-+	return s
 +def reduce_nums(val_1,val_2,val_op):
-+	try:a=0+val_1
-+	except TypeError:a=int(val_1)
-+	try:b=0+val_2
-+	except TypeError:b=int(val_2)
++	try:
++		a=0+val_1
++	except TypeError:
++		a=int(val_1)
++	try:
++		b=0+val_2
++	except TypeError:
++		b=int(val_2)
 +	d=val_op
-+	if d=='%':c=a%b
-+	elif d=='+':c=a+b
-+	elif d=='-':c=a-b
-+	elif d=='*':c=a*b
-+	elif d=='/':c=a/b
-+	elif d=='^':c=a^b
-+	elif d=='==':c=int(a==b)
-+	elif d=='|'or d=='bitor':c=a|b
-+	elif d=='||'or d=='or':c=int(a or b)
-+	elif d=='&'or d=='bitand':c=a&b
-+	elif d=='&&'or d=='and':c=int(a and b)
-+	elif d=='!='or d=='not_eq':c=int(a!=b)
-+	elif d=='^'or d=='xor':c=int(a^b)
-+	elif d=='<=':c=int(a<=b)
-+	elif d=='<':c=int(a<b)
-+	elif d=='>':c=int(a>b)
-+	elif d=='>=':c=int(a>=b)
-+	elif d=='<<':c=a<<b
-+	elif d=='>>':c=a>>b
-+	else:c=0
++	if d=='%':
++		c=a%b
++	elif d=='+':
++		c=a+b
++	elif d=='-':
++		c=a-b
++	elif d=='*':
++		c=a*b
++	elif d=='/':
++		c=a/b
++	elif d=='^':
++		c=a^b
++	elif d=='==':
++		c=int(a==b)
++	elif d=='|'or d=='bitor':
++		c=a|b
++	elif d=='||'or d=='or':
++		c=int(a or b)
++	elif d=='&'or d=='bitand':
++		c=a&b
++	elif d=='&&'or d=='and':
++		c=int(a and b)
++	elif d=='!='or d=='not_eq':
++		c=int(a!=b)
++	elif d=='^'or d=='xor':
++		c=int(a^b)
++	elif d=='<=':
++		c=int(a<=b)
++	elif d=='<':
++		c=int(a<b)
++	elif d=='>':
++		c=int(a>b)
++	elif d=='>=':
++		c=int(a>=b)
++	elif d=='<<':
++		c=a<<b
++	elif d=='>>':
++		c=a>>b
++	else:
++		c=0
 +	return c
 +def get_num(lst):
-+	if not lst:raise PreprocError('empty list for get_num')
++	if not lst:
++		raise PreprocError('empty list for get_num')
 +	(p,v)=lst[0]
 +	if p==OP:
 +		if v=='(':
@@ -5814,7 +6092,8 @@ Last-Update: 2017-07-19
 +	else:
 +		raise PreprocError('Invalid token %r for get_num'%lst)
 +def get_term(lst):
-+	if not lst:raise PreprocError('empty list for get_term')
++	if not lst:
++		raise PreprocError('empty list for get_term')
 +	num,lst=get_num(lst)
 +	if not lst:
 +		return(num,[])
@@ -5930,18 +6209,22 @@ Last-Update: 2017-07-19
 +							one_param.append((p2,v2))
 +							count_paren+=1
 +						elif v2==')':
-+							if one_param:args.append(one_param)
++							if one_param:
++								args.append(one_param)
 +							break
 +						elif v2==',':
-+							if not one_param:raise PreprocError('empty param in funcall %r'%v)
++							if not one_param:
++								raise PreprocError('empty param in funcall %r'%v)
 +							args.append(one_param)
 +							one_param=[]
 +						else:
 +							one_param.append((p2,v2))
 +					else:
 +						one_param.append((p2,v2))
-+						if v2=='(':count_paren+=1
-+						elif v2==')':count_paren-=1
++						if v2=='(':
++							count_paren+=1
++						elif v2==')':
++							count_paren-=1
 +				else:
 +					raise PreprocError('malformed macro')
 +				accu=[]
@@ -5974,7 +6257,8 @@ Last-Update: 2017-07-19
 +								for x in args[pt-st+1:]:
 +									va_toks.extend(x)
 +									va_toks.append((OP,','))
-+								if va_toks:va_toks.pop()
++								if va_toks:
++									va_toks.pop()
 +								if len(accu)>1:
 +									(p3,v3)=accu[-1]
 +									(p4,v4)=accu[-2]
@@ -6001,15 +6285,21 @@ Last-Update: 2017-07-19
 +		i+=1
 +def eval_macro(lst,defs):
 +	reduce_tokens(lst,defs,[])
-+	if not lst:raise PreprocError('missing tokens to evaluate')
-+	(p,v)=reduce_eval(lst)
++	if not lst:
++		raise PreprocError('missing tokens to evaluate')
++	if lst:
++		p,v=lst[0]
++		if p==IDENT and v not in defs:
++			raise PreprocError('missing macro %r'%lst)
++	p,v=reduce_eval(lst)
 +	return int(v)!=0
 +def extract_macro(txt):
 +	t=tokenize(txt)
 +	if re_fun.search(txt):
 +		p,name=t[0]
 +		p,v=t[1]
-+		if p!=OP:raise PreprocError('expected (')
++		if p!=OP:
++			raise PreprocError('expected (')
 +		i=1
 +		pindex=0
 +		params={}
@@ -6078,16 +6368,20 @@ Last-Update: 2017-07-19
 +		return ord(txt)
 +	c=txt[1]
 +	if c=='x':
-+		if len(txt)==4 and txt[3]in string.hexdigits:return int(txt[2:],16)
++		if len(txt)==4 and txt[3]in string.hexdigits:
++			return int(txt[2:],16)
 +		return int(txt[2:],16)
 +	elif c.isdigit():
-+		if c=='0'and len(txt)==2:return 0
++		if c=='0'and len(txt)==2:
++			return 0
 +		for i in 3,2,1:
 +			if len(txt)>i and txt[1:1+i].isdigit():
 +				return(1+i,int(txt[1:1+i],8))
 +	else:
-+		try:return chr_esc[c]
-+		except KeyError:raise PreprocError('could not parse char literal %r'%txt)
++		try:
++			return chr_esc[c]
++		except KeyError:
++			raise PreprocError('could not parse char literal %r'%txt)
 +def tokenize(s):
 +	return tokenize_private(s)[:]
 +def tokenize_private(s):
@@ -6098,27 +6392,32 @@ Last-Update: 2017-07-19
 +			v=m(name)
 +			if v:
 +				if name==IDENT:
-+					try:
-+						g_optrans[v]
++					if v in g_optrans:
 +						name=OP
-+					except KeyError:
-+						if v.lower()=="true":
-+							v=1
-+							name=NUM
-+						elif v.lower()=="false":
-+							v=0
-+							name=NUM
++					elif v.lower()=="true":
++						v=1
++						name=NUM
++					elif v.lower()=="false":
++						v=0
++						name=NUM
 +				elif name==NUM:
-+					if m('oct'):v=int(v,8)
-+					elif m('hex'):v=int(m('hex'),16)
-+					elif m('n0'):v=m('n0')
++					if m('oct'):
++						v=int(v,8)
++					elif m('hex'):
++						v=int(m('hex'),16)
++					elif m('n0'):
++						v=m('n0')
 +					else:
 +						v=m('char')
-+						if v:v=parse_char(v)
-+						else:v=m('n2')or m('n4')
++						if v:
++							v=parse_char(v)
++						else:
++							v=m('n2')or m('n4')
 +				elif name==OP:
-+					if v=='%:':v='#'
-+					elif v=='%:%:':v='##'
++					if v=='%:':
++						v='#'
++					elif v=='%:%:':
++						v='##'
 +				elif name==STR:
 +					v=v[1:-1]
 +				ret.append((name,v))
@@ -6151,11 +6450,11 @@ Last-Update: 2017-07-19
 +		self.names=[]
 +		self.curfile=''
 +		self.ban_includes=set()
++		self.listed=set()
 +	def cached_find_resource(self,node,filename):
 +		try:
 +			cache=node.ctx.preproc_cache_node
 +		except AttributeError:
-+			global FILE_CACHE_SIZE
 +			cache=node.ctx.preproc_cache_node=Utils.lru_cache(FILE_CACHE_SIZE)
 +		key=(node,filename)
 +		try:
@@ -6171,27 +6470,41 @@ Last-Update: 2017-07-19
 +						ret=None
 +			cache[key]=ret
 +			return ret
-+	def tryfind(self,filename):
++	def tryfind(self,filename,kind='"',env=None):
 +		if filename.endswith('.moc'):
 +			self.names.append(filename)
 +			return None
 +		self.curfile=filename
-+		found=self.cached_find_resource(self.currentnode_stack[-1],filename)
-+		for n in self.nodepaths:
-+			if found:
-+				break
-+			found=self.cached_find_resource(n,filename)
++		found=None
++		if kind=='"':
++			if env.MSVC_VERSION:
++				for n in reversed(self.currentnode_stack):
++					found=self.cached_find_resource(n,filename)
++					if found:
++						break
++			else:
++				found=self.cached_find_resource(self.currentnode_stack[-1],filename)
++		if not found:
++			for n in self.nodepaths:
++				found=self.cached_find_resource(n,filename)
++				if found:
++					break
++		listed=self.listed
 +		if found and not found in self.ban_includes:
-+			self.nodes.append(found)
++			if found not in listed:
++				listed.add(found)
++				self.nodes.append(found)
 +			self.addlines(found)
 +		else:
-+			if not filename in self.names:
++			if filename not in listed:
++				listed.add(filename)
 +				self.names.append(filename)
 +		return found
 +	def filter_comments(self,node):
 +		code=node.read()
 +		if use_trigraphs:
-+			for(a,b)in trig_def:code=code.split(a).join(b)
++			for(a,b)in trig_def:
++				code=code.split(a).join(b)
 +		code=re_nl.sub('',code)
 +		code=re_cpp.sub(repl,code)
 +		return re_lines.findall(code)
@@ -6199,7 +6512,6 @@ Last-Update: 2017-07-19
 +		try:
 +			cache=node.ctx.preproc_cache_lines
 +		except AttributeError:
-+			global LINE_CACHE_SIZE
 +			cache=node.ctx.preproc_cache_lines=Utils.lru_cache(LINE_CACHE_SIZE)
 +		try:
 +			return cache[node]
@@ -6221,8 +6533,7 @@ Last-Update: 2017-07-19
 +			raise PreprocError('could not read the file %r'%node)
 +		except Exception:
 +			if Logs.verbose>0:
-+				Logs.error('parsing %r failed',node)
-+				traceback.print_exc()
++				Logs.error('parsing %r failed %s',node,traceback.format_exc())
 +		else:
 +			self.lines.extend(lines)
 +	def start(self,node,env):
@@ -6240,8 +6551,6 @@ Last-Update: 2017-07-19
 +				self.currentnode_stack.pop()
 +				continue
 +			try:
-+				ve=Logs.verbose
-+				if ve:Logs.debug('preproc: line is %s - %s state is %s',token,line,self.state)
 +				state=self.state
 +				if token[:2]=='if':
 +					state.append(undefined)
@@ -6252,23 +6561,27 @@ Last-Update: 2017-07-19
 +						continue
 +				if token=='if':
 +					ret=eval_macro(tokenize(line),self.defs)
-+					if ret:state[-1]=accepted
-+					else:state[-1]=ignored
++					if ret:
++						state[-1]=accepted
++					else:
++						state[-1]=ignored
 +				elif token=='ifdef':
 +					m=re_mac.match(line)
-+					if m and m.group()in self.defs:state[-1]=accepted
-+					else:state[-1]=ignored
++					if m and m.group()in self.defs:
++						state[-1]=accepted
++					else:
++						state[-1]=ignored
 +				elif token=='ifndef':
 +					m=re_mac.match(line)
-+					if m and m.group()in self.defs:state[-1]=ignored
-+					else:state[-1]=accepted
++					if m and m.group()in self.defs:
++						state[-1]=ignored
++					else:
++						state[-1]=accepted
 +				elif token=='include'or token=='import':
 +					(kind,inc)=extract_include(line,self.defs)
-+					if ve:Logs.debug('preproc: include found %s    (%s) ',inc,kind)
-+					if kind=='"'or not strict_quotes:
-+						self.current_file=self.tryfind(inc)
-+						if token=='import':
-+							self.ban_includes.add(self.current_file)
++					self.current_file=self.tryfind(inc,kind,env)
++					if token=='import':
++						self.ban_includes.add(self.current_file)
 +				elif token=='elif':
 +					if state[-1]==accepted:
 +						state[-1]=skipped
@@ -6276,8 +6589,10 @@ Last-Update: 2017-07-19
 +						if eval_macro(tokenize(line),self.defs):
 +							state[-1]=accepted
 +				elif token=='else':
-+					if state[-1]==accepted:state[-1]=skipped
-+					elif state[-1]==ignored:state[-1]=accepted
++					if state[-1]==accepted:
++						state[-1]=skipped
++					elif state[-1]==ignored:
++						state[-1]=accepted
 +				elif token=='define':
 +					try:
 +						self.defs[self.define_name(line)]=line
@@ -6292,11 +6607,10 @@ Last-Update: 2017-07-19
 +						self.ban_includes.add(self.current_file)
 +			except Exception as e:
 +				if Logs.verbose:
-+					Logs.debug('preproc: line parsing failed (%s): %s %s',e,line,Utils.ex_stack())
++					Logs.debug('preproc: line parsing failed (%s): %s %s',e,line,traceback.format_exc())
 +	def define_name(self,line):
 +		return re_mac.match(line).group()
 +def scan(task):
-+	global go_absolute
 +	try:
 +		incn=task.generator.includes_nodes
 +	except AttributeError:
@@ -6445,7 +6759,7 @@ Last-Update: 2017-07-19
 +class grep_for_endianness(Task.Task):
 +	color='PINK'
 +	def run(self):
-+		txt=self.inputs[0].read(flags='rb').decode('iso8859-1')
++		txt=self.inputs[0].read(flags='rb').decode('latin-1')
 +		if txt.find('LiTTleEnDian')>-1:
 +			self.generator.tmp.append('little')
 +		elif txt.find('BIGenDianSyS')>-1:
@@ -6465,7 +6779,7 @@ Last-Update: 2017-07-19
 +	return tmp[0]
 --- /dev/null
 +++ b/waflib/Tools/ccroot.py
-@@ -0,0 +1,476 @@
+@@ -0,0 +1,479 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
 +# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
@@ -6531,6 +6845,7 @@ Last-Update: 2017-07-19
 +	self.env.INCPATHS=[x.path_from(cwd)for x in lst]
 +class link_task(Task.Task):
 +	color='YELLOW'
++	weight=3
 +	inst_to=None
 +	chmod=Utils.O755
 +	def add_target(self,target):
@@ -6590,8 +6905,10 @@ Last-Update: 2017-07-19
 +def rm_tgt(cls):
 +	old=cls.run
 +	def wrap(self):
-+		try:os.remove(self.outputs[0].abspath())
-+		except OSError:pass
++		try:
++			os.remove(self.outputs[0].abspath())
++		except OSError:
++			pass
 +		return old(self)
 +	setattr(cls,'run',wrap)
 +rm_tgt(stlink_task)
@@ -6615,7 +6932,7 @@ Last-Update: 2017-07-19
 +	try:
 +		inst_to=self.install_path
 +	except AttributeError:
-+		inst_to=self.link_task.__class__.inst_to
++		inst_to=self.link_task.inst_to
 +	if inst_to:
 +		self.install_task=self.add_install_files(install_to=inst_to,install_from=self.link_task.outputs[:],chmod=self.link_task.chmod,task=self.link_task)
 +@taskgen_method
@@ -6707,7 +7024,7 @@ Last-Update: 2017-07-19
 +			if y.tmp_use_objects:
 +				self.add_objects_from_tgen(y)
 +		if getattr(y,'export_includes',None):
-+			self.includes.extend(y.to_incnodes(y.export_includes))
++			self.includes=self.includes+y.to_incnodes(y.export_includes)
 +		if getattr(y,'export_defines',None):
 +			self.env.append_value('DEFINES',self.to_list(y.export_defines))
 +	for x in names:
@@ -6775,8 +7092,8 @@ Last-Update: 2017-07-19
 +		node=self.path.find_resource(self.defs)
 +		if not node:
 +			raise Errors.WafError('invalid def file %r'%self.defs)
-+		if'msvc'in(self.env.CC_NAME,self.env.CXX_NAME):
-+			self.env.append_value('LINKFLAGS','/def:%s'%node.path_from(self.get_cwd()))
++		if self.env.def_PATTERN:
++			self.env.append_value('LINKFLAGS',self.env.def_PATTERN%node.path_from(self.get_cwd()))
 +			self.link_task.dep_nodes.append(node)
 +		else:
 +			self.link_task.inputs.append(node)
@@ -6823,7 +7140,7 @@ Last-Update: 2017-07-19
 +			outs.append(node.parent.make_node(name2))
 +		self.create_task('vnum',node,outs)
 +	if getattr(self,'install_task',None):
-+		self.install_task.hasrun=Task.SKIP_ME
++		self.install_task.hasrun=Task.SKIPPED
 +		path=self.install_task.install_to
 +		if self.env.DEST_OS=='openbsd':
 +			libname=self.link_task.outputs[0].name
@@ -6841,7 +7158,7 @@ Last-Update: 2017-07-19
 +		try:
 +			inst_to=self.install_path
 +		except AttributeError:
-+			inst_to=self.link_task.__class__.inst_to
++			inst_to=self.link_task.inst_to
 +		if inst_to:
 +			p=Utils.subst_vars(inst_to,self.env)
 +			path=os.path.join(p,name2)
@@ -7174,7 +7491,7 @@ Last-Update: 2017-07-19
 +		opt.load('%s'%x)
 --- /dev/null
 +++ b/waflib/Tools/cs.py
-@@ -0,0 +1,98 @@
+@@ -0,0 +1,113 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
 +# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
@@ -7235,10 +7552,8 @@ Last-Update: 2017-07-19
 +	else:
 +		out=node.change_ext('.pdb')
 +	self.cs_task.outputs.append(out)
-+	try:
-+		self.install_task.source.append(out)
-+	except AttributeError:
-+		pass
++	if getattr(self,'install_task',None):
++		self.pdb_install_task=self.add_install_files(install_to=self.install_task.install_to,install_from=out)
 +	if csdebug=='pdbonly':
 +		val=['/debug+','/debug:pdbonly']
 +	elif csdebug=='full':
@@ -7246,13 +7561,30 @@ Last-Update: 2017-07-19
 +	else:
 +		val=['/debug-']
 +	self.env.append_value('CSFLAGS',val)
++@feature('cs')
++@after_method('debug_cs')
++def doc_cs(self):
++	csdoc=getattr(self,'csdoc',self.env.CSDOC)
++	if not csdoc:
++		return
++	node=self.cs_task.outputs[0]
++	out=node.change_ext('.xml')
++	self.cs_task.outputs.append(out)
++	if getattr(self,'install_task',None):
++		self.doc_install_task=self.add_install_files(install_to=self.install_task.install_to,install_from=out)
++	self.env.append_value('CSFLAGS','/doc:%s'%out.abspath())
 +class mcs(Task.Task):
 +	color='YELLOW'
 +	run_str='${MCS} ${CSTYPE} ${CSFLAGS} ${ASS_ST:ASSEMBLIES} ${RES_ST:RESOURCES} ${OUT} ${SRC}'
-+	def exec_command(self,cmd,**kw):
-+		if'/noconfig'in cmd:
-+			raise ValueError('/noconfig is not allowed when using response files, check your flags!')
-+		return super(self.__class__,self).exec_command(cmd,**kw)
++	def split_argfile(self,cmd):
++		inline=[cmd[0]]
++		infile=[]
++		for x in cmd[1:]:
++			if x.lower()=='/noconfig':
++				inline.append(x)
++			else:
++				infile.append(self.quote_flag(x))
++		return(inline,infile)
 +def configure(conf):
 +	csc=getattr(Options.options,'cscbinary',None)
 +	if csc:
@@ -7416,7 +7748,7 @@ Last-Update: 2017-07-19
 +		self.env.DLIBRARY=ret.strip()
 --- /dev/null
 +++ b/waflib/Tools/d_scan.py
-@@ -0,0 +1,131 @@
+@@ -0,0 +1,136 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
 +# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
@@ -7437,7 +7769,8 @@ Last-Update: 2017-07-19
 +			i+=1
 +			while i<max:
 +				c=txt[i]
-+				if c==delim:break
++				if c==delim:
++					break
 +				elif c=='\\':
 +					i+=1
 +				i+=1
@@ -7446,7 +7779,8 @@ Last-Update: 2017-07-19
 +		elif c=='/':
 +			buf.append(txt[begin:i])
 +			i+=1
-+			if i==max:break
++			if i==max:
++				break
 +			c=txt[i]
 +			if c=='+':
 +				i+=1
@@ -7460,7 +7794,8 @@ Last-Update: 2017-07-19
 +						c=None
 +					elif prev=='+'and c=='/':
 +						nesting-=1
-+						if nesting==0:break
++						if nesting==0:
++							break
 +						c=None
 +					i+=1
 +			elif c=='*':
@@ -7469,7 +7804,8 @@ Last-Update: 2017-07-19
 +				while i<max:
 +					prev=c
 +					c=txt[i]
-+					if prev=='*'and c=='/':break
++					if prev=='*'and c=='/':
++						break
 +					i+=1
 +			elif c=='/':
 +				i+=1
@@ -7537,7 +7873,8 @@ Last-Update: 2017-07-19
 +		code="".join(filter_comments(path))
 +		names=self.get_strings(code)
 +		for x in names:
-+			if x in self.allnames:continue
++			if x in self.allnames:
++				continue
 +			self.allnames.append(x)
 +			self.tryfind(x)
 +def scan(self):
@@ -7564,7 +7901,7 @@ Last-Update: 2017-07-19
 +	if not'process_dbus'in self.meths:
 +		self.meths.append('process_dbus')
 +	self.dbus_lst.append([filename,prefix,mode])
-+@before_method('apply_core')
++@before_method('process_source')
 +def process_dbus(self):
 +	for filename,prefix,mode in getattr(self,'dbus_lst',[]):
 +		node=self.path.find_resource(filename)
@@ -7636,12 +7973,12 @@ Last-Update: 2017-07-19
 +		conf.common_flags_ldc()
 --- /dev/null
 +++ b/waflib/Tools/errcheck.py
-@@ -0,0 +1,167 @@
+@@ -0,0 +1,175 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
 +# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
-+typos={'feature':'features','sources':'source','targets':'target','include':'includes','export_include':'export_includes','define':'defines','importpath':'includes','installpath':'install_path','iscopy':'is_copy',}
++typos={'feature':'features','sources':'source','targets':'target','include':'includes','export_include':'export_includes','define':'defines','importpath':'includes','installpath':'install_path','iscopy':'is_copy','uses':'use',}
 +meths_typos=['__call__','program','shlib','stlib','objects']
 +import sys
 +from waflib import Logs,Build,Node,Task,TaskGen,ConfigSet,Errors,Utils
@@ -7683,8 +8020,11 @@ Last-Update: 2017-07-19
 +		for(k,v)in uids.items():
 +			if len(v)>1:
 +				Logs.error('* Several tasks use the same identifier. Please check the information on\n   https://waf.io/apidocs/Task.html?highlight=uid#waflib.Task.Task.uid')
++				tg_details=tsk.generator.name
++				if Logs.verbose>2:
++					tg_details=tsk.generator
 +				for tsk in v:
-+					Logs.error('  - object %r (%r) defined in %r',tsk.__class__.__name__,tsk,tsk.generator)
++					Logs.error('  - object %r (%r) defined in %r',tsk.__class__.__name__,tsk,tg_details)
 +def check_invalid_constraints(self):
 +	feat=set()
 +	for x in list(TaskGen.feats.values()):
@@ -7730,15 +8070,20 @@ Last-Update: 2017-07-19
 +					Logs.error("In ant_glob pattern %r: '..' means 'two dots', not 'parent directory'",k[0])
 +				if'.'in sp:
 +					Logs.error("In ant_glob pattern %r: '.' means 'one dot', not 'current directory'",k[0])
-+		if kw.get('remove',True):
-+			try:
-+				if self.is_child_of(self.ctx.bldnode)and not kw.get('quiet',False):
-+					Logs.error('Using ant_glob on the build folder (%r) is dangerous (quiet=True to disable this warning)',self)
-+			except AttributeError:
-+				pass
 +		return self.old_ant_glob(*k,**kw)
 +	Node.Node.old_ant_glob=Node.Node.ant_glob
 +	Node.Node.ant_glob=ant_glob
++	def ant_iter(self,accept=None,maxdepth=25,pats=[],dir=False,src=True,remove=True,quiet=False):
++		if remove:
++			try:
++				if self.is_child_of(self.ctx.bldnode)and not quiet:
++					quiet=True
++					Logs.error('Calling ant_glob on build folders (%r) is dangerous: add quiet=True / remove=False',self)
++			except AttributeError:
++				pass
++		return self.old_ant_iter(accept,maxdepth,pats,dir,src,remove,quiet)
++	Node.Node.old_ant_iter=Node.Node.ant_iter
++	Node.Node.ant_iter=ant_iter
 +	old=Task.is_before
 +	def is_before(t1,t2):
 +		ret=old(t1,t2)
@@ -7762,7 +8107,7 @@ Last-Update: 2017-07-19
 +		else:
 +			for x in('before','after'):
 +				for y in self.to_list(getattr(self,x,[])):
-+					if not Task.classes.get(y,None):
++					if not Task.classes.get(y):
 +						Logs.error('Erroneous order constraint %s=%r on %r (no such class)',x,y,self)
 +	TaskGen.feature('*')(check_err_order)
 +	def check_compile(self):
@@ -7798,7 +8143,7 @@ Last-Update: 2017-07-19
 +		elif name=='prepend':
 +			raise Errors.WafError('env.prepend does not exist: use env.prepend_value')
 +		if name in self.__slots__:
-+			return object.__getattr__(self,name,default)
++			return super(ConfigSet.ConfigSet,self).__getattr__(name,default)
 +		else:
 +			return self[name]
 +	ConfigSet.ConfigSet.__getattr__=_getattr
@@ -7811,7 +8156,7 @@ Last-Update: 2017-07-19
 +# encoding: utf-8
 +# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
-+from waflib import Utils,Task
++from waflib import Utils,Task,Errors
 +from waflib.Tools import ccroot,fc_config,fc_scan
 +from waflib.TaskGen import extension
 +from waflib.Configure import conf
@@ -7819,12 +8164,12 @@ Last-Update: 2017-07-19
 +ccroot.USELIB_VARS['fcprogram_test']=ccroot.USELIB_VARS['fcprogram']=set(['LIB','STLIB','LIBPATH','STLIBPATH','LINKFLAGS','RPATH','LINKDEPS'])
 +ccroot.USELIB_VARS['fcshlib']=set(['LIB','STLIB','LIBPATH','STLIBPATH','LINKFLAGS','RPATH','LINKDEPS'])
 +ccroot.USELIB_VARS['fcstlib']=set(['ARFLAGS','LINKDEPS'])
-+@extension('.f','.f90','.F','.F90','.for','.FOR')
++@extension('.f','.F','.f90','.F90','.for','.FOR','.f95','.F95','.f03','.F03','.f08','.F08')
 +def fc_hook(self,node):
 +	return self.create_compiled_task('fc',node)
 +@conf
 +def modfile(conf,name):
-+	return{'lower':name.lower()+'.mod','lower.MOD':name.upper()+'.MOD','UPPER.mod':name.upper()+'.mod','UPPER':name.upper()+'.MOD'}[conf.env.FC_MOD_CAPITALIZATION or'lower']
++	return{'lower':name.lower()+'.mod','lower.MOD':name.lower()+'.MOD','UPPER.mod':name.upper()+'.mod','UPPER':name.upper()+'.MOD'}[conf.env.FC_MOD_CAPITALIZATION or'lower']
 +def get_fortran_tasks(tsk):
 +	bld=tsk.generator.bld
 +	tasks=bld.get_tasks_group(bld.get_group_idx(tsk.generator))
@@ -7860,7 +8205,7 @@ Last-Update: 2017-07-19
 +					name=bld.modfile(x.replace('MOD@',''))
 +					node=bld.srcnode.find_or_declare(name)
 +					tsk.set_outputs(node)
-+					outs[id(node)].add(tsk)
++					outs[node].add(tsk)
 +		for tsk in lst:
 +			key=tsk.uid()
 +			for x in bld.raw_deps[key]:
@@ -7870,7 +8215,7 @@ Last-Update: 2017-07-19
 +					if node and node not in tsk.outputs:
 +						if not node in bld.node_deps[key]:
 +							bld.node_deps[key].append(node)
-+						ins[id(node)].add(tsk)
++						ins[node].add(tsk)
 +		for k in ins.keys():
 +			for a in ins[k]:
 +				a.run_after.update(outs[k])
@@ -7909,7 +8254,7 @@ Last-Update: 2017-07-19
 +		kw['output']=0
 +		try:
 +			(bld.out,bld.err)=bld.cmd_and_log(cmd,**kw)
-+		except Exception:
++		except Errors.WafError:
 +			return-1
 +		if bld.out:
 +			bld.to_log('out: %s\n'%bld.out)
@@ -7917,7 +8262,7 @@ Last-Update: 2017-07-19
 +			bld.to_log('err: %s\n'%bld.err)
 --- /dev/null
 +++ b/waflib/Tools/fc_config.py
-@@ -0,0 +1,287 @@
+@@ -0,0 +1,299 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
 +# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
@@ -7977,7 +8322,7 @@ Last-Update: 2017-07-19
 +	v.LINKFLAGS_fcshlib=['-dynamiclib']
 +	v.fcshlib_PATTERN='lib%s.dylib'
 +	v.FRAMEWORKPATH_ST='-F%s'
-+	v.FRAMEWORK_ST='-framework %s'
++	v.FRAMEWORK_ST=['-framework']
 +	v.LINKFLAGS_fcstlib=[]
 +	v.FCSHLIB_MARKER=''
 +	v.FCSTLIB_MARKER=''
@@ -7987,7 +8332,7 @@ Last-Update: 2017-07-19
 +	v=conf.env
 +	v.fcprogram_PATTERN=v.fcprogram_test_PATTERN='%s.exe'
 +	v.fcshlib_PATTERN='%s.dll'
-+	v.implib_PATTERN='lib%s.dll.a'
++	v.implib_PATTERN='%s.dll.a'
 +	v.IMPLIB_ST='-Wl,--out-implib,%s'
 +	v.FCFLAGS_fcshlib=[]
 +	v.append_value('LINKFLAGS',['-Wl,--enable-auto-import'])
@@ -8196,7 +8541,7 @@ Last-Update: 2017-07-19
 +	self.env.fcshlib_PATTERN=self.env.pyext_PATTERN
 +@conf
 +def detect_openmp(self):
-+	for x in('-qopenmp','-fopenmp','-openmp','-mp','-xopenmp','-omp','-qsmp=omp'):
++	for x in('-fopenmp','-openmp','-mp','-xopenmp','-omp','-qsmp=omp'):
 +		try:
 +			self.check_fc(msg='Checking for OpenMP flag %s'%x,fragment='program main\n  call omp_get_num_threads()\nend program main',fcflags=x,linkflags=x,uselib_store='OPENMP')
 +		except self.errors.ConfigurationError:
@@ -8205,6 +8550,18 @@ Last-Update: 2017-07-19
 +			break
 +	else:
 +		self.fatal('Could not find OpenMP')
++@conf
++def check_gfortran_o_space(self):
++	if self.env.FC_NAME!='GFORTRAN'or int(self.env.FC_VERSION[0])>4:
++		return
++	self.env.stash()
++	self.env.FCLNK_TGT_F=['-o','']
++	try:
++		self.check_fc(msg='Checking if the -o link must be split from arguments',fragment=FC_FRAGMENT,features='fc fcshlib')
++	except self.errors.ConfigurationError:
++		self.env.revert()
++	else:
++		self.env.commit()
 --- /dev/null
 +++ b/waflib/Tools/fc_scan.py
 @@ -0,0 +1,64 @@
@@ -8274,7 +8631,7 @@ Last-Update: 2017-07-19
 +				self.names.append(filename)
 --- /dev/null
 +++ b/waflib/Tools/flex.py
-@@ -0,0 +1,37 @@
+@@ -0,0 +1,38 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
 +# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
@@ -8291,7 +8648,8 @@ Last-Update: 2017-07-19
 +	bld=tsk.generator.bld
 +	wd=bld.variant_dir
 +	def to_list(xx):
-+		if isinstance(xx,str):return[xx]
++		if isinstance(xx,str):
++			return[xx]
 +		return xx
 +	tsk.last_cmd=lst=[]
 +	lst.extend(to_list(env.FLEX))
@@ -8386,7 +8744,7 @@ Last-Update: 2017-07-19
 +	conf.load('asm')
 --- /dev/null
 +++ b/waflib/Tools/gcc.py
-@@ -0,0 +1,103 @@
+@@ -0,0 +1,104 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
 +# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
@@ -8431,7 +8789,7 @@ Last-Update: 2017-07-19
 +	v=conf.env
 +	v.cprogram_PATTERN='%s.exe'
 +	v.cshlib_PATTERN='%s.dll'
-+	v.implib_PATTERN='lib%s.dll.a'
++	v.implib_PATTERN='%s.dll.a'
 +	v.IMPLIB_ST='-Wl,--out-implib,%s'
 +	v.CFLAGS_cshlib=[]
 +	v.append_value('LINKFLAGS',['-Wl,--enable-auto-import'])
@@ -8490,6 +8848,7 @@ Last-Update: 2017-07-19
 +	conf.cc_load_tools()
 +	conf.cc_add_flags()
 +	conf.link_add_flags()
++	conf.check_gcc_o_space()
 --- /dev/null
 +++ b/waflib/Tools/gdc.py
 @@ -0,0 +1,35 @@
@@ -8530,7 +8889,7 @@ Last-Update: 2017-07-19
 +	conf.d_platform_flags()
 --- /dev/null
 +++ b/waflib/Tools/gfortran.py
-@@ -0,0 +1,68 @@
+@@ -0,0 +1,71 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
 +# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
@@ -8570,8 +8929,10 @@ Last-Update: 2017-07-19
 +	version_re=re.compile(r"GNU\s*Fortran",re.I).search
 +	cmd=fc+['--version']
 +	out,err=fc_config.getoutput(conf,cmd,stdin=False)
-+	if out:match=version_re(out)
-+	else:match=version_re(err)
++	if out:
++		match=version_re(out)
++	else:
++		match=version_re(err)
 +	if not match:
 +		conf.fatal('Could not determine the compiler type')
 +	cmd=fc+['-dM','-E','-']
@@ -8599,9 +8960,10 @@ Last-Update: 2017-07-19
 +	conf.fc_add_flags()
 +	conf.gfortran_flags()
 +	conf.gfortran_modifier_platform()
++	conf.check_gfortran_o_space()
 --- /dev/null
 +++ b/waflib/Tools/glib2.py
-@@ -0,0 +1,241 @@
+@@ -0,0 +1,242 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
 +# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
@@ -8638,7 +9000,8 @@ Last-Update: 2017-07-19
 +		get=self.env.get_flat
 +		cmd1="%s %s --prefix=%s --header > %s"%(get('GLIB_GENMARSHAL'),self.inputs[0].srcpath(),get('GLIB_GENMARSHAL_PREFIX'),self.outputs[0].abspath())
 +		ret=bld.exec_command(cmd1)
-+		if ret:return ret
++		if ret:
++			return ret
 +		c='''#include "%s"\n'''%self.outputs[0].name
 +		self.outputs[1].write(c)
 +		cmd2="%s %s --prefix=%s --body >> %s"%(get('GLIB_GENMARSHAL'),self.inputs[0].srcpath(),get('GLIB_GENMARSHAL_PREFIX'),self.outputs[1].abspath())
@@ -8701,7 +9064,7 @@ Last-Update: 2017-07-19
 +	if hasattr(self,'settings_enum_namespace'):
 +		raise Errors.WafError("Tried to add gsettings enums to %r more than once"%self.name)
 +	self.settings_enum_namespace=namespace
-+	if type(filename_list)!='list':
++	if not isinstance(filename_list,list):
 +		filename_list=[filename_list]
 +	self.settings_enum_files=filename_list
 +@feature('glib2')
@@ -8914,7 +9277,7 @@ Last-Update: 2017-07-19
 +		dirs_options.add_option(option_name,help=str_help,default='',dest=name.upper())
 --- /dev/null
 +++ b/waflib/Tools/gxx.py
-@@ -0,0 +1,103 @@
+@@ -0,0 +1,104 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
 +# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
@@ -8959,7 +9322,7 @@ Last-Update: 2017-07-19
 +	v=conf.env
 +	v.cxxprogram_PATTERN='%s.exe'
 +	v.cxxshlib_PATTERN='%s.dll'
-+	v.implib_PATTERN='lib%s.dll.a'
++	v.implib_PATTERN='%s.dll.a'
 +	v.IMPLIB_ST='-Wl,--out-implib,%s'
 +	v.CXXFLAGS_cxxshlib=[]
 +	v.append_value('LINKFLAGS',['-Wl,--enable-auto-import'])
@@ -9018,6 +9381,7 @@ Last-Update: 2017-07-19
 +	conf.cxx_load_tools()
 +	conf.cxx_add_flags()
 +	conf.link_add_flags()
++	conf.check_gcc_o_space('cxx')
 --- /dev/null
 +++ b/waflib/Tools/icc.py
 @@ -0,0 +1,20 @@
@@ -9066,12 +9430,12 @@ Last-Update: 2017-07-19
 +	conf.link_add_flags()
 --- /dev/null
 +++ b/waflib/Tools/ifort.py
-@@ -0,0 +1,301 @@
+@@ -0,0 +1,303 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
 +# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
-+import os,re
++import os,re,traceback
 +from waflib import Utils,Logs,Errors
 +from waflib.Tools import fc,fc_config,fc_scan,ar,ccroot
 +from waflib.Configure import conf
@@ -9127,7 +9491,7 @@ Last-Update: 2017-07-19
 +	conf.env.FC_VERSION=(k['major'],k['minor'])
 +def configure(conf):
 +	if Utils.is_win32:
-+		compiler,version,path,includes,libdirs,arch=conf.detect_ifort(True)
++		compiler,version,path,includes,libdirs,arch=conf.detect_ifort()
 +		v=conf.env
 +		v.DEST_CPU=arch
 +		v.PATH=path
@@ -9136,8 +9500,7 @@ Last-Update: 2017-07-19
 +		v.MSVC_COMPILER=compiler
 +		try:
 +			v.MSVC_VERSION=float(version)
-+		except Exception:
-+			raise
++		except ValueError:
 +			v.MSVC_VERSION=float(version[:-3])
 +		conf.find_ifort_win32()
 +		conf.ifort_modifier_win32()
@@ -9154,42 +9517,44 @@ Last-Update: 2017-07-19
 +	version_pattern=re.compile('^...?.?\....?.?')
 +	try:
 +		all_versions=Utils.winreg.OpenKey(Utils.winreg.HKEY_LOCAL_MACHINE,'SOFTWARE\\Wow6432node\\Intel\\Compilers\\Fortran')
-+	except WindowsError:
++	except OSError:
 +		try:
 +			all_versions=Utils.winreg.OpenKey(Utils.winreg.HKEY_LOCAL_MACHINE,'SOFTWARE\\Intel\\Compilers\\Fortran')
-+		except WindowsError:
++		except OSError:
 +			return
 +	index=0
 +	while 1:
 +		try:
 +			version=Utils.winreg.EnumKey(all_versions,index)
-+		except WindowsError:
++		except OSError:
 +			break
 +		index+=1
 +		if not version_pattern.match(version):
 +			continue
 +		targets={}
 +		for target,arch in all_ifort_platforms:
-+			if target=='intel64':targetDir='EM64T_NATIVE'
-+			else:targetDir=target
++			if target=='intel64':
++				targetDir='EM64T_NATIVE'
++			else:
++				targetDir=target
 +			try:
 +				Utils.winreg.OpenKey(all_versions,version+'\\'+targetDir)
 +				icl_version=Utils.winreg.OpenKey(all_versions,version)
 +				path,type=Utils.winreg.QueryValueEx(icl_version,'ProductDir')
-+			except WindowsError:
++			except OSError:
 +				pass
 +			else:
-+				batch_file=os.path.join(path,'bin','iclvars.bat')
++				batch_file=os.path.join(path,'bin','ifortvars.bat')
 +				if os.path.isfile(batch_file):
 +					targets[target]=target_compiler(conf,'intel',arch,version,target,batch_file)
 +		for target,arch in all_ifort_platforms:
 +			try:
 +				icl_version=Utils.winreg.OpenKey(all_versions,version+'\\'+target)
 +				path,type=Utils.winreg.QueryValueEx(icl_version,'ProductDir')
-+			except WindowsError:
++			except OSError:
 +				continue
 +			else:
-+				batch_file=os.path.join(path,'bin','iclvars.bat')
++				batch_file=os.path.join(path,'bin','ifortvars.bat')
 +				if os.path.isfile(batch_file):
 +					targets[target]=target_compiler(conf,'intel',arch,version,target,batch_file)
 +		major=version[0:2]
@@ -9253,7 +9618,7 @@ Last-Update: 2017-07-19
 +	try:
 +		conf.cmd_and_log(fc+['/help'],env=env)
 +	except UnicodeError:
-+		st=Utils.ex_stack()
++		st=traceback.format_exc()
 +		if conf.logger:
 +			conf.logger.error(st)
 +		conf.fatal('ifort: Unicode error - check the code page?')
@@ -9282,7 +9647,7 @@ Last-Update: 2017-07-19
 +			return
 +		self.is_done=True
 +		try:
-+			vs=self.conf.get_msvc_version(self.compiler,self.version,self.bat_target,self.bat)
++			vs=self.conf.get_ifort_version_win32(self.compiler,self.version,self.bat_target,self.bat)
 +		except Errors.ConfigurationError:
 +			self.is_valid=False
 +			return
@@ -9322,7 +9687,8 @@ Last-Update: 2017-07-19
 +	v.IFORT_MANIFEST=(compiler=='intel'and version>=11)
 +	fc=conf.find_program(compiler_name,var='FC',path_list=path)
 +	env=dict(conf.environ)
-+	if path:env.update(PATH=';'.join(path))
++	if path:
++		env.update(PATH=';'.join(path))
 +	if not conf.cmd_and_log(fc+['/nologo','/help'],env=env):
 +		conf.fatal('not intel fortran compiler could not be identified')
 +	v.FC_NAME='IFORT'
@@ -9370,11 +9736,12 @@ Last-Update: 2017-07-19
 +		self.env.DO_MANIFEST=True
 --- /dev/null
 +++ b/waflib/Tools/intltool.py
-@@ -0,0 +1,97 @@
+@@ -0,0 +1,101 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
 +# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
++from __future__ import with_statement
 +import os,re
 +from waflib import Context,Task,Utils,Logs
 +import waflib.Tools.ccroot
@@ -9392,8 +9759,10 @@ Last-Update: 2017-07-19
 +@before_method('process_source')
 +@feature('intltool_in')
 +def apply_intltool_in_f(self):
-+	try:self.meths.remove('process_source')
-+	except ValueError:pass
++	try:
++		self.meths.remove('process_source')
++	except ValueError:
++		pass
 +	self.ensure_localedir()
 +	podir=getattr(self,'podir','.')
 +	podirnode=self.path.find_dir(podir)
@@ -9421,20 +9790,21 @@ Last-Update: 2017-07-19
 +			self.add_install_files(install_to=inst,install_from=task.outputs)
 +@feature('intltool_po')
 +def apply_intltool_po(self):
-+	try:self.meths.remove('process_source')
-+	except ValueError:pass
++	try:
++		self.meths.remove('process_source')
++	except ValueError:
++		pass
 +	self.ensure_localedir()
 +	appname=getattr(self,'appname',getattr(Context.g_module,Context.APPNAME,'set_your_app_name'))
 +	podir=getattr(self,'podir','.')
 +	inst=getattr(self,'install_path','${LOCALEDIR}')
 +	linguas=self.path.find_node(os.path.join(podir,'LINGUAS'))
 +	if linguas:
-+		file=open(linguas.abspath())
-+		langs=[]
-+		for line in file.readlines():
-+			if not line.startswith('#'):
-+				langs+=line.split()
-+		file.close()
++		with open(linguas.abspath())as f:
++			langs=[]
++			for line in f.readlines():
++				if not line.startswith('#'):
++					langs+=line.split()
 +		re_linguas=re.compile('[-a-zA-Z_@.]+')
 +		for lang in langs:
 +			if re_linguas.match(lang):
@@ -9470,11 +9840,12 @@ Last-Update: 2017-07-19
 +		conf.check(header_name='locale.h')
 --- /dev/null
 +++ b/waflib/Tools/irixcc.py
-@@ -0,0 +1,50 @@
+@@ -0,0 +1,51 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
 +# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
++from waflib import Errors
 +from waflib.Tools import ccroot,ar
 +from waflib.Configure import conf
 +@conf
@@ -9491,7 +9862,7 @@ Last-Update: 2017-07-19
 +		conf.fatal('irixcc was not found')
 +	try:
 +		conf.cmd_and_log(cc+['-version'])
-+	except Exception:
++	except Errors.WafError:
 +		conf.fatal('%r -version could not be executed'%cc)
 +	v.CC=cc
 +	v.CC_NAME='irix'
@@ -9523,7 +9894,7 @@ Last-Update: 2017-07-19
 +	conf.link_add_flags()
 --- /dev/null
 +++ b/waflib/Tools/javaw.py
-@@ -0,0 +1,296 @@
+@@ -0,0 +1,299 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
 +# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
@@ -9592,6 +9963,7 @@ Last-Update: 2017-07-19
 +	if names:
 +		tsk.env.append_value('JAVACFLAGS',['-sourcepath',names])
 +@feature('javac')
++@before_method('propagate_uselib_vars')
 +@after_method('apply_java')
 +def use_javac_files(self):
 +	lst=[]
@@ -9615,7 +9987,8 @@ Last-Update: 2017-07-19
 +@feature('javac')
 +@after_method('apply_java','propagate_uselib_vars','use_javac_files')
 +def set_classpath(self):
-+	self.env.append_value('CLASSPATH',getattr(self,'classpath',[]))
++	if getattr(self,'classpath',None):
++		self.env.append_unique('CLASSPATH',getattr(self,'classpath',[]))
 +	for x in self.tasks:
 +		x.env.CLASSPATH=os.pathsep.join(self.env.CLASSPATH)+os.pathsep
 +@feature('jar')
@@ -9637,9 +10010,11 @@ Last-Update: 2017-07-19
 +	if manifest:
 +		jarcreate=getattr(self,'jarcreate','cfm')
 +		if not isinstance(manifest,Node.Node):
-+			node=self.path.find_or_declare(manifest)
++			node=self.path.find_resource(manifest)
 +		else:
 +			node=manifest
++		if not node:
++			self.bld.fatal('invalid manifest file %r for %r'%(manifest,self))
 +		tsk.dep_nodes.append(node)
 +		jaropts.insert(0,node.abspath())
 +	else:
@@ -9689,7 +10064,6 @@ Last-Update: 2017-07-19
 +			if not t.hasrun:
 +				return Task.ASK_LATER
 +		if not self.inputs:
-+			global JAR_RE
 +			try:
 +				self.inputs=[x for x in self.basedir.ant_glob(JAR_RE,remove=False)if id(x)!=id(self.outputs[0])]
 +			except Exception:
@@ -9709,10 +10083,10 @@ Last-Update: 2017-07-19
 +			if not t.hasrun:
 +				return Task.ASK_LATER
 +		if not self.inputs:
-+			global SOURCE_RE
 +			self.inputs=[]
 +			for x in self.srcdir:
-+				self.inputs.extend(x.ant_glob(SOURCE_RE,remove=False))
++				if x.exists():
++					self.inputs.extend(x.ant_glob(SOURCE_RE,remove=False))
 +		return super(javac,self).runnable_status()
 +	def post_run(self):
 +		for node in self.generator.outdir.ant_glob('**/*.class'):
@@ -9882,7 +10256,7 @@ Last-Update: 2017-07-19
 +	conf.find_program('luac',var='LUAC')
 --- /dev/null
 +++ b/waflib/Tools/md5_tstamp.py
-@@ -0,0 +1,25 @@
+@@ -0,0 +1,24 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
 +# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
@@ -9897,7 +10271,6 @@ Last-Update: 2017-07-19
 +	cache=self.ctx.hashes_md5_tstamp
 +	if filename in cache and cache[filename][0]==st.st_mtime:
 +		return cache[filename][1]
-+	global STRONGEST
 +	if STRONGEST:
 +		ret=Utils.h_file(filename)
 +	else:
@@ -9910,12 +10283,12 @@ Last-Update: 2017-07-19
 +Node.Node.h_file=h_file
 --- /dev/null
 +++ b/waflib/Tools/msvc.py
-@@ -0,0 +1,660 @@
+@@ -0,0 +1,704 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
 +# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
-+import os,sys,re
++import os,sys,re,traceback
 +from waflib import Utils,Logs,Options,Errors
 +from waflib.TaskGen import after_method,feature
 +from waflib.Configure import conf
@@ -9940,7 +10313,7 @@ Last-Update: 2017-07-19
 +version vfw32 wbemuuid  webpost wiaguid wininet winmm winscard winspool winstrm
 +wintrust wldap32 wmiutils wow32 ws2_32 wsnmp32 wsock32 wst wtsapi32 xaswitch xolehlp
 +'''.split()
-+all_msvc_platforms=[('x64','amd64'),('x86','x86'),('ia64','ia64'),('x86_amd64','amd64'),('x86_ia64','ia64'),('x86_arm','arm'),('amd64_x86','x86'),('amd64_arm','arm')]
++all_msvc_platforms=[('x64','amd64'),('x86','x86'),('ia64','ia64'),('x86_amd64','amd64'),('x86_ia64','ia64'),('x86_arm','arm'),('x86_arm64','arm64'),('amd64_x86','x86'),('amd64_arm','arm'),('amd64_arm64','arm64')]
 +all_wince_platforms=[('armv4','arm'),('armv4i','arm'),('mipsii','mips'),('mipsii_fp','mips'),('mipsiv','mips'),('mipsiv_fp','mips'),('sh4','sh'),('x86','cex86')]
 +all_icl_platforms=[('intel64','amd64'),('em64t','amd64'),('ia32','x86'),('Itanium','ia64')]
 +def options(opt):
@@ -9954,7 +10327,7 @@ Last-Update: 2017-07-19
 +		platforms=Utils.to_list(conf.env.MSVC_TARGETS)or[i for i,j in all_msvc_platforms+all_icl_platforms+all_wince_platforms]
 +	desired_versions=getattr(Options.options,'msvc_version','').split(',')
 +	if desired_versions==['']:
-+		desired_versions=conf.env.MSVC_VERSIONS or list(reversed(list(versiondict.keys())))
++		desired_versions=conf.env.MSVC_VERSIONS or list(reversed(sorted(versiondict.keys())))
 +	lazy_detect=getattr(Options.options,'msvc_lazy',True)
 +	if conf.env.MSVC_LAZY_AUTODETECT is False:
 +		lazy_detect=False
@@ -9967,11 +10340,17 @@ Last-Update: 2017-07-19
 +					del val[arch]
 +		conf.env.MSVC_INSTALLED_VERSIONS=versiondict
 +	for version in desired_versions:
++		Logs.debug('msvc: detecting %r - %r',version,desired_versions)
 +		try:
 +			targets=versiondict[version]
 +		except KeyError:
 +			continue
++		seen=set()
 +		for arch in platforms:
++			if arch in seen:
++				continue
++			else:
++				seen.add(arch)
 +			try:
 +				cfg=targets[arch]
 +			except KeyError:
@@ -10021,7 +10400,7 @@ Last-Update: 2017-07-19
 +	try:
 +		conf.cmd_and_log(cxx+['/help'],env=env)
 +	except UnicodeError:
-+		st=Utils.ex_stack()
++		st=traceback.format_exc()
 +		if conf.logger:
 +			conf.logger.error(st)
 +		conf.fatal('msvc: Unicode error - check the code page?')
@@ -10033,43 +10412,14 @@ Last-Update: 2017-07-19
 +	finally:
 +		conf.env[compiler_name]=''
 +	return(MSVC_PATH,MSVC_INCDIR,MSVC_LIBDIR)
-+@conf
-+def gather_wsdk_versions(conf,versions):
-+	version_pattern=re.compile('^v..?.?\...?.?')
-+	try:
-+		all_versions=Utils.winreg.OpenKey(Utils.winreg.HKEY_LOCAL_MACHINE,'SOFTWARE\\Wow6432node\\Microsoft\\Microsoft SDKs\\Windows')
-+	except WindowsError:
-+		try:
-+			all_versions=Utils.winreg.OpenKey(Utils.winreg.HKEY_LOCAL_MACHINE,'SOFTWARE\\Microsoft\\Microsoft SDKs\\Windows')
-+		except WindowsError:
-+			return
-+	index=0
-+	while 1:
-+		try:
-+			version=Utils.winreg.EnumKey(all_versions,index)
-+		except WindowsError:
-+			break
-+		index+=1
-+		if not version_pattern.match(version):
-+			continue
-+		try:
-+			msvc_version=Utils.winreg.OpenKey(all_versions,version)
-+			path,type=Utils.winreg.QueryValueEx(msvc_version,'InstallationFolder')
-+		except WindowsError:
-+			continue
-+		if path and os.path.isfile(os.path.join(path,'bin','SetEnv.cmd')):
-+			targets={}
-+			for target,arch in all_msvc_platforms:
-+				targets[target]=target_compiler(conf,'wsdk',arch,version,'/'+target,os.path.join(path,'bin','SetEnv.cmd'))
-+			versions['wsdk '+version[1:]]=targets
 +def gather_wince_supported_platforms():
 +	supported_wince_platforms=[]
 +	try:
 +		ce_sdk=Utils.winreg.OpenKey(Utils.winreg.HKEY_LOCAL_MACHINE,'SOFTWARE\\Wow6432node\\Microsoft\\Windows CE Tools\\SDKs')
-+	except WindowsError:
++	except OSError:
 +		try:
 +			ce_sdk=Utils.winreg.OpenKey(Utils.winreg.HKEY_LOCAL_MACHINE,'SOFTWARE\\Microsoft\\Windows CE Tools\\SDKs')
-+		except WindowsError:
++		except OSError:
 +			ce_sdk=''
 +	if not ce_sdk:
 +		return supported_wince_platforms
@@ -10078,15 +10428,15 @@ Last-Update: 2017-07-19
 +		try:
 +			sdk_device=Utils.winreg.EnumKey(ce_sdk,index)
 +			sdk=Utils.winreg.OpenKey(ce_sdk,sdk_device)
-+		except WindowsError:
++		except OSError:
 +			break
 +		index+=1
 +		try:
 +			path,type=Utils.winreg.QueryValueEx(sdk,'SDKRootDir')
-+		except WindowsError:
++		except OSError:
 +			try:
 +				path,type=Utils.winreg.QueryValueEx(sdk,'SDKInformation')
-+			except WindowsError:
++			except OSError:
 +				continue
 +			path,xml=os.path.split(path)
 +		path=str(path)
@@ -10107,17 +10457,17 @@ Last-Update: 2017-07-19
 +		prefix='SOFTWARE\\Wow6432node\\Microsoft\\'+vcver
 +		try:
 +			all_versions=Utils.winreg.OpenKey(Utils.winreg.HKEY_LOCAL_MACHINE,prefix)
-+		except WindowsError:
++		except OSError:
 +			prefix='SOFTWARE\\Microsoft\\'+vcver
 +			try:
 +				all_versions=Utils.winreg.OpenKey(Utils.winreg.HKEY_LOCAL_MACHINE,prefix)
-+			except WindowsError:
++			except OSError:
 +				continue
 +		index=0
 +		while 1:
 +			try:
 +				version=Utils.winreg.EnumKey(all_versions,index)
-+			except WindowsError:
++			except OSError:
 +				break
 +			index+=1
 +			match=version_pattern.match(version)
@@ -10156,13 +10506,45 @@ Last-Update: 2017-07-19
 +		self.is_valid=True
 +		(self.bindirs,self.incdirs,self.libdirs)=vs
 +	def __str__(self):
-+		return str((self.bindirs,self.incdirs,self.libdirs))
++		return str((self.compiler,self.cpu,self.version,self.bat_target,self.bat))
 +	def __repr__(self):
-+		return repr((self.bindirs,self.incdirs,self.libdirs))
++		return repr((self.compiler,self.cpu,self.version,self.bat_target,self.bat))
++@conf
++def gather_wsdk_versions(conf,versions):
++	version_pattern=re.compile('^v..?.?\...?.?')
++	try:
++		all_versions=Utils.winreg.OpenKey(Utils.winreg.HKEY_LOCAL_MACHINE,'SOFTWARE\\Wow6432node\\Microsoft\\Microsoft SDKs\\Windows')
++	except OSError:
++		try:
++			all_versions=Utils.winreg.OpenKey(Utils.winreg.HKEY_LOCAL_MACHINE,'SOFTWARE\\Microsoft\\Microsoft SDKs\\Windows')
++		except OSError:
++			return
++	index=0
++	while 1:
++		try:
++			version=Utils.winreg.EnumKey(all_versions,index)
++		except OSError:
++			break
++		index+=1
++		if not version_pattern.match(version):
++			continue
++		try:
++			msvc_version=Utils.winreg.OpenKey(all_versions,version)
++			path,type=Utils.winreg.QueryValueEx(msvc_version,'InstallationFolder')
++		except OSError:
++			continue
++		if path and os.path.isfile(os.path.join(path,'bin','SetEnv.cmd')):
++			targets={}
++			for target,arch in all_msvc_platforms:
++				targets[target]=target_compiler(conf,'wsdk',arch,version,'/'+target,os.path.join(path,'bin','SetEnv.cmd'))
++			versions['wsdk '+version[1:]]=targets
 +@conf
 +def gather_msvc_targets(conf,versions,version,vc_path):
 +	targets={}
-+	if os.path.isfile(os.path.join(vc_path,'vcvarsall.bat')):
++	if os.path.isfile(os.path.join(vc_path,'VC','Auxiliary','Build','vcvarsall.bat')):
++		for target,realtarget in all_msvc_platforms[::-1]:
++			targets[target]=target_compiler(conf,'msvc',realtarget,version,target,os.path.join(vc_path,'VC','Auxiliary','Build','vcvarsall.bat'))
++	elif os.path.isfile(os.path.join(vc_path,'vcvarsall.bat')):
 +		for target,realtarget in all_msvc_platforms[::-1]:
 +			targets[target]=target_compiler(conf,'msvc',realtarget,version,target,os.path.join(vc_path,'vcvarsall.bat'))
 +	elif os.path.isfile(os.path.join(vc_path,'Common7','Tools','vsvars32.bat')):
@@ -10170,7 +10552,7 @@ Last-Update: 2017-07-19
 +	elif os.path.isfile(os.path.join(vc_path,'Bin','vcvars32.bat')):
 +		targets['x86']=target_compiler(conf,'msvc','x86',version,'',os.path.join(vc_path,'Bin','vcvars32.bat'))
 +	if targets:
-+		versions['msvc '+version]=targets
++		versions['msvc %s'%version]=targets
 +@conf
 +def gather_wince_targets(conf,versions,version,vc_path,vsvars,supported_platforms):
 +	for device,platforms in supported_platforms:
@@ -10197,16 +10579,48 @@ Last-Update: 2017-07-19
 +	if targets:
 +		versions['winphone '+version]=targets
 +@conf
++def gather_vswhere_versions(conf,versions):
++	try:
++		import json
++	except ImportError:
++		Logs.error('Visual Studio 2017 detection requires Python 2.6')
++		return
++	prg_path=os.environ.get('ProgramFiles(x86)',os.environ.get('ProgramFiles','C:\\Program Files (x86)'))
++	vswhere=os.path.join(prg_path,'Microsoft Visual Studio','Installer','vswhere.exe')
++	args=[vswhere,'-products','*','-legacy','-format','json']
++	try:
++		txt=conf.cmd_and_log(args)
++	except Errors.WafError as e:
++		Logs.debug('msvc: vswhere.exe failed %s',e)
++		return
++	if sys.version_info[0]<3:
++		txt=txt.decode(Utils.console_encoding())
++	arr=json.loads(txt)
++	arr.sort(key=lambda x:x['installationVersion'])
++	for entry in arr:
++		ver=entry['installationVersion']
++		ver=str('.'.join(ver.split('.')[:2]))
++		path=str(os.path.abspath(entry['installationPath']))
++		if os.path.exists(path)and('msvc %s'%ver)not in versions:
++			conf.gather_msvc_targets(versions,ver,path)
++@conf
 +def gather_msvc_versions(conf,versions):
 +	vc_paths=[]
 +	for(v,version,reg)in gather_msvc_detected_versions():
 +		try:
 +			try:
 +				msvc_version=Utils.winreg.OpenKey(Utils.winreg.HKEY_LOCAL_MACHINE,reg+"\\Setup\\VC")
-+			except WindowsError:
++			except OSError:
 +				msvc_version=Utils.winreg.OpenKey(Utils.winreg.HKEY_LOCAL_MACHINE,reg+"\\Setup\\Microsoft Visual C++")
 +			path,type=Utils.winreg.QueryValueEx(msvc_version,'ProductDir')
-+		except WindowsError:
++		except OSError:
++			try:
++				msvc_version=Utils.winreg.OpenKey(Utils.winreg.HKEY_LOCAL_MACHINE,"SOFTWARE\\Wow6432node\\Microsoft\\VisualStudio\\SxS\\VS7")
++				path,type=Utils.winreg.QueryValueEx(msvc_version,version)
++			except OSError:
++				continue
++			else:
++				vc_paths.append((version,os.path.abspath(str(path))))
 +			continue
 +		else:
 +			vc_paths.append((version,os.path.abspath(str(path))))
@@ -10230,29 +10644,31 @@ Last-Update: 2017-07-19
 +	version_pattern=re.compile('^...?.?\....?.?')
 +	try:
 +		all_versions=Utils.winreg.OpenKey(Utils.winreg.HKEY_LOCAL_MACHINE,'SOFTWARE\\Wow6432node\\Intel\\Compilers\\C++')
-+	except WindowsError:
++	except OSError:
 +		try:
 +			all_versions=Utils.winreg.OpenKey(Utils.winreg.HKEY_LOCAL_MACHINE,'SOFTWARE\\Intel\\Compilers\\C++')
-+		except WindowsError:
++		except OSError:
 +			return
 +	index=0
 +	while 1:
 +		try:
 +			version=Utils.winreg.EnumKey(all_versions,index)
-+		except WindowsError:
++		except OSError:
 +			break
 +		index+=1
 +		if not version_pattern.match(version):
 +			continue
 +		targets={}
 +		for target,arch in all_icl_platforms:
-+			if target=='intel64':targetDir='EM64T_NATIVE'
-+			else:targetDir=target
++			if target=='intel64':
++				targetDir='EM64T_NATIVE'
++			else:
++				targetDir=target
 +			try:
 +				Utils.winreg.OpenKey(all_versions,version+'\\'+targetDir)
 +				icl_version=Utils.winreg.OpenKey(all_versions,version)
 +				path,type=Utils.winreg.QueryValueEx(icl_version,'ProductDir')
-+			except WindowsError:
++			except OSError:
 +				pass
 +			else:
 +				batch_file=os.path.join(path,'bin','iclvars.bat')
@@ -10262,7 +10678,7 @@ Last-Update: 2017-07-19
 +			try:
 +				icl_version=Utils.winreg.OpenKey(all_versions,version+'\\'+target)
 +				path,type=Utils.winreg.QueryValueEx(icl_version,'ProductDir')
-+			except WindowsError:
++			except OSError:
 +				continue
 +			else:
 +				batch_file=os.path.join(path,'bin','iclvars.bat')
@@ -10275,28 +10691,30 @@ Last-Update: 2017-07-19
 +	version_pattern=re.compile('^...?.?\...?.?.?')
 +	try:
 +		all_versions=Utils.winreg.OpenKey(Utils.winreg.HKEY_LOCAL_MACHINE,'SOFTWARE\\Wow6432node\\Intel\\Suites')
-+	except WindowsError:
++	except OSError:
 +		try:
 +			all_versions=Utils.winreg.OpenKey(Utils.winreg.HKEY_LOCAL_MACHINE,'SOFTWARE\\Intel\\Suites')
-+		except WindowsError:
++		except OSError:
 +			return
 +	index=0
 +	while 1:
 +		try:
 +			version=Utils.winreg.EnumKey(all_versions,index)
-+		except WindowsError:
++		except OSError:
 +			break
 +		index+=1
 +		if not version_pattern.match(version):
 +			continue
 +		targets={}
 +		for target,arch in all_icl_platforms:
-+			if target=='intel64':targetDir='EM64T_NATIVE'
-+			else:targetDir=target
++			if target=='intel64':
++				targetDir='EM64T_NATIVE'
++			else:
++				targetDir=target
 +			try:
 +				try:
 +					defaults=Utils.winreg.OpenKey(all_versions,version+'\\Defaults\\C++\\'+targetDir)
-+				except WindowsError:
++				except OSError:
 +					if targetDir=='EM64T_NATIVE':
 +						defaults=Utils.winreg.OpenKey(all_versions,version+'\\Defaults\\C++\\EM64T')
 +					else:
@@ -10305,7 +10723,7 @@ Last-Update: 2017-07-19
 +				Utils.winreg.OpenKey(all_versions,version+'\\'+uid+'\\C++\\'+targetDir)
 +				icl_version=Utils.winreg.OpenKey(all_versions,version+'\\'+uid+'\\C++')
 +				path,type=Utils.winreg.QueryValueEx(icl_version,'ProductDir')
-+			except WindowsError:
++			except OSError:
 +				pass
 +			else:
 +				batch_file=os.path.join(path,'bin','iclvars.bat')
@@ -10329,11 +10747,13 @@ Last-Update: 2017-07-19
 +	return self.setup_msvc(self.get_msvc_versions())
 +@conf
 +def get_msvc_versions(self):
-+	dct={}
++	dct=Utils.ordered_iter_dict()
 +	self.gather_icl_versions(dct)
 +	self.gather_intel_composer_versions(dct)
 +	self.gather_wsdk_versions(dct)
 +	self.gather_msvc_versions(dct)
++	self.gather_vswhere_versions(dct)
++	Logs.debug('msvc: detected versions %r',list(dct.keys()))
 +	return dct
 +@conf
 +def find_lt_names_msvc(self,libname,is_static=False):
@@ -10374,7 +10794,7 @@ Last-Update: 2017-07-19
 +		return None
 +	(lt_path,lt_libname,lt_static)=self.find_lt_names_msvc(lib,is_static)
 +	if lt_path!=None and lt_libname!=None:
-+		if lt_static==True:
++		if lt_static:
 +			return os.path.join(lt_path,lt_libname)
 +	if lt_path!=None:
 +		_libpaths=[lt_path]+self.env.LIBPATH
@@ -10433,7 +10853,7 @@ Last-Update: 2017-07-19
 +	v.MSVC_COMPILER=compiler
 +	try:
 +		v.MSVC_VERSION=float(version)
-+	except TypeError:
++	except ValueError:
 +		v.MSVC_VERSION=float(version[:-3])
 +def _get_prog_names(conf,compiler):
 +	if compiler=='intel':
@@ -10457,13 +10877,14 @@ Last-Update: 2017-07-19
 +	v.MSVC_MANIFEST=(compiler=='msvc'and version>=8)or(compiler=='wsdk'and version>=6)or(compiler=='intel'and version>=11)
 +	cxx=conf.find_program(compiler_name,var='CXX',path_list=path)
 +	env=dict(conf.environ)
-+	if path:env.update(PATH=';'.join(path))
++	if path:
++		env.update(PATH=';'.join(path))
 +	if not conf.cmd_and_log(cxx+['/nologo','/help'],env=env):
 +		conf.fatal('the msvc compiler could not be identified')
 +	v.CC=v.CXX=cxx
 +	v.CC_NAME=v.CXX_NAME='msvc'
 +	if not v.LINK_CXX:
-+		v.LINK_CXX=conf.find_program(linker_name,path_list=path,errmsg='%s was not found (linker)'%linker_name)
++		conf.find_program(linker_name,path_list=path,errmsg='%s was not found (linker)'%linker_name,var='LINK_CXX')
 +	if not v.LINK_CC:
 +		v.LINK_CC=v.LINK_CXX
 +	if not v.AR:
@@ -10502,11 +10923,6 @@ Last-Update: 2017-07-19
 +		v.CXX_TGT_F=['/FC']+v.CXX_TGT_F
 +	v.CPPPATH_ST='/I%s'
 +	v.AR_TGT_F=v.CCLNK_TGT_F=v.CXXLNK_TGT_F='/OUT:'
-+	v.CFLAGS_CONSOLE=v.CXXFLAGS_CONSOLE=['/SUBSYSTEM:CONSOLE']
-+	v.CFLAGS_NATIVE=v.CXXFLAGS_NATIVE=['/SUBSYSTEM:NATIVE']
-+	v.CFLAGS_POSIX=v.CXXFLAGS_POSIX=['/SUBSYSTEM:POSIX']
-+	v.CFLAGS_WINDOWS=v.CXXFLAGS_WINDOWS=['/SUBSYSTEM:WINDOWS']
-+	v.CFLAGS_WINDOWSCE=v.CXXFLAGS_WINDOWSCE=['/SUBSYSTEM:WINDOWSCE']
 +	v.CFLAGS_CRT_MULTITHREADED=v.CXXFLAGS_CRT_MULTITHREADED=['/MT']
 +	v.CFLAGS_CRT_MULTITHREADED_DLL=v.CXXFLAGS_CRT_MULTITHREADED_DLL=['/MD']
 +	v.CFLAGS_CRT_MULTITHREADED_DBG=v.CXXFLAGS_CRT_MULTITHREADED_DBG=['/MTd']
@@ -10526,6 +10942,7 @@ Last-Update: 2017-07-19
 +	v.LINKFLAGS_cstlib=[]
 +	v.cstlib_PATTERN=v.cxxstlib_PATTERN='%s.lib'
 +	v.cprogram_PATTERN=v.cxxprogram_PATTERN='%s.exe'
++	v.def_PATTERN='/def:%s'
 +@after_method('apply_link')
 +@feature('c','cxx')
 +def apply_flags_msvc(self):
@@ -10565,7 +10982,7 @@ Last-Update: 2017-07-19
 +@after_method('propagate_uselib_vars')
 +def make_winphone_app(self):
 +	make_winapp(self,'WINAPI_FAMILY_PHONE_APP')
-+	conf.env.append_unique('LINKFLAGS',['/NODEFAULTLIB:ole32.lib','PhoneAppModelHost.lib'])
++	self.env.append_unique('LINKFLAGS',['/NODEFAULTLIB:ole32.lib','PhoneAppModelHost.lib'])
 +@feature('winapp')
 +@after_method('process_use')
 +@after_method('propagate_uselib_vars')
@@ -10606,20 +11023,21 @@ Last-Update: 2017-07-19
 +		cls.run=run
 --- /dev/null
 +++ b/waflib/Tools/perl.py
-@@ -0,0 +1,84 @@
+@@ -0,0 +1,85 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
 +# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import os
-+from waflib import Task,Options,Utils
++from waflib import Task,Options,Utils,Errors
 +from waflib.Configure import conf
 +from waflib.TaskGen import extension,feature,before_method
 +@before_method('apply_incpaths','apply_link','propagate_uselib_vars')
 +@feature('perlext')
 +def init_perlext(self):
 +	self.uselib=self.to_list(getattr(self,'uselib',[]))
-+	if not'PERLEXT'in self.uselib:self.uselib.append('PERLEXT')
++	if not'PERLEXT'in self.uselib:
++		self.uselib.append('PERLEXT')
 +	self.env.cshlib_PATTERN=self.env.cxxshlib_PATTERN=self.env.perlext_PATTERN
 +@extension('.xs')
 +def xsubpp_file(self,node):
@@ -10655,7 +11073,7 @@ Last-Update: 2017-07-19
 +	self.start_msg('perl module %s'%module)
 +	try:
 +		r=self.cmd_and_log(cmd)
-+	except Exception:
++	except Errors.WafError:
 +		self.end_msg(False)
 +		return None
 +	self.end_msg(r or True)
@@ -10693,13 +11111,13 @@ Last-Update: 2017-07-19
 +	opt.add_option('--with-perl-archdir',type='string',dest='perlarchdir',help='Specify directory where to install arch specific files',default=None)
 --- /dev/null
 +++ b/waflib/Tools/python.py
-@@ -0,0 +1,407 @@
+@@ -0,0 +1,410 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
 +# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import os,sys
-+from waflib import Utils,Options,Errors,Logs,Task,Node
++from waflib import Errors,Logs,Node,Options,Task,Utils
 +from waflib.TaskGen import extension,before_method,after_method,feature
 +from waflib.Configure import conf
 +FRAG='''
@@ -10740,7 +11158,7 @@ Last-Update: 2017-07-19
 +		self.install_32=True
 +@extension('.py')
 +def process_py(self,node):
-+	assert(getattr(self,'install_path')),'add features="py"'
++	assert(hasattr(self,'install_path')),'add features="py"'
 +	if self.install_path:
 +		if self.install_from:
 +			self.add_install_files(install_to=self.install_path,install_from=node,cwd=self.install_from,relative_trick=True)
@@ -11053,7 +11471,7 @@ Last-Update: 2017-07-19
 +	conf.start_msg(msg)
 +	try:
 +		ret=conf.cmd_and_log(conf.env.PYTHON+['-c',PYTHON_MODULE_TEMPLATE%module_name])
-+	except Exception:
++	except Errors.WafError:
 +		conf.end_msg(False)
 +		conf.fatal('Could not find the python module %r'%module_name)
 +	ret=ret.strip()
@@ -11078,13 +11496,16 @@ Last-Update: 2017-07-19
 +			conf.end_msg(ret)
 +def configure(conf):
 +	v=conf.env
-+	if Options.options.pythondir:
++	if getattr(Options.options,'pythondir',None):
 +		v.PYTHONDIR=Options.options.pythondir
-+	if Options.options.pythonarchdir:
++	if getattr(Options.options,'pythonarchdir',None):
 +		v.PYTHONARCHDIR=Options.options.pythonarchdir
-+	if Options.options.nopycache:
++	if getattr(Options.options,'nopycache',None):
 +		v.NOPYCACHE=Options.options.nopycache
-+	conf.find_program('python',var='PYTHON',value=Options.options.python or sys.executable)
++	if not v.PYTHON:
++		v.PYTHON=[getattr(Options.options,'python',None)or sys.executable]
++	v.PYTHON=Utils.to_list(v.PYTHON)
++	conf.find_program('python',var='PYTHON')
 +	v.PYFLAGS=''
 +	v.PYFLAGS_OPT='-O'
 +	v.PYC=getattr(Options.options,'pyc',1)
@@ -11103,11 +11524,12 @@ Last-Update: 2017-07-19
 +	pyopt.add_option('--pythonarchdir',dest='pythonarchdir',help='Installation path for python extension (pyext, platform-dependent .so or .dylib files)')
 --- /dev/null
 +++ b/waflib/Tools/qt5.py
-@@ -0,0 +1,492 @@
+@@ -0,0 +1,497 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
 +# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
++from __future__ import with_statement
 +try:
 +	from xml.sax import make_parser
 +	from xml.sax.handler import ContentHandler
@@ -11154,7 +11576,7 @@ Last-Update: 2017-07-19
 +			if self.generator:
 +				self.generator.tasks.append(tsk)
 +			gen=self.generator.bld.producer
-+			gen.outstanding.appendleft(tsk)
++			gen.outstanding.append(tsk)
 +			gen.total+=1
 +			return tsk
 +		else:
@@ -11204,6 +11626,7 @@ Last-Update: 2017-07-19
 +	color='BLUE'
 +class XMLHandler(ContentHandler):
 +	def __init__(self):
++		ContentHandler.__init__(self)
 +		self.buf=[]
 +		self.files=[]
 +	def startElement(self,name,attrs):
@@ -11216,7 +11639,7 @@ Last-Update: 2017-07-19
 +		self.buf.append(cars)
 +@extension(*EXT_RCC)
 +def create_rcc_task(self,node):
-+	rcnode=node.change_ext('_rc.cpp')
++	rcnode=node.change_ext('_rc.%d.cpp'%self.idx)
 +	self.create_task('rcc',node,rcnode)
 +	cpptask=self.create_task('cxx',rcnode,rcnode.change_ext('.o'))
 +	try:
@@ -11226,8 +11649,13 @@ Last-Update: 2017-07-19
 +	return cpptask
 +@extension(*EXT_UI)
 +def create_uic_task(self,node):
-+	uictask=self.create_task('ui5',node)
-+	uictask.outputs=[node.parent.find_or_declare(self.env.ui_PATTERN%node.name[:-3])]
++	try:
++		uic_cache=self.bld.uic_cache
++	except AttributeError:
++		uic_cache=self.bld.uic_cache={}
++	if node not in uic_cache:
++		uictask=uic_cache[node]=self.create_task('ui5',node)
++		uictask.outputs=[node.parent.find_or_declare(self.env.ui_PATTERN%node.name[:-3])]
 +@extension('.ts')
 +def add_lang(self,node):
 +	self.lang=self.to_list(getattr(self,'lang',[]))+[node]
@@ -11250,22 +11678,23 @@ Last-Update: 2017-07-19
 +		for x in self.to_list(self.lang):
 +			if isinstance(x,str):
 +				x=self.path.find_resource(x+'.ts')
-+			qmtasks.append(self.create_task('ts2qm',x,x.change_ext('.qm')))
++			qmtasks.append(self.create_task('ts2qm',x,x.change_ext('.%d.qm'%self.idx)))
 +		if getattr(self,'update',None)and Options.options.trans_qt5:
-+			cxxnodes=[a.inputs[0]for a in self.compiled_tasks]+[a.inputs[0]for a in self.tasks if getattr(a,'inputs',None)and a.inputs[0].name.endswith('.ui')]
++			cxxnodes=[a.inputs[0]for a in self.compiled_tasks]+[a.inputs[0]for a in self.tasks if a.inputs and a.inputs[0].name.endswith('.ui')]
 +			for x in qmtasks:
 +				self.create_task('trans_update',cxxnodes,x.inputs)
 +		if getattr(self,'langname',None):
 +			qmnodes=[x.outputs[0]for x in qmtasks]
 +			rcnode=self.langname
 +			if isinstance(rcnode,str):
-+				rcnode=self.path.find_or_declare(rcnode+'.qrc')
++				rcnode=self.path.find_or_declare(rcnode+('.%d.qrc'%self.idx))
 +			t=self.create_task('qm2rcc',qmnodes,rcnode)
 +			k=create_rcc_task(self,t.outputs[0])
 +			self.link_task.inputs.append(k.outputs[0])
 +	lst=[]
 +	for flag in self.to_list(self.env.CXXFLAGS):
-+		if len(flag)<2:continue
++		if len(flag)<2:
++			continue
 +		f=flag[0:2]
 +		if f in('-D','-I','/D','/I'):
 +			if(f[0]=='/'):
@@ -11289,22 +11718,25 @@ Last-Update: 2017-07-19
 +		parser=make_parser()
 +		curHandler=XMLHandler()
 +		parser.setContentHandler(curHandler)
-+		fi=open(self.inputs[0].abspath(),'r')
-+		try:
-+			parser.parse(fi)
-+		finally:
-+			fi.close()
++		with open(self.inputs[0].abspath(),'r')as f:
++			parser.parse(f)
 +		nodes=[]
 +		names=[]
 +		root=self.inputs[0].parent
 +		for x in curHandler.files:
 +			nd=root.find_resource(x)
-+			if nd:nodes.append(nd)
-+			else:names.append(x)
++			if nd:
++				nodes.append(nd)
++			else:
++				names.append(x)
 +		return(nodes,names)
++	def quote_flag(self,x):
++		return x
 +class moc(Task.Task):
 +	color='BLUE'
 +	run_str='${QT_MOC} ${MOC_FLAGS} ${MOCCPPPATH_ST:INCPATHS} ${MOCDEFINES_ST:DEFINES} ${SRC} ${MOC_ST} ${TGT}'
++	def quote_flag(self,x):
++		return x
 +class ui5(Task.Task):
 +	color='BLUE'
 +	run_str='${QT_UIC} ${SRC} -o ${TGT}'
@@ -11345,7 +11777,6 @@ Last-Update: 2017-07-19
 +			break
 +	else:
 +		self.fatal('Could not build a simple Qt application')
-+	from waflib import Utils
 +	if Utils.unversioned_sys_platform()=='freebsd':
 +		frag='#include <QApplication>\nint main(int argc, char **argv) { QApplication app(argc, argv); return NULL != (void*) (&app);}\n'
 +		try:
@@ -11437,7 +11868,7 @@ Last-Update: 2017-07-19
 +	uicver=uicver.replace('Qt User Interface Compiler ','').replace('User Interface Compiler for Qt','')
 +	self.end_msg(uicver)
 +	if uicver.find(' 3.')!=-1 or uicver.find(' 4.')!=-1:
-+		self.fatal('this uic compiler is for qt3 or qt5, add uic for qt5 to your path')
++		self.fatal('this uic compiler is for qt3 or qt4, add uic for qt5 to your path')
 +	find_bin(['moc-qt5','moc'],'QT_MOC')
 +	find_bin(['rcc-qt5','rcc'],'QT_RCC')
 +	find_bin(['lrelease-qt5','lrelease'],'QT_LRELEASE')
@@ -11474,7 +11905,6 @@ Last-Update: 2017-07-19
 +			for k in('','5')if Utils.is_win32 else['']:
 +				for p in('lib',''):
 +					yield(p,name,k,x)
-+		raise StopIteration
 +	for tup in lib_names():
 +		k=''.join(tup)
 +		path=os.path.join(qtlibs,k)
@@ -11502,24 +11932,24 @@ Last-Update: 2017-07-19
 +		for i in self.qt5_vars:
 +			uselib=i.upper()
 +			if Utils.unversioned_sys_platform()=='darwin':
-+				frameworkName=i+'.framework'
-+				qtDynamicLib=os.path.join(env.QTLIBS,frameworkName,i)
++				fwk=i.replace('Qt5','Qt')
++				frameworkName=fwk+'.framework'
++				qtDynamicLib=os.path.join(env.QTLIBS,frameworkName,fwk)
 +				if os.path.exists(qtDynamicLib):
-+					env.append_unique('FRAMEWORK_'+uselib,i)
++					env.append_unique('FRAMEWORK_'+uselib,fwk)
++					env.append_unique('FRAMEWORKPATH_'+uselib,env.QTLIBS)
 +					self.msg('Checking for %s'%i,qtDynamicLib,'GREEN')
 +				else:
 +					self.msg('Checking for %s'%i,False,'YELLOW')
 +				env.append_unique('INCLUDES_'+uselib,os.path.join(env.QTLIBS,frameworkName,'Headers'))
 +			else:
-+				for j in('','d'):
-+					k='_DEBUG'if j=='d'else''
-+					ret=self.find_single_qt5_lib(i+j,uselib+k,env.QTLIBS,qtincludes,force_static)
-+					if not force_static and not ret:
-+						ret=self.find_single_qt5_lib(i+j,uselib+k,env.QTLIBS,qtincludes,True)
-+					self.msg('Checking for %s'%(i+j),ret,'GREEN'if ret else'YELLOW')
++				ret=self.find_single_qt5_lib(i,uselib,env.QTLIBS,qtincludes,force_static)
++				if not force_static and not ret:
++					ret=self.find_single_qt5_lib(i,uselib,env.QTLIBS,qtincludes,True)
++				self.msg('Checking for %s'%i,ret,'GREEN'if ret else'YELLOW')
 +	else:
 +		path='%s:%s:%s/pkgconfig:/usr/lib/qt5/lib/pkgconfig:/opt/qt5/lib/pkgconfig:/usr/lib/qt5/lib:/opt/qt5/lib'%(self.environ.get('PKG_CONFIG_PATH',''),env.QTLIBS,env.QTLIBS)
-+		for i in self.qt5_vars_debug+self.qt5_vars:
++		for i in self.qt5_vars:
 +			self.check_cfg(package=i,args='--cflags --libs',mandatory=False,force_static=force_static,pkg_config_path=path)
 +@conf
 +def simplify_qt5_libs(self):
@@ -11539,7 +11969,6 @@ Last-Update: 2017-07-19
 +					accu.append(lib)
 +				env['LIBPATH_'+var]=accu
 +	process_lib(self.qt5_vars,'LIBPATH_QTCORE')
-+	process_lib(self.qt5_vars_debug,'LIBPATH_QTCORE_DEBUG')
 +@conf
 +def add_qt5_rpath(self):
 +	env=self.env
@@ -11558,7 +11987,6 @@ Last-Update: 2017-07-19
 +						accu.append('-Wl,--rpath='+lib)
 +					env['RPATH_'+var]=accu
 +		process_rpath(self.qt5_vars,'LIBPATH_QTCORE')
-+		process_rpath(self.qt5_vars_debug,'LIBPATH_QTCORE_DEBUG')
 +@conf
 +def set_qt5_libs_to_check(self):
 +	self.qt5_vars=Utils.to_list(getattr(self,'qt5_vars',[]))
@@ -11569,19 +11997,18 @@ Last-Update: 2017-07-19
 +			pat=pat.replace('.dll','.lib')
 +		if self.environ.get('QT5_FORCE_STATIC'):
 +			pat=self.env.cxxstlib_PATTERN
-+		re_qt=re.compile(pat%'(?P<name>Qt5.*)'+'$')
++		if Utils.unversioned_sys_platform()=='darwin':
++			pat="%s\.framework"
++		re_qt=re.compile(pat%'Qt5?(?P<name>.*)'+'$')
 +		for x in dirlst:
 +			m=re_qt.match(x)
 +			if m:
-+				self.qt5_vars.append(m.group('name'))
++				self.qt5_vars.append("Qt5%s"%m.group('name'))
 +		if not self.qt5_vars:
 +			self.fatal('cannot find any Qt5 library (%r)'%self.env.QTLIBS)
 +	qtextralibs=getattr(Options.options,'qtextralibs',None)
 +	if qtextralibs:
 +		self.qt5_vars.extend(qtextralibs.split(','))
-+	if not hasattr(self,'qt5_vars_debug'):
-+		self.qt5_vars_debug=[a+'_DEBUG'for a in self.qt5_vars]
-+	self.qt5_vars_debug=Utils.to_list(self.qt5_vars_debug)
 +@conf
 +def set_qt5_defines(self):
 +	if sys.platform!='win32':
@@ -11589,7 +12016,6 @@ Last-Update: 2017-07-19
 +	for x in self.qt5_vars:
 +		y=x.replace('Qt5','Qt')[2:].upper()
 +		self.env.append_unique('DEFINES_%s'%x.upper(),'QT_%s_LIB'%y)
-+		self.env.append_unique('DEFINES_%s_DEBUG'%x.upper(),'QT_%s_LIB'%y)
 +def options(opt):
 +	opt.add_option('--want-rpath',action='store_true',default=False,dest='want_rpath',help='enable the rpath for qt libraries')
 +	for i in'qtdir qtbin qtlibs'.split():
@@ -11604,7 +12030,7 @@ Last-Update: 2017-07-19
 +# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import os
-+from waflib import Options,Utils,Task
++from waflib import Errors,Options,Task,Utils
 +from waflib.TaskGen import before_method,feature,extension
 +from waflib.Configure import conf
 +@feature('rubyext')
@@ -11625,12 +12051,12 @@ Last-Update: 2017-07-19
 +	ruby=self.find_program('ruby',var='RUBY',value=Options.options.rubybinary)
 +	try:
 +		version=self.cmd_and_log(ruby+['-e','puts defined?(VERSION) ? VERSION : RUBY_VERSION']).strip()
-+	except Exception:
++	except Errors.WafError:
 +		self.fatal('could not determine ruby version')
 +	self.env.RUBY_VERSION=version
 +	try:
-+		ver=tuple(map(int,version.split(".")))
-+	except Exception:
++		ver=tuple(map(int,version.split('.')))
++	except Errors.WafError:
 +		self.fatal('unsupported ruby version %r'%version)
 +	cver=''
 +	if minver:
@@ -11683,7 +12109,7 @@ Last-Update: 2017-07-19
 +	self.start_msg('Ruby module %s'%module_name)
 +	try:
 +		self.cmd_and_log(self.env.RUBY+['-e','require \'%s\';puts 1'%module_name])
-+	except Exception:
++	except Errors.WafError:
 +		self.end_msg(False)
 +		self.fatal('Could not find the ruby module %r'%module_name)
 +	self.end_msg(True)
@@ -11698,11 +12124,12 @@ Last-Update: 2017-07-19
 +	opt.add_option('--with-ruby-binary',type='string',dest='rubybinary',help='Specify alternate ruby binary')
 --- /dev/null
 +++ b/waflib/Tools/suncc.py
-@@ -0,0 +1,47 @@
+@@ -0,0 +1,48 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
 +# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
++from waflib import Errors
 +from waflib.Tools import ccroot,ar
 +from waflib.Configure import conf
 +@conf
@@ -11711,7 +12138,7 @@ Last-Update: 2017-07-19
 +	cc=conf.find_program('cc',var='CC')
 +	try:
 +		conf.cmd_and_log(cc+['-flags'])
-+	except Exception:
++	except Errors.WafError:
 +		conf.fatal('%r is not a Sun compiler'%cc)
 +	v.CC_NAME='sun'
 +	conf.get_suncc_version(cc)
@@ -11748,11 +12175,12 @@ Last-Update: 2017-07-19
 +	conf.link_add_flags()
 --- /dev/null
 +++ b/waflib/Tools/suncxx.py
-@@ -0,0 +1,47 @@
+@@ -0,0 +1,48 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
 +# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
++from waflib import Errors
 +from waflib.Tools import ccroot,ar
 +from waflib.Configure import conf
 +@conf
@@ -11761,7 +12189,7 @@ Last-Update: 2017-07-19
 +	cc=conf.find_program(['CC','c++'],var='CXX')
 +	try:
 +		conf.cmd_and_log(cc+['-flags'])
-+	except Exception:
++	except Errors.WafError:
 +		conf.fatal('%r is not a Sun compiler'%cc)
 +	v.CXX_NAME='sun'
 +	conf.get_suncc_version(cc)
@@ -11798,7 +12226,7 @@ Last-Update: 2017-07-19
 +	conf.link_add_flags()
 --- /dev/null
 +++ b/waflib/Tools/tex.py
-@@ -0,0 +1,324 @@
+@@ -0,0 +1,327 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
 +# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
@@ -11810,17 +12238,20 @@ Last-Update: 2017-07-19
 +def bibunitscan(self):
 +	node=self.inputs[0]
 +	nodes=[]
-+	if not node:return nodes
++	if not node:
++		return nodes
 +	code=node.read()
 +	for match in re_bibunit.finditer(code):
 +		path=match.group('file')
 +		if path:
++			found=None
 +			for k in('','.bib'):
 +				Logs.debug('tex: trying %s%s',path,k)
 +				fi=node.parent.find_resource(path+k)
 +				if fi:
++					found=True
 +					nodes.append(fi)
-+			else:
++			if not found:
 +				Logs.debug('tex: could not find %s',path)
 +	Logs.debug('tex: found the following bibunit files: %s',nodes)
 +	return nodes
@@ -11865,13 +12296,13 @@ Last-Update: 2017-07-19
 +		nodes=[]
 +		names=[]
 +		seen=[]
-+		if not node:return(nodes,names)
++		if not node:
++			return(nodes,names)
 +		def parse_node(node):
 +			if node in seen:
 +				return
 +			seen.append(node)
 +			code=node.read()
-+			global re_tex
 +			for match in re_tex.finditer(code):
 +				multibib=match.group('type')
 +				if multibib and multibib.startswith('bibliography'):
@@ -12125,13 +12556,13 @@ Last-Update: 2017-07-19
 +	v.DVIPSFLAGS='-Ppdf'
 --- /dev/null
 +++ b/waflib/Tools/vala.py
-@@ -0,0 +1,214 @@
+@@ -0,0 +1,218 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
 +# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
 +import re
-+from waflib import Context,Task,Utils,Logs,Options,Errors,Node
++from waflib import Build,Context,Errors,Logs,Node,Options,Task,Utils
 +from waflib.TaskGen import extension,taskgen_method
 +from waflib.Configure import conf
 +class valac(Task.Task):
@@ -12228,8 +12659,10 @@ Last-Update: 2017-07-19
 +				package_obj=self.bld.get_tgen_by_name(package)
 +			except Errors.WafError:
 +				continue
++			package_obj.post()
 +			package_name=package_obj.target
-+			for task in package_obj.tasks:
++			task=getattr(package_obj,'valatask',None)
++			if task:
 +				for output in task.outputs:
 +					if output.name==package_name+".vapi":
 +						valatask.set_run_after(task)
@@ -12259,19 +12692,13 @@ Last-Update: 2017-07-19
 +		valatask.outputs.append(self.dump_deps_node)
 +	if self.is_lib and valatask.install_binding:
 +		headers_list=[o for o in valatask.outputs if o.suffix()==".h"]
-+		try:
-+			self.install_vheader.source=headers_list
-+		except AttributeError:
++		if headers_list:
 +			self.install_vheader=self.add_install_files(install_to=valatask.header_path,install_from=headers_list)
 +		vapi_list=[o for o in valatask.outputs if(o.suffix()in(".vapi",".deps"))]
-+		try:
-+			self.install_vapi.source=vapi_list
-+		except AttributeError:
++		if vapi_list:
 +			self.install_vapi=self.add_install_files(install_to=valatask.vapi_path,install_from=vapi_list)
 +		gir_list=[o for o in valatask.outputs if o.suffix()=='.gir']
-+		try:
-+			self.install_gir.source=gir_list
-+		except AttributeError:
++		if gir_list:
 +			self.install_gir=self.add_install_files(install_to=getattr(self,'gir_path','${DATAROOTDIR}/gir-1.0'),install_from=gir_list)
 +	if hasattr(self,'vala_resources'):
 +		nodes=self.to_nodes(self.vala_resources)
@@ -12291,12 +12718,20 @@ Last-Update: 2017-07-19
 +	c_node=valatask.vala_dir_node.find_or_declare(name)
 +	valatask.outputs.append(c_node)
 +	self.source.append(c_node)
++@extension('.vapi')
++def vapi_file(self,node):
++	try:
++		valatask=self.valatask
++	except AttributeError:
++		valatask=self.valatask=self.create_task('valac')
++		self.init_vala_task()
++	valatask.inputs.append(node)
 +@conf
 +def find_valac(self,valac_name,min_version):
 +	valac=self.find_program(valac_name,var='VALAC')
 +	try:
 +		output=self.cmd_and_log(valac+['--version'])
-+	except Exception:
++	except Errors.WafError:
 +		valac_version=None
 +	else:
 +		ver=re.search(r'\d+.\d+.\d+',output).group().split('.')
@@ -12342,12 +12777,12 @@ Last-Update: 2017-07-19
 +	valaopts.add_option('--vala-target-glib',default=None,dest='vala_target_glib',metavar='MAJOR.MINOR',help='Target version of glib for Vala GObject code generation')
 --- /dev/null
 +++ b/waflib/Tools/waf_unit_test.py
-@@ -0,0 +1,143 @@
+@@ -0,0 +1,172 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
 +# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
-+import os,sys
++import os,shlex,sys
 +from waflib.TaskGen import feature,after_method,taskgen_method
 +from waflib import Utils,Task,Logs,Options
 +from waflib.Tools import ccroot
@@ -12361,6 +12796,39 @@ Last-Update: 2017-07-19
 +status = subprocess.call(cmd, env=env, cwd=%(cwd)r, shell=isinstance(cmd, str))
 +sys.exit(status)
 +"""
++@taskgen_method
++def handle_ut_cwd(self,key):
++	cwd=getattr(self,key,None)
++	if cwd:
++		if isinstance(cwd,str):
++			if os.path.isabs(cwd):
++				self.ut_cwd=self.bld.root.make_node(cwd)
++			else:
++				self.ut_cwd=self.path.make_node(cwd)
++@feature('test_scripts')
++def make_interpreted_test(self):
++	for x in['test_scripts_source','test_scripts_template']:
++		if not hasattr(self,x):
++			Logs.warn('a test_scripts taskgen i missing %s'%x)
++			return
++	self.ut_run,lst=Task.compile_fun(self.test_scripts_template,shell=getattr(self,'test_scripts_shell',False))
++	script_nodes=self.to_nodes(self.test_scripts_source)
++	for script_node in script_nodes:
++		tsk=self.create_task('utest',[script_node])
++		tsk.vars=lst+tsk.vars
++		tsk.env['SCRIPT']=script_node.path_from(tsk.get_cwd())
++	self.handle_ut_cwd('test_scripts_cwd')
++	env=getattr(self,'test_scripts_env',None)
++	if env:
++		self.ut_env=env
++	else:
++		self.ut_env=dict(os.environ)
++	paths=getattr(self,'test_scripts_paths',{})
++	for(k,v)in paths.items():
++		p=self.ut_env.get(k,'').split(os.pathsep)
++		if isinstance(v,str):
++			v=v.split(os.pathsep)
++		self.ut_env[k]=os.pathsep.join(p+v)
 +@feature('test')
 +@after_method('apply_link','process_use')
 +def make_test(self):
@@ -12370,14 +12838,7 @@ Last-Update: 2017-07-19
 +	if getattr(self,'ut_str',None):
 +		self.ut_run,lst=Task.compile_fun(self.ut_str,shell=getattr(self,'ut_shell',False))
 +		tsk.vars=lst+tsk.vars
-+	if getattr(self,'ut_cwd',None):
-+		if isinstance(self.ut_cwd,str):
-+			if os.path.isabs(self.ut_cwd):
-+				self.ut_cwd=self.bld.root.make_node(self.ut_cwd)
-+			else:
-+				self.ut_cwd=self.path.make_node(self.ut_cwd)
-+	else:
-+		self.ut_cwd=tsk.inputs[0].parent
++	self.handle_ut_cwd('ut_cwd')
 +	if not hasattr(self,'ut_paths'):
 +		paths=[]
 +		for x in self.tmp_use_sorted:
@@ -12400,14 +12861,20 @@ Last-Update: 2017-07-19
 +			add_path('LD_LIBRARY_PATH')
 +		else:
 +			add_path('LD_LIBRARY_PATH')
++	if not hasattr(self,'ut_cmd'):
++		self.ut_cmd=getattr(Options.options,'testcmd',False)
 +@taskgen_method
 +def add_test_results(self,tup):
 +	Logs.debug("ut: %r",tup)
-+	self.utest_result=tup
++	try:
++		self.utest_results.append(tup)
++	except AttributeError:
++		self.utest_results=[tup]
 +	try:
 +		self.bld.utest_results.append(tup)
 +	except AttributeError:
 +		self.bld.utest_results=[tup]
++@Task.deep_inputs
 +class utest(Task.Task):
 +	color='PINK'
 +	after=['vnum','inst']
@@ -12430,23 +12897,20 @@ Last-Update: 2017-07-19
 +		if hasattr(self.generator,'ut_run'):
 +			return self.generator.ut_run(self)
 +		self.ut_exec=getattr(self.generator,'ut_exec',[self.inputs[0].abspath()])
-+		if getattr(self.generator,'ut_fun',None):
-+			self.generator.ut_fun(self)
-+		testcmd=getattr(self.generator,'ut_cmd',False)or getattr(Options.options,'testcmd',False)
-+		if testcmd:
-+			self.ut_exec=(testcmd%' '.join(self.ut_exec)).split(' ')
++		ut_cmd=getattr(self.generator,'ut_cmd',False)
++		if ut_cmd:
++			self.ut_exec=shlex.split(ut_cmd%' '.join(self.ut_exec))
 +		return self.exec_command(self.ut_exec)
 +	def exec_command(self,cmd,**kw):
 +		Logs.debug('runner: %r',cmd)
 +		if getattr(Options.options,'dump_test_scripts',False):
-+			global SCRIPT_TEMPLATE
 +			script_code=SCRIPT_TEMPLATE%{'python':sys.executable,'env':self.get_test_env(),'cwd':self.get_cwd().abspath(),'cmd':cmd}
 +			script_file=self.inputs[0].abspath()+'_run.py'
 +			Utils.writef(script_file,script_code)
 +			os.chmod(script_file,Utils.O755)
 +			if Logs.verbose>1:
 +				Logs.info('Test debug file written as %r'%script_file)
-+		proc=Utils.subprocess.Popen(cmd,cwd=self.get_cwd().abspath(),env=self.get_test_env(),stderr=Utils.subprocess.PIPE,stdout=Utils.subprocess.PIPE)
++		proc=Utils.subprocess.Popen(cmd,cwd=self.get_cwd().abspath(),env=self.get_test_env(),stderr=Utils.subprocess.PIPE,stdout=Utils.subprocess.PIPE,shell=isinstance(cmd,str))
 +		(stdout,stderr)=proc.communicate()
 +		self.waf_unit_test_results=tup=(self.inputs[0].abspath(),proc.returncode,stdout,stderr)
 +		testlock.acquire()
@@ -12455,21 +12919,21 @@ Last-Update: 2017-07-19
 +		finally:
 +			testlock.release()
 +	def get_cwd(self):
-+		return self.generator.ut_cwd
++		return getattr(self.generator,'ut_cwd',self.inputs[0].parent)
 +def summary(bld):
 +	lst=getattr(bld,'utest_results',[])
 +	if lst:
 +		Logs.pprint('CYAN','execution summary')
 +		total=len(lst)
 +		tfail=len([x for x in lst if x[1]])
-+		Logs.pprint('CYAN','  tests that pass %d/%d'%(total-tfail,total))
++		Logs.pprint('GREEN','  tests that pass %d/%d'%(total-tfail,total))
 +		for(f,code,out,err)in lst:
 +			if not code:
-+				Logs.pprint('CYAN','    %s'%f)
-+		Logs.pprint('CYAN','  tests that fail %d/%d'%(tfail,total))
++				Logs.pprint('GREEN','    %s'%f)
++		Logs.pprint('GREEN'if tfail==0 else'RED','  tests that fail %d/%d'%(tfail,total))
 +		for(f,code,out,err)in lst:
 +			if code:
-+				Logs.pprint('CYAN','    %s'%f)
++				Logs.pprint('RED','    %s'%f)
 +def set_exit_code(bld):
 +	lst=getattr(bld,'utest_results',[])
 +	for(f,code,out,err)in lst:
@@ -12484,11 +12948,11 @@ Last-Update: 2017-07-19
 +	opt.add_option('--notests',action='store_true',default=False,help='Exec no unit tests',dest='no_tests')
 +	opt.add_option('--alltests',action='store_true',default=False,help='Exec all unit tests',dest='all_tests')
 +	opt.add_option('--clear-failed',action='store_true',default=False,help='Force failed unit tests to run again next time',dest='clear_failed_tests')
-+	opt.add_option('--testcmd',action='store',default=False,help='Run the unit tests using the test-cmd string'' example "--test-cmd="valgrind --error-exitcode=1'' %s" to run under valgrind',dest='testcmd')
++	opt.add_option('--testcmd',action='store',default=False,dest='testcmd',help='Run the unit tests using the test-cmd string example "--testcmd="valgrind --error-exitcode=1 %s" to run under valgrind')
 +	opt.add_option('--dump-test-scripts',action='store_true',default=False,help='Create python scripts to help debug tests',dest='dump_test_scripts')
 --- /dev/null
 +++ b/waflib/Tools/winres.py
-@@ -0,0 +1,51 @@
+@@ -0,0 +1,52 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
 +# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
@@ -12512,7 +12976,8 @@ Last-Update: 2017-07-19
 +	def filter_comments(self,node):
 +		code=node.read()
 +		if c_preproc.use_trigraphs:
-+			for(a,b)in c_preproc.trig_def:code=code.split(a).join(b)
++			for(a,b)in c_preproc.trig_def:
++				code=code.split(a).join(b)
 +		code=c_preproc.re_nl.sub('',code)
 +		code=c_preproc.re_cpp.sub(c_preproc.repl,code)
 +		ret=[]
@@ -12636,12 +13101,13 @@ Last-Update: 2017-07-19
 +	conf.link_add_flags()
 --- /dev/null
 +++ b/waflib/Utils.py
-@@ -0,0 +1,597 @@
+@@ -0,0 +1,615 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
 +# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
-+import atexit,os,sys,errno,traceback,inspect,re,datetime,platform,base64,signal,functools
++from __future__ import with_statement
++import atexit,os,sys,errno,inspect,re,datetime,platform,base64,signal,functools,time
 +try:
 +	import cPickle
 +except ImportError:
@@ -12656,7 +13122,7 @@ Last-Update: 2017-07-19
 +try:
 +	TimeoutExpired=subprocess.TimeoutExpired
 +except AttributeError:
-+	class TimeoutExpired(object):
++	class TimeoutExpired(Exception):
 +		pass
 +from collections import deque,defaultdict
 +try:
@@ -12759,46 +13225,47 @@ Last-Update: 2017-07-19
 +			node.key=key
 +			node.val=val
 +			self.table[key]=node
++class lazy_generator(object):
++	def __init__(self,fun,params):
++		self.fun=fun
++		self.params=params
++	def __iter__(self):
++		return self
++	def __next__(self):
++		try:
++			it=self.it
++		except AttributeError:
++			it=self.it=self.fun(*self.params)
++		return next(it)
++	next=__next__
 +is_win32=os.sep=='\\'or sys.platform=='win32'
-+def readf(fname,m='r',encoding='ISO8859-1'):
++def readf(fname,m='r',encoding='latin-1'):
 +	if sys.hexversion>0x3000000 and not'b'in m:
 +		m+='b'
-+		f=open(fname,m)
-+		try:
++		with open(fname,m)as f:
 +			txt=f.read()
-+		finally:
-+			f.close()
 +		if encoding:
 +			txt=txt.decode(encoding)
 +		else:
 +			txt=txt.decode()
 +	else:
-+		f=open(fname,m)
-+		try:
++		with open(fname,m)as f:
 +			txt=f.read()
-+		finally:
-+			f.close()
 +	return txt
-+def writef(fname,data,m='w',encoding='ISO8859-1'):
++def writef(fname,data,m='w',encoding='latin-1'):
 +	if sys.hexversion>0x3000000 and not'b'in m:
 +		data=data.encode(encoding)
 +		m+='b'
-+	f=open(fname,m)
-+	try:
++	with open(fname,m)as f:
 +		f.write(data)
-+	finally:
-+		f.close()
 +def h_file(fname):
-+	f=open(fname,'rb')
 +	m=md5()
-+	try:
++	with open(fname,'rb')as f:
 +		while fname:
 +			fname=f.read(200000)
 +			m.update(fname)
-+	finally:
-+		f.close()
 +	return m.digest()
-+def readf_win32(f,m='r',encoding='ISO8859-1'):
++def readf_win32(f,m='r',encoding='latin-1'):
 +	flags=os.O_NOINHERIT|os.O_RDONLY
 +	if'b'in m:
 +		flags|=os.O_BINARY
@@ -12810,23 +13277,17 @@ Last-Update: 2017-07-19
 +		raise IOError('Cannot read from %r'%f)
 +	if sys.hexversion>0x3000000 and not'b'in m:
 +		m+='b'
-+		f=os.fdopen(fd,m)
-+		try:
++		with os.fdopen(fd,m)as f:
 +			txt=f.read()
-+		finally:
-+			f.close()
 +		if encoding:
 +			txt=txt.decode(encoding)
 +		else:
 +			txt=txt.decode()
 +	else:
-+		f=os.fdopen(fd,m)
-+		try:
++		with os.fdopen(fd,m)as f:
 +			txt=f.read()
-+		finally:
-+			f.close()
 +	return txt
-+def writef_win32(f,data,m='w',encoding='ISO8859-1'):
++def writef_win32(f,data,m='w',encoding='latin-1'):
 +	if sys.hexversion>0x3000000 and not'b'in m:
 +		data=data.encode(encoding)
 +		m+='b'
@@ -12839,24 +13300,18 @@ Last-Update: 2017-07-19
 +		fd=os.open(f,flags)
 +	except OSError:
 +		raise OSError('Cannot write to %r'%f)
-+	f=os.fdopen(fd,m)
-+	try:
++	with os.fdopen(fd,m)as f:
 +		f.write(data)
-+	finally:
-+		f.close()
 +def h_file_win32(fname):
 +	try:
 +		fd=os.open(fname,os.O_BINARY|os.O_RDONLY|os.O_NOINHERIT)
 +	except OSError:
 +		raise OSError('Cannot read from %r'%fname)
-+	f=os.fdopen(fd,'rb')
 +	m=md5()
-+	try:
++	with os.fdopen(fd,'rb')as f:
 +		while fname:
 +			fname=f.read(200000)
 +			m.update(fname)
-+	finally:
-+		f.close()
 +	return m.digest()
 +readf_unix=readf
 +writef_unix=writef
@@ -12915,13 +13370,25 @@ Last-Update: 2017-07-19
 +				ret+=256**(3-i)*int(ver[i])
 +		return ret
 +	return ver
-+def ex_stack():
-+	return traceback.format_exc()
 +def to_list(val):
 +	if isinstance(val,str):
 +		return val.split()
 +	else:
 +		return val
++def console_encoding():
++	try:
++		import ctypes
++	except ImportError:
++		pass
++	else:
++		try:
++			codepage=ctypes.windll.kernel32.GetConsoleCP()
++		except AttributeError:
++			pass
++		else:
++			if codepage:
++				return'cp%d'%codepage
++	return sys.stdout.encoding or('cp1252'if is_win32 else'latin-1')
 +def split_path_unix(path):
 +	return path.split('/')
 +def split_path_cygwin(path):
@@ -12933,16 +13400,18 @@ Last-Update: 2017-07-19
 +re_sp=re.compile('[/\\\\]+')
 +def split_path_win32(path):
 +	if path.startswith('\\\\'):
-+		ret=re_sp.split(path)[2:]
-+		ret[0]='\\'+ret[0]
++		ret=re_sp.split(path)[1:]
++		ret[0]='\\\\'+ret[0]
++		if ret[0]=='\\\\?':
++			return ret[1:]
 +		return ret
 +	return re_sp.split(path)
 +msysroot=None
 +def split_path_msys(path):
-+	if path.startswith(('/','\\'))and not path.startswith(('\\','\\\\')):
++	if path.startswith(('/','\\'))and not path.startswith(('//','\\\\')):
 +		global msysroot
 +		if not msysroot:
-+			msysroot=subprocess.check_output(['cygpath','-w','/']).decode(sys.stdout.encoding or'iso8859-1')
++			msysroot=subprocess.check_output(['cygpath','-w','/']).decode(sys.stdout.encoding or'latin-1')
 +			msysroot=msysroot.strip()
 +		path=os.path.normpath(msysroot+os.sep+path)
 +	return split_path_win32(path)
@@ -12994,6 +13463,11 @@ Last-Update: 2017-07-19
 +	fu=re.sub('_+','_',fu)
 +	fu=fu.upper()
 +	return fu
++re_sh=re.compile('\\s|\'|"')
++def shell_escape(cmd):
++	if isinstance(cmd,str):
++		return cmd
++	return' '.join(repr(x)if re_sh.search(x)else x for x in cmd)
 +def h_list(lst):
 +	return md5(repr(lst).encode()).digest()
 +def h_fun(fun):
@@ -13023,7 +13497,7 @@ Last-Update: 2017-07-19
 +	else:
 +		ret=str(h_fun(ins))
 +	if sys.hexversion>0x3000000:
-+		ret=ret.encode('iso8859-1','xmlcharrefreplace')
++		ret=ret.encode('latin-1','xmlcharrefreplace')
 +	return ret
 +reg_subst=re.compile(r"(\\\\)|(\$\$)|\$\{([^}]+)\}")
 +def subst_vars(expr,params):
@@ -13070,9 +13544,11 @@ Last-Update: 2017-07-19
 +	pass
 +class Timer(object):
 +	def __init__(self):
-+		self.start_time=datetime.datetime.utcnow()
++		self.start_time=self.now()
 +	def __str__(self):
-+		delta=datetime.datetime.utcnow()-self.start_time
++		delta=self.now()-self.start_time
++		if not isinstance(delta,datetime.timedelta):
++			delta=datetime.timedelta(seconds=delta)
 +		days=delta.days
 +		hours,rem=divmod(delta.seconds,3600)
 +		minutes,seconds=divmod(rem,60)
@@ -13085,6 +13561,11 @@ Last-Update: 2017-07-19
 +		if days or hours or minutes:
 +			result+='%dm'%minutes
 +		return'%s%.3fs'%(result,seconds)
++	def now(self):
++		return datetime.datetime.utcnow()
++	if hasattr(time,'perf_counter'):
++		def now(self):
++			return time.perf_counter()
 +def read_la_file(path):
 +	sp=re.compile(r'^([^=]+)=\'(.*)\'$')
 +	dc={}
@@ -13112,7 +13593,7 @@ Last-Update: 2017-07-19
 +		return None
 +	try:
 +		result=winreg.QueryValue(key,"Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\%s.exe"%filename[0])
-+	except WindowsError:
++	except OSError:
 +		pass
 +	else:
 +		if os.path.isfile(result):
@@ -13138,7 +13619,7 @@ Last-Update: 2017-07-19
 +		kwargs['env']=dict(os.environ)
 +	try:
 +		obj=base64.b64encode(cPickle.dumps([cmd,kwargs,cargs]))
-+	except TypeError:
++	except(TypeError,AttributeError):
 +		return run_regular_process(cmd,kwargs,cargs)
 +	proc=get_process()
 +	if not proc:
@@ -13150,7 +13631,9 @@ Last-Update: 2017-07-19
 +	if not obj:
 +		raise OSError('Preforked sub-process %r died'%proc.pid)
 +	process_pool.append(proc)
-+	ret,out,err,ex,trace=cPickle.loads(base64.b64decode(obj))
++	lst=cPickle.loads(base64.b64decode(obj))
++	assert len(lst)==5
++	ret,out,err,ex,trace=lst
 +	if ex:
 +		if ex=='OSError':
 +			raise OSError(trace)
@@ -13231,7 +13714,7 @@ Last-Update: 2017-07-19
 +			k.wait()
 +if(sys.hexversion<0x207000f and not is_win32)or sys.hexversion>=0x306000f:
 +	atexit.register(atexit_pool)
-+if sys.platform=='cli'or not sys.executable:
++if os.environ.get('WAF_NO_PREFORK')or sys.platform=='cli'or not sys.executable:
 +	run_process=run_regular_process
 +	get_process=alloc_process_pool=nada
 --- /dev/null
@@ -13491,7 +13974,7 @@ Last-Update: 2017-07-19
 +
 --- /dev/null
 +++ b/waflib/extras/compat15.py
-@@ -0,0 +1,301 @@
+@@ -0,0 +1,305 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
 +# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
@@ -13588,7 +14071,7 @@ Last-Update: 2017-07-19
 +Options.OptionsContext.tool_options=Context.Context.load
 +Options.Handler=Options.OptionsContext
 +Task.simple_task_type=Task.task_type_from_func=Task.task_factory
-+Task.TaskBase.classes=Task.classes
++Task.Task.classes=Task.classes
 +def setitem(self,key,value):
 +	if key.startswith('CCFLAGS'):
 +		key=key[1:]
@@ -13735,10 +14218,12 @@ Last-Update: 2017-07-19
 +			lst=y.to_list(y.add_objects)
 +			lst.reverse()
 +			for u in lst:
-+				if u in seen:continue
++				if u in seen:
++					continue
 +				added=1
 +				names=[u]+names
-+			if added:continue
++			if added:
++				continue
 +		y.post()
 +		seen.append(x)
 +		for t in getattr(y,'compiled_tasks',[]):
@@ -13752,8 +14237,10 @@ Last-Update: 2017-07-19
 +		self.link_task.inputs.append(node)
 +@TaskGen.taskgen_method
 +def add_obj_file(self,file):
-+	if not hasattr(self,'obj_files'):self.obj_files=[]
-+	if not'process_obj_files'in self.meths:self.meths.append('process_obj_files')
++	if not hasattr(self,'obj_files'):
++		self.obj_files=[]
++	if not'process_obj_files'in self.meths:
++		self.meths.append('process_obj_files')
 +	self.obj_files.append(file)
 +old_define=Configure.ConfigurationContext.__dict__['define']
 +@Configure.conf
@@ -13795,15 +14282,15 @@ Last-Update: 2017-07-19
 +TaskGen.before=before
 --- /dev/null
 +++ b/waflib/fixpy2.py
-@@ -0,0 +1,54 @@
+@@ -0,0 +1,47 @@
 +#! /usr/bin/env python
 +# encoding: utf-8
 +# WARNING! Do not edit! https://waf.io/book/index.html#_obtaining_the_waf_file
 +
++from __future__ import with_statement
 +import os
 +all_modifs={}
 +def fixdir(dir):
-+	global all_modifs
 +	for k in all_modifs:
 +		for v in all_modifs[k]:
 +			modif(os.path.join(dir,'waflib'),k,v)
@@ -13818,20 +14305,13 @@ Last-Update: 2017-07-19
 +			modif(dir,x,fun)
 +		return
 +	filename=os.path.join(dir,name)
-+	f=open(filename,'r')
-+	try:
++	with open(filename,'r')as f:
 +		txt=f.read()
-+	finally:
-+		f.close()
 +	txt=fun(txt)
-+	f=open(filename,'w')
-+	try:
++	with open(filename,'w')as f:
 +		f.write(txt)
-+	finally:
-+		f.close()
 +def subst(*k):
 +	def do_subst(fun):
-+		global all_modifs
 +		for x in k:
 +			try:
 +				all_modifs[x].append(fun)
@@ -13842,7 +14322,7 @@ Last-Update: 2017-07-19
 +@subst('*')
 +def r1(code):
 +	code=code.replace('as e:',',e:')
-+	code=code.replace(".decode(sys.stdout.encoding or'iso8859-1',errors='replace')",'')
++	code=code.replace(".decode(sys.stdout.encoding or'latin-1',errors='replace')",'')
 +	return code.replace('.encode()','')
 +@subst('Runner.py')
 +def r4(code):
@@ -13869,7 +14349,7 @@ Last-Update: 2017-07-19
 +try:
 +	TimeoutExpired=subprocess.TimeoutExpired
 +except AttributeError:
-+	class TimeoutExpired(object):
++	class TimeoutExpired(Exception):
 +		pass
 +def run():
 +	txt=sys.stdin.readline().strip()
