@@ -25,6 +25,7 @@
 #if HAVE_STDATOMIC
 #include <stdatomic.h>
 typedef _Atomic float mp_atomic_float;
+typedef _Atomic int64_t mp_atomic_int64;
 #else
 
 // Emulate the parts of C11 stdatomic.h needed by mpv.
@@ -38,6 +39,7 @@ typedef struct { uint_least32_t v;     } atomic_uint_least32_t;
 typedef struct { unsigned long long v; } atomic_ullong;
 
 typedef struct { float v;              } mp_atomic_float;
+typedef struct { int64_t v;            } mp_atomic_int64;
 
 #define ATOMIC_VAR_INIT(x) \
     {.v = (x)}
@@ -54,9 +56,9 @@ extern pthread_mutex_t mp_atomic_mutex;
 #define atomic_load(p)                                  \
     ({ __typeof__(p) p_ = (p);                          \
        pthread_mutex_lock(&mp_atomic_mutex);            \
-       __typeof__(p_->v) v = p_->v;                     \
+       __typeof__(p_->v) v_ = p_->v;                    \
        pthread_mutex_unlock(&mp_atomic_mutex);          \
-       v; })
+       v_; })
 #define atomic_store(p, val)                            \
     ({ __typeof__(val) val_ = (val);                    \
        __typeof__(p) p_ = (p);                          \
@@ -67,26 +69,33 @@ extern pthread_mutex_t mp_atomic_mutex;
     ({ __typeof__(a) a_ = (a);                          \
        __typeof__(b) b_ = (b);                          \
        pthread_mutex_lock(&mp_atomic_mutex);            \
-       __typeof__(a_->v) v = a_->v;                     \
-       a_->v = v op b_;                                 \
+       __typeof__(a_->v) v_ = a_->v;                    \
+       a_->v = v_ op b_;                                \
        pthread_mutex_unlock(&mp_atomic_mutex);          \
-       v; })
+       v_; })
 #define atomic_fetch_add(a, b) atomic_fetch_op(a, b, +)
 #define atomic_fetch_and(a, b) atomic_fetch_op(a, b, &)
 #define atomic_fetch_or(a, b)  atomic_fetch_op(a, b, |)
+#define atomic_exchange(p, new)                         \
+    ({ __typeof__(p) p_ = (p);                          \
+       pthread_mutex_lock(&mp_atomic_mutex);            \
+       __typeof__(p_->v) res_ = p_->v;                  \
+       p_->v = (new);                                   \
+       pthread_mutex_unlock(&mp_atomic_mutex);          \
+       res_; })
 #define atomic_compare_exchange_strong(p, old, new)     \
     ({ __typeof__(p) p_ = (p);                          \
        __typeof__(old) old_ = (old);                    \
        __typeof__(new) new_ = (new);                    \
        pthread_mutex_lock(&mp_atomic_mutex);            \
-       int res = p_->v == *old_;                        \
-       if (res) {                                       \
+       int res_ = p_->v == *old_;                       \
+       if (res_) {                                      \
            p_->v = new_;                                \
        } else {                                         \
            *old_ = p_->v;                               \
        }                                                \
        pthread_mutex_unlock(&mp_atomic_mutex);          \
-       res; })
+       res_; })
 
 #endif /* else HAVE_STDATOMIC */
 

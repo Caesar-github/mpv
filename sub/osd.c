@@ -28,6 +28,7 @@
 #include "osdep/timer.h"
 
 #include "mpv_talloc.h"
+#include "options/m_config.h"
 #include "options/options.h"
 #include "common/global.h"
 #include "common/msg.h"
@@ -49,8 +50,8 @@ static const m_option_t style_opts[] = {
     OPT_COLOR("border-color", border_color, 0),
     OPT_COLOR("shadow-color", shadow_color, 0),
     OPT_COLOR("back-color", back_color, 0),
-    OPT_FLOATRANGE("border-size", border_size, 0, 0, 10),
-    OPT_FLOATRANGE("shadow-offset", shadow_offset, 0, 0, 10),
+    OPT_FLOAT("border-size", border_size, 0),
+    OPT_FLOAT("shadow-offset", shadow_offset, 0),
     OPT_FLOATRANGE("spacing", spacing, 0, -10, 10),
     OPT_INTRANGE("margin-x", margin_x, 0, 0, 300),
     OPT_INTRANGE("margin-y", margin_y, 0, 0, 600),
@@ -117,12 +118,13 @@ struct osd_state *osd_create(struct mpv_global *global)
 
     struct osd_state *osd = talloc_zero(NULL, struct osd_state);
     *osd = (struct osd_state) {
-        .opts = global->opts,
+        .opts_cache = m_config_cache_alloc(osd, global, &mp_osd_render_sub_opts),
         .global = global,
         .log = mp_log_new(osd, global->log, "osd"),
         .force_video_pts = MP_NOPTS_VALUE,
     };
     pthread_mutex_init(&osd->lock, NULL);
+    osd->opts = osd->opts_cache->opts;
 
     for (int n = 0; n < MAX_OSD_PARTS; n++) {
         struct osd_object *obj = talloc(osd, struct osd_object);
@@ -262,10 +264,8 @@ static void render_object(struct osd_state *osd, struct osd_object *obj,
                           const bool sub_formats[SUBBITMAP_COUNT],
                           struct sub_bitmaps *out_imgs)
 {
-    struct MPOpts *opts = osd->opts;
-
     int format = SUBBITMAP_LIBASS;
-    if (!sub_formats[format] || opts->force_rgba_osd)
+    if (!sub_formats[format] || osd->opts->force_rgba_osd)
         format = SUBBITMAP_RGBA;
 
     *out_imgs = (struct sub_bitmaps) {0};
@@ -273,12 +273,8 @@ static void render_object(struct osd_state *osd, struct osd_object *obj,
     check_obj_resize(osd, res, obj);
 
     if (obj->type == OSDTYPE_SUB || obj->type == OSDTYPE_SUB2) {
-        if (obj->sub) {
-            double sub_pts = video_pts;
-            if (sub_pts != MP_NOPTS_VALUE)
-                sub_pts -= opts->sub_delay;
-            sub_get_bitmaps(obj->sub, obj->vo_res, format, sub_pts, out_imgs);
-        }
+        if (obj->sub)
+            sub_get_bitmaps(obj->sub, obj->vo_res, format, video_pts, out_imgs);
     } else if (obj->type == OSDTYPE_EXTERNAL2) {
         if (obj->external2 && obj->external2->format) {
             *out_imgs = *obj->external2;
@@ -410,6 +406,8 @@ void osd_changed(struct osd_state *osd)
     pthread_mutex_lock(&osd->lock);
     osd->objs[OSDTYPE_OSD]->osd_changed = true;
     osd->want_redraw_notification = true;
+    // Done here for a lack of a better place.
+    m_config_cache_update(osd->opts_cache);
     pthread_mutex_unlock(&osd->lock);
 }
 

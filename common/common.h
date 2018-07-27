@@ -58,16 +58,9 @@ enum stream_type {
     STREAM_TYPE_COUNT,
 };
 
-enum {
-    DATA_OK     = 1,        // data is actually being returned
-    DATA_WAIT   = 0,        // async wait: check state again after next wakeup
-    DATA_AGAIN  = -2,       // repeat request (internal progress was made)
-    DATA_STARVE = -1,       // need input (might require to drain other outputs)
-    DATA_EOF    = -3,       // no more data available
-};
-
 extern const char mpv_version[];
 extern const char mpv_builddate[];
+extern const char mpv_copyright[];
 
 char *mp_format_time(double time, bool fractions);
 char *mp_format_time_fmt(const char *fmt, double time);
@@ -110,5 +103,18 @@ char *mp_tag_str_buf(char *buf, size_t buf_size, uint32_t tag);
     mp_tprintf_buf((char[SIZE]){0}, (SIZE), (format), __VA_ARGS__)
 char *mp_tprintf_buf(char *buf, size_t buf_size, const char *format, ...)
     PRINTF_ATTRIBUTE(3, 4);
+
+char **mp_dup_str_array(void *tctx, char **s);
+
+// We generally do not handle allocation failure of small malloc()s. This would
+// create a large number of rarely tested code paths, which would probably
+// regress and cause security issues. We prefer to fail fast.
+// This macro generally behaves like an assert(), except it will make sure to
+// kill the process even with NDEBUG.
+#define MP_HANDLE_OOM(x) do {   \
+        assert(x);              \
+        if (!(x))               \
+            abort();            \
+    } while (0)
 
 #endif /* MPLAYER_MPCOMMON_H */

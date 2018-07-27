@@ -41,6 +41,9 @@
 #define USE_MASTER 0
 #define BUF_COUNT 2
 
+// Modulo that works correctly for negative numbers
+#define MOD(a,b) ((((a)%(b))+(b))%(b))
+
 struct framebuffer {
     uint32_t width;
     uint32_t height;
@@ -71,6 +74,7 @@ struct priv {
     int32_t screen_h;
     struct mp_image *last_input;
     struct mp_image *cur_frame;
+    struct mp_image *cur_frame_cropped;
     struct mp_rect src;
     struct mp_rect dst;
     struct mp_osd_res osd;
@@ -149,8 +153,8 @@ static bool fb_setup_double_buffering(struct vo *vo)
 
     p->front_buf = 0;
     for (unsigned int i = 0; i < 2; i++) {
-        p->bufs[i].width = p->kms->mode.hdisplay;
-        p->bufs[i].height = p->kms->mode.vdisplay;
+        p->bufs[i].width = p->kms->mode.mode.hdisplay;
+        p->bufs[i].height = p->kms->mode.mode.vdisplay;
     }
 
     for (unsigned int i = 0; i < BUF_COUNT; i++) {
@@ -180,9 +184,9 @@ static bool crtc_setup(struct vo *vo)
         return true;
     p->old_crtc = drmModeGetCrtc(p->kms->fd, p->kms->crtc_id);
     int ret = drmModeSetCrtc(p->kms->fd, p->kms->crtc_id,
-                             p->bufs[p->front_buf + BUF_COUNT - 1].fb,
+                             p->bufs[MOD(p->front_buf - 1, BUF_COUNT)].fb,
                              0, 0, &p->kms->connector->connector_id, 1,
-                             &p->kms->mode);
+                             &p->kms->mode.mode);
     p->active = true;
     return ret == 0;
 }
@@ -273,17 +277,7 @@ static int reconfig(struct vo *vo, struct mp_image_params *params)
     int w = p->dst.x1 - p->dst.x0;
     int h = p->dst.y1 - p->dst.y0;
 
-    // p->osd contains the parameters assuming OSD rendering in window
-    // coordinates, but OSD can only be rendered in the intersection
-    // between window and video rectangle (i.e. not into panscan borders).
-    p->osd.w = w;
-    p->osd.h = h;
-    p->osd.mt = MPMIN(0, p->osd.mt);
-    p->osd.mb = MPMIN(0, p->osd.mb);
-    p->osd.mr = MPMIN(0, p->osd.mr);
-    p->osd.ml = MPMIN(0, p->osd.ml);
-
-    mp_sws_set_from_cmdline(p->sws, vo->opts->sws_opts);
+    mp_sws_set_from_cmdline(p->sws, vo->global);
     p->sws->src = *params;
     p->sws->dst = (struct mp_image_params) {
         .imgfmt = IMGFMT,
@@ -297,6 +291,15 @@ static int reconfig(struct vo *vo, struct mp_image_params *params)
     p->cur_frame = mp_image_alloc(IMGFMT, p->screen_w, p->screen_h);
     mp_image_params_guess_csp(&p->sws->dst);
     mp_image_set_params(p->cur_frame, &p->sws->dst);
+    p->cur_frame[0].w = p->screen_w;
+    p->cur_frame[0].h = p->screen_h;
+
+    talloc_free(p->cur_frame_cropped);
+    p->cur_frame_cropped = mp_image_new_dummy_ref(p->cur_frame);
+    mp_image_crop_rc(p->cur_frame_cropped, p->dst);
+
+    talloc_free(p->last_input);
+    p->last_input = NULL;
 
     struct framebuffer *buf = p->bufs;
     for (unsigned int i = 0; i < BUF_COUNT; i++)
@@ -320,7 +323,13 @@ static void draw_image(struct vo *vo, mp_image_t *mpi)
             src_rc.x0 = MP_ALIGN_DOWN(src_rc.x0, mpi->fmt.align_x);
             src_rc.y0 = MP_ALIGN_DOWN(src_rc.y0, mpi->fmt.align_y);
             mp_image_crop_rc(&src, src_rc);
-            mp_sws_scale(p->sws, p->cur_frame, &src);
+
+            mp_image_clear(p->cur_frame, 0, 0, p->cur_frame->w, p->dst.y0);
+            mp_image_clear(p->cur_frame, 0, p->dst.y1, p->cur_frame->w, p->cur_frame->h);
+            mp_image_clear(p->cur_frame, 0, p->dst.y0, p->dst.x0, p->dst.y1);
+            mp_image_clear(p->cur_frame, p->dst.x1, p->dst.y0, p->cur_frame->w, p->dst.y1);
+
+            mp_sws_scale(p->sws, p->cur_frame_cropped, &src);
             osd_draw_on_image(vo->osd, p->osd, src.pts, 0, p->cur_frame);
         } else {
             mp_image_clear(p->cur_frame, 0, 0, p->cur_frame->w, p->cur_frame->h);
@@ -328,13 +337,9 @@ static void draw_image(struct vo *vo, mp_image_t *mpi)
         }
 
         struct framebuffer *front_buf = &p->bufs[p->front_buf];
-        int w = p->dst.x1 - p->dst.x0;
-        int h = p->dst.y1 - p->dst.y0;
-        int x = (p->screen_w - w) >> 1;
-        int y = (p->screen_h - h) >> 1;
-        int shift = y * front_buf->stride + x * BYTES_PER_PIXEL;
-        memcpy_pic(front_buf->map + shift, p->cur_frame->planes[0],
-                   w * BYTES_PER_PIXEL, h, front_buf->stride,
+        memcpy_pic(front_buf->map, p->cur_frame->planes[0],
+                   p->cur_frame->w * BYTES_PER_PIXEL, p->cur_frame->h,
+                   front_buf->stride,
                    p->cur_frame->stride[0]);
     }
 
@@ -354,7 +359,7 @@ static void flip_page(struct vo *vo)
                               p->bufs[p->front_buf].fb,
                               DRM_MODE_PAGE_FLIP_EVENT, p);
     if (ret) {
-        MP_WARN(vo, "Cannot flip page for connector\n");
+        MP_WARN(vo, "Failed to queue page flip: %s\n", mp_strerror(errno));
     } else {
         p->front_buf++;
         p->front_buf %= BUF_COUNT;
@@ -394,6 +399,7 @@ static void uninit(struct vo *vo)
 
     talloc_free(p->last_input);
     talloc_free(p->cur_frame);
+    talloc_free(p->cur_frame_cropped);
 }
 
 static int preinit(struct vo *vo)
@@ -414,7 +420,8 @@ static int preinit(struct vo *vo)
     p->kms = kms_create(
         vo->log, vo->opts->drm_opts->drm_connector_spec,
                  vo->opts->drm_opts->drm_mode_id,
-                 vo->opts->drm_opts->drm_overlay_id);
+                 vo->opts->drm_opts->drm_osd_plane_id,
+                 vo->opts->drm_opts->drm_video_plane_id);
     if (!p->kms) {
         MP_ERR(vo, "Failed to create KMS.\n");
         goto err;
@@ -439,6 +446,14 @@ static int preinit(struct vo *vo)
         MP_ERR(vo, "Cannot set CRTC: %s\n", mp_strerror(errno));
         goto err;
     }
+
+    if (vo->opts->force_monitor_aspect != 0.0) {
+        vo->monitor_par = p->screen_w / (double) p->screen_h /
+                          vo->opts->force_monitor_aspect;
+    } else {
+        vo->monitor_par = 1 / vo->opts->monitor_pixel_aspect;
+    }
+    mp_verbose(vo->log, "Monitor pixel aspect: %g\n", vo->monitor_par);
 
     return 0;
 

@@ -26,13 +26,13 @@
 #include "libmpv/client.h"
 
 #include "common/common.h"
+#include "filters/filter.h"
+#include "filters/f_output_chain.h"
 #include "options/options.h"
 #include "sub/osd.h"
 #include "audio/aframe.h"
 #include "video/mp_image.h"
 #include "video/out/vo.h"
-
-#include "lavfi.h"
 
 // definitions used internally by the core player code
 
@@ -43,7 +43,6 @@ enum stop_play_reason {
     PT_NEXT_ENTRY,      // prepare to play next entry in playlist
     PT_CURRENT_ENTRY,   // prepare to play mpctx->playlist->current
     PT_STOP,            // stop playback, clear playlist
-    PT_RELOAD_FILE,     // restart playback
     PT_QUIT,            // stop playback, quit player
     PT_ERROR,           // play next playlist entry (due to an error)
 };
@@ -134,13 +133,14 @@ struct track {
     int ff_index; // same as stream->ff_index, or 0.
 
     char *title;
-    bool default_track, forced_track;
+    bool default_track, forced_track, dependent_track;
     bool attached_picture;
     char *lang;
 
     // If this track is from an external file (e.g. subtitle file).
     bool is_external;
     bool no_default;            // pretend it's not external for auto-selection
+    bool no_auto_select;
     char *external_filename;
     bool auto_loaded;
 
@@ -152,13 +152,12 @@ struct track {
     struct dec_sub *d_sub;
 
     // Current decoding state (NULL if selected==false)
-    struct dec_video *d_video;
-    struct dec_audio *d_audio;
+    struct mp_decoder_wrapper *dec;
 
     // Where the decoded result goes to (one of them is not NULL if active)
     struct vo_chain *vo_c;
     struct ao_chain *ao_c;
-    struct lavfi_pad *sink;
+    struct mp_pin *sink;
 
     // For stream recording (remuxing mode).
     struct mp_recorder_sink *remux_sink;
@@ -168,57 +167,43 @@ struct track {
 struct vo_chain {
     struct mp_log *log;
 
-    struct mp_hwdec_devices *hwdec_devs;
-    double container_fps;
+    struct mp_output_chain *filter;
 
-    struct vf_chain *vf;
+    //struct vf_chain *vf;
     struct vo *vo;
 
-    // 1-element input frame queue.
-    struct mp_image *input_mpi;
-
-    // Last known input_mpi format (so vf can be reinitialized any time).
-    struct mp_image_params input_format;
-
     struct track *track;
-    struct lavfi_pad *filter_src;
-    struct dec_video *video_src;
+    struct mp_pin *filter_src;
+    struct mp_pin *dec_src;
 
     // - video consists of a single picture, which should be shown only once
     // - do not sync audio to video in any way
     bool is_coverart;
-    // Just to avoid decoding the coverart picture again after a seek.
-    struct mp_image *cached_coverart;
+    // - video consists of sparse still images
+    bool is_sparse;
 };
 
 // Like vo_chain, for audio.
 struct ao_chain {
     struct mp_log *log;
 
-    double pts; // timestamp of first sample output by decoder
     bool spdif_passthrough, spdif_failed;
-    bool pts_reset;
 
-    struct af_stream *af;
-    struct mp_aconverter *conv; // if af unavailable
+    struct mp_output_chain *filter;
+
     struct ao *ao;
     struct mp_audio_buffer *ao_buffer;
     double ao_resume_time;
 
-    // 1-element input frame queue.
-    struct mp_aframe *input_frame;
-
     // 1-element output frame queue.
     struct mp_aframe *output_frame;
+    bool out_eof;
 
-    // Last known input_mpi format (so af can be reinitialized any time).
-    struct mp_aframe *input_format;
-
-    struct mp_aframe *filter_input_format;
+    double last_out_pts;
 
     struct track *track;
-    struct lavfi_pad *filter_src;
-    struct dec_audio *audio_src;
+    struct mp_pin *filter_src;
+    struct mp_pin *dec_src;
 };
 
 /* Note that playback can be paused, stopped, etc. at any time. While paused,
@@ -241,7 +226,7 @@ enum playback_status {
 
 typedef struct MPContext {
     bool initialized;
-    bool autodetach;
+    bool is_cli;
     struct mpv_global *global;
     struct MPOpts *opts;
     struct mp_log *log;
@@ -250,7 +235,6 @@ typedef struct MPContext {
     struct mp_client_api *clients;
     struct mp_dispatch_queue *dispatch;
     struct mp_cancel *playback_abort;
-    bool in_dispatch;
     // Number of asynchronous tasks that still need to finish until MPContext
     // destruction is ok. It's implied that the async tasks call
     // mp_wakeup_core() each time this is decremented.
@@ -316,10 +300,13 @@ typedef struct MPContext {
     // Currently, this is used for the secondary subtitle track only.
     struct track *current_track[NUM_PTRACKS][STREAM_TYPE_COUNT];
 
-    struct lavfi *lavfi;
+    struct mp_filter *filter_root;
+
+    struct mp_filter *lavfi;
+    char *lavfi_graph;
 
     struct ao *ao;
-    struct mp_aframe *ao_decoder_fmt; // for weak gapless audio check
+    struct mp_aframe *ao_filter_fmt; // for weak gapless audio check
     struct ao_chain *ao_chain;
 
     struct vo_chain *vo_chain;
@@ -348,7 +335,6 @@ typedef struct MPContext {
     // Number of mistimed frames.
     int mistimed_frames_total;
     bool hrseek_active;     // skip all data until hrseek_pts
-    bool hrseek_framedrop;  // allow decoder to drop frames before hrseek_pts
     bool hrseek_lastframe;  // drop everything until last frame reached
     bool hrseek_backstep;   // go to frame before seek target
     double hrseek_pts;
@@ -363,8 +349,6 @@ typedef struct MPContext {
     // How much video timing has been changed to make it match the audio
     // timeline. Used for status line information only.
     double total_avsync_change;
-    // Used to compute the number of frames dropped in a row.
-    int dropped_frames_start;
     // A-V sync difference when last frame was displayed. Kept to display
     // the same value if the status line is updated at a time where no new
     // video frame is shown.
@@ -411,9 +395,9 @@ typedef struct MPContext {
 
     struct seek_params seek;
 
-    // Allow audio to issue a second seek if audio is too far ahead (for non-hr
-    // seeks with external audio tracks).
-    bool audio_allow_second_chance_seek;
+    // Can be temporarily set to an external audio track after seeks. Then it
+    // must be seeked to the video position once video is done seeking.
+    struct track *seek_slave;
 
     /* Heuristic for relative chapter seeks: keep track which chapter
      * the user wanted to go to, even if we aren't exactly within the
@@ -432,7 +416,7 @@ typedef struct MPContext {
     bool playing_msg_shown;
 
     bool paused_for_cache;
-    double cache_stop_time, cache_wait_time;
+    double cache_stop_time;
     int cache_buffer;
 
     // Set after showing warning about decoding being too slow for realtime
@@ -448,8 +432,6 @@ typedef struct MPContext {
     struct encode_lavc_context *encode_lavc_ctx;
 
     struct mp_ipc_ctx *ipc_ctx;
-
-    struct mpv_opengl_cb_context *gl_cb_ctx;
 
     pthread_mutex_t lock;
 
@@ -502,8 +484,8 @@ struct playlist_entry *mp_check_playlist_resume(struct MPContext *mpctx,
 // loadfile.c
 void mp_abort_playback_async(struct MPContext *mpctx);
 void uninit_player(struct MPContext *mpctx, unsigned int mask);
-struct track *mp_add_external_file(struct MPContext *mpctx, char *filename,
-                                   enum stream_type filter);
+int mp_add_external_file(struct MPContext *mpctx, char *filename,
+                         enum stream_type filter);
 #define FLAG_MARK_SELECTION 1
 void mp_switch_track(struct MPContext *mpctx, enum stream_type type,
                      struct track *track, int flags);
@@ -604,7 +586,6 @@ struct mp_scripting {
 };
 void mp_load_scripts(struct MPContext *mpctx);
 void mp_load_builtin_scripts(struct MPContext *mpctx);
-int mp_load_script(struct MPContext *mpctx, const char *fname);
 int mp_load_user_script(struct MPContext *mpctx, const char *fname);
 
 // sub.c
@@ -630,13 +611,5 @@ void uninit_video_out(struct MPContext *mpctx);
 void uninit_video_chain(struct MPContext *mpctx);
 double calc_average_frame_duration(struct MPContext *mpctx);
 int init_video_decoder(struct MPContext *mpctx, struct track *track);
-void recreate_auto_filters(struct MPContext *mpctx);
-
-// Values of MPOpts.softvol
-enum {
-    SOFTVOL_NO = 0,
-    SOFTVOL_YES = 1,
-    SOFTVOL_AUTO = 2,
-};
 
 #endif /* MPLAYER_MP_CORE_H */

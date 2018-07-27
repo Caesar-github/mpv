@@ -8,9 +8,8 @@ You can encode files from one format/codec to another using this facility.
 
 ``--of=<format>``
     Specifies the output format (overrides autodetection by the file name
-    extension of the file specified by ``-o``). This can be a comma separated
-    list of possible formats to try. See ``--of=help`` for a full list of
-    supported formats.
+    extension of the file specified by ``-o``). See ``--of=help`` for a full
+    list of supported formats.
 
 ``--ofopts=<options>``
     Specifies the output format options for libavformat.
@@ -22,50 +21,16 @@ You can encode files from one format/codec to another using this facility.
     ``--ofopts-add=<options1[,options2,...]>``
         Appends the options given as arguments to the options list.
 
-    ``--ofopts-pre=<options1[,options2,...]>``
-        Prepends the options given as arguments to the options list.
-
-    ``--ofopts-del=<index1[,index2,...]>``
-        Deletes the options at the given indexes. Index numbers start at 0,
-        negative numbers address the end of the list (-1 is the last).
-
-    ``--ofopts-clr``
+    ``--ofopts=""``
         Completely empties the options list.
 
-``--ofps=<float value>``
-    Specifies the output format time base (default: 24000). Low values like 25
-    limit video fps by dropping frames.
-
-``--oautofps``
-    Sets the output format time base to the guessed frame rate of the input
-    video (simulates MEncoder behavior, useful for AVI; may cause frame drops).
-    Note that not all codecs and not all formats support VFR encoding, and some
-    which do have bugs when a target bitrate is specified - use ``--ofps`` or
-    ``--oautofps`` to force CFR encoding in these cases.
-
-``--omaxfps=<float value>``
-    Specifies the minimum distance of adjacent frames (default: 0, which means
-    unset). Content of lower frame rate is not readjusted to this frame rate;
-    content of higher frame rate is decimated to this frame rate.
-
-``--oharddup``
-    If set, the frame rate given by ``--ofps`` is attained not by skipping time
-    codes, but by duplicating frames (constant frame rate mode).
-
-``--oneverdrop``
-    If set, frames are never dropped. Instead, time codes of video are
-    readjusted to always increase. This may cause AV desync, though; to work
-    around this, use a high-fps time base using ``--ofps`` and absolutely
-    avoid ``--oautofps``.
-
 ``--oac=<codec>``
-    Specifies the output audio codec. This can be a comma separated list of
-    possible codecs to try. See ``--oac=help`` for a full list of supported
-    codecs.
+    Specifies the output audio codec. See ``--oac=help`` for a full list of
+    supported codecs.
 
 ``--oaoffset=<value>``
     Shifts audio data by the given time (in seconds) by adding/removing
-    samples at the start.
+    samples at the start. Deprecated.
 
 ``--oacopts=<options>``
     Specifies the output audio codec options for libavcodec.
@@ -82,30 +47,22 @@ You can encode files from one format/codec to another using this facility.
     ``--oacopts-add=<options1[,options2,...]>``
         Appends the options given as arguments to the options list.
 
-    ``--oacopts-pre=<options1[,options2,...]>``
-        Prepends the options given as arguments to the options list.
-
-    ``--oacopts-del=<index1[,index2,...]>``
-        Deletes the options at the given indexes. Index numbers start at 0,
-        negative numbers address the end of the list (-1 is the last).
-
-    ``--oacopts-clr``
+    ``--oacopts=""``
         Completely empties the options list.
 
 ``--oafirst``
     Force the audio stream to become the first stream in the output.
-    By default, the order is unspecified.
+    By default, the order is unspecified. Deprecated.
 
 ``--ovc=<codec>``
-    Specifies the output video codec. This can be a comma separated list of
-    possible codecs to try. See ``--ovc=help`` for a full list of supported
-    codecs.
+    Specifies the output video codec. See ``--ovc=help`` for a full list of
+    supported codecs.
 
 ``--ovoffset=<value>``
     Shifts video data by the given time (in seconds) by shifting the pts
-    values.
+    values. Deprecated.
 
-``--ovcopts <options>``
+``--ovcopts=<options>``
     Specifies the output video codec options for libavcodec.
     See --ovcopts=help for a full list of supported options.
 
@@ -123,26 +80,12 @@ You can encode files from one format/codec to another using this facility.
     ``--ovcopts-add=<options1[,options2,...]>``
         Appends the options given as arguments to the options list.
 
-    ``--ovcopts-pre=<options1[,options2,...]>``
-        Prepends the options given as arguments to the options list.
-
-    ``--ovcopts-del=<index1[,index2,...]>``
-        Deletes the options at the given indexes. Index numbers start at 0,
-        negative numbers address the end of the list (-1 is the last).
-
-    ``--ovcopts-clr``
+    ``--ovcopts=""``
         Completely empties the options list.
 
 ``--ovfirst``
     Force the video stream to become the first stream in the output.
-    By default, the order is unspecified.
-
-``--ocopyts``
-    Copies input pts to the output video (not supported by some output
-    container formats, e.g. AVI). Discontinuities are still fixed.
-    By default, audio pts are set to playback time and video pts are
-    synchronized to match audio pts, as some output formats do not support
-    anything else.
+    By default, the order is unspecified. Deprecated.
 
 ``--orawts``
     Copies input pts to the output video (not supported by some output
@@ -150,6 +93,27 @@ You can encode files from one format/codec to another using this facility.
     and all pts are passed through as-is. Never seek backwards or use multiple
     input files in this mode!
 
-``--no-ometadata``
+``--no-ocopy-metadata``
     Turns off copying of metadata from input files to output files when
     encoding (which is enabled by default).
+
+``--oset-metadata=<metadata-tag[,metadata-tag,...]>``
+    Specifies metadata to include in the output file.
+    Supported keys vary between output formats. For example, Matroska (MKV) and
+    FLAC allow almost arbitrary keys, while support in MP4 and MP3 is more
+    limited.
+
+    .. admonition:: Example
+
+        "``--oset-metadata=title="Output title",comment="Another tag"``"
+            adds a title and a comment to the output file.
+
+``--oremove-metadata=<metadata-tag[,metadata-tag,...]>``
+    Specifies metadata to exclude from the output file when copying from the
+    input file.
+
+    .. admonition:: Example
+
+        "``--oremove-metadata=comment,genre``"
+            excludes copying of the the comment and genre tags to the output
+            file.

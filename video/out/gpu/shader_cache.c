@@ -777,11 +777,6 @@ static void gl_sc_generate(struct gl_shader_cache *sc,
         ADD(header, "#define texture texture2D\n");
     }
 
-    if (sc->ra->glsl_vulkan && type == RA_RENDERPASS_TYPE_COMPUTE) {
-        ADD(header, "#define gl_GlobalInvocationIndex "
-                    "(gl_WorkGroupID * gl_WorkGroupSize + gl_LocalInvocationID)\n");
-    }
-
     // Additional helpers.
     ADD(header, "#define LUT_POS(x, lut_size)"
                 " mix(0.5 / (lut_size), 1.0 - 0.5 / (lut_size), (x))\n");
@@ -965,13 +960,14 @@ static void gl_sc_generate(struct gl_shader_cache *sc,
 }
 
 struct mp_pass_perf gl_sc_dispatch_draw(struct gl_shader_cache *sc,
-                                        struct ra_tex *target,
+                                        struct ra_tex *target, bool discard,
                                         const struct ra_renderpass_input *vao,
                                         int vao_len, size_t vertex_stride,
                                         void *vertices, size_t num_vertices)
 {
     struct timer_pool *timer = NULL;
 
+    sc->params.invalidate_target = discard;
     gl_sc_generate(sc, RA_RENDERPASS_TYPE_RASTER, target->params.format,
                    vao, vao_len, vertex_stride);
     if (!sc->current_shader)

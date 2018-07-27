@@ -63,7 +63,10 @@ the player will more or less hang until the script returns from the main chunk
 (and ``mp_event_loop`` is called), or the script calls ``mp_event_loop`` or
 ``mp.dispatch_events`` directly. This is done to make it possible for a script
 to fully setup event handlers etc. before playback actually starts. In older
-mpv versions, this happened asynchronously.
+mpv versions, this happened asynchronously. With mpv 0.29.0, this changes
+slightly, and it merely waits for scripts to be loaded in this manner before
+starting playback as part of the player initialization phase. Scripts run though
+initialization in parallel. This might change again.
 
 mp functions
 ------------
@@ -427,7 +430,7 @@ are useful only in special situations.
 
 ``mp.get_wakeup_pipe()``
     Calls ``mpv_get_wakeup_pipe()`` and returns the read end of the wakeup
-    pipe. (See ``client.h`` for details.)
+    pipe. This is deprecated, but still works. (See ``client.h`` for details.)
 
 ``mp.get_next_timeout()``
     Return the relative time in seconds when the next timer (``mp.add_timeout``
@@ -531,7 +534,7 @@ Example implementation::
     print(options.optionA)
 
 
-The config file will be stored in ``lua-settings/identifier.conf`` in mpv's user
+The config file will be stored in ``script-opts/identifier.conf`` in mpv's user
 folder. Comment lines can be started with # and stray spaces are not removed.
 Boolean values will be represented with yes/no.
 
@@ -681,6 +684,10 @@ strictly part of the guaranteed API.
             ``subprocess`` function.
 
     The function returns ``nil``.
+
+``utils.getpid()``
+    Returns the process ID of the running mpv process. This can be used to identify
+    the calling mpv when launching (detached) subprocesses.
 
 ``utils.parse_json(str [, trail])``
     Parses the given string argument as JSON, and returns it as a Lua table. On

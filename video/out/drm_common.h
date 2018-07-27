@@ -24,12 +24,15 @@
 #include "options/m_option.h"
 #include "drm_atomic.h"
 
+#define DRM_OPTS_FORMAT_XRGB8888    0
+#define DRM_OPTS_FORMAT_XRGB2101010 1
+
 struct kms {
     struct mp_log *log;
     int fd;
     drmModeConnector *connector;
     drmModeEncoder *encoder;
-    drmModeModeInfo mode;
+    struct drm_mode mode;
     uint32_t crtc_id;
     int card_no;
     struct drm_atomic_context *atomic_context;
@@ -45,7 +48,10 @@ struct vt_switcher {
 struct drm_opts {
     char *drm_connector_spec;
     int drm_mode_id;
-    int drm_overlay_id;
+    int drm_osd_plane_id;
+    int drm_video_plane_id;
+    int drm_format;
+    struct m_geometry drm_osd_size;
 };
 
 bool vt_switcher_init(struct vt_switcher *s, struct mp_log *log);
@@ -59,7 +65,7 @@ void vt_switcher_release(struct vt_switcher *s, void (*handler)(void*),
                          void *user_data);
 
 struct kms *kms_create(struct mp_log *log, const char *connector_spec,
-                       int mode_id, int overlay_id);
+                       int mode_id, int osd_plane_id, int video_plane_id);
 void kms_destroy(struct kms *kms);
 double kms_get_display_fps(const struct kms *kms);
 

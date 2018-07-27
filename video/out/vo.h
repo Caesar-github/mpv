@@ -45,10 +45,13 @@ enum {
     VO_EVENT_LIVE_RESIZING              = 1 << 5,
     // Window fullscreen state changed via external influence.
     VO_EVENT_FULLSCREEN_STATE           = 1 << 6,
+    // Special thing for encode mode (vo_driver.initially_blocked).
+    // Part of VO_EVENTS_USER to make vo_is_ready_for_frame() work properly.
+    VO_EVENT_INITIAL_UNBLOCK            = 1 << 7,
 
     // Set of events the player core may be interested in.
     VO_EVENTS_USER = VO_EVENT_RESIZE | VO_EVENT_WIN_STATE |
-                     VO_EVENT_FULLSCREEN_STATE,
+                     VO_EVENT_FULLSCREEN_STATE | VO_EVENT_INITIAL_UNBLOCK,
 };
 
 enum mp_voctrl {
@@ -65,13 +68,18 @@ enum mp_voctrl {
     VOCTRL_SET_EQUALIZER,               // struct voctrl_set_equalizer_args*
     VOCTRL_GET_EQUALIZER,               // struct voctrl_get_equalizer_args*
 
-    /* private to vo_opengl */
+    /* private to vo_gpu */
     VOCTRL_LOAD_HWDEC_API,
 
     // Redraw the image previously passed to draw_image() (basically, repeat
     // the previous draw_image call). If this is handled, the OSD should also
     // be updated and redrawn. Optional; emulated if not available.
     VOCTRL_REDRAW_FRAME,
+
+    // Only used internally in vo_opengl_cb
+    VOCTRL_PREINIT,
+    VOCTRL_UNINIT,
+    VOCTRL_RECONFIG,
 
     VOCTRL_FULLSCREEN,
     VOCTRL_ONTOP,
@@ -102,7 +110,12 @@ enum mp_voctrl {
     VOCTRL_GET_DISPLAY_NAMES,
 
     // Retrieve window contents. (Normal screenshots use vo_get_current_frame().)
+    // Deprecated for VOCTRL_SCREENSHOT with corresponding flags.
     VOCTRL_SCREENSHOT_WIN,              // struct mp_image**
+
+    // A normal screenshot - VOs can react to this if vo_get_current_frame() is
+    // not sufficient.
+    VOCTRL_SCREENSHOT,                  // struct voctrl_screenshot*
 
     VOCTRL_UPDATE_RENDER_OPTS,
 
@@ -111,6 +124,9 @@ enum mp_voctrl {
     VOCTRL_GET_DISPLAY_FPS,             // double*
 
     VOCTRL_GET_PREF_DEINT,              // int*
+
+    /* private to vo_gpu */
+    VOCTRL_EXTERNAL_RESIZE,
 };
 
 // VOCTRL_SET_EQUALIZER
@@ -167,13 +183,18 @@ struct voctrl_performance_data {
     struct mp_frame_perf fresh, redraw;
 };
 
+struct voctrl_screenshot {
+    bool scaled, subs, osd, high_bit_depth;
+    struct mp_image *res;
+};
+
 enum {
     // VO does handle mp_image_params.rotate in 90 degree steps
     VO_CAP_ROTATE90     = 1 << 0,
     // VO does framedrop itself (vo_vdpau). Untimed/encoding VOs never drop.
     VO_CAP_FRAMEDROP    = 1 << 1,
-    // VO does not support redraws (vo_mediacodec_embed).
-    VO_CAP_NOREDRAW     = 1 << 2,
+    // VO does not allow frames to be retained (vo_mediacodec_embed).
+    VO_CAP_NORETAIN     = 1 << 2,
 };
 
 #define VO_MAX_REQ_FRAMES 10
@@ -187,7 +208,6 @@ struct vo_extra {
     struct input_ctx *input_ctx;
     struct osd_state *osd;
     struct encode_lavc_context *encode_lavc_ctx;
-    struct mpv_opengl_cb_context *opengl_cb_context;
     void (*wakeup_cb)(void *ctx);
     void *wakeup_ctx;
 };
@@ -219,6 +239,8 @@ struct vo_frame {
     bool still;
     // Frames are output as fast as possible, with implied vsync blocking.
     bool display_synced;
+    // Dropping the frame is allowed if the VO is behind.
+    bool can_drop;
     // The current frame to be drawn.
     // Warning: When OSD should be redrawn in --force-window --idle mode, this
     //          can be NULL. The VO should draw a black background, OSD on top.
@@ -244,6 +266,12 @@ struct vo_frame {
 struct vo_driver {
     // Encoding functionality, which can be invoked via --o only.
     bool encode;
+
+    // This requires waiting for a VO_EVENT_INITIAL_UNBLOCK event before the
+    // first frame can be sent. Doing vo_reconfig*() calls is allowed though.
+    // Encode mode uses this, the core uses vo_is_ready_for_frame() to
+    // implicitly check for this.
+    bool initially_blocked;
 
     // VO_CAP_* bits
     int caps;
@@ -272,6 +300,12 @@ struct vo_driver {
      * returns: < 0 on error, >= 0 on success
      */
     int (*reconfig)(struct vo *vo, struct mp_image_params *params);
+
+    /*
+     * Like reconfig(), but provides the whole mp_image for which the change is
+     * required. (The image doesn't have to have real data.)
+     */
+    int (*reconfig2)(struct vo *vo, struct mp_image *img);
 
     /*
      * Control interface
@@ -309,6 +343,14 @@ struct vo_driver {
                                   int stride_align);
 
     /*
+     * Thread-safe variant of get_image. Set at most one of these callbacks.
+     * This excludes _all_ synchronization magic. The only guarantee is that
+     * vo_driver.uninit is not called before this function returns.
+     */
+    struct mp_image *(*get_image_ts)(struct vo *vo, int imgfmt, int w, int h,
+                                     int stride_align);
+
+    /*
      * Render the given frame to the VO's backbuffer. This operation will be
      * followed by a draw_osd and a flip_page[_timed] call.
      * mpi belongs to the VO; the VO must free it eventually.
@@ -321,6 +363,9 @@ struct vo_driver {
 
     /* Render the given frame. Note that this is also called when repeating
      * or redrawing frames.
+     *
+     * frame is freed by the caller, but the callee can still modify the
+     * contained data and references.
      */
     void (*draw_frame)(struct vo *vo, struct vo_frame *frame);
 
@@ -413,6 +458,7 @@ struct vo {
 struct mpv_global;
 struct vo *init_best_video_out(struct mpv_global *global, struct vo_extra *ex);
 int vo_reconfig(struct vo *vo, struct mp_image_params *p);
+int vo_reconfig2(struct vo *vo, struct mp_image *img);
 
 int vo_control(struct vo *vo, int request, void *data);
 void vo_control_async(struct vo *vo, int request, void *data);
@@ -444,6 +490,7 @@ double vo_get_estimated_vsync_jitter(struct vo *vo);
 double vo_get_display_fps(struct vo *vo);
 double vo_get_delay(struct vo *vo);
 void vo_discard_timing_info(struct vo *vo);
+struct vo_frame *vo_get_current_vo_frame(struct vo *vo);
 struct mp_image *vo_get_image(struct vo *vo, int imgfmt, int w, int h,
                               int stride_align);
 

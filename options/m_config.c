@@ -194,11 +194,18 @@ struct m_config *m_config_new(void *talloc_ctx, struct mp_log *log,
     return config;
 }
 
-struct m_config *m_config_from_obj_desc(void *talloc_ctx, struct mp_log *log,
-                                        struct m_obj_desc *desc)
+static struct m_config *m_config_from_obj_desc(void *talloc_ctx,
+                                               struct mp_log *log,
+                                               struct mpv_global *global,
+                                               struct m_obj_desc *desc)
 {
-    return m_config_new(talloc_ctx, log, desc->priv_size, desc->priv_defaults,
-                        desc->options);
+    struct m_config *c =
+        m_config_new(talloc_ctx, log, desc->priv_size, desc->priv_defaults,
+                     desc->options);
+    c->global = global;
+    if (desc->set_defaults && c->global)
+        desc->set_defaults(c->global, c->optstruct);
+    return c;
 }
 
 // Like m_config_from_obj_desc(), but don't allocate option struct.
@@ -260,7 +267,7 @@ struct m_config *m_config_from_obj_desc_and_args(void *ta_parent,
     struct mp_log *log, struct mpv_global *global, struct m_obj_desc *desc,
     const char *name, struct m_obj_settings *defaults, char **args)
 {
-    struct m_config *config = m_config_from_obj_desc(ta_parent, log, desc);
+    struct m_config *config = m_config_from_obj_desc(ta_parent, log, global, desc);
 
     for (int n = 0; defaults && defaults[n].name; n++) {
         struct m_obj_settings *entry = &defaults[n];
@@ -518,7 +525,9 @@ static void m_config_add_option(struct m_config *config,
             // The required alignment is unknown, so go with the maximum C
             // could require. Slightly wasteful, but not that much.
             int align = (size - config->shadow_size % size) % size;
-            co.shadow_offset = config->shadow_size + align;
+            int offset = config->shadow_size + align;
+            assert(offset <= INT16_MAX);
+            co.shadow_offset = offset;
             config->shadow_size = co.shadow_offset + size;
         }
 
@@ -602,7 +611,7 @@ struct m_config_option *m_config_get_co(const struct m_config *config,
 {
     struct m_config_option *co = m_config_get_co_any(config, name);
     // CLI aliases should not be real options, and are explicitly handled by
-    // m_config_set_option_cli(). So petend it does not exist.
+    // m_config_set_option_cli(). So pretend it does not exist.
     if (co && co->opt->type == &m_option_type_cli_alias)
         co = NULL;
     return co;
@@ -812,16 +821,16 @@ static struct m_config_option *m_config_mogrify_cli_opt(struct m_config *config,
         return co;
 
     // Turn "--no-foo" into "foo" + set *out_negate.
-    if (!co && bstr_eatstart0(name, "no-")) {
-        co = m_config_get_co(config, *name);
+    bstr no_name = *name;
+    if (!co && bstr_eatstart0(&no_name, "no-")) {
+        co = m_config_get_co(config, no_name);
 
         // Not all choice types have this value - if they don't, then parsing
         // them will simply result in an error. Good enough.
-        if (co && co->opt->type != CONF_TYPE_FLAG &&
-                  co->opt->type != CONF_TYPE_CHOICE &&
-                  co->opt->type != &m_option_type_aspect)
+        if (!co || !(co->opt->type->flags & M_OPT_TYPE_CHOICE))
             return NULL;
 
+        *name = no_name;
         *out_negate = true;
         return co;
     }
@@ -1025,7 +1034,7 @@ void m_config_print_option_list(const struct m_config *config, const char *name)
         }
         char *def = NULL;
         if (co->default_data)
-            def = m_option_print(opt, co->default_data);
+            def = m_option_pretty_print(opt, co->default_data);
         if (def) {
             MP_INFO(config, " (default: %s)", def);
             talloc_free(def);
@@ -1039,7 +1048,7 @@ void m_config_print_option_list(const struct m_config *config, const char *name)
         if (opt->type == &m_option_type_alias)
             MP_INFO(config, " for %s", (char *)opt->priv);
         if (opt->type == &m_option_type_cli_alias)
-            MP_INFO(config, " for %s (CLI/config files only)", (char *)opt->priv);
+            MP_INFO(config, " for --%s (CLI/config files only)", (char *)opt->priv);
         MP_INFO(config, "\n");
         for (int n = 0; opt->type->actions && opt->type->actions[n].name; n++) {
             const struct m_option_action *action = &opt->type->actions[n];
@@ -1340,6 +1349,20 @@ void m_config_notify_change_co(struct m_config *config,
     }
 }
 
+void m_config_notify_change_opt_ptr(struct m_config *config, void *ptr)
+{
+    for (int n = 0; n < config->num_opts; n++) {
+        struct m_config_option *co = &config->opts[n];
+        if (co->data == ptr) {
+            m_config_notify_change_co(config, co);
+            return;
+        }
+    }
+    // ptr doesn't point to any config->optstruct field declared in the
+    // option list?
+    assert(false);
+}
+
 void m_config_cache_set_wakeup_cb(struct m_config_cache *cache,
                                   void (*cb)(void *ctx), void *cb_ctx)
 {
@@ -1379,7 +1402,7 @@ void m_config_cache_set_dispatch_change_cb(struct m_config_cache *cache,
                                            struct mp_dispatch_queue *dispatch,
                                            void (*cb)(void *ctx), void *cb_ctx)
 {
-    // Remove the old one is tricky. Firts make sure no new notifications will
+    // Removing the old one is tricky. First make sure no new notifications will
     // come.
     m_config_cache_set_wakeup_cb(cache, NULL, NULL);
     // Remove any pending notifications (assume we're on the same thread as
@@ -1402,22 +1425,13 @@ void m_config_cache_set_dispatch_change_cb(struct m_config_cache *cache,
     }
 }
 
-bool m_config_is_in_group(struct m_config *config,
-                          const struct m_sub_options *group,
-                          struct m_config_option *co)
-{
-    for (int n = 0; n < config->num_groups; n++) {
-        if (config->groups[n].group == group)
-            return is_group_included(config, co->group, n);
-    }
-    return false;
-}
-
 void *mp_get_config_group(void *ta_parent, struct mpv_global *global,
                           const struct m_sub_options *group)
 {
-    assert(ta_parent); // without you'd necessarily leak memory
-    struct m_config_cache *cache = m_config_cache_alloc(ta_parent, global, group);
+    struct m_config_cache *cache = m_config_cache_alloc(NULL, global, group);
+    // Make talloc_free(cache->opts) free the entire cache.
+    ta_set_parent(cache->opts, ta_parent);
+    ta_set_parent(cache, cache->opts);
     return cache->opts;
 }
 
@@ -1425,7 +1439,7 @@ void mp_read_option_raw(struct mpv_global *global, const char *name,
                         const struct m_option_type *type, void *dst)
 {
     struct m_config_shadow *shadow = global->config;
-    struct m_config_option *co = m_config_get_co(shadow->root, bstr0(name));
+    struct m_config_option *co = m_config_get_co_raw(shadow->root, bstr0(name));
     assert(co);
     assert(co->shadow_offset >= 0);
     assert(co->opt->type == type);

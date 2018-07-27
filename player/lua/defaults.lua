@@ -511,24 +511,21 @@ function mp.osd_message(text, duration)
 end
 
 local hook_table = {}
-local hook_registered = false
 
-local function hook_run(id, cont)
-    local fn = hook_table[tonumber(id)]
+mp.register_event("hook", function(ev)
+    local fn = hook_table[tonumber(ev.id)]
     if fn then
         fn()
     end
-    mp.commandv("hook-ack", cont)
-end
+    mp.raw_hook_continue(ev.hook_id)
+end)
 
 function mp.add_hook(name, pri, cb)
-    if not hook_registered then
-        mp.register_script_message("hook_run", hook_run)
-        hook_registered = true
-    end
     local id = #hook_table + 1
     hook_table[id] = cb
-    mp.commandv("hook-add", name, id, pri)
+    -- The C API suggests using 0 for a neutral priority, but lua.rst suggests
+    -- 50 (?), so whatever.
+    mp.raw_hook_add(id, name, pri - 50)
 end
 
 local mp_utils = package.loaded["mp.utils"]
@@ -587,6 +584,16 @@ end
 
 function mp_utils.getcwd()
     return mp.get_property("working-directory")
+end
+
+function mp_utils.format_bytes_humanized(b)
+    local d = {"Bytes", "KiB", "MiB", "GiB", "TiB", "PiB"}
+    local i = 1
+    while b >= 1024 do
+        b = b / 1024
+        i = i + 1
+    end
+    return string.format("%0.2f %s", b, d[i] and d[i] or "*1024^" .. (i-1))
 end
 
 return {}

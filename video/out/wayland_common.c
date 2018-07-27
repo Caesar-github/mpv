@@ -26,8 +26,8 @@
 #include "win_state.h"
 #include "wayland_common.h"
 
-// Generated from xdg-shell-unstable-v6.xml
-#include "video/out/wayland/xdg-shell-v6.h"
+// Generated from xdg-shell.xml
+#include "video/out/wayland/xdg-shell.h"
 
 // Generated from idle-inhibit-unstable-v1.xml
 #include "video/out/wayland/idle-inhibit-v1.h"
@@ -35,12 +35,12 @@
 // Generated from server-decoration.xml
 #include "video/out/wayland/srv-decor.h"
 
-static void xdg_shell_ping(void *data, struct zxdg_shell_v6 *shell, uint32_t serial)
+static void xdg_shell_ping(void *data, struct xdg_wm_base *shell, uint32_t serial)
 {
-    zxdg_shell_v6_pong(shell, serial);
+    xdg_wm_base_pong(shell, serial);
 }
 
-static const struct zxdg_shell_v6_listener xdg_shell_listener = {
+static const struct xdg_wm_base_listener xdg_shell_listener = {
     xdg_shell_ping,
 };
 
@@ -125,7 +125,7 @@ static void pointer_handle_motion(void *data, struct wl_pointer *pointer,
 static void window_move(struct vo_wayland_state *wl, uint32_t serial)
 {
     if (wl->xdg_toplevel)
-        zxdg_toplevel_v6_move(wl->xdg_toplevel, wl->seat, serial);
+        xdg_toplevel_move(wl->xdg_toplevel, wl->seat, serial);
 }
 
 static void pointer_handle_button(void *data, struct wl_pointer *wl_pointer,
@@ -177,9 +177,9 @@ static const struct wl_pointer_listener pointer_listener = {
 };
 
 static int check_for_resize(struct vo_wayland_state *wl, wl_fixed_t x_w, wl_fixed_t y_w,
-                            enum zxdg_toplevel_v6_resize_edge *edge)
+                            enum xdg_toplevel_resize_edge *edge)
 {
-    if (wl->touch_entries || wl->fullscreen)
+    if (wl->touch_entries || wl->fullscreen || wl->maximized)
         return 0;
 
     const int edge_pixels = 64;
@@ -190,21 +190,21 @@ static int check_for_resize(struct vo_wayland_state *wl, wl_fixed_t x_w, wl_fixe
     int bottom_edge = pos[1] > (mp_rect_h(wl->geometry) - edge_pixels);
 
     if (left_edge) {
-        *edge = ZXDG_TOPLEVEL_V6_RESIZE_EDGE_LEFT;
+        *edge = XDG_TOPLEVEL_RESIZE_EDGE_LEFT;
         if (top_edge)
-            *edge = ZXDG_TOPLEVEL_V6_RESIZE_EDGE_TOP_LEFT;
+            *edge = XDG_TOPLEVEL_RESIZE_EDGE_TOP_LEFT;
         else if (bottom_edge)
-            *edge = ZXDG_TOPLEVEL_V6_RESIZE_EDGE_BOTTOM_LEFT;
+            *edge = XDG_TOPLEVEL_RESIZE_EDGE_BOTTOM_LEFT;
     } else if (right_edge) {
-        *edge = ZXDG_TOPLEVEL_V6_RESIZE_EDGE_RIGHT;
+        *edge = XDG_TOPLEVEL_RESIZE_EDGE_RIGHT;
         if (top_edge)
-            *edge = ZXDG_TOPLEVEL_V6_RESIZE_EDGE_TOP_RIGHT;
+            *edge = XDG_TOPLEVEL_RESIZE_EDGE_TOP_RIGHT;
         else if (bottom_edge)
-            *edge = ZXDG_TOPLEVEL_V6_RESIZE_EDGE_BOTTOM_RIGHT;
+            *edge = XDG_TOPLEVEL_RESIZE_EDGE_BOTTOM_RIGHT;
     } else if (top_edge) {
-        *edge = ZXDG_TOPLEVEL_V6_RESIZE_EDGE_TOP;
+        *edge = XDG_TOPLEVEL_RESIZE_EDGE_TOP;
     } else if (bottom_edge) {
-        *edge = ZXDG_TOPLEVEL_V6_RESIZE_EDGE_BOTTOM;
+        *edge = XDG_TOPLEVEL_RESIZE_EDGE_BOTTOM;
     } else {
         *edge = 0;
         return 0;
@@ -219,14 +219,14 @@ static void touch_handle_down(void *data, struct wl_touch *wl_touch,
 {
     struct vo_wayland_state *wl = data;
 
-    enum zxdg_toplevel_v6_resize_edge edge;
+    enum xdg_toplevel_resize_edge edge;
     if (check_for_resize(wl, x_w, y_w, &edge)) {
         wl->touch_entries = 0;
-        zxdg_toplevel_v6_resize(wl->xdg_toplevel, wl->seat, serial, edge);
+        xdg_toplevel_resize(wl->xdg_toplevel, wl->seat, serial, edge);
         return;
     } else if (wl->touch_entries) {
         wl->touch_entries = 0;
-        zxdg_toplevel_v6_move(wl->xdg_toplevel, wl->seat, serial);
+        xdg_toplevel_move(wl->xdg_toplevel, wl->seat, serial);
         return;
     }
 
@@ -782,9 +782,8 @@ static void registry_handle_add(void *data, struct wl_registry *reg, uint32_t id
     int found = 1;
     struct vo_wayland_state *wl = data;
 
-    if (!strcmp(interface, wl_compositor_interface.name) && found++) {
-        ver = MPMIN(ver, 4); /* Cap the version */
-        wl->compositor = wl_registry_bind(reg, id, &wl_compositor_interface, ver);
+    if (!strcmp(interface, wl_compositor_interface.name) && (ver >= 3) && found++) {
+        wl->compositor = wl_registry_bind(reg, id, &wl_compositor_interface, 3);
         wl->surface = wl_compositor_create_surface(wl->compositor);
         wl->cursor_surface = wl_compositor_create_surface(wl->compositor);
         wl_surface_add_listener(wl->surface, &surface_listener, wl);
@@ -805,9 +804,10 @@ static void registry_handle_add(void *data, struct wl_registry *reg, uint32_t id
         wl_list_insert(&wl->output_list, &output->link);
     }
 
-    if (!strcmp(interface, zxdg_shell_v6_interface.name) && found++) {
-        wl->shell = wl_registry_bind(reg, id, &zxdg_shell_v6_interface, 1);
-        zxdg_shell_v6_add_listener(wl->shell, &xdg_shell_listener, wl);
+    if (!strcmp(interface, xdg_wm_base_interface.name) && found++) {
+        ver = MPMIN(ver, 2); /* We can use either 1 or 2 */
+        wl->shell = wl_registry_bind(reg, id, &xdg_wm_base_interface, ver);
+        xdg_wm_base_add_listener(wl->shell, &xdg_shell_listener, wl);
     }
 
     if (!strcmp(interface, wl_seat_interface.name) && found++) {
@@ -866,38 +866,42 @@ static const struct wl_registry_listener registry_listener = {
     registry_handle_remove,
 };
 
-static void handle_surface_config(void *data, struct zxdg_surface_v6 *surface,
+static void handle_surface_config(void *data, struct xdg_surface *surface,
                                   uint32_t serial)
 {
-    zxdg_surface_v6_ack_configure(surface, serial);
+    xdg_surface_ack_configure(surface, serial);
 }
 
-static const struct zxdg_surface_v6_listener xdg_surface_listener = {
+static const struct xdg_surface_listener xdg_surface_listener = {
     handle_surface_config,
 };
 
-static void handle_toplevel_config(void *data, struct zxdg_toplevel_v6 *toplevel,
+static void handle_toplevel_config(void *data, struct xdg_toplevel *toplevel,
                                    int32_t width, int32_t height, struct wl_array *states)
 {
     struct vo_wayland_state *wl = data;
     struct mp_rect old_geometry = wl->geometry;
 
     int prev_fs_state = wl->fullscreen;
-    bool maximized = false;
+    wl->maximized = false;
     wl->fullscreen = false;
-    enum zxdg_toplevel_v6_state *state;
+    enum xdg_toplevel_state *state;
     wl_array_for_each(state, states) {
         switch (*state) {
-        case ZXDG_TOPLEVEL_V6_STATE_FULLSCREEN:
+        case XDG_TOPLEVEL_STATE_FULLSCREEN:
             wl->fullscreen = true;
             break;
-        case ZXDG_TOPLEVEL_V6_STATE_RESIZING:
+        case XDG_TOPLEVEL_STATE_RESIZING:
             wl->pending_vo_events |= VO_EVENT_LIVE_RESIZING;
             break;
-        case ZXDG_TOPLEVEL_V6_STATE_MAXIMIZED:
-            maximized = true;
+        case XDG_TOPLEVEL_STATE_ACTIVATED:
             break;
-        case ZXDG_TOPLEVEL_V6_STATE_ACTIVATED:
+        case XDG_TOPLEVEL_STATE_TILED_TOP:
+        case XDG_TOPLEVEL_STATE_TILED_LEFT:
+        case XDG_TOPLEVEL_STATE_TILED_RIGHT:
+        case XDG_TOPLEVEL_STATE_TILED_BOTTOM:
+        case XDG_TOPLEVEL_STATE_MAXIMIZED:
+            wl->maximized = true;
             break;
         }
     }
@@ -910,7 +914,7 @@ static void handle_toplevel_config(void *data, struct zxdg_toplevel_v6 *toplevel
     if (width > 0 && height > 0) {
         if (!wl->fullscreen) {
             if (wl->vo->opts->keepaspect && wl->vo->opts->keepaspect_window &&
-                !maximized) {
+                !wl->maximized) {
                 if (width > height)
                     width  = height * wl->aspect_ratio;
                 else
@@ -939,27 +943,27 @@ static void handle_toplevel_config(void *data, struct zxdg_toplevel_v6 *toplevel
     wl->pending_vo_events |= VO_EVENT_RESIZE;
 }
 
-static void handle_toplevel_close(void *data, struct zxdg_toplevel_v6 *xdg_toplevel)
+static void handle_toplevel_close(void *data, struct xdg_toplevel *xdg_toplevel)
 {
     struct vo_wayland_state *wl = data;
     mp_input_put_key(wl->vo->input_ctx, MP_KEY_CLOSE_WIN);
 }
 
-static const struct zxdg_toplevel_v6_listener xdg_toplevel_listener = {
+static const struct xdg_toplevel_listener xdg_toplevel_listener = {
     handle_toplevel_config,
     handle_toplevel_close,
 };
 
 static int create_xdg_surface(struct vo_wayland_state *wl)
 {
-    wl->xdg_surface = zxdg_shell_v6_get_xdg_surface(wl->shell, wl->surface);
-    zxdg_surface_v6_add_listener(wl->xdg_surface, &xdg_surface_listener, wl);
+    wl->xdg_surface = xdg_wm_base_get_xdg_surface(wl->shell, wl->surface);
+    xdg_surface_add_listener(wl->xdg_surface, &xdg_surface_listener, wl);
 
-    wl->xdg_toplevel = zxdg_surface_v6_get_toplevel(wl->xdg_surface);
-    zxdg_toplevel_v6_add_listener(wl->xdg_toplevel, &xdg_toplevel_listener, wl);
+    wl->xdg_toplevel = xdg_surface_get_toplevel(wl->xdg_surface);
+    xdg_toplevel_add_listener(wl->xdg_toplevel, &xdg_toplevel_listener, wl);
 
-    zxdg_toplevel_v6_set_title (wl->xdg_toplevel, "mpv");
-    zxdg_toplevel_v6_set_app_id(wl->xdg_toplevel, "mpv");
+    xdg_toplevel_set_title (wl->xdg_toplevel, "mpv");
+    xdg_toplevel_set_app_id(wl->xdg_toplevel, "mpv");
 
     return 0;
 }
@@ -1010,7 +1014,7 @@ int vo_wayland_init(struct vo *vo)
 
     if (!wl->shell) {
         MP_FATAL(wl, "Compositor doesn't support the required %s protocol!\n",
-                 zxdg_shell_v6_interface.name);
+                 xdg_wm_base_interface.name);
         return false;
     }
 
@@ -1074,7 +1078,7 @@ void vo_wayland_uninit(struct vo *vo)
         zwp_idle_inhibit_manager_v1_destroy(wl->idle_inhibit_manager);
 
     if (wl->shell)
-        zxdg_shell_v6_destroy(wl->shell);
+        xdg_wm_base_destroy(wl->shell);
 
     if (wl->shm)
         wl_shm_destroy(wl->shm);
@@ -1153,11 +1157,14 @@ int vo_wayland_reconfig(struct vo *vo)
     vo_calc_window_geometry(vo, &screenrc, &geo);
     vo_apply_window_geometry(vo, &geo);
 
-    wl->geometry.x0  = 0;
-    wl->geometry.y0  = 0;
-    wl->geometry.x1  = vo->dwidth / wl->scaling;
-    wl->geometry.y1  = vo->dheight / wl->scaling;
-    wl->window_size  = wl->geometry;
+    if (!wl->configured || !wl->maximized) {
+        wl->geometry.x0 = 0;
+        wl->geometry.y0 = 0;
+        wl->geometry.x1 = vo->dwidth  / wl->scaling;
+        wl->geometry.y1 = vo->dheight / wl->scaling;
+        wl->window_size = wl->geometry;
+    }
+
     wl->aspect_ratio = vo->dwidth / (float)vo->dheight;
 
     if (vo->opts->fullscreen) {
@@ -1168,7 +1175,7 @@ int vo_wayland_reconfig(struct vo *vo)
             wl->geometry.x1  = mp_rect_w(wl->current_output->geometry)/wl->scaling;
             wl->geometry.y1  = mp_rect_h(wl->current_output->geometry)/wl->scaling;
         } else {
-            zxdg_toplevel_v6_set_fullscreen(wl->xdg_toplevel, wl_out);
+            xdg_toplevel_set_fullscreen(wl->xdg_toplevel, wl_out);
         }
     }
 
@@ -1198,6 +1205,7 @@ static int set_screensaver_inhibitor(struct vo_wayland_state *wl, int state)
     } else {
         MP_VERBOSE(wl, "Disabling the idle inhibitor\n");
         zwp_idle_inhibitor_v1_destroy(wl->idle_inhibitor);
+        wl->idle_inhibitor = NULL;
     }
     return VO_TRUE;
 }
@@ -1207,9 +1215,9 @@ static int toggle_fullscreen(struct vo_wayland_state *wl)
     if (!wl->xdg_toplevel)
         return VO_NOTAVAIL;
     if (wl->fullscreen)
-        zxdg_toplevel_v6_unset_fullscreen(wl->xdg_toplevel);
+        xdg_toplevel_unset_fullscreen(wl->xdg_toplevel);
     else
-        zxdg_toplevel_v6_set_fullscreen(wl->xdg_toplevel, NULL);
+        xdg_toplevel_set_fullscreen(wl->xdg_toplevel, NULL);
     return VO_TRUE;
 }
 
@@ -1217,7 +1225,7 @@ static int update_window_title(struct vo_wayland_state *wl, char *title)
 {
     if (!wl->xdg_toplevel)
         return VO_NOTAVAIL;
-    zxdg_toplevel_v6_set_title(wl->xdg_toplevel, title);
+    xdg_toplevel_set_title(wl->xdg_toplevel, title);
     return VO_TRUE;
 }
 
@@ -1318,7 +1326,7 @@ int vo_wayland_control(struct vo *vo, int *events, int request, void *arg)
     }
     case VOCTRL_SET_UNFS_WINDOW_SIZE: {
         int *s = arg;
-        if (!wl->fullscreen) {
+        if (!wl->fullscreen && !wl->maximized) {
             wl->geometry.x0 = 0;
             wl->geometry.y0 = 0;
             wl->geometry.x1 = s[0]/wl->scaling;

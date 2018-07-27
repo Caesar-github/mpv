@@ -324,7 +324,7 @@ Available video output drivers are:
     This is low quality, and has issues with OSD.
 
     .. note:: This driver is for compatibility with crappy systems. You can
-              use vaapi hardware decoding with ``--vo=opengl`` too.
+              use vaapi hardware decoding with ``--vo=gpu`` too.
 
     The following global options are supported by this video output:
 
@@ -428,37 +428,21 @@ Available video output drivers are:
     ``--vo-image-outdir=<dirname>``
         Specify the directory to save the image files to (default: ``./``).
 
-``wayland`` (Wayland only)
-    Wayland shared memory video output as fallback for ``opengl``.
+``libmpv``
+    For use with libmpv direct embedding. As a special case, on OS X it
+    is used like a normal VO within mpv (cocoa-cb). Otherwise useless in any
+    other contexts.
+    (See ``<mpv/render.h>``.)
 
-    .. note:: This driver is for compatibility with systems that don't provide
-              working OpenGL drivers.
-
-    The following global options are supported by this video output:
-
-    ``--vo-wayland-alpha``
-        Use a buffer format that supports videos and images with alpha
-        information
-    ``--vo-wayland-rgb565``
-        Use RGB565 as buffer format. This format is implemented on most
-        platforms, especially on embedded where it is far more efficient then
-        RGB8888.
-    ``--vo-wayland-triple-buffering``
-        Use 3 buffers instead of 2. This can lead to more fluid playback, but
-        uses more memory.
-
-``opengl-cb``
-    For use with libmpv direct OpenGL embedding; useless in any other contexts.
-    (See ``<mpv/opengl_cb.h>``.)
-
-    This also supports many of the options the ``opengl`` VO has.
+    This also supports many of the options the ``gpu`` VO has, depending on the
+    backend.
 
 ``rpi`` (Raspberry Pi)
     Native video output on the Raspberry Pi using the MMAL API.
 
-    This is deprecated. Use ``--vo=opengl`` instead, which is the default and
+    This is deprecated. Use ``--vo=gpu`` instead, which is the default and
     provides the same functionality. The ``rpi`` VO will be removed in
-    mpv 0.23.0. Its functionality was folded into --vo=opengl, which now uses
+    mpv 0.23.0. Its functionality was folded into --vo=gpu, which now uses
     RPI hardware decoding by treating it as a hardware overlay (without applying
     GL filtering). Also to be changed in 0.23.0: the --fs flag will be reset to
     "no" by default (like on the other platforms).
@@ -488,7 +472,7 @@ Available video output drivers are:
     Video output driver using Kernel Mode Setting / Direct Rendering Manager.
     Should be used when one doesn't want to install full-blown graphical
     environment (e.g. no X). Does not support hardware acceleration (if you
-    need this, check the ``drm`` backend for ``opengl`` VO).
+    need this, check the ``drm`` backend for ``gpu`` VO).
 
     The following global options are supported by this video output:
 
@@ -501,13 +485,42 @@ Available video output drivers are:
         (default: empty)
 
     ``--drm-mode=<number>``
-        Mode ID to use (resolution, bit depth and frame rate).
+        Mode ID to use (resolution and frame rate).
         (default: 0)
 
-    ``--drm-overlay=<number>``
-        Select the DRM overlay index to use.
-        Overlay index is zero based, and related to crtc.
-        (default: 0)
+    ``--drm-osd-plane-id=<number>``
+        Select the DRM plane index to use for OSD (or OSD and video).
+        Index is zero based, and related to crtc.
+        When using this option with the drm_prime renderer, it will only affect
+        the OSD contents. Otherwise it will set OSD & video plane.
+        (default: primary plane)
+
+    ``--drm-video-plane-id=<number>``
+        Select the DRM plane index to use for video layer.
+        Index is zero based, and related to crtc.
+        This option only has effect when using the drm_prime renderer (which
+        supports several layers) together with ``vo=gpu`` and ``gpu-context=drm``.
+        (default: first overlay plane)
+
+    ``--drm-format=<xrgb8888,xrgb2101010>``
+        Select the DRM format to use (default: xrgb8888). This allows you to
+        choose the bit depth of the DRM mode. xrgb8888 is your usual 24 bit per
+        pixel/8 bits per channel packed RGB format with 8 bits of padding.
+        xrgb2101010 is a packed 30 bits per pixel/10 bits per channel packed RGB
+        format with 2 bits of padding.
+
+        Unless you have an intel graphics card, a recent kernel and a recent
+        version of mesa (>=18) xrgb2101010 is unlikely to work for you.
+
+        This currently only has an effect when used together with the ``drm``
+        backend for the ``gpu`` VO. The ``drm`` VO always uses xrgb8888.
+
+    ``--drm-osd-size=<[WxH]>``
+        Sets the OSD OpenGL size to the specified size. OSD will then be upscaled
+        to the current screen resolution. This option can be useful when using
+        several layers in high resolutions with a GPU which cannot handle it.
+        Note : this option is only available with DRM atomic support.
+        (default: display resolution)
 
 ``mediacodec_embed`` (Android)
     Renders ``IMGFMT_MEDIACODEC`` frames directly to an ``android.view.Surface``.

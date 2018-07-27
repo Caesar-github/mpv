@@ -47,8 +47,17 @@ const struct m_sub_options drm_conf = {
         OPT_STRING_VALIDATE("drm-connector", drm_connector_spec,
                             0, drm_validate_connector_opt),
         OPT_INT("drm-mode", drm_mode_id, 0),
-        OPT_INT("drm-overlay", drm_overlay_id, 0),
+        OPT_INT("drm-osd-plane-id", drm_osd_plane_id, 0),
+        OPT_INT("drm-video-plane-id", drm_video_plane_id, 0),
+        OPT_CHOICE("drm-format", drm_format, 0,
+                   ({"xrgb8888",    DRM_OPTS_FORMAT_XRGB8888},
+                    {"xrgb2101010", DRM_OPTS_FORMAT_XRGB2101010})),
+        OPT_SIZE_BOX("drm-osd-size", drm_osd_size, 0),
         {0},
+    },
+    .defaults = &(const struct drm_opts) {
+        .drm_osd_plane_id = -1,
+        .drm_video_plane_id = -1,
     },
     .size = sizeof(struct drm_opts),
 };
@@ -164,6 +173,27 @@ static bool setup_connector(struct kms *kms, const drmModeRes *res,
 
 static bool setup_crtc(struct kms *kms, const drmModeRes *res)
 {
+    // First try to find currently connected encoder and its current CRTC
+    for (unsigned int i = 0; i < res->count_encoders; i++) {
+        drmModeEncoder *encoder = drmModeGetEncoder(kms->fd, res->encoders[i]);
+        if (!encoder) {
+            MP_WARN(kms, "Cannot retrieve encoder %u:%u: %s\n",
+                    i, res->encoders[i], mp_strerror(errno));
+            continue;
+        }
+
+        if (encoder->encoder_id == kms->connector->encoder_id && encoder->crtc_id != 0) {
+            MP_VERBOSE(kms, "Connector %u currently connected to encoder %u\n",
+                       kms->connector->connector_id, kms->connector->encoder_id);
+            kms->encoder = encoder;
+            kms->crtc_id = encoder->crtc_id;
+            goto success;
+        }
+
+        drmModeFreeEncoder(encoder);
+    }
+
+    // Otherwise pick first legal encoder and CRTC combo for the connector
     for (unsigned int i = 0; i < kms->connector->count_encoders; ++i) {
         drmModeEncoder *encoder
             = drmModeGetEncoder(kms->fd, kms->connector->encoders[i]);
@@ -181,7 +211,7 @@ static bool setup_crtc(struct kms *kms, const drmModeRes *res)
 
             kms->encoder = encoder;
             kms->crtc_id = res->crtcs[j];
-            return true;
+            goto success;
         }
 
         drmModeFreeEncoder(encoder);
@@ -190,6 +220,11 @@ static bool setup_crtc(struct kms *kms, const drmModeRes *res)
     MP_ERR(kms, "Connector %u has no suitable CRTC\n",
            kms->connector->connector_id);
     return false;
+
+  success:
+    MP_VERBOSE(kms, "Selected Encoder %u with CRTC %u\n",
+               kms->encoder->encoder_id, kms->crtc_id);
+    return true;
 }
 
 static bool setup_mode(struct kms *kms, int mode_id)
@@ -202,7 +237,7 @@ static bool setup_mode(struct kms *kms, int mode_id)
         return false;
     }
 
-    kms->mode = kms->connector->modes[mode_id];
+    kms->mode.mode = kms->connector->modes[mode_id];
     return true;
 }
 
@@ -234,7 +269,7 @@ static void parse_connector_spec(struct mp_log *log,
 
 
 struct kms *kms_create(struct mp_log *log, const char *connector_spec,
-                       int mode_id, int overlay_id)
+                       int mode_id, int osd_plane_id, int video_plane_id)
 {
     int card_no = -1;
     char *connector_name = NULL;
@@ -246,7 +281,7 @@ struct kms *kms_create(struct mp_log *log, const char *connector_spec,
         .fd = open_card(card_no),
         .connector = NULL,
         .encoder = NULL,
-        .mode = { 0 },
+        .mode = {{0}},
         .crtc_id = -1,
         .card_no = card_no,
     };
@@ -281,13 +316,13 @@ struct kms *kms_create(struct mp_log *log, const char *connector_spec,
         mp_verbose(log, "No DRM Atomic support found\n");
     } else {
         mp_verbose(log, "DRM Atomic support found\n");
-        kms->atomic_context = drm_atomic_create_context(kms->log, kms->fd, kms->crtc_id, overlay_id);
+        kms->atomic_context = drm_atomic_create_context(kms->log, kms->fd, kms->crtc_id,
+                                                        kms->connector->connector_id, osd_plane_id, video_plane_id);
         if (!kms->atomic_context) {
             mp_err(log, "Failed to create DRM atomic context\n");
             goto err;
         }
     }
-
 
     drmModeFreeResources(res);
     return kms;
@@ -305,6 +340,7 @@ void kms_destroy(struct kms *kms)
 {
     if (!kms)
         return;
+    drm_mode_destroy_blob(kms->fd, &kms->mode);
     if (kms->connector) {
         drmModeFreeConnector(kms->connector);
         kms->connector = NULL;
@@ -389,7 +425,7 @@ void kms_show_available_cards_and_connectors(struct mp_log *log)
 
 double kms_get_display_fps(const struct kms *kms)
 {
-    return mode_get_Hz(&kms->mode);
+    return mode_get_Hz(&kms->mode.mode);
 }
 
 int drm_validate_connector_opt(struct mp_log *log, const struct m_option *opt,
@@ -427,7 +463,6 @@ static int install_signal(int signo, void (*handler)(int))
     act.sa_flags = SA_RESTART;
     return sigaction(signo, &act, NULL);
 }
-
 
 bool vt_switcher_init(struct vt_switcher *s, struct mp_log *log)
 {
@@ -479,6 +514,14 @@ bool vt_switcher_init(struct vt_switcher *s, struct mp_log *log)
         return false;
     }
 
+    // Block the VT switching signals from interrupting the VO thread (they will
+    // still be picked up by other threads, which will fill vt_switcher_pipe for us)
+    sigset_t set;
+    sigemptyset(&set);
+    sigaddset(&set, RELEASE_SIGNAL);
+    sigaddset(&set, ACQUIRE_SIGNAL);
+    pthread_sigmask(SIG_BLOCK, &set, NULL);
+
     return true;
 }
 
@@ -504,6 +547,13 @@ void vt_switcher_interrupt_poll(struct vt_switcher *s)
 
 void vt_switcher_destroy(struct vt_switcher *s)
 {
+    struct vt_mode vt_mode = {0};
+    vt_mode.mode = VT_AUTO;
+    if (ioctl(s->tty_fd, VT_SETMODE, &vt_mode) < 0) {
+        MP_ERR(s, "VT_SETMODE failed: %s\n", mp_strerror(errno));
+        return;
+    }
+
     install_signal(RELEASE_SIGNAL, SIG_DFL);
     install_signal(ACQUIRE_SIGNAL, SIG_DFL);
     close(s->tty_fd);

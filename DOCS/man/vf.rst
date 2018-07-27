@@ -1,8 +1,11 @@
 VIDEO FILTERS
 =============
 
-Video filters allow you to modify the video stream and its properties. The
-syntax is:
+Video filters allow you to modify the video stream and its properties. All of
+the information described in this section applies to audio filters as well
+(generally using the prefix ``--af`` instead of ``--vf``).
+
+The exact syntax is:
 
 ``--vf=<filter1[=parameter1:parameter2:...],filter2,...>``
     Setup a chain of video filters. This consists on the filter name, and an
@@ -41,11 +44,18 @@ syntax is:
     the ``lavfi`` filter, which uses a very similar syntax as mpv (MPlayer
     historically) to specify filters and their parameters.
 
+Filters can be manipulated at run time. You can use ``@`` labels as described
+above in combination with the ``vf`` command (see `COMMAND INTERFACE`_) to get
+more control over this. Initially disabled filters with ``!`` are useful for
+this as well.
+
 You can also set defaults for each filter. The defaults are applied before the
-normal filter parameters.
+normal filter parameters. This is deprecated and never worked for the
+libavfilter bridge.
 
 ``--vf-defaults=<filter1[=parameter1:parameter2:...],filter2,...>``
-    Set defaults for each filter.
+    Set defaults for each filter. (Deprecated. ``--af-defaults`` is deprecated
+    as well.)
 
 .. note::
 
@@ -75,15 +85,20 @@ normal filter parameters.
 Video filters are managed in lists. There are a few commands to manage the
 filter list.
 
-``--vf-add=<filter1[,filter2,...]>``
-    Appends the filters given as arguments to the filter list.
+``--vf-add=filter``
+    Appends the filter given as arguments to the filter list. (Passing multiple
+    filters is currently still possible, but deprecated.)
 
-``--vf-pre=<filter1[,filter2,...]>``
-    Prepends the filters given as arguments to the filter list.
+``--vf-pre=filter``
+    Prepends the filters given as arguments to the filter list. (Passing
+    multiple filters is currently still possible, but deprecated.)
 
-``--vf-del=<index1[,index2,...]>``
-    Deletes the filters at the given indexes. Index numbers start at 0,
-    negative numbers address the end of the list (-1 is the last).
+``--vf-del=filter``
+    Deletes the filter. The filter can even given the way it was added (filter
+    name and its full argument list), by label (prefixed with ``@``), or as
+    index number. Index numbers start at 0, negative numbers address the end of
+    the list (-1 is the last). (Passing multiple filters is currently still
+    possible, but deprecated.)
 
 ``--vf-clr``
     Completely empties the filter list.
@@ -93,10 +108,6 @@ With filters that support it, you can access parameters by their name.
 ``--vf=<filter>=help``
     Prints the parameter names and parameter value ranges for a particular
     filter.
-
-``--vf=<filter=named_parameter1=value1[:named_parameter2=value2:...]>``
-    Sets a named parameter to the given value. Use on and off or yes and no to
-    set flag parameters.
 
 Available mpv-only filters are:
 
@@ -110,9 +121,7 @@ Available mpv-only filters are:
 
     ``<fmt>``
         Format name, e.g. rgb15, bgr24, 420p, etc. (default: don't change).
-    ``<outfmt>``
-        Format name that should be substituted for the output. If they do not
-        have the same bytes per pixel and chroma subsampling, it will fail.
+
     ``<colormatrix>``
         Controls the YUV to RGB color space conversion when playing video. There
         are various standards. Normally, BT.601 should be used for SD video, and
@@ -120,7 +129,7 @@ Available mpv-only filters are:
         results in slightly under or over saturated and shifted colors.
 
         These options are not always supported. Different video outputs provide
-        varying degrees of support. The ``opengl`` and ``vdpau`` video output
+        varying degrees of support. The ``gpu`` and ``vdpau`` video output
         drivers usually offer full support. The ``xv`` output can set the color
         space if the system video driver supports it, but not input and output
         levels. The ``scale`` video filter can configure color space and input
@@ -163,7 +172,7 @@ Available mpv-only filters are:
         used to override the setting.
 
         This option only affects video output drivers that perform color
-        management, for example ``opengl`` with the ``target-prim`` or
+        management, for example ``gpu`` with the ``target-prim`` or
         ``icc-profile`` suboptions set.
 
         If this option is set to ``auto`` (which is the default), the video's
@@ -459,7 +468,7 @@ Available mpv-only filters are:
     other userdata type will result in hard crashes.
 
 ``vavpp``
-    VA-AP-API video post processing. Works with ``--vo=vaapi`` and ``--vo=opengl``
+    VA-AP-API video post processing. Works with ``--vo=vaapi`` and ``--vo=gpu``
     only. Currently deinterlaces. This filter is automatically inserted if
     deinterlacing is requested (either using the ``d`` key, by default mapped to
     the command ``cycle deinterlace``, or the ``--deinterlace`` option).
@@ -469,18 +478,22 @@ Available mpv-only filters are:
 
         no
             Don't perform deinterlacing.
+        auto
+             Select the best quality deinterlacing algorithm (default). This
+             goes by the order of the options as documented, with
+             ``motion-compensated`` being considered best quality.
         first-field
             Show only first field.
         bob
-            bob deinterlacing (default).
+            bob deinterlacing.
         weave, motion-adaptive, motion-compensated
             Advanced deinterlacing algorithms. Whether these actually work
             depends on the GPU hardware, the GPU drivers, driver bugs, and
             mpv bugs.
 
     ``<interlaced-only>``
-        :no:  Deinterlace all frames.
-        :yes: Only deinterlace frames marked as interlaced (default).
+        :no:  Deinterlace all frames (default).
+        :yes: Only deinterlace frames marked as interlaced.
 
     ``reversal-bug=<yes|no>``
         :no:  Use the API as it was interpreted by older Mesa drivers. While
@@ -492,12 +505,12 @@ Available mpv-only filters are:
               algorithms.
 
 ``vdpaupp``
-    VDPAU video post processing. Works with ``--vo=vdpau`` and ``--vo=opengl``
+    VDPAU video post processing. Works with ``--vo=vdpau`` and ``--vo=gpu``
     only. This filter is automatically inserted if deinterlacing is requested
     (either using the ``d`` key, by default mapped to the command
     ``cycle deinterlace``, or the ``--deinterlace`` option). When enabling
     deinterlacing, it is always preferred over software deinterlacer filters
-    if the ``vdpau`` VO is used, and also if ``opengl`` is used and hardware
+    if the ``vdpau`` VO is used, and also if ``gpu`` is used and hardware
     decoding was activated at least once (i.e. vdpau was loaded).
 
     ``sharpen=<-1-1>``
@@ -535,7 +548,7 @@ Available mpv-only filters are:
         Try to apply inverse telecine, needs motion adaptive temporal
         deinterlacing.
     ``interlaced-only=<yes|no>``
-        If ``yes`` (default), only deinterlace frames marked as interlaced.
+        If ``yes``, only deinterlace frames marked as interlaced (default: no).
     ``hqscaling=<0-9>``
         0
             Use default VDPAU scaling (default).
@@ -549,7 +562,7 @@ Available mpv-only filters are:
     ``deint=<yes|no>``
         Whether deinterlacing is enabled (default: no).
     ``interlaced-only=<yes|no>``
-        If ``yes`` (default), only deinterlace frames marked as interlaced.
+        If ``yes``, only deinterlace frames marked as interlaced (default: no).
     ``mode=<blend|bob|adaptive|mocomp|ivctc|none>``
         Tries to select a video processor with the given processing capability.
         If a video processor supports multiple capabilities, it is not clear

@@ -53,6 +53,9 @@ struct demux_ctrl_reader_state {
     double ts_end; // approx. timestamp of end of buffered range
     int64_t total_bytes;
     int64_t fw_bytes;
+    double seeking; // current low level seek target, or NOPTS
+    int low_level_seeks; // number of started low level seeks
+    double ts_last; // approx. timestamp of demuxer position
     // Positions that can be seeked to without incurring the latency of a low
     // level seek.
     int num_seek_ranges;
@@ -232,8 +235,7 @@ typedef struct demuxer {
 
     // Since the demuxer can run in its own thread, and the stream is not
     // thread-safe, only the demuxer is allowed to access the stream directly.
-    // You can freely use demux_stream_control() to send STREAM_CTRLs, or use
-    // demux_pause() to get exclusive access to the stream.
+    // You can freely use demux_stream_control() to send STREAM_CTRLs.
     // Also note that the stream can get replaced if fully_read is set.
     struct stream *stream;
 } demuxer_t;
@@ -253,6 +255,8 @@ struct demux_packet *demux_read_packet(struct sh_stream *sh);
 int demux_read_packet_async(struct sh_stream *sh, struct demux_packet **out_pkt);
 bool demux_stream_is_selected(struct sh_stream *stream);
 bool demux_has_packet(struct sh_stream *sh);
+void demux_set_stream_wakeup_cb(struct sh_stream *sh,
+                                void (*cb)(void *ctx), void *ctx);
 struct demux_packet *demux_read_any_packet(struct demuxer *demuxer);
 
 struct sh_stream *demux_get_stream(struct demuxer *demuxer, int index);
@@ -282,6 +286,8 @@ void demux_set_ts_offset(struct demuxer *demuxer, double offset);
 
 int demux_control(struct demuxer *demuxer, int cmd, void *arg);
 
+void demux_block_reading(struct demuxer *demuxer, bool block);
+
 void demuxer_select_track(struct demuxer *demuxer, struct sh_stream *stream,
                           double ref_pts, bool selected);
 void demux_set_stream_autoselect(struct demuxer *demuxer, bool autoselect);
@@ -297,7 +303,7 @@ void demux_set_stream_tags(struct demuxer *demuxer, struct sh_stream *sh,
 
 int demux_stream_control(demuxer_t *demuxer, int ctrl, void *arg);
 
-void demux_changed(demuxer_t *demuxer, int events);
+void demux_metadata_changed(demuxer_t *demuxer);
 void demux_update(demuxer_t *demuxer);
 
 void demux_disable_cache(demuxer_t *demuxer);
@@ -311,5 +317,8 @@ bool demux_matroska_uid_cmp(struct matroska_segment_uid *a,
                             struct matroska_segment_uid *b);
 
 const char *stream_type_name(enum stream_type type);
+
+void mp_packet_tags_unref(struct mp_packet_tags *tags);
+void mp_packet_tags_setref(struct mp_packet_tags **dst, struct mp_packet_tags *src);
 
 #endif /* MPLAYER_DEMUXER_H */

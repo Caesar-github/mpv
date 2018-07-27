@@ -23,6 +23,7 @@
 #include "common/msg.h"
 #include "input/input.h"
 #include "player/client.h"
+#include "options/m_config.h"
 
 #import "osdep/macosx_application_objc.h"
 #include "osdep/macosx_compat.h"
@@ -33,8 +34,28 @@
 #if HAVE_MACOS_TOUCHBAR
 #import "osdep/macosx_touchbar.h"
 #endif
+#if HAVE_MACOS_COCOA_CB
+#include "osdep/macOS_swift.h"
+#endif
 
 #define MPV_PROTOCOL @"mpv://"
+
+#define OPT_BASE_STRUCT struct macos_opts
+const struct m_sub_options macos_conf = {
+    .opts = (const struct m_option[]) {
+        OPT_CHOICE("macos-title-bar-style", macos_title_bar_style, 0,
+                   ({"dark", 0}, {"ultradark", 1}, {"light", 2},
+                    {"mediumlight", 3}, {"auto", 4})),
+        OPT_CHOICE_OR_INT("macos-fs-animation-duration",
+                          macos_fs_animation_duration, 0, 0, 1000,
+                          ({"default", -1})),
+        {0}
+    },
+    .size = sizeof(struct macos_opts),
+    .defaults = &(const struct macos_opts){
+        .macos_fs_animation_duration = -1,
+    },
+};
 
 // Whether the NSApplication singleton was created. If this is false, we are
 // running in libmpv mode, and cocoa_main() was never called.
@@ -61,8 +82,9 @@ static void terminate_cocoa_application(void)
 }
 
 @implementation Application
-@synthesize menuBar = _menu_Bar;
+@synthesize menuBar = _menu_bar;
 @synthesize openCount = _open_count;
+@synthesize cocoaCB = _cocoa_cb;
 
 - (void)sendEvent:(NSEvent *)event
 {
@@ -96,6 +118,18 @@ static void terminate_cocoa_application(void)
     [super dealloc];
 }
 
+static const char macosx_icon[] =
+#include "osdep/macosx_icon.inc"
+;
+
+- (NSImage *)getMPVIcon
+{
+    NSData *icon_data = [NSData dataWithBytesNoCopy:(void *)macosx_icon
+                                             length:sizeof(macosx_icon)
+                                       freeWhenDone:NO];
+    return [[NSImage alloc] initWithData:icon_data];
+}
+
 #if HAVE_MACOS_TOUCHBAR
 - (NSTouchBar *)makeTouchBar
 {
@@ -117,6 +151,21 @@ static void terminate_cocoa_application(void)
     if ([self respondsToSelector:@selector(touchBar)])
         [(TouchBar *)self.touchBar processEvent:event];
 #endif
+    if (_cocoa_cb) {
+        [_cocoa_cb processEvent:event];
+    }
+}
+
+- (void)setMpvHandle:(struct mpv_handle *)ctx
+{
+#if HAVE_MACOS_COCOA_CB
+    [NSApp setCocoaCB:[[CocoaCB alloc] init:ctx]];
+#endif
+}
+
+- (const struct m_sub_options *)getMacOSConf
+{
+    return &macos_conf;
 }
 
 - (void)queueCommand:(char *)cmd

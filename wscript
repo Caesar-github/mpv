@@ -12,6 +12,8 @@ from waftools.checks.custom import *
 c_preproc.go_absolute=True # enable system folders
 c_preproc.standard_includes.append('/usr/local/include')
 
+APPNAME = 'mpv'
+
 """
 Dependency identifiers (for win32 vs. Unix):
     wscript / C source                  meaning
@@ -342,10 +344,6 @@ iconv support use --disable-iconv.",
                     check_statement('zlib.h', 'inflate(0, Z_NO_FLUSH)')),
         'req': True,
         'fmsg': 'Unable to find development files for zlib.'
-    } , {
-        'name' : '--encoding',
-        'desc' : 'Encoding',
-        'func': check_true,
     }, {
         'name': '--libbluray',
         'desc': 'Bluray support',
@@ -412,11 +410,11 @@ iconv support use --disable-iconv.",
 ]
 
 ffmpeg_pkg_config_checks = [
-    'libavutil',     '>= 56.6.100',
-    'libavcodec',    '>= 58.7.100',
-    'libavformat',   '>= 58.0.102',
+    'libavutil',     '>= 56.12.100',
+    'libavcodec',    '>= 58.16.100',
+    'libavformat',   '>= 58.9.100',
     'libswscale',    '>= 5.0.101',
-    'libavfilter',   '>= 7.0.101',
+    'libavfilter',   '>= 7.14.100',
     'libswresample', '>= 3.0.100',
 ]
 libav_pkg_config_checks = [
@@ -480,12 +478,6 @@ audio_output_features = [
         'name': '--sdl2',
         'desc': 'SDL2',
         'func': check_pkg_config('sdl2'),
-        'default': 'disable'
-    }, {
-        'name': '--sdl1',
-        'desc': 'SDL (1.x)',
-        'deps': '!sdl2',
-        'func': check_pkg_config('sdl'),
         'default': 'disable'
     }, {
         'name': '--oss-audio',
@@ -740,8 +732,7 @@ video_output_features = [
         'deps': '!shaderc-shared',
         'groups': ['shaderc'],
         'func': check_cc(header_name='shaderc/shaderc.h',
-                         lib=['shaderc_combined', 'glslang', 'SPIRV-Tools',
-                              'SPIRV-Tools-opt', 'stdc++']),
+                         lib=['shaderc_combined', 'stdc++']),
     }, {
         'name': '--shaderc',
         'desc': 'libshaderc SPIR-V compiler',
@@ -771,9 +762,9 @@ video_output_features = [
                      linkflags="-L/opt/vc/lib",
                      header_name="bcm_host.h",
                      lib=['mmal_core', 'mmal_util', 'mmal_vc_client', 'bcm_host']),
-            # We still need all OpenGL symbols, because the vo_opengl code is
+            # We still need all OpenGL symbols, because the vo_gpu code is
             # generic and supports anything from GLES2/OpenGL 2.1 to OpenGL 4 core.
-            check_cc(lib="EGL"),
+            check_cc(lib="EGL", linkflags="-lGLESv2"),
             check_cc(lib="GLESv2"),
         ),
     } , {
@@ -830,15 +821,14 @@ hwaccel_features = [
         'deps': 'gl-cocoa && videotoolbox-hwaccel',
         'func': check_true
     }, {
-        # (conflated with ANGLE for easier deps)
         'name': '--d3d-hwaccel',
-        'desc': 'D3D11VA hwaccel (plus ANGLE)',
-        'deps': 'os-win32 && egl-angle',
+        'desc': 'D3D11VA hwaccel',
+        'deps': 'os-win32',
         'func': check_true,
     }, {
         'name': '--d3d9-hwaccel',
-        'desc': 'DXVA2 hwaccel (plus ANGLE)',
-        'deps': 'd3d-hwaccel && egl-angle-win32',
+        'desc': 'DXVA2 hwaccel',
+        'deps': 'd3d-hwaccel',
         'func': check_true,
     }, {
         'name': '--gl-dxinterop-d3d9',
@@ -847,11 +837,14 @@ hwaccel_features = [
         'groups': [ 'gl' ],
         'func': check_true,
     }, {
+        'name': 'ffnvcodec',
+        'desc': 'CUDA Headers and dynamic loader',
+        'func': check_pkg_config('ffnvcodec >= 8.1.24.1'),
+    }, {
         'name': '--cuda-hwaccel',
         'desc': 'CUDA hwaccel',
-        'deps': 'gl',
-        'func': check_cc(fragment=load_fragment('cuda.c'),
-                         use='libavcodec'),
+        'deps': 'gl && ffnvcodec',
+        'func': check_true,
     }
 ]
 
@@ -916,22 +909,17 @@ standalone_features = [
             framework_name=['AppKit'],
             compile_filename='test-touchbar.m',
             linkflags='-fobjc-arc')
-     }
+     }, {
+        'name': '--macos-cocoa-cb',
+        'desc': 'macOS opengl-cb backend',
+        'deps': 'cocoa',
+        'func': check_true
+    }
 ]
 
 _INSTALL_DIRS_LIST = [
-    ('bindir',  '${PREFIX}/bin',      'binary files'),
-    ('libdir',  '${PREFIX}/lib',      'library files'),
-    ('confdir', '${PREFIX}/etc/mpv',  'configuration files'),
-
-    ('incdir',  '${PREFIX}/include',  'include files'),
-
-    ('datadir', '${PREFIX}/share',    'data files'),
-    ('mandir',  '${DATADIR}/man',     'man pages '),
-    ('docdir',  '${DATADIR}/doc/mpv', 'documentation files'),
-    ('htmldir', '${DOCDIR}',          'html documentation files'),
+    ('confdir', '${SYSCONFDIR}/mpv',  'configuration files'),
     ('zshdir',  '${DATADIR}/zsh/site-functions', 'zsh completion functions'),
-
     ('confloaddir', '${CONFDIR}', 'configuration files load directory'),
 ]
 
@@ -939,16 +927,36 @@ def options(opt):
     opt.load('compiler_c')
     opt.load('waf_customizations')
     opt.load('features')
+    opt.load('gnu_dirs')
 
-    group = opt.get_option_group("build and install options")
+    #remove unused options from gnu_dirs
+    opt.parser.remove_option("--sbindir")
+    opt.parser.remove_option("--libexecdir")
+    opt.parser.remove_option("--sharedstatedir")
+    opt.parser.remove_option("--localstatedir")
+    opt.parser.remove_option("--oldincludedir")
+    opt.parser.remove_option("--infodir")
+    opt.parser.remove_option("--localedir")
+    opt.parser.remove_option("--dvidir")
+    opt.parser.remove_option("--pdfdir")
+    opt.parser.remove_option("--psdir")
+
+    libdir = opt.parser.get_option('--libdir')
+    if libdir:
+        # Replace any mention of lib64 as we keep the default
+        # for libdir the same as before the waf update.
+        libdir.help = libdir.help.replace('lib64', 'lib')
+
+    group = opt.get_option_group("Installation directories")
     for ident, default, desc in _INSTALL_DIRS_LIST:
         group.add_option('--{0}'.format(ident),
             type    = 'string',
             dest    = ident,
             default = default,
             help    = 'directory for installing {0} [{1}]' \
-                      .format(desc, default))
+                      .format(desc, default.replace('${','').replace('}','')))
 
+    group = opt.get_option_group("build and install options")
     group.add_option('--variant',
         default = '',
         help    = 'variant name for saving configuration and build results')
@@ -967,6 +975,10 @@ def options(opt):
         type    = 'string',
         dest    = 'LUA_VER',
         help    = "select Lua package which should be autodetected. Choices: 51 51deb 51obsd 51fbsd 52 52deb 52arch 52fbsd luajit")
+    group.add_option('--swift-flags',
+        type    = 'string',
+        dest    = 'SWIFT_FLAGS',
+        help    = "Optional Swift compiler flags")
 
 @conf
 def is_optimization(ctx):
@@ -977,6 +989,7 @@ def is_debug_build(ctx):
     return getattr(ctx.options, 'enable_debug-build')
 
 def configure(ctx):
+    from waflib import Options
     ctx.resetenv(ctx.options.variant)
     ctx.check_waf_version(mini='1.8.4')
     target = os.environ.get('TARGET')
@@ -1002,8 +1015,16 @@ def configure(ctx):
     ctx.load('compiler_c')
     ctx.load('waf_customizations')
     ctx.load('dependencies')
+    ctx.load('detections.compiler_swift')
     ctx.load('detections.compiler')
     ctx.load('detections.devices')
+    ctx.load('gnu_dirs')
+
+    # if libdir is not set in command line options,
+    # override the gnu_dirs default in order to
+    # always have `lib/` as the library directory.
+    if not getattr(Options.options, 'LIBDIR', None):
+        ctx.env['LIBDIR'] = Utils.subst_vars(os.path.join('${EXEC_PREFIX}', 'lib'), ctx.env)
 
     for ident, _, _ in _INSTALL_DIRS_LIST:
         varname = ident.upper()
@@ -1023,6 +1044,9 @@ def configure(ctx):
 
     if ctx.options.LUA_VER:
         ctx.options.enable_lua = True
+
+    if ctx.options.SWIFT_FLAGS:
+        ctx.env.SWIFT_FLAGS += ' ' + ctx.options.SWIFT_FLAGS
 
     ctx.parse_dependencies(standalone_features)
 
@@ -1062,7 +1086,12 @@ def build(ctx):
             'The project was not configured: run "waf --variant={0} configure" first!'
                 .format(ctx.options.variant))
     ctx.unpack_dependencies_lists()
+    ctx.add_group('versionh')
+    ctx.add_group('sources')
+
+    ctx.set_group('versionh')
     __write_version__(ctx)
+    ctx.set_group('sources')
     ctx.load('wscript_build')
 
 def init(ctx):

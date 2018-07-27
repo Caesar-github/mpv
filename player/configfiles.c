@@ -82,11 +82,12 @@ void mp_parse_cfgfiles(struct MPContext *mpctx)
         m_config_set_profile(conf, SECT_ENCODE, 0);
 }
 
-static int try_load_config(struct MPContext *mpctx, const char *file, int flags)
+static int try_load_config(struct MPContext *mpctx, const char *file, int flags,
+                           int msgl)
 {
     if (!mp_path_exists(file))
         return 0;
-    MP_INFO(mpctx, "Loading config '%s'\n", file);
+    MP_MSG(mpctx, msgl, "Loading config '%s'\n", file);
     m_config_parse_config_file(mpctx->mconfig, file, NULL, flags);
     return 1;
 }
@@ -114,14 +115,14 @@ static void mp_load_per_file_config(struct MPContext *mpctx)
 
         bstr dir = mp_dirname(cfg);
         char *dircfg = mp_path_join_bstr(NULL, dir, bstr0("mpv.conf"));
-        try_load_config(mpctx, dircfg, FILE_LOCAL_FLAGS);
+        try_load_config(mpctx, dircfg, FILE_LOCAL_FLAGS, MSGL_INFO);
         talloc_free(dircfg);
 
-        if (try_load_config(mpctx, cfg, FILE_LOCAL_FLAGS))
+        if (try_load_config(mpctx, cfg, FILE_LOCAL_FLAGS, MSGL_INFO))
             return;
 
         if ((confpath = mp_find_config_file(NULL, mpctx->global, name))) {
-            try_load_config(mpctx, confpath, FILE_LOCAL_FLAGS);
+            try_load_config(mpctx, confpath, FILE_LOCAL_FLAGS, MSGL_INFO);
 
             talloc_free(confpath);
         }
@@ -139,27 +140,18 @@ static void mp_auto_load_profile(struct MPContext *mpctx, char *category,
     m_profile_t *p = m_config_get_profile0(mpctx->mconfig, t);
     if (p) {
         MP_INFO(mpctx, "Auto-loading profile '%s'\n", t);
-        if (strcmp(category, "ao") == 0 || strcmp(category, "vo") == 0)
-            MP_WARN(mpctx, "'%s' auto profiles are deprecated.\n", category);
         m_config_set_profile(mpctx->mconfig, t, FILE_LOCAL_FLAGS);
     }
 }
 
 void mp_load_auto_profiles(struct MPContext *mpctx)
 {
-    struct MPOpts *opts = mpctx->opts;
-
     mp_auto_load_profile(mpctx, "protocol",
                          mp_split_proto(bstr0(mpctx->filename), NULL));
     mp_auto_load_profile(mpctx, "extension",
                          bstr0(mp_splitext(mpctx->filename, NULL)));
 
     mp_load_per_file_config(mpctx);
-
-    if (opts->vo->video_driver_list)
-        mp_auto_load_profile(mpctx, "vo", bstr0(opts->vo->video_driver_list[0].name));
-    if (opts->audio_driver_list)
-        mp_auto_load_profile(mpctx, "ao", bstr0(opts->audio_driver_list[0].name));
 }
 
 #define MP_WATCH_LATER_CONF "watch_later"
@@ -405,7 +397,7 @@ void mp_load_playback_resume(struct MPContext *mpctx, const char *file)
         m_config_backup_opt(mpctx->mconfig, "start");
         MP_INFO(mpctx, "Resuming playback. This behavior can "
                "be disabled with --no-resume-playback.\n");
-        try_load_config(mpctx, fname, M_SETOPT_PRESERVE_CMDLINE);
+        try_load_config(mpctx, fname, M_SETOPT_PRESERVE_CMDLINE, MSGL_V);
         unlink(fname);
     }
     talloc_free(fname);

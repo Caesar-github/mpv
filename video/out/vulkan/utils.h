@@ -55,22 +55,26 @@ bool mpvk_pick_surface_format(struct mpvk_ctx *vk);
 
 struct mpvk_device_opts {
     int queue_count;    // number of queues to use
+    int async_transfer; // enable async transfer
+    int async_compute;  // enable async compute
 };
 
 // Create a logical device and initialize the vk_cmdpools
 bool mpvk_device_init(struct mpvk_ctx *vk, struct mpvk_device_opts opts);
 
-// Wait until all commands submitted to all queues have completed
-void mpvk_pool_wait_idle(struct mpvk_ctx *vk, struct vk_cmdpool *pool);
-void mpvk_dev_wait_idle(struct mpvk_ctx *vk);
+// Wait for all currently pending commands to have completed. This is the only
+// function that actually processes the callbacks. Will wait at most `timeout`
+// nanoseconds for the completion of each command. Using it with a value of
+// UINT64_MAX effectively means waiting until the pool/device is idle. The
+// timeout may also be passed as 0, in which case this function will not block,
+// but only poll for completed commands.
+void mpvk_poll_commands(struct mpvk_ctx *vk, uint64_t timeout);
 
-// Wait until at least one command submitted to any queue has completed, and
-// process the callbacks. Good for event loops that need to delay until a
-// command completes. Will block at most `timeout` nanoseconds. If used with
-// 0, it only garbage collects completed commands without blocking.
-void mpvk_pool_poll_cmds(struct mpvk_ctx *vk, struct vk_cmdpool *pool,
-                         uint64_t timeout);
-void mpvk_dev_poll_cmds(struct mpvk_ctx *vk, uint32_t timeout);
+// Flush all currently queued commands. Call this once per frame, after
+// submitting all of the command buffers for that frame. Calling this more
+// often than that is possible but bad for performance.
+// Returns whether successful. Failed commands will be implicitly dropped.
+bool mpvk_flush_commands(struct mpvk_ctx *vk);
 
 // Since lots of vulkan operations need to be done lazily once the affected
 // resources are no longer in use, provide an abstraction for tracking these.
@@ -88,20 +92,22 @@ struct vk_callback {
 // This will essentially run once the device is completely idle.
 void vk_dev_callback(struct mpvk_ctx *vk, vk_cb callback, void *p, void *arg);
 
-#define MPVK_MAX_CMD_DEPS 8
-
 // Helper wrapper around command buffers that also track dependencies,
 // callbacks and synchronization primitives
 struct vk_cmd {
     struct vk_cmdpool *pool; // pool it was allocated from
-    VkCommandBuffer buf;
-    VkFence fence; // the fence guards cmd buffer reuse
-    VkSemaphore done; // the semaphore signals when execution is done
+    VkQueue queue;           // the submission queue (for recording/pending)
+    VkCommandBuffer buf;     // the command buffer itself
+    VkFence fence;           // the fence guards cmd buffer reuse
     // The semaphores represent dependencies that need to complete before
     // this command can be executed. These are *not* owned by the vk_cmd
-    VkSemaphore deps[MPVK_MAX_CMD_DEPS];
-    VkPipelineStageFlags depstages[MPVK_MAX_CMD_DEPS];
+    VkSemaphore *deps;
+    VkPipelineStageFlags *depstages;
     int num_deps;
+    // The signals represent semaphores that fire once the command finishes
+    // executing. These are also not owned by the vk_cmd
+    VkSemaphore *sigs;
+    int num_sigs;
     // Since VkFences are useless, we have to manually track "callbacks"
     // to fire once the VkFence completes. These are used for multiple purposes,
     // ranging from garbage collection (resource deallocation) to fencing.
@@ -113,41 +119,64 @@ struct vk_cmd {
 // bool will be set to `true` once the command completes, or shortly thereafter.
 void vk_cmd_callback(struct vk_cmd *cmd, vk_cb callback, void *p, void *arg);
 
-// Associate a dependency for the current command. This semaphore must signal
-// by the corresponding stage before the command may execute.
-void vk_cmd_dep(struct vk_cmd *cmd, VkSemaphore dep,
-                VkPipelineStageFlags depstage);
+// Associate a raw dependency for the current command. This semaphore must
+// signal by the corresponding stage before the command may execute.
+void vk_cmd_dep(struct vk_cmd *cmd, VkSemaphore dep, VkPipelineStageFlags stage);
 
-#define MPVK_MAX_QUEUES 8
-#define MPVK_MAX_CMDS 64
+// Associate a raw signal with the current command. This semaphore will signal
+// after the command completes.
+void vk_cmd_sig(struct vk_cmd *cmd, VkSemaphore sig);
+
+// Signal abstraction: represents an abstract synchronization mechanism.
+// Internally, this may either resolve as a semaphore or an event depending
+// on whether the appropriate conditions are met.
+struct vk_signal {
+    VkSemaphore semaphore;
+    VkEvent event;
+    VkQueue event_source;
+};
+
+// Generates a signal after the execution of all previous commands matching the
+// given the pipeline stage. The signal is owned by the caller, and must be
+// consumed eith vk_cmd_wait or released with vk_signal_cancel in order to
+// free the resources.
+struct vk_signal *vk_cmd_signal(struct mpvk_ctx *vk, struct vk_cmd *cmd,
+                                VkPipelineStageFlags stage);
+
+// Consumes a previously generated signal. This signal must fire by the
+// indicated stage before the command can run. If *event is not NULL, then it
+// MAY be set to a VkEvent which the caller MUST manually wait on in the most
+// appropriate way. This function takes over ownership of the signal (and the
+// signal will be released/reused automatically)
+void vk_cmd_wait(struct mpvk_ctx *vk, struct vk_cmd *cmd,
+                 struct vk_signal **sigptr, VkPipelineStageFlags stage,
+                 VkEvent *out_event);
+
+// Destroys a currently pending signal, for example if the resource is no
+// longer relevant.
+void vk_signal_destroy(struct mpvk_ctx *vk, struct vk_signal **sig);
 
 // Command pool / queue family hybrid abstraction
 struct vk_cmdpool {
     VkQueueFamilyProperties props;
-    uint32_t qf; // queue family index
+    int qf; // queue family index
     VkCommandPool pool;
-    VkQueue queues[MPVK_MAX_QUEUES];
-    int qcount;
-    int qindex;
-    // Command buffers associated with this queue
-    struct vk_cmd cmds[MPVK_MAX_CMDS];
-    int cindex;
-    int cindex_pending;
+    VkQueue *queues;
+    int num_queues;
+    int idx_queues;
+    // Command buffers associated with this queue. These are available for
+    // re-recording
+    struct vk_cmd **cmds;
+    int num_cmds;
 };
 
-// Fetch the next command buffer from a command pool and begin recording to it.
+// Fetch a command buffer from a command pool and begin recording to it.
 // Returns NULL on failure.
 struct vk_cmd *vk_cmd_begin(struct mpvk_ctx *vk, struct vk_cmdpool *pool);
 
-// Finish the currently recording command buffer and submit it for execution.
-// If `done` is not NULL, it will be set to a semaphore that will signal once
-// the command completes. (And MUST have a corresponding semaphore wait)
-// Returns whether successful.
-bool vk_cmd_submit(struct mpvk_ctx *vk, struct vk_cmd *cmd, VkSemaphore *done);
-
-// Rotate the queues for each vk_cmdpool. Call this once per frame to ensure
-// good parallelism between frames when using multiple queues
-void vk_cmd_cycle_queues(struct mpvk_ctx *vk);
+// Finish recording a command buffer and queue it for execution. This function
+// takes over ownership of *cmd, i.e. the caller should not touch it again.
+void vk_cmd_queue(struct mpvk_ctx *vk, struct vk_cmd *cmd);
 
 // Predefined structs for a simple non-layered, non-mipped image
 extern const VkImageSubresourceRange vk_range;

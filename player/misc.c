@@ -182,7 +182,7 @@ double get_track_seek_offset(struct MPContext *mpctx, struct track *track)
         if (track->type == STREAM_AUDIO)
             return -opts->audio_delay;
         if (track->type == STREAM_SUB)
-            return -opts->sub_delay;
+            return -opts->subs_rend->sub_delay;
     }
     return 0;
 }
@@ -200,10 +200,7 @@ void issue_refresh_seek(struct MPContext *mpctx, enum seek_precision min_prec)
         mp_wakeup_core(mpctx);
         return;
     }
-    // maybe happens when changing filters while file is loaded - ignore for now
-    if (mpctx->playback_pts == MP_NOPTS_VALUE)
-        return;
-    queue_seek(mpctx, MPSEEK_ABSOLUTE, mpctx->playback_pts, min_prec, 0);
+    queue_seek(mpctx, MPSEEK_ABSOLUTE, get_current_time(mpctx), min_prec, 0);
 }
 
 float mp_get_cache_percent(struct MPContext *mpctx)

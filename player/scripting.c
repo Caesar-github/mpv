@@ -95,19 +95,12 @@ static void *script_thread(void *p)
     if (arg->backend->load(arg->client, arg->fname) < 0)
         MP_ERR(arg, "Could not load %s %s\n", arg->backend->name, arg->fname);
 
-    mpv_detach_destroy(arg->client);
+    mpv_destroy(arg->client);
     talloc_free(arg);
     return NULL;
 }
 
-static void wait_loaded(struct MPContext *mpctx)
-{
-    while (!mp_clients_all_initialized(mpctx))
-        mp_idle(mpctx);
-    mp_wakeup_core(mpctx); // avoid lost wakeups during waiting
-}
-
-int mp_load_script(struct MPContext *mpctx, const char *fname)
+static int mp_load_script(struct MPContext *mpctx, const char *fname)
 {
     char *ext = mp_splitext(fname, NULL);
     const struct mp_scripting *backend = NULL;
@@ -138,19 +131,17 @@ int mp_load_script(struct MPContext *mpctx, const char *fname)
         talloc_free(arg);
         return -1;
     }
+    mp_client_set_weak(arg->client);
     arg->log = mp_client_get_log(arg->client);
 
     MP_DBG(arg, "Loading %s %s...\n", backend->name, fname);
 
     pthread_t thread;
     if (pthread_create(&thread, NULL, script_thread, arg)) {
-        mpv_detach_destroy(arg->client);
+        mpv_destroy(arg->client);
         talloc_free(arg);
         return -1;
     }
-
-    wait_loaded(mpctx);
-    MP_DBG(mpctx, "Done loading %s.\n", fname);
 
     return 0;
 }
@@ -202,15 +193,11 @@ static void load_builtin_script(struct MPContext *mpctx, bool enable,
         if (enable) {
             mp_load_script(mpctx, fname);
         } else {
-            // Try to unload it by sending a shutdown event. Wait until it has
-            // terminated, or re-enabling the script could be racy (because it'd
-            // recognize a still-terminating script as "loaded").
-            while (mp_client_exists(mpctx, name)) {
-                if (mp_client_send_event(mpctx, name, MPV_EVENT_SHUTDOWN, NULL) < 0)
-                    break;
-                mp_idle(mpctx);
-            }
-            mp_wakeup_core(mpctx); // avoid lost wakeups during waiting
+            // Try to unload it by sending a shutdown event. This can be
+            // unreliable, because user scripts could have clashing names, or
+            // disabling and then quickly re-enabling a builtin script might
+            // detect the still-terminating script as loaded.
+            mp_client_send_event(mpctx, name, 0, MPV_EVENT_SHUTDOWN, NULL);
         }
     }
     talloc_free(tmp);

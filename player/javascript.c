@@ -40,6 +40,7 @@
 #include "osdep/subprocess.h"
 #include "osdep/timer.h"
 #include "osdep/threads.h"
+#include "osdep/getpid.h"
 #include "stream/stream.h"
 #include "sub/osd.h"
 #include "core.h"
@@ -502,6 +503,8 @@ error_out:
  *********************************************************************/
 static void pushnode(js_State *J, mpv_node *node);
 static void makenode(void *ta_ctx, mpv_node *dst, js_State *J, int idx);
+static int jsL_checkint(js_State *J, int idx);
+static int64_t jsL_checkint64(js_State *J, int idx);
 
 // Return the index in opts of stack[idx] (or of def if undefined), else throws.
 static int checkopt(js_State *J, int idx, const char *def, const char *opts[],
@@ -791,6 +794,21 @@ static void script_get_wakeup_pipe(js_State *J)
     js_pushnumber(J, mpv_get_wakeup_pipe(jclient(J)));
 }
 
+// args: name (str), priority (int), id (uint)
+static void script__hook_add(js_State *J)
+{
+    const char *name = js_tostring(J, 1);
+    int pri = jsL_checkint(J, 2);
+    uint64_t id = jsL_checkint64(J, 3);
+    push_status(J, mpv_hook_add(jclient(J), id, name, pri));
+}
+
+// args: id (uint)
+static void script__hook_continue(js_State *J)
+{
+    push_status(J, mpv_hook_continue(jclient(J), jsL_checkint64(J, 1)));
+}
+
 /**********************************************************************
  *  mp.utils
  *********************************************************************/
@@ -990,6 +1008,12 @@ static void script_subprocess_detached(js_State *J, void *af)
     af_subprocess_common(J, 1, af);
 }
 
+// args: none
+static void script_getpid(js_State *J)
+{
+    js_pushnumber(J, mp_getpid());
+}
+
 // args: prefixed file name, data (c-str)
 static void script_write_file(js_State *J, void *af)
 {
@@ -1094,6 +1118,22 @@ static bool same_as_int64(double d)
 {
     // The range checks also validly filter inf and nan, so behavior is defined
     return d >= INT64_MIN && d <= INT64_MAX && d == (int64_t)d;
+}
+
+static int jsL_checkint(js_State *J, int idx)
+{
+    double d = js_tonumber(J, idx);
+    if (!(d >= INT_MIN && d <= INT_MAX))
+        js_error(J, "integer out of range at index %d", idx);
+    return d;
+}
+
+static int64_t jsL_checkint64(js_State *J, int idx)
+{
+    double d = js_tonumber(J, idx);
+    if (!(d >= INT64_MIN && d <= INT64_MAX))
+        js_error(J, "integer out of range at index %d", idx);
+    return d;
 }
 
 // From the js stack value/array/object at index idx
@@ -1236,6 +1276,13 @@ static void script_wait_event(js_State *J)
         js_setproperty(J, -2, "data");  // reply.data (value as observed type)
         break;
     }
+
+    case MPV_EVENT_HOOK: {
+        mpv_event_hook *hook = event->data;
+        js_pushnumber(J, hook->id);
+        js_setproperty(J, -2, "hook_id");  // reply.hook_id (is a number)
+        break;
+    }
     }  // switch (event->event_id)
 
     assert(top == js_gettop(J) - 1);
@@ -1278,6 +1325,8 @@ static const struct fn_entry main_fns[] = {
     AF_ENTRY(format_time, 2),
     FN_ENTRY(enable_messages, 1),
     FN_ENTRY(get_wakeup_pipe, 0),
+    FN_ENTRY(_hook_add, 3),
+    FN_ENTRY(_hook_continue, 1),
     FN_ENTRY(set_osd_ass, 3),
     FN_ENTRY(get_osd_size, 0),
     FN_ENTRY(get_osd_margins, 0),
@@ -1296,6 +1345,7 @@ static const struct fn_entry utils_fns[] = {
     AF_ENTRY(get_user_path, 1),
     AF_ENTRY(subprocess, 1),
     AF_ENTRY(subprocess_detached, 1),
+    FN_ENTRY(getpid, 0),
 
     FN_ENTRY(read_file, 2),
     AF_ENTRY(write_file, 2),

@@ -18,6 +18,7 @@
 #include <stddef.h>
 #include <limits.h>
 #include <strings.h>
+#include <assert.h>
 #include <libavutil/dict.h>
 #include "tags.h"
 #include "misc/bstr.h"
@@ -44,6 +45,24 @@ void mp_tags_set_bstr(struct mp_tags *tags, bstr key, bstr value)
     tags->num_keys++;
 }
 
+void mp_tags_remove_str(struct mp_tags *tags, const char *key)
+{
+    mp_tags_remove_bstr(tags, bstr0(key));
+}
+
+void mp_tags_remove_bstr(struct mp_tags *tags, bstr key)
+{
+    for (int n = 0; n < tags->num_keys; n++) {
+        if (bstrcasecmp0(key, tags->keys[n]) == 0) {
+            talloc_free(tags->keys[n]);
+            talloc_free(tags->values[n]);
+            int num_keys = tags->num_keys; // copy so it's only decremented once
+            MP_TARRAY_REMOVE_AT(tags->keys, num_keys, n);
+            MP_TARRAY_REMOVE_AT(tags->values, tags->num_keys, n);
+        }
+    }
+}
+
 char *mp_tags_get_str(struct mp_tags *tags, const char *key)
 {
     return mp_tags_get_bstr(tags, bstr0(key));
@@ -64,17 +83,25 @@ void mp_tags_clear(struct mp_tags *tags)
     talloc_free_children(tags);
 }
 
+
+
 struct mp_tags *mp_tags_dup(void *tparent, struct mp_tags *tags)
 {
     struct mp_tags *new = talloc_zero(tparent, struct mp_tags);
-    MP_RESIZE_ARRAY(new, new->keys,   tags->num_keys);
-    MP_RESIZE_ARRAY(new, new->values, tags->num_keys);
-    new->num_keys = tags->num_keys;
-    for (int n = 0; n < tags->num_keys; n++) {
-        new->keys[n] = talloc_strdup(new, tags->keys[n]);
-        new->values[n] = talloc_strdup(new, tags->values[n]);
-    }
+    mp_tags_replace(new, tags);
     return new;
+}
+
+void mp_tags_replace(struct mp_tags *dst, struct mp_tags *src)
+{
+    mp_tags_clear(dst);
+    MP_RESIZE_ARRAY(dst, dst->keys,   src->num_keys);
+    MP_RESIZE_ARRAY(dst, dst->values, src->num_keys);
+    dst->num_keys = src->num_keys;
+    for (int n = 0; n < src->num_keys; n++) {
+        dst->keys[n] = talloc_strdup(dst, src->keys[n]);
+        dst->values[n] = talloc_strdup(dst, src->values[n]);
+    }
 }
 
 // Return a copy of the tags, but containing only keys in list. Also forces

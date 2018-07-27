@@ -35,6 +35,7 @@
 #include <libbluray/overlay.h>
 #include <libbluray/keys.h>
 #include <libbluray/bluray-version.h>
+#include <libbluray/log_control.h>
 #include <libavutil/common.h>
 
 #include "config.h"
@@ -388,6 +389,9 @@ static int bluray_stream_open_internal(stream_t *s)
         return STREAM_UNSUPPORTED;
     }
 
+    if (!mp_msg_test(s->log, MSGL_DEBUG))
+        bd_set_debug_mask(0);
+
     /* open device */
     BLURAY *bd = bd_open(device, NULL);
     if (!bd) {
@@ -414,7 +418,7 @@ static int bluray_stream_open_internal(stream_t *s)
             return STREAM_UNSUPPORTED;
         }
 
-        MP_VERBOSE(s, "List of available titles:\n");
+        MP_INFO(s, "List of available titles:\n");
 
         /* parse titles information */
         uint64_t max_duration = 0;
@@ -424,7 +428,7 @@ static int bluray_stream_open_internal(stream_t *s)
                 continue;
 
             char *time = mp_format_time(ti->duration / 90000, false);
-            MP_VERBOSE(s, "idx: %3d duration: %s (playlist: %05d.mpls)\n",
+            MP_INFO(s, "idx: %3d duration: %s (playlist: %05d.mpls)\n",
                        i, time, ti->playlist);
             talloc_free(time);
 
@@ -529,19 +533,16 @@ static bool check_bdmv(const char *path)
     if (!temp)
         return false;
 
-    bool r = false;
+    char data[50] = {0};
 
-    const char *sig1 = "MOBJ020";
-    const char *sig2 = "MOBJ0100";
-    char data[50];
-
-    if (fread(data, 50, 1, temp) == 1) {
-        r = memcmp(data, sig1, strlen(sig1)) == 0 ||
-            memcmp(data, sig2, strlen(sig2)) == 0;
-    }
-
+    fread(data, 50, 1, temp);
     fclose(temp);
-    return r;
+
+    bstr bdata = {data, 50};
+
+    return bstr_startswith0(bdata, "MOBJ0100") || // AVCHD
+           bstr_startswith0(bdata, "MOBJ0200") || // Blu-ray
+           bstr_startswith0(bdata, "MOBJ0300");   // UHD BD
 }
 
 // Destructively remove the current trailing path component.

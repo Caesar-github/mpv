@@ -26,6 +26,7 @@
 #include <libavutil/error.h>
 #include <libavutil/cpu.h>
 #include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
 
 #include "config.h"
 
@@ -33,6 +34,7 @@
 #include "common/msg.h"
 #include "demux/packet.h"
 #include "demux/stheader.h"
+#include "misc/bstr.h"
 #include "video/fmt-conversion.h"
 #include "av_common.h"
 #include "codecs.h"
@@ -217,33 +219,47 @@ void mp_set_avcodec_threads(struct mp_log *l, AVCodecContext *avctx, int threads
     avctx->thread_count = threads;
 }
 
-void mp_add_lavc_decoders(struct mp_decoder_list *list, enum AVMediaType type)
+static void add_codecs(struct mp_decoder_list *list, enum AVMediaType type,
+                       bool decoders)
 {
-    AVCodec *cur = NULL;
+    void *iter = NULL;
     for (;;) {
-        cur = av_codec_next(cur);
+        const AVCodec *cur = av_codec_iterate(&iter);
         if (!cur)
             break;
-        if (av_codec_is_decoder(cur) && cur->type == type) {
-            mp_add_decoder(list, "lavc", mp_codec_from_av_codec_id(cur->id),
+        if (av_codec_is_decoder(cur) == decoders &&
+            (type == AVMEDIA_TYPE_UNKNOWN || cur->type == type))
+        {
+            mp_add_decoder(list, mp_codec_from_av_codec_id(cur->id),
                            cur->name, cur->long_name);
         }
     }
 }
 
+void mp_add_lavc_decoders(struct mp_decoder_list *list, enum AVMediaType type)
+{
+    add_codecs(list, type, true);
+}
+
 // (Abuses the decoder list data structures.)
 void mp_add_lavc_encoders(struct mp_decoder_list *list)
 {
-    AVCodec *cur = NULL;
+    add_codecs(list, AVMEDIA_TYPE_UNKNOWN, false);
+}
+
+char **mp_get_lavf_demuxers(void)
+{
+    char **list = NULL;
+    void *iter = NULL;
+    int num = 0;
     for (;;) {
-        cur = av_codec_next(cur);
+        const AVInputFormat *cur = av_demuxer_iterate(&iter);
         if (!cur)
             break;
-        if (av_codec_is_encoder(cur)) {
-            mp_add_decoder(list, "lavc", mp_codec_from_av_codec_id(cur->id),
-                           cur->name, cur->long_name);
-        }
+        MP_TARRAY_APPEND(NULL, list, num, talloc_strdup(NULL, cur->name));
     }
+    MP_TARRAY_APPEND(NULL, list, num, NULL);
+    return list;
 }
 
 int mp_codec_to_av_codec_id(const char *codec)
@@ -297,7 +313,7 @@ void mp_avdict_print_unset(struct mp_log *log, int msgl, AVDictionary *dict)
 // to the name of the n-th parameter.
 static void resolve_positional_arg(void *avobj, char **name)
 {
-    if (!*name || (*name)[0] != '@')
+    if (!*name || (*name)[0] != '@' || !avobj)
         return;
 
     char *end = NULL;
@@ -329,11 +345,18 @@ static void resolve_positional_arg(void *avobj, char **name)
 // Returns: >=0 success, <0 failed to set an option
 int mp_set_avopts(struct mp_log *log, void *avobj, char **kv)
 {
+    return mp_set_avopts_pos(log, avobj, avobj, kv);
+}
+
+// Like mp_set_avopts(), but the posargs argument is used to resolve positional
+// arguments. If posargs==NULL, positional args are disabled.
+int mp_set_avopts_pos(struct mp_log *log, void *avobj, void *posargs, char **kv)
+{
     int success = 0;
     for (int n = 0; kv && kv[n * 2]; n++) {
         char *k = kv[n * 2 + 0];
         char *v = kv[n * 2 + 1];
-        resolve_positional_arg(avobj, &k);
+        resolve_positional_arg(posargs, &k);
         int r = av_opt_set(avobj, k, v, AV_OPT_SEARCH_CHILDREN);
         if (r == AVERROR_OPTION_NOT_FOUND) {
             mp_err(log, "AVOption '%s' not found.\n", k);
@@ -347,51 +370,3 @@ int mp_set_avopts(struct mp_log *log, void *avobj, char **kv)
     }
     return success;
 }
-
-#if LIBAVUTIL_VERSION_MICRO >= 100
-AVFrameSideData *ffmpeg_garbage(AVFrame *frame,
-                                enum AVFrameSideDataType type,
-                                AVBufferRef *buf)
-{
-    AVFrameSideData *ret, **tmp;
-
-    if (!buf)
-        return NULL;
-
-    if (frame->nb_side_data > INT_MAX / sizeof(*frame->side_data) - 1)
-        goto fail;
-
-    tmp = av_realloc(frame->side_data,
-                     (frame->nb_side_data + 1) * sizeof(*frame->side_data));
-    if (!tmp)
-        goto fail;
-    frame->side_data = tmp;
-
-    ret = av_mallocz(sizeof(*ret));
-    if (!ret)
-        goto fail;
-
-    ret->buf = buf;
-    ret->data = ret->buf->data;
-    ret->size = buf->size;
-    ret->type = type;
-
-    frame->side_data[frame->nb_side_data++] = ret;
-
-    return ret;
-fail:
-    av_buffer_unref(&buf);
-    return NULL;
-}
-#else
-AVFrameSideData *ffmpeg_garbage(AVFrame *frame,
-                                enum AVFrameSideDataType type,
-                                AVBufferRef *buf)
-{
-    AVFrameSideData *sd = av_frame_new_side_data(frame, type, buf->size);
-    if (sd)
-        memcpy(sd->data, buf->data, buf->size);
-    av_buffer_unref(&buf);
-    return sd;
-}
-#endif

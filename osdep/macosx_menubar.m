@@ -87,9 +87,29 @@
                     }],
                     @{ @"name": @"separator" },
                     [NSMutableDictionary dictionaryWithDictionary:@{
+                        @"name"       : @"Services",
+                        @"key"        : @"",
+                    }],
+                    @{ @"name": @"separator" },
+                    [NSMutableDictionary dictionaryWithDictionary:@{
                         @"name"       : @"Hide mpv",
                         @"action"     : @"hide:",
                         @"key"        : @"h",
+                        @"target"     : NSApp
+                    }],
+                    [NSMutableDictionary dictionaryWithDictionary:@{
+                        @"name"       : @"Hide Others",
+                        @"action"     : @"hideOtherApplications:",
+                        @"key"        : @"h",
+                        @"modifiers"  : [NSNumber numberWithUnsignedInteger:
+                                            NSEventModifierFlagCommand |
+                                            NSEventModifierFlagOption],
+                        @"target"     : NSApp
+                    }],
+                    [NSMutableDictionary dictionaryWithDictionary:@{
+                        @"name"       : @"Show All",
+                        @"action"     : @"unhideAllApplications:",
+                        @"key"        : @"",
                         @"target"     : NSApp
                     }],
                     @{ @"name": @"separator" },
@@ -125,6 +145,11 @@
                         @"target"     : self
                     }],
                     @{ @"name": @"separator" },
+                    [NSMutableDictionary dictionaryWithDictionary:@{
+                        @"name"       : @"Close",
+                        @"action"     : @"performClose:",
+                        @"key"        : @"w"
+                    }],
                     [NSMutableDictionary dictionaryWithDictionary:@{
                         @"name"       : @"Save Screenshot",
                         @"action"     : @"cmd:",
@@ -577,6 +602,7 @@
 - (NSMenu *)mainMenu
 {
     NSMenu *mainMenu = [[NSMenu alloc] initWithTitle:@"MainMenu"];
+    NSApp.servicesMenu = [NSMenu alloc];
 
     for(id mMenu in menuTree) {
         NSMenu *menu = [[NSMenu alloc] initWithTitle:mMenu[@"name"]];
@@ -600,6 +626,15 @@
                         keyEquivalent:subMenu[@"key"]];
                 [iItem setTarget:subMenu[@"target"]];
                 [subMenu setObject:iItem forKey:@"menuItem"];
+
+                NSNumber *m = subMenu[@"modifiers"];
+                if (m) {
+                    [iItem setKeyEquivalentModifierMask:m.unsignedIntegerValue];
+                }
+
+                if ([subMenu[@"name"] isEqual:@"Services"]) {
+                    iItem.submenu = NSApp.servicesMenu;
+                }
             }
         }
     }
@@ -611,8 +646,8 @@
 {
     NSDictionary *options = [NSDictionary dictionaryWithObjectsAndKeys:
         @"mpv", @"ApplicationName",
-        [self getMPVIcon], @"ApplicationIcon",
-         @"Copyright © 2000-2017 mpv/MPlayer/mplayer2 projects", @"Copyright",
+        [(Application *)NSApp getMPVIcon], @"ApplicationIcon",
+        [NSString stringWithUTF8String:mpv_copyright], @"Copyright",
         [NSString stringWithUTF8String:mpv_version], @"ApplicationVersion",
         nil];
     [NSApp orderFrontStandardAboutPanelWithOptions:options];
@@ -660,7 +695,7 @@
     [panel setCanChooseDirectories:YES];
     [panel setAllowsMultipleSelection:YES];
 
-    if ([panel runModal] == NSFileHandlingPanelOKButton){
+    if ([panel runModal] == NSModalResponseOK){
         NSMutableArray *fileArray = [[NSMutableArray alloc] init];
         for (id url in [panel URLs])
             [fileArray addObject:[url path]];
@@ -674,7 +709,7 @@
     [alert setMessageText:@"Open URL"];
     [alert addButtonWithTitle:@"Ok"];
     [alert addButtonWithTitle:@"Cancel"];
-    [alert setIcon:[self getMPVIcon]];
+    [alert setIcon:[(Application *)NSApp getMPVIcon]];
 
     NSTextField *input = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 300, 24)];
     [input setPlaceholderString:@"URL"];
@@ -702,25 +737,13 @@
     [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:url]];
 }
 
-static const char macosx_icon[] =
-#include "osdep/macosx_icon.inc"
-;
-
-- (NSImage *)getMPVIcon
-{
-    NSData *icon_data = [NSData dataWithBytesNoCopy:(void *)macosx_icon
-                                             length:sizeof(macosx_icon)
-                                       freeWhenDone:NO];
-    return [[NSImage alloc] initWithData:icon_data];
-}
-
 - (void)alertWithTitle:(NSString *)title andText:(NSString *)text
 {
     NSAlert *alert = [[NSAlert alloc] init];
     [alert setMessageText:title];
     [alert setInformativeText:text];
     [alert addButtonWithTitle:@"Ok"];
-    [alert setIcon:[self getMPVIcon]];
+    [alert setIcon:[(Application *)NSApp getMPVIcon]];
     [alert runModal];
 }
 

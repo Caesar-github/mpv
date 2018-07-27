@@ -101,6 +101,7 @@ static int ra_init_gl(struct ra *ra, GL *gl)
         {RA_CAP_TEX_1D,             MPGL_CAP_1D_TEX},
         {RA_CAP_TEX_3D,             MPGL_CAP_3D_TEX},
         {RA_CAP_COMPUTE,            MPGL_CAP_COMPUTE_SHADER},
+        {RA_CAP_NUM_GROUPS,         MPGL_CAP_COMPUTE_SHADER},
         {RA_CAP_NESTED_ARRAY,       MPGL_CAP_NESTED_ARRAY},
     };
 
@@ -276,6 +277,13 @@ static struct ra_tex *gl_tex_create_blank(struct ra *ra,
         tex_gl->target = GL_TEXTURE_EXTERNAL_OES;
     }
 
+    if (params->downloadable && !(params->dimensions == 2 &&
+                                  params->format->renderable))
+    {
+        gl_tex_destroy(ra, tex);
+        return NULL;
+    }
+
     return tex;
 }
 
@@ -283,6 +291,8 @@ static struct ra_tex *gl_tex_create(struct ra *ra,
                                     const struct ra_tex_params *params)
 {
     GL *gl = ra_gl_get(ra);
+    assert(!params->format->dummy_format);
+
     struct ra_tex *tex = gl_tex_create_blank(ra, params);
     if (!tex)
         return NULL;
@@ -326,8 +336,11 @@ static struct ra_tex *gl_tex_create(struct ra *ra,
 
     gl_check_error(gl, ra->log, "after creating texture");
 
-    // Even blitting needs an FBO in OpenGL for strange reasons
-    if (tex->params.render_dst || tex->params.blit_src || tex->params.blit_dst) {
+    // Even blitting needs an FBO in OpenGL for strange reasons.
+    // Download is handled by reading from an FBO.
+    if (tex->params.render_dst || tex->params.blit_src ||
+        tex->params.blit_dst || tex->params.downloadable)
+    {
         if (!tex->params.format->renderable) {
             MP_ERR(ra, "Trying to create renderable texture with unsupported "
                    "format.\n");
@@ -382,6 +395,7 @@ static const struct ra_format fbo_dummy_format = {
         .flags = F_CR,
     },
     .renderable = true,
+    .dummy_format = true,
 };
 
 // Create a ra_tex that merely wraps an existing framebuffer. gl_fbo can be 0
@@ -506,6 +520,18 @@ static bool gl_tex_upload(struct ra *ra,
     }
 
     return true;
+}
+
+static bool gl_tex_download(struct ra *ra, struct ra_tex_download_params *params)
+{
+    GL *gl = ra_gl_get(ra);
+    struct ra_tex *tex = params->tex;
+    struct ra_tex_gl *tex_gl = tex->priv;
+    if (!tex_gl->fbo)
+        return false;
+    return gl_read_fbo_contents(gl, tex_gl->fbo, 1, tex_gl->format, tex_gl->type,
+                                tex->params.w, tex->params.h, params->dst,
+                                params->stride);
 }
 
 static void gl_buf_destroy(struct ra *ra, struct ra_buf *buf)
@@ -996,6 +1022,10 @@ static void gl_renderpass_run(struct ra *ra,
         assert(params->target->params.render_dst);
         assert(params->target->params.format == pass->params.target_format);
         gl->BindFramebuffer(GL_FRAMEBUFFER, target_gl->fbo);
+        if (pass->params.invalidate_target && gl->InvalidateFramebuffer) {
+            GLenum fb = target_gl->fbo ? GL_COLOR_ATTACHMENT0 : GL_COLOR;
+            gl->InvalidateFramebuffer(GL_FRAMEBUFFER, 1, &fb);
+        }
         gl->Viewport(params->viewport.x0, params->viewport.y0,
                      mp_rect_w(params->viewport),
                      mp_rect_h(params->viewport));
@@ -1126,6 +1156,7 @@ static struct ra_fns ra_fns_gl = {
     .tex_create             = gl_tex_create,
     .tex_destroy            = gl_tex_destroy,
     .tex_upload             = gl_tex_upload,
+    .tex_download           = gl_tex_download,
     .buf_create             = gl_buf_create,
     .buf_destroy            = gl_buf_destroy,
     .buf_update             = gl_buf_update,

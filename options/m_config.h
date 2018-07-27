@@ -113,7 +113,6 @@ typedef struct m_config {
 //            contains default values for all options
 //  options: list of options. Each option defines a member of the optstruct
 //           and a corresponding option switch or sub-option field.
-//  suboptinit: if not NULL, initialize the suboption string (used for presets)
 // Note that the m_config object will keep pointers to defaults and options.
 struct m_config *m_config_new(void *talloc_ctx, struct mp_log *log,
                               size_t size, const void *defaults,
@@ -122,9 +121,6 @@ struct m_config *m_config_new(void *talloc_ctx, struct mp_log *log,
 // Creates "backup" shadow memory for use with m_config_cache. Sets it on
 // mpv_global. Expected to be called at early init on the main m_config.
 void m_config_create_shadow(struct m_config *config);
-
-struct m_config *m_config_from_obj_desc(void *talloc_ctx, struct mp_log *log,
-                                        struct m_obj_desc *desc);
 
 struct m_config *m_config_from_obj_desc_noalloc(void *talloc_ctx,
                                                 struct mp_log *log,
@@ -201,10 +197,10 @@ int m_config_option_requires_param(struct m_config *config, bstr name);
 // Notify m_config_cache users that the option has (probably) changed its value.
 void m_config_notify_change_co(struct m_config *config,
                                struct m_config_option *co);
-
-bool m_config_is_in_group(struct m_config *config,
-                          const struct m_sub_options *group,
-                          struct m_config_option *co);
+// Like m_config_notify_change_co(), but automatically find the option by its
+// pointer within the global option struct (config->optstruct). In practice,
+// it means it works only on fields in MPContext.opts.
+void m_config_notify_change_opt_ptr(struct m_config *config, void *ptr);
 
 // Return all (visible) option names as NULL terminated string list.
 char **m_config_list_options(void *ta_parent, const struct m_config *config);
@@ -324,8 +320,6 @@ bool m_config_cache_update(struct m_config_cache *cache);
 // Like m_config_cache_alloc(), but return the struct (m_config_cache->opts)
 // directly, with no way to update the config. Basically this returns a copy
 // with a snapshot of the current option values.
-// Warning: does currently not set the child as its own talloc root, which
-//          means the only way to free the struct is by freeing ta_parent.
 void *mp_get_config_group(void *ta_parent, struct mpv_global *global,
                           const struct m_sub_options *group);
 
