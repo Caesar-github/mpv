@@ -16,6 +16,7 @@
  */
 
 #include <stdarg.h>
+#include <math.h>
 #include <assert.h>
 
 #include <libavutil/common.h>
@@ -48,14 +49,17 @@ char *mp_format_time_fmt(const char *fmt, double time)
     time = time < 0 ? -time : time;
     long long int itime = time;
     long long int h, m, tm, s;
-    int ms;
+    int ms = lrint((time - itime) * 1000);
+    if (ms >= 1000) {
+        ms -= 1000;
+        itime += 1;
+    }
     s = itime;
     tm = s / 60;
     h = s / 3600;
     s -= h * 3600;
     m = s / 60;
     s -= m * 60;
-    ms = (time - itime) * 1000;
     char *res = talloc_strdup(NULL, "");
     while (*fmt) {
         if (fmt[0] == '%') {
@@ -68,6 +72,7 @@ char *mp_format_time_fmt(const char *fmt, double time)
             case 's': appendf(&res, "%s%lld", sign, itime); break;
             case 'S': appendf(&res, "%02lld", s); break;
             case 'T': appendf(&res, "%03d", ms); break;
+            case 'f': appendf(&res, "%f", time); break;
             case '%': appendf(&res, "%s", "%"); break;
             default: goto error;
             }
@@ -301,4 +306,15 @@ char *mp_tprintf_buf(char *buf, size_t buf_size, const char *format, ...)
     vsnprintf(buf, buf_size, format, ap);
     va_end(ap);
     return buf;
+}
+
+char **mp_dup_str_array(void *tctx, char **s)
+{
+    char **r = NULL;
+    int num_r = 0;
+    for (int n = 0; s && s[n]; n++)
+        MP_TARRAY_APPEND(tctx, r, num_r, talloc_strdup(tctx, s[n]));
+    if (r)
+        MP_TARRAY_APPEND(tctx, r, num_r, NULL);
+    return r;
 }

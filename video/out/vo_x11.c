@@ -28,7 +28,6 @@
 #include "vo.h"
 #include "video/csputils.h"
 #include "video/mp_image.h"
-#include "video/filter/vf.h"
 
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
@@ -245,7 +244,7 @@ static bool resize(struct vo *vo)
         return -1;
     }
 
-    mp_sws_set_from_cmdline(p->sws, vo->opts->sws_opts);
+    mp_sws_set_from_cmdline(p->sws, vo->global);
     p->sws->dst = (struct mp_image_params) {
         .imgfmt = fmte->mpfmt,
         .w = p->dst_w,

@@ -42,14 +42,9 @@
 #include "video/hwdec.h"
 #include "video/image_writer.h"
 #include "sub/osd.h"
-#include "audio/decode/dec_audio.h"
 #include "player/core.h"
 #include "player/command.h"
 #include "stream/stream.h"
-
-#if HAVE_LIBAF
-#include "audio/filter/af.h"
-#endif
 
 #if HAVE_DRM
 #include "video/out/drm_common.h"
@@ -92,6 +87,9 @@ extern const struct m_sub_options d3d11_conf;
 extern const struct m_sub_options d3d11va_conf;
 extern const struct m_sub_options angle_conf;
 extern const struct m_sub_options cocoa_conf;
+extern const struct m_sub_options macos_conf;
+extern const struct m_sub_options android_conf;
+extern const struct m_sub_options vaapi_conf;
 
 static const struct m_sub_options screenshot_conf = {
     .opts = image_writer_opts,
@@ -142,6 +140,8 @@ static const m_option_t mp_vo_opt_list[] = {
     OPT_FLAG("keepaspect-window", keepaspect_window, 0),
     OPT_FLAG("hidpi-window-scale", hidpi_window_scale, 0),
     OPT_FLAG("native-fs", native_fs, 0),
+    OPT_DOUBLE("display-fps", override_display_fps, M_OPT_MIN, .min = 0),
+    OPT_DOUBLERANGE("video-timing-offset", timing_offset, 0, 0.0, 1.0),
 #if HAVE_X11
     OPT_CHOICE("x11-netwm", x11_netwm, 0,
                ({"auto", 0}, {"no", -1}, {"yes", 1})),
@@ -179,7 +179,103 @@ const struct m_sub_options vo_sub_opts = {
         .x11_bypass_compositor = 2,
         .mmcss_profile = "Playback",
         .ontop_level = -1,
+        .timing_offset = 0.050,
     },
+};
+
+#undef OPT_BASE_STRUCT
+#define OPT_BASE_STRUCT struct mp_subtitle_opts
+
+const struct m_sub_options mp_subtitle_sub_opts = {
+    .opts = (const struct m_option[]){
+        OPT_FLOAT("sub-delay", sub_delay, 0),
+        OPT_FLOAT("sub-fps", sub_fps, 0),
+        OPT_FLOAT("sub-speed", sub_speed, 0),
+        OPT_FLAG("sub-visibility", sub_visibility, 0),
+        OPT_FLAG("sub-forced-only", forced_subs_only, 0),
+        OPT_FLAG("stretch-dvd-subs", stretch_dvd_subs, 0),
+        OPT_FLAG("stretch-image-subs-to-screen", stretch_image_subs, 0),
+        OPT_FLAG("image-subs-video-resolution", image_subs_video_res, 0),
+        OPT_FLAG("sub-fix-timing", sub_fix_timing, 0),
+        OPT_INTRANGE("sub-pos", sub_pos, 0, 0, 100),
+        OPT_FLOATRANGE("sub-gauss", sub_gauss, 0, 0.0, 3.0),
+        OPT_FLAG("sub-gray", sub_gray, 0),
+        OPT_FLAG("sub-ass", ass_enabled, 0),
+        OPT_FLAG("sub-filter-sdh", sub_filter_SDH, 0),
+        OPT_FLAG("sub-filter-sdh-harder", sub_filter_SDH_harder, 0),
+        OPT_FLOATRANGE("sub-scale", sub_scale, 0, 0, 100),
+        OPT_FLOATRANGE("sub-ass-line-spacing", ass_line_spacing, 0, -1000, 1000),
+        OPT_FLAG("sub-use-margins", sub_use_margins, 0),
+        OPT_FLAG("sub-ass-force-margins", ass_use_margins, 0),
+        OPT_FLAG("sub-ass-vsfilter-aspect-compat", ass_vsfilter_aspect_compat, 0),
+        OPT_CHOICE("sub-ass-vsfilter-color-compat", ass_vsfilter_color_compat, 0,
+                ({"no", 0}, {"basic", 1}, {"full", 2}, {"force-601", 3})),
+        OPT_FLAG("sub-ass-vsfilter-blur-compat", ass_vsfilter_blur_compat, 0),
+        OPT_FLAG("embeddedfonts", use_embedded_fonts, 0),
+        OPT_STRINGLIST("sub-ass-force-style", ass_force_style_list, 0),
+        OPT_STRING("sub-ass-styles", ass_styles_file, M_OPT_FILE),
+        OPT_CHOICE("sub-ass-hinting", ass_hinting, 0,
+                ({"none", 0}, {"light", 1}, {"normal", 2}, {"native", 3})),
+        OPT_CHOICE("sub-ass-shaper", ass_shaper, 0,
+                ({"simple", 0}, {"complex", 1})),
+        OPT_FLAG("sub-ass-justify", ass_justify, 0),
+        OPT_CHOICE("sub-ass-override", ass_style_override, 0,
+                ({"no", 0}, {"yes", 1}, {"force", 3}, {"scale", 4}, {"strip", 5})),
+        OPT_FLAG("sub-scale-by-window", sub_scale_by_window, 0),
+        OPT_FLAG("sub-scale-with-window", sub_scale_with_window, 0),
+        OPT_FLAG("sub-ass-scale-with-window", ass_scale_with_window, 0),
+        OPT_SUBSTRUCT("sub", sub_style, sub_style_conf, 0),
+        OPT_FLAG("sub-clear-on-seek", sub_clear_on_seek, 0),
+        OPT_INTRANGE("teletext-page", teletext_page, 0, 1, 999),
+        {0}
+    },
+    .size = sizeof(OPT_BASE_STRUCT),
+    .defaults = &(OPT_BASE_STRUCT){
+        .sub_visibility = 1,
+        .sub_pos = 100,
+        .sub_speed = 1.0,
+        .ass_enabled = 1,
+        .sub_scale_by_window = 1,
+        .ass_use_margins = 0,
+        .sub_use_margins = 1,
+        .ass_scale_with_window = 0,
+        .sub_scale_with_window = 1,
+        .teletext_page = 100,
+        .sub_scale = 1,
+        .ass_vsfilter_aspect_compat = 1,
+        .ass_vsfilter_color_compat = 1,
+        .ass_vsfilter_blur_compat = 1,
+        .ass_style_override = 1,
+        .ass_shaper = 1,
+        .use_embedded_fonts = 1,
+    },
+    .change_flags = UPDATE_OSD,
+};
+
+#undef OPT_BASE_STRUCT
+#define OPT_BASE_STRUCT struct mp_osd_render_opts
+
+const struct m_sub_options mp_osd_render_sub_opts = {
+    .opts = (const struct m_option[]){
+        OPT_FLOATRANGE("osd-bar-align-x", osd_bar_align_x, 0, -1.0, +1.0),
+        OPT_FLOATRANGE("osd-bar-align-y", osd_bar_align_y, 0, -1.0, +1.0),
+        OPT_FLOATRANGE("osd-bar-w", osd_bar_w, 0, 1, 100),
+        OPT_FLOATRANGE("osd-bar-h", osd_bar_h, 0, 0.1, 50),
+        OPT_SUBSTRUCT("osd", osd_style, osd_style_conf, 0),
+        OPT_FLOATRANGE("osd-scale", osd_scale, 0, 0, 100),
+        OPT_FLAG("osd-scale-by-window", osd_scale_by_window, 0),
+        OPT_FLAG("force-rgba-osd-rendering", force_rgba_osd, 0),
+        {0}
+    },
+    .size = sizeof(OPT_BASE_STRUCT),
+    .defaults = &(OPT_BASE_STRUCT){
+        .osd_bar_align_y = 0.5,
+        .osd_bar_w = 75.0,
+        .osd_bar_h = 3.125,
+        .osd_scale = 1,
+        .osd_scale_by_window = 1,
+    },
+    .change_flags = UPDATE_OSD,
 };
 
 #undef OPT_BASE_STRUCT
@@ -196,6 +292,18 @@ const struct m_sub_options dvd_conf = {
     .defaults = &(const struct dvd_opts){
         .angle = 1,
     },
+};
+
+#undef OPT_BASE_STRUCT
+#define OPT_BASE_STRUCT struct filter_opts
+
+const struct m_sub_options filter_conf = {
+    .opts = (const struct m_option[]){
+        OPT_FLAG("deinterlace", deinterlace, 0),
+        {0}
+    },
+    .size = sizeof(OPT_BASE_STRUCT),
+    .change_flags = UPDATE_IMGPAR,
 };
 
 #undef OPT_BASE_STRUCT
@@ -323,12 +431,6 @@ const m_option_t mp_opts[] = {
     OPT_TRACKCHOICE("vid", stream_id[0][STREAM_VIDEO]),
     OPT_TRACKCHOICE("sid", stream_id[0][STREAM_SUB]),
     OPT_TRACKCHOICE("secondary-sid", stream_id[1][STREAM_SUB]),
-    OPT_TRACKCHOICE("ff-aid", stream_id_ff[STREAM_AUDIO],
-                    .deprecation_message = "no replacement"),
-    OPT_TRACKCHOICE("ff-vid", stream_id_ff[STREAM_VIDEO],
-                    .deprecation_message = "no replacement"),
-    OPT_TRACKCHOICE("ff-sid", stream_id_ff[STREAM_SUB],
-                    .deprecation_message = "no replacement"),
     OPT_ALIAS("sub", "sid"),
     OPT_ALIAS("video", "vid"),
     OPT_ALIAS("audio", "aid"),
@@ -360,7 +462,9 @@ const m_option_t mp_opts[] = {
     OPT_STRING("sub-demuxer", sub_demuxer_name, 0),
     OPT_FLAG("demuxer-thread", demuxer_thread, 0),
     OPT_FLAG("prefetch-playlist", prefetch_open, 0),
-    OPT_FLAG("cache-pause", cache_pausing, 0),
+    OPT_FLAG("cache-pause", cache_pause, 0),
+    OPT_FLAG("cache-pause-initial", cache_pause_initial, 0),
+    OPT_FLOAT("cache-pause-wait", cache_pause_wait, M_OPT_MIN, .min = 0),
 
     OPT_DOUBLE("mf-fps", mf_fps, 0),
     OPT_STRING("mf-type", mf_type, 0),
@@ -379,10 +483,9 @@ const m_option_t mp_opts[] = {
 
     // force video/audio rate:
     OPT_DOUBLE("fps", force_fps, CONF_MIN, .min = 0),
-    OPT_INTRANGE("audio-samplerate", force_srate, UPDATE_AUDIO, 1000, 16*48000),
+    OPT_INTRANGE("audio-samplerate", force_srate, UPDATE_AUDIO, 0, 16*48000),
     OPT_CHANNELS("audio-channels", audio_output_channels, UPDATE_AUDIO),
     OPT_AUDIOFORMAT("audio-format", audio_output_format, UPDATE_AUDIO),
-    OPT_FLAG("audio-normalize-downmix", audio_normalize, UPDATE_AUDIO),
     OPT_DOUBLE("speed", playback_speed, M_OPT_RANGE, .min = 0.01, .max = 100.0),
 
     OPT_FLAG("audio-pitch-correction", pitch_correction, 0),
@@ -392,30 +495,23 @@ const m_option_t mp_opts[] = {
 
 // ------------------------- codec/vfilter options --------------------
 
-#if HAVE_LIBAF
-    OPT_SETTINGSLIST("af-defaults", af_defs, 0, &af_obj_list, ),
+    OPT_SETTINGSLIST("af-defaults", af_defs, 0, &af_obj_list,
+                     .deprecation_message = "use --af + enable/disable flags"),
     OPT_SETTINGSLIST("af", af_settings, 0, &af_obj_list, ),
-#endif
-    OPT_SETTINGSLIST("vf-defaults", vf_defs, 0, &vf_obj_list, ),
+    OPT_SETTINGSLIST("vf-defaults", vf_defs, 0, &vf_obj_list,
+                     .deprecation_message = "use --vf + enable/disable flags"),
     OPT_SETTINGSLIST("vf", vf_settings, 0, &vf_obj_list, ),
 
-    OPT_FLAG("deinterlace", deinterlace, UPDATE_DEINT),
+    OPT_SUBSTRUCT("", filter_opts, filter_conf, 0),
 
     OPT_STRING("ad", audio_decoders, 0),
     OPT_STRING("vd", video_decoders, 0),
 
     OPT_STRING("audio-spdif", audio_spdif, 0),
 
-    OPT_FLAG("ad-spdif-dtshd", dtshd, 0,
-             .deprecation_message = "use --audio-spdif instead"),
-
     OPT_STRING_VALIDATE("hwdec", hwdec_api, M_OPT_OPTIONAL_PARAM,
                         hwdec_validate_opt),
     OPT_STRING("hwdec-codecs", hwdec_codecs, 0),
-#if HAVE_VIDEOTOOLBOX_HWACCEL
-    OPT_IMAGEFORMAT("videotoolbox-format", videotoolbox_format, 0, .min = -1,
-                    .deprecation_message = "use --hwdec-image-format instead"),
-#endif
     OPT_IMAGEFORMAT("hwdec-image-format", hwdec_image_format, 0, .min = -1),
 
     // -1 means auto aspect (prefer container size until aspect change)
@@ -441,55 +537,15 @@ const m_option_t mp_opts[] = {
     OPT_PATHLIST("external-files", external_files, 0),
     OPT_CLI_ALIAS("external-file", "external-files-append"),
     OPT_FLAG("autoload-files", autoload_files, 0),
-    OPT_FLOAT("sub-delay", sub_delay, UPDATE_OSD),
-    OPT_FLOAT("sub-fps", sub_fps, UPDATE_OSD),
-    OPT_FLOAT("sub-speed", sub_speed, UPDATE_OSD),
-    OPT_FLAG("sub-visibility", sub_visibility, UPDATE_OSD),
-    OPT_FLAG("sub-forced-only", forced_subs_only, UPDATE_OSD),
-    OPT_FLAG("stretch-dvd-subs", stretch_dvd_subs, UPDATE_OSD),
-    OPT_FLAG("stretch-image-subs-to-screen", stretch_image_subs, UPDATE_OSD),
-    OPT_FLAG("image-subs-video-resolution", image_subs_video_res, UPDATE_OSD),
-    OPT_FLAG("sub-fix-timing", sub_fix_timing, 0),
     OPT_CHOICE("sub-auto", sub_auto, 0,
                ({"no", -1}, {"exact", 0}, {"fuzzy", 1}, {"all", 2})),
     OPT_CHOICE("audio-file-auto", audiofile_auto, 0,
                ({"no", -1}, {"exact", 0}, {"fuzzy", 1}, {"all", 2})),
-    OPT_INTRANGE("sub-pos", sub_pos, UPDATE_OSD, 0, 100),
-    OPT_FLOATRANGE("sub-gauss", sub_gauss, UPDATE_OSD, 0.0, 3.0),
-    OPT_FLAG("sub-gray", sub_gray, UPDATE_OSD),
-    OPT_FLAG("sub-ass", ass_enabled, 0),
-    OPT_FLAG("sub-filter-sdh", sub_filter_SDH, 0),
-    OPT_FLAG("sub-filter-sdh-harder", sub_filter_SDH_harder, 0),
-    OPT_FLOATRANGE("sub-scale", sub_scale, UPDATE_OSD, 0, 100),
-    OPT_FLOATRANGE("sub-ass-line-spacing", ass_line_spacing, UPDATE_OSD, -1000, 1000),
-    OPT_FLAG("sub-use-margins", sub_use_margins, UPDATE_OSD),
-    OPT_FLAG("sub-ass-force-margins", ass_use_margins, UPDATE_OSD),
-    OPT_FLAG("sub-ass-vsfilter-aspect-compat", ass_vsfilter_aspect_compat, UPDATE_OSD),
-    OPT_CHOICE("sub-ass-vsfilter-color-compat", ass_vsfilter_color_compat, UPDATE_OSD,
-               ({"no", 0}, {"basic", 1}, {"full", 2}, {"force-601", 3})),
-    OPT_FLAG("sub-ass-vsfilter-blur-compat", ass_vsfilter_blur_compat, UPDATE_OSD),
-    OPT_FLAG("embeddedfonts", use_embedded_fonts, 0),
-    OPT_STRINGLIST("sub-ass-force-style", ass_force_style_list, UPDATE_OSD),
-    OPT_STRING("sub-ass-styles", ass_styles_file, M_OPT_FILE),
-    OPT_CHOICE("sub-ass-hinting", ass_hinting, UPDATE_OSD,
-               ({"none", 0}, {"light", 1}, {"normal", 2}, {"native", 3})),
-    OPT_CHOICE("sub-ass-shaper", ass_shaper, UPDATE_OSD,
-               ({"simple", 0}, {"complex", 1})),
-    OPT_FLAG("sub-ass-justify", ass_justify, 0),
-    OPT_CHOICE("sub-ass-override", ass_style_override, UPDATE_OSD,
-               ({"no", 0}, {"yes", 1}, {"force", 3}, {"scale", 4}, {"strip", 5})),
-    OPT_FLAG("sub-scale-by-window", sub_scale_by_window, UPDATE_OSD),
-    OPT_FLAG("sub-scale-with-window", sub_scale_with_window, UPDATE_OSD),
-    OPT_FLAG("sub-ass-scale-with-window", ass_scale_with_window, UPDATE_OSD),
+
+    OPT_SUBSTRUCT("", subs_rend, mp_subtitle_sub_opts, 0),
+    OPT_SUBSTRUCT("", osd_rend, mp_osd_render_sub_opts, 0),
+
     OPT_FLAG("osd-bar", osd_bar_visible, UPDATE_OSD),
-    OPT_FLOATRANGE("osd-bar-align-x", osd_bar_align_x, UPDATE_OSD, -1.0, +1.0),
-    OPT_FLOATRANGE("osd-bar-align-y", osd_bar_align_y, UPDATE_OSD, -1.0, +1.0),
-    OPT_FLOATRANGE("osd-bar-w", osd_bar_w, UPDATE_OSD, 1, 100),
-    OPT_FLOATRANGE("osd-bar-h", osd_bar_h, UPDATE_OSD, 0.1, 50),
-    OPT_SUBSTRUCT("osd", osd_style, osd_style_conf, 0),
-    OPT_SUBSTRUCT("sub", sub_style, sub_style_conf, 0),
-    OPT_FLAG("sub-clear-on-seek", sub_clear_on_seek, 0),
-    OPT_INTRANGE("teletext-page", teletext_page, 0, 1, 999),
 
 //---------------------- libao/libvo options ------------------------
     OPT_SETTINGSLIST("ao", audio_driver_list, 0, &ao_obj_list, ),
@@ -502,12 +558,6 @@ const m_option_t mp_opts[] = {
     OPT_CHOICE("force-window", force_vo, 0,
                ({"no", 0}, {"yes", 1}, {"immediate", 2})),
 
-    OPT_CHOICE("softvol", softvol, 0,
-               ({"no", SOFTVOL_NO},
-                {"yes", SOFTVOL_YES},
-                {"auto", SOFTVOL_AUTO}),
-               .deprecation_message = "softvol is always active, and behaves "
-                                      "as if --softvol=yes is always set"),
     OPT_FLOATRANGE("volume-max", softvol_max, 0, 100, 1000),
     // values <0 for volume and mute are legacy and ignored
     OPT_FLOATRANGE("volume", softvol_volume, UPDATE_VOL, -1, 1000),
@@ -531,13 +581,8 @@ const m_option_t mp_opts[] = {
 
     OPT_STRING("title", wintitle, 0),
     OPT_STRING("force-media-title", media_title, 0),
-    // set aspect ratio of monitor - useful for 16:9 TV-out
-    OPT_FLAG("force-rgba-osd-rendering", force_rgba_osd, 0),
     OPT_CHOICE_OR_INT("video-rotate", video_rotate, UPDATE_IMGPAR, 0, 359,
                       ({"no", -1})),
-    OPT_CHOICE_C("video-stereo-mode", video_stereo_mode, UPDATE_IMGPAR,
-                 mp_stereo3d_names,
-                 .deprecation_message = "mostly broken"),
 
     OPT_CHOICE_OR_INT("cursor-autohide", cursor_autohide_delay, 0,
                       0, 30000, ({"no", -1}, {"always", -2})),
@@ -549,10 +594,13 @@ const m_option_t mp_opts[] = {
     OPT_FLAG("use-filedir-conf", use_filedir_conf, 0),
     OPT_CHOICE("osd-level", osd_level, 0,
                ({"0", 0}, {"1", 1}, {"2", 2}, {"3", 3})),
+    OPT_CHOICE("osd-on-seek", osd_on_seek, 0,
+               ({"no", 0},
+                {"bar", 1},
+                {"msg", 2},
+                {"msg-bar", 3})),
     OPT_INTRANGE("osd-duration", osd_duration, 0, 0, 3600000),
     OPT_FLAG("osd-fractions", osd_fractions, 0),
-    OPT_FLOATRANGE("osd-scale", osd_scale, UPDATE_OSD, 0, 100),
-    OPT_FLAG("osd-scale-by-window", osd_scale_by_window, 0),
 
     OPT_DOUBLE("sstep", step_sec, CONF_MIN, 0),
 
@@ -561,8 +609,7 @@ const m_option_t mp_opts[] = {
                 {"vo", 1},
                 {"decoder", 2},
                 {"decoder+vo", 3})),
-
-    OPT_DOUBLE("display-fps", frame_drop_fps, M_OPT_MIN, .min = 0),
+    OPT_FLAG("video-latency-hacks", video_latency_hacks, 0),
 
     OPT_FLAG("untimed", untimed, 0),
 
@@ -656,6 +703,8 @@ const m_option_t mp_opts[] = {
 
     OPT_STRING("record-file", record_file, M_OPT_FILE),
 
+    OPT_SUBSTRUCT("", resample_opts, resample_conf, 0),
+
     OPT_SUBSTRUCT("", input_opts, input_config, 0),
 
     OPT_SUBSTRUCT("", vo, vo_sub_opts, 0),
@@ -687,6 +736,14 @@ const m_option_t mp_opts[] = {
     OPT_SUBSTRUCT("", cocoa_opts, cocoa_conf, 0),
 #endif
 
+#if HAVE_MACOS_COCOA_CB
+    OPT_SUBSTRUCT("", macos_opts, macos_conf, 0),
+#endif
+
+#if HAVE_ANDROID
+    OPT_SUBSTRUCT("", android_opts, android_conf, 0),
+#endif
+
 #if HAVE_GL_WIN32
     OPT_CHOICE("opengl-dwmflush", wingl_dwm_flush, 0,
                ({"no", -1}, {"auto", 0}, {"windowed", 1}, {"yes", 2})),
@@ -697,9 +754,11 @@ const m_option_t mp_opts[] = {
                       0, INT_MAX, ({"auto", -1})),
 #endif
 
-#if HAVE_ENCODING
-    OPT_SUBSTRUCT("", encode_opts, encode_config, 0),
+#if HAVE_VAAPI
+    OPT_SUBSTRUCT("vaapi", vaapi_opts, vaapi_conf, 0),
 #endif
+
+    OPT_SUBSTRUCT("", encode_opts, encode_config, 0),
 
     OPT_REMOVED("a52drc", "use --ad-lavc-ac3drc=level"),
     OPT_REMOVED("afm", "use --ad=..."),
@@ -774,7 +833,6 @@ const m_option_t mp_opts[] = {
     OPT_REMOVED("volstep", "edit input.conf directly instead"),
     OPT_REMOVED("fixed-vo", "--fixed-vo=yes is now the default"),
     OPT_REPLACED("mkv-subtitle-preroll", "demuxer-mkv-subtitle-preroll"),
-    OPT_REPLACED("dtshd", "ad-spdif-dtshd"),
     OPT_REPLACED("ass-use-margins", "sub-use-margins"),
     OPT_REPLACED("media-title", "force-media-title"),
     OPT_REPLACED("input-unix-socket", "input-ipc-server"),
@@ -812,6 +870,7 @@ const m_option_t mp_opts[] = {
     OPT_REMOVED("fs-black-out-screens", NULL),
     OPT_REPLACED("sub-paths", "sub-file-paths"),
     OPT_REMOVED("heartbeat-cmd", "use Lua scripting instead"),
+    OPT_REMOVED("no-ometadata", "use --no-ocopy-metadata"),
 
     {0}
 };
@@ -822,7 +881,6 @@ const struct MPOpts mp_default_opts = {
     .audio_driver_list = NULL,
     .audio_decoders = NULL,
     .video_decoders = NULL,
-    .softvol = SOFTVOL_AUTO,
     .softvol_max = 130,
     .softvol_volume = 100,
     .softvol_mute = 0,
@@ -835,18 +893,8 @@ const struct MPOpts mp_default_opts = {
     .cursor_autohide_delay = 1000,
     .video_osd = 1,
     .osd_level = 1,
+    .osd_on_seek = 1,
     .osd_duration = 1000,
-    .osd_bar_align_y = 0.5,
-    .osd_bar_w = 75.0,
-    .osd_bar_h = 3.125,
-    .osd_scale = 1,
-    .osd_scale_by_window = 1,
-    .sub_scale_by_window = 1,
-    .ass_use_margins = 0,
-    .sub_use_margins = 1,
-    .ass_scale_with_window = 0,
-    .sub_scale_with_window = 1,
-    .teletext_page = 100,
 #if HAVE_LUA
     .lua_load_osc = 1,
     .lua_load_ytdl = 1,
@@ -868,7 +916,8 @@ const struct MPOpts mp_default_opts = {
     .autoload_files = 1,
     .demuxer_thread = 1,
     .hls_bitrate = INT_MAX,
-    .cache_pausing = 1,
+    .cache_pause = 1,
+    .cache_pause_wait = 1.0,
     .chapterrange = {-1, -1},
     .ab_loop = {MP_NOPTS_VALUE, MP_NOPTS_VALUE},
     .edition_id = -1,
@@ -891,14 +940,8 @@ const struct MPOpts mp_default_opts = {
                    { [STREAM_AUDIO] = -2,
                      [STREAM_VIDEO] = -2,
                      [STREAM_SUB] = -2, }, },
-    .stream_id_ff = { [STREAM_AUDIO] = -1,
-                      [STREAM_VIDEO] = -1,
-                      [STREAM_SUB] = -1, },
     .stream_auto_sel = 1,
     .audio_display = 1,
-    .sub_visibility = 1,
-    .sub_pos = 100,
-    .sub_speed = 1.0,
     .audio_output_format = 0,  // AF_FORMAT_UNKNOWN
     .playback_speed = 1.,
     .pitch_correction = 1,
@@ -907,21 +950,10 @@ const struct MPOpts mp_default_opts = {
     .sub_auto = 0,
     .audiofile_auto = -1,
     .osd_bar_visible = 1,
-#if HAVE_LIBASS
-    .ass_enabled = 1,
-#endif
-    .sub_scale = 1,
-    .ass_vsfilter_aspect_compat = 1,
-    .ass_vsfilter_color_compat = 1,
-    .ass_vsfilter_blur_compat = 1,
-    .ass_style_override = 1,
-    .ass_shaper = 1,
-    .use_embedded_fonts = 1,
     .screenshot_template = "mpv-shot%n",
 
     .hwdec_api = HAVE_RPI ? "mmal" : "no",
     .hwdec_codecs = "h264,vc1,wmv3,hevc,mpeg2video,vp9",
-    .videotoolbox_format = IMGFMT_NV12,
 
     .audio_output_channels = {
         .set = 1,
@@ -933,8 +965,9 @@ const struct MPOpts mp_default_opts = {
     .mf_fps = 1.0,
 
     .display_tags = (char **)(const char*[]){
-        "Artist", "Album", "Album_Artist", "Comment", "Composer", "Genre",
-        "Performer", "Title", "Track", "icy-title", "service_name",
+        "Artist", "Album", "Album_Artist", "Comment", "Composer",
+        "Date", "Description", "Genre", "Performer", "Rating",
+        "Series", "Title", "Track", "icy-title", "service_name",
         NULL
     },
 

@@ -30,6 +30,7 @@
 #include <sys/time.h>
 #include <stdlib.h>
 #include <stdarg.h>
+#include <limits.h>
 #include <math.h>
 #include <string.h>
 
@@ -42,8 +43,11 @@
 
 #include <alsa/asoundlib.h>
 
-#define HAVE_CHMAP_API \
-    (defined(SND_CHMAP_API_VERSION) && SND_CHMAP_API_VERSION >= (1 << 16))
+#if defined(SND_CHMAP_API_VERSION) && SND_CHMAP_API_VERSION >= (1 << 16)
+#define HAVE_CHMAP_API 1
+#else
+#define HAVE_CHMAP_API 0
+#endif
 
 #include "ao.h"
 #include "internal.h"
@@ -56,6 +60,8 @@ struct ao_alsa_opts {
     int resample;
     int ni;
     int ignore_chmap;
+    int buffer_time;
+    int frags;
 };
 
 #define OPT_BASE_STRUCT struct ao_alsa_opts
@@ -67,6 +73,8 @@ static const struct m_sub_options ao_alsa_conf = {
         OPT_INTRANGE("alsa-mixer-index", mixer_index, 0, 0, 99),
         OPT_FLAG("alsa-non-interleaved", ni, 0),
         OPT_FLAG("alsa-ignore-chmap", ignore_chmap, 0),
+        OPT_INTRANGE("alsa-buffer-time", buffer_time, 0, 0, INT_MAX),
+        OPT_INTRANGE("alsa-periods", frags, 0, 0, INT_MAX),
         {0}
     },
     .defaults = &(const struct ao_alsa_opts) {
@@ -74,6 +82,8 @@ static const struct m_sub_options ao_alsa_conf = {
         .mixer_name = "Master",
         .mixer_index = 0,
         .ni = 0,
+        .buffer_time = 100000,
+        .frags = 4,
     },
     .size = sizeof(struct ao_alsa_opts),
 };
@@ -95,9 +105,6 @@ struct priv {
 
     struct ao_alsa_opts *opts;
 };
-
-#define BUFFER_TIME 250000  // 250ms
-#define FRAGCOUNT 16
 
 #define CHECK_ALSA_ERROR(message) \
     do { \
@@ -518,7 +525,7 @@ static int set_chmap(struct ao *ao, struct mp_chmap *dev_chmap, int num_channels
 
 #endif /* else HAVE_CHMAP_API */
 
-static void dump_hw_params(struct ao *ao, int msglevel, const char *msg,
+static void dump_hw_params(struct ao *ao, const char *msg,
                            snd_pcm_hw_params_t *hw_params)
 {
     struct priv *p = ao->priv;
@@ -530,7 +537,7 @@ static void dump_hw_params(struct ao *ao, int msglevel, const char *msg,
     char *tmp = NULL;
     size_t tmp_s = snd_output_buffer_string(p->output, &tmp);
     if (tmp)
-        mp_msg(ao->log, msglevel, "%s---\n%.*s---\n", msg, (int)tmp_s, tmp);
+        mp_msg(ao->log, MSGL_DEBUG, "%s---\n%.*s---\n", msg, (int)tmp_s, tmp);
     snd_output_flush(p->output);
 }
 
@@ -645,6 +652,7 @@ alsa_error: ;
 static int init_device(struct ao *ao, int mode)
 {
     struct priv *p = ao->priv;
+    struct ao_alsa_opts *opts = p->opts;
     int ret = INIT_DEVICE_ERR_GENERIC;
     char *tmp;
     size_t tmp_s;
@@ -678,7 +686,7 @@ static int init_device(struct ao *ao, int mode)
     err = snd_pcm_hw_params_any(p->alsa, alsa_hwparams);
     CHECK_ALSA_ERROR("Unable to get initial parameters");
 
-    dump_hw_params(ao, MSGL_DEBUG, "Start HW params:\n", alsa_hwparams);
+    dump_hw_params(ao, "Start HW params:\n", alsa_hwparams);
 
     // Some ALSA drivers have broken delay reporting, so disable the ALSA
     // resampling plugin by default.
@@ -686,7 +694,7 @@ static int init_device(struct ao *ao, int mode)
         err = snd_pcm_hw_params_set_rate_resample(p->alsa, alsa_hwparams, 0);
         CHECK_ALSA_ERROR("Unable to disable resampling");
     }
-    dump_hw_params(ao, MSGL_DEBUG, "HW params after rate:\n", alsa_hwparams);
+    dump_hw_params(ao, "HW params after rate:\n", alsa_hwparams);
 
     snd_pcm_access_t access = af_fmt_is_planar(ao->format)
                                     ? SND_PCM_ACCESS_RW_NONINTERLEAVED
@@ -698,10 +706,10 @@ static int init_device(struct ao *ao, int mode)
         err = snd_pcm_hw_params_set_access(p->alsa, alsa_hwparams, access);
     }
     CHECK_ALSA_ERROR("Unable to set access type");
-    dump_hw_params(ao, MSGL_DEBUG, "HW params after access:\n", alsa_hwparams);
+    dump_hw_params(ao, "HW params after access:\n", alsa_hwparams);
 
     bool found_format = false;
-    int try_formats[AF_FORMAT_COUNT];
+    int try_formats[AF_FORMAT_COUNT + 1];
     af_get_best_sample_formats(ao->format, try_formats);
     for (int n = 0; try_formats[n] && !found_format; n++) {
         int mp_format = try_formats[n];
@@ -741,7 +749,7 @@ static int init_device(struct ao *ao, int mode)
 
     err = snd_pcm_hw_params_set_format(p->alsa, alsa_hwparams, p->alsa_fmt);
     CHECK_ALSA_ERROR("Unable to set format");
-    dump_hw_params(ao, MSGL_DEBUG, "HW params after format:\n", alsa_hwparams);
+    dump_hw_params(ao, "HW params after format:\n", alsa_hwparams);
 
     // Stereo, or mono if input is 1 channel.
     struct mp_chmap reduced;
@@ -770,7 +778,7 @@ static int init_device(struct ao *ao, int mode)
     err = snd_pcm_hw_params_set_channels_near
             (p->alsa, alsa_hwparams, &num_channels);
     CHECK_ALSA_ERROR("Unable to set channels");
-    dump_hw_params(ao, MSGL_DEBUG, "HW params after channels:\n", alsa_hwparams);
+    dump_hw_params(ao, "HW params after channels:\n", alsa_hwparams);
 
     if (num_channels > MP_NUM_CHANNELS) {
         MP_FATAL(ao, "Too many audio channels (%d).\n", num_channels);
@@ -780,32 +788,35 @@ static int init_device(struct ao *ao, int mode)
     err = snd_pcm_hw_params_set_rate_near
             (p->alsa, alsa_hwparams, &ao->samplerate, NULL);
     CHECK_ALSA_ERROR("Unable to set samplerate-2");
-    dump_hw_params(ao, MSGL_DEBUG, "HW params after rate-2:\n", alsa_hwparams);
+    dump_hw_params(ao, "HW params after rate-2:\n", alsa_hwparams);
 
     snd_pcm_hw_params_t *hwparams_backup;
     snd_pcm_hw_params_alloca(&hwparams_backup);
     snd_pcm_hw_params_copy(hwparams_backup, alsa_hwparams);
 
     // Cargo-culted buffer settings; might still be useful for PulseAudio.
-    err = snd_pcm_hw_params_set_buffer_time_near
-            (p->alsa, alsa_hwparams, &(unsigned int){BUFFER_TIME}, NULL);
-    CHECK_ALSA_WARN("Unable to set buffer time near");
-    if (err >= 0) {
+    err = 0;
+    if (opts->buffer_time) {
+        err = snd_pcm_hw_params_set_buffer_time_near
+                (p->alsa, alsa_hwparams, &(unsigned int){opts->buffer_time}, NULL);
+        CHECK_ALSA_WARN("Unable to set buffer time near");
+    }
+    if (err >= 0 && opts->frags) {
         err = snd_pcm_hw_params_set_periods_near
-                    (p->alsa, alsa_hwparams, &(unsigned int){FRAGCOUNT}, NULL);
+                    (p->alsa, alsa_hwparams, &(unsigned int){opts->frags}, NULL);
         CHECK_ALSA_WARN("Unable to set periods");
     }
     if (err < 0)
         snd_pcm_hw_params_copy(alsa_hwparams, hwparams_backup);
 
-    dump_hw_params(ao, MSGL_V, "Going to set final HW params:\n", alsa_hwparams);
+    dump_hw_params(ao, "Going to set final HW params:\n", alsa_hwparams);
 
     /* finally install hardware parameters */
     err = snd_pcm_hw_params(p->alsa, alsa_hwparams);
     ret = INIT_DEVICE_ERR_HWPARAMS;
     CHECK_ALSA_ERROR("Unable to set hw-parameters");
     ret = INIT_DEVICE_ERR_GENERIC;
-    dump_hw_params(ao, MSGL_DEBUG, "Final HW params:\n", alsa_hwparams);
+    dump_hw_params(ao, "Final HW params:\n", alsa_hwparams);
 
     if (set_chmap(ao, &dev_chmap, num_channels) < 0)
         goto alsa_error;
@@ -844,11 +855,6 @@ static int init_device(struct ao *ao, int mode)
     err = snd_pcm_sw_params_set_start_threshold
             (p->alsa, alsa_swparams, p->outburst);
     CHECK_ALSA_ERROR("Unable to set start threshold");
-
-    /* disable underrun reporting */
-    err = snd_pcm_sw_params_set_stop_threshold
-            (p->alsa, alsa_swparams, boundary);
-    CHECK_ALSA_ERROR("Unable to set stop threshold");
 
     /* play silence when there is an underrun */
     err = snd_pcm_sw_params_set_silence_size
@@ -933,17 +939,20 @@ static void drain(struct ao *ao)
 static int get_space(struct ao *ao)
 {
     struct priv *p = ao->priv;
-    snd_pcm_status_t *status;
-    int err;
 
-    snd_pcm_status_alloca(&status);
+    snd_pcm_sframes_t space = snd_pcm_avail(p->alsa);
+    if (space < 0) {
+        MP_ERR(ao, "Error received from snd_pcm_avail (%ld, %s)!\n",
+               space, snd_strerror(space));
+        if (space == -EPIPE) // EOF
+            return p->buffersize;
 
-    err = snd_pcm_status(p->alsa, status);
-    if (!check_device_present(ao, err))
+        // request a reload of the AO if device is not present,
+        // then error out.
+        check_device_present(ao, space);
         goto alsa_error;
-    CHECK_ALSA_ERROR("cannot get pcm status");
+    }
 
-    unsigned space = snd_pcm_status_get_avail(status);
     if (space > p->buffersize) // Buffer underrun?
         space = p->buffersize;
     return space / p->outburst * p->outburst;
@@ -1106,6 +1115,11 @@ static int play(struct ao *ao, void **data, int samples, int flags)
         } else if (res < 0) {
             if (res == -ESTRPIPE) {  /* suspend */
                 resume_device(ao);
+            } else if (res == -EPIPE) {
+                // For some reason, writing a smaller fragment at the end
+                // immediately underruns.
+                if (!(flags & AOPLAY_FINAL_CHUNK))
+                    MP_WARN(ao, "Device underrun detected.\n");
             } else {
                 MP_ERR(ao, "Write error: %s\n", snd_strerror(res));
             }

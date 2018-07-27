@@ -44,6 +44,38 @@
 #define EGL_OPENGL_ES3_BIT                      0x00000040
 #endif
 
+struct mp_egl_config_attr {
+    int attrib;
+    const char *name;
+};
+
+#define MP_EGL_ATTRIB(id) {id, # id}
+
+static const struct mp_egl_config_attr mp_egl_attribs[] = {
+    MP_EGL_ATTRIB(EGL_CONFIG_ID),
+    MP_EGL_ATTRIB(EGL_RED_SIZE),
+    MP_EGL_ATTRIB(EGL_GREEN_SIZE),
+    MP_EGL_ATTRIB(EGL_BLUE_SIZE),
+    MP_EGL_ATTRIB(EGL_ALPHA_SIZE),
+    MP_EGL_ATTRIB(EGL_COLOR_BUFFER_TYPE),
+    MP_EGL_ATTRIB(EGL_CONFIG_CAVEAT),
+    MP_EGL_ATTRIB(EGL_CONFORMANT),
+};
+
+static void dump_egl_config(struct mp_log *log, int msgl, EGLDisplay display,
+                            EGLConfig config)
+{
+    for (int n = 0; n < MP_ARRAY_SIZE(mp_egl_attribs); n++) {
+        const char *name = mp_egl_attribs[n].name;
+        EGLint v = -1;
+        if (eglGetConfigAttrib(display, config, mp_egl_attribs[n].attrib, &v)) {
+            mp_msg(log, msgl, "  %s=%d\n", name, v);
+        } else {
+            mp_msg(log, msgl, "  %s=<error>\n", name);
+        }
+    }
+}
+
 // es_version: 0 (core), 2 or 3
 static bool create_context(struct ra_ctx *ctx, EGLDisplay display,
                            int es_version, struct mpegl_cb cb,
@@ -83,9 +115,9 @@ static bool create_context(struct ra_ctx *ctx, EGLDisplay display,
 
     EGLint attributes[] = {
         EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
-        EGL_RED_SIZE, 1,
-        EGL_GREEN_SIZE, 1,
-        EGL_BLUE_SIZE, 1,
+        EGL_RED_SIZE, 8,
+        EGL_GREEN_SIZE, 8,
+        EGL_BLUE_SIZE, 8,
         EGL_ALPHA_SIZE, ctx->opts.want_alpha ? 1 : 0,
         EGL_RENDERABLE_TYPE, rend,
         EGL_NONE
@@ -101,16 +133,27 @@ static bool create_context(struct ra_ctx *ctx, EGLDisplay display,
 
     if (!num_configs) {
         talloc_free(configs);
-        MP_MSG(ctx, msgl, "Could not choose EGLConfig!\n");
+        MP_MSG(ctx, msgl, "Could not choose EGLConfig for %s!\n", name);
         return false;
     }
+
+    for (int n = 0; n < num_configs; n++)
+        dump_egl_config(ctx->log, MSGL_TRACE, display, configs[n]);
 
     int chosen = 0;
     if (cb.refine_config)
         chosen = cb.refine_config(cb.user_data, configs, num_configs);
+    if (chosen < 0) {
+        talloc_free(configs);
+        MP_MSG(ctx, msgl, "Could not refine EGLConfig for %s!\n", name);
+        return false;
+    }
     EGLConfig config = configs[chosen];
 
     talloc_free(configs);
+
+    MP_DBG(ctx, "Chosen EGLConfig:\n");
+    dump_egl_config(ctx->log, MSGL_DEBUG, display, config);
 
     EGLContext *egl_ctx = NULL;
 
@@ -152,7 +195,7 @@ static bool create_context(struct ra_ctx *ctx, EGLDisplay display,
     }
 
     if (!egl_ctx) {
-        MP_MSG(ctx, msgl, "Could not create EGL context!\n");
+        MP_MSG(ctx, msgl, "Could not create EGL context for %s!\n", name);
         return false;
     }
 
@@ -199,6 +242,14 @@ bool mpegl_create_context_cb(struct ra_ctx *ctx, EGLDisplay display,
     return false;
 }
 
+static int GLAPIENTRY swap_interval(int interval)
+{
+    EGLDisplay display = eglGetCurrentDisplay();
+    if (!display)
+        return 1;
+    return !eglSwapInterval(display, interval);
+}
+
 static void *mpegl_get_proc_address(void *ctx, const char *name)
 {
     void *p = eglGetProcAddress(name);
@@ -223,4 +274,6 @@ void mpegl_load_functions(struct GL *gl, struct mp_log *log)
         egl_exts = eglQueryString(display, EGL_EXTENSIONS);
 
     mpgl_load_functions2(gl, mpegl_get_proc_address, NULL, egl_exts, log);
+    if (!gl->SwapInterval)
+        gl->SwapInterval = swap_interval;
 }

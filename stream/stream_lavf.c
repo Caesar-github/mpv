@@ -46,6 +46,7 @@ struct stream_lavf_params {
     char *tls_cert_file;
     char *tls_key_file;
     double timeout;
+    char *http_proxy;
 };
 
 const struct m_sub_options stream_lavf_conf = {
@@ -61,6 +62,7 @@ const struct m_sub_options stream_lavf_conf = {
         OPT_STRING("tls-cert-file", tls_cert_file, M_OPT_FILE),
         OPT_STRING("tls-key-file", tls_key_file, M_OPT_FILE),
         OPT_DOUBLE("network-timeout", timeout, M_OPT_MIN, .min = 0),
+        OPT_STRING("http-proxy", http_proxy, 0),
         {0}
     },
     .size = sizeof(struct stream_lavf_params),
@@ -77,8 +79,6 @@ static struct mp_tags *read_icy(stream_t *stream);
 static int fill_buffer(stream_t *s, char *buffer, int max_len)
 {
     AVIOContext *avio = s->priv;
-    if (!avio)
-        return -1;
 #if LIBAVFORMAT_VERSION_MICRO >= 100 && LIBAVFORMAT_VERSION_INT >= AV_VERSION_INT(57, 81, 100)
     int r = avio_read_partial(avio, buffer, max_len);
 #else
@@ -90,8 +90,6 @@ static int fill_buffer(stream_t *s, char *buffer, int max_len)
 static int write_buffer(stream_t *s, char *buffer, int len)
 {
     AVIOContext *avio = s->priv;
-    if (!avio)
-        return -1;
     avio_write(avio, buffer, len);
     avio_flush(avio);
     if (avio->error)
@@ -102,8 +100,6 @@ static int write_buffer(stream_t *s, char *buffer, int len)
 static int seek(stream_t *s, int64_t newpos)
 {
     AVIOContext *avio = s->priv;
-    if (!avio)
-        return -1;
     if (avio_seek(avio, newpos, SEEK_SET) < 0) {
         return 0;
     }
@@ -125,8 +121,6 @@ static void close_f(stream_t *stream)
 static int control(stream_t *s, int cmd, void *arg)
 {
     AVIOContext *avio = s->priv;
-    if (!avio && cmd != STREAM_CTRL_RECONNECT)
-        return -1;
     int64_t size;
     switch(cmd) {
     case STREAM_CTRL_GET_SIZE:
@@ -174,16 +168,6 @@ static int control(stream_t *s, int cmd, void *arg)
         if (!*(struct mp_tags **)arg)
             break;
         return 1;
-    }
-    case STREAM_CTRL_RECONNECT: {
-        if (avio && avio->write_flag)
-            break; // don't bother with this
-        // avio doesn't seem to support this - emulate it by reopening
-        close_f(s);
-        s->priv = NULL;
-        stream_drop_buffers(s);
-        s->pos = 0;
-        return open_f(s);
     }
     }
     return STREAM_UNSUPPORTED;
@@ -242,6 +226,8 @@ void mp_setup_av_network_options(AVDictionary **dict, struct mpv_global *global,
         snprintf(buf, sizeof(buf), "%lld", (long long)(opts->timeout * 1e6));
         av_dict_set(dict, "timeout", buf, 0);
     }
+    if (opts->http_proxy && opts->http_proxy[0])
+        av_dict_set(dict, "http_proxy", opts->http_proxy, 0);
 
     mp_set_avdict(dict, opts->avopts);
 
@@ -303,6 +289,9 @@ static int open_f(stream_t *stream)
     {
         filename = talloc_asprintf(temp, "mmsh://%.*s", BSTR_P(b_filename));
     }
+
+    av_dict_set(&dict, "reconnect", "1", 0);
+    av_dict_set(&dict, "reconnect_delay_max", "7", 0);
 
     mp_setup_av_network_options(&dict, stream->global, stream->log);
 
@@ -419,7 +408,7 @@ const stream_info_t stream_info_ffmpeg = {
   .open = open_f,
   .protocols = (const char *const[]){
      "rtmp", "rtsp", "http", "https", "mms", "mmst", "mmsh", "mmshttp", "rtp",
-     "httpproxy", "hls", "rtmpe", "rtmps", "rtmpt", "rtmpte", "rtmpts", "srtp",
+     "httpproxy", "rtmpe", "rtmps", "rtmpt", "rtmpte", "rtmpts", "srtp",
      "data",
      NULL },
   .can_write = true,

@@ -64,8 +64,7 @@ struct mp_image_params {
     enum mp_chroma_location chroma_location;
     // The image should be rotated clockwise (0-359 degrees).
     int rotate;
-    enum mp_stereo3d_mode stereo_in;    // image is encoded with this mode
-    enum mp_stereo3d_mode stereo_out;   // should be displayed with this mode
+    enum mp_stereo3d_mode stereo3d; // image is encoded with this mode
     struct mp_spherical_params spherical;
 };
 
@@ -105,6 +104,8 @@ typedef struct mp_image {
     double pts;
     /* only after decoder */
     double dts, pkt_duration;
+    /* container reported FPS; can be incorrect, or 0 if unknown */
+    double nominal_fps;
     /* for private use */
     void* priv;
 
@@ -119,7 +120,17 @@ typedef struct mp_image {
     struct AVBufferRef *hwctx;
     // Embedded ICC profile, if any
     struct AVBufferRef *icc_profile;
+    // Closed captions packet, if any (only after decoder)
+    struct AVBufferRef *a53_cc;
+    // Other side data we don't care about.
+    struct mp_ff_side_data *ff_side_data;
+    int num_ff_side_data;
 } mp_image_t;
+
+struct mp_ff_side_data {
+    int type;
+    struct AVBufferRef *buf;
+};
 
 int mp_chroma_div_up(int size, int shift);
 

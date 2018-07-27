@@ -182,6 +182,9 @@ enum mp_imgfmt {
     IMGFMT_RGB0_START = IMGFMT_0RGB,
     IMGFMT_RGB0_END = IMGFMT_RGB0,
 
+    // Like IMGFMT_RGBA, but 2 bytes per component.
+    IMGFMT_RGBA64,
+
     // Accessed with bit-shifts after endian-swapping the uint16_t pixel
     IMGFMT_RGB565,              // 5r 6g 5b (MSB to LSB)
 
@@ -190,23 +193,16 @@ enum mp_imgfmt {
     IMGFMT_VDPAU,           // VdpVideoSurface
     IMGFMT_VDPAU_OUTPUT,    // VdpOutputSurface
     IMGFMT_VAAPI,
-    // NV12/P010/P016
     // plane 0: ID3D11Texture2D
     // plane 1: slice index casted to pointer
-    IMGFMT_D3D11VA,
-    // Like IMGFMT_D3D11VA, but format is restricted to NV12.
-    IMGFMT_D3D11NV12,
-    // Like IMGFMT_D3D11VA, but format is restricted to a certain RGB format.
-    // Also, it must have a share handle, have been flushed, and not be a
-    // texture array slice.
-    IMGFMT_D3D11RGB,
+    IMGFMT_D3D11,
     IMGFMT_DXVA2,           // IDirect3DSurface9 (NV12/P010/P016)
     IMGFMT_MMAL,            // MMAL_BUFFER_HEADER_T
     IMGFMT_VIDEOTOOLBOX,    // CVPixelBufferRef
     IMGFMT_MEDIACODEC,      // AVMediaCodecBuffer
     IMGFMT_DRMPRIME,        // AVDRMFrameDescriptor
-
     IMGFMT_CUDA,            // CUDA Buffer
+
     // Generic pass-through of AV_PIX_FMT_*. Used for formats which don't have
     // a corresponding IMGFMT_ value.
     IMGFMT_AVPIXFMT_START,
@@ -231,7 +227,7 @@ static inline bool IMGFMT_IS_RGB(int fmt)
 }
 
 #define IMGFMT_RGB_DEPTH(fmt) (mp_imgfmt_get_desc(fmt).plane_bits)
-#define IMGFMT_IS_HWACCEL(fmt) (mp_imgfmt_get_desc(fmt).flags & MP_IMGFLAG_HWACCEL)
+#define IMGFMT_IS_HWACCEL(fmt) (!!(mp_imgfmt_get_desc(fmt).flags & MP_IMGFLAG_HWACCEL))
 
 int mp_imgfmt_from_name(bstr name);
 char *mp_imgfmt_to_name_buf(char *buf, size_t buf_size, int fmt);
@@ -244,5 +240,6 @@ char **mp_imgfmt_name_list(void);
 int mp_imgfmt_find(int xs, int ys, int planes, int component_bits, int flags);
 
 int mp_imgfmt_select_best(int dst1, int dst2, int src);
+int mp_imgfmt_select_best_list(int *dst, int num_dst, int src);
 
 #endif /* MPLAYER_IMG_FORMAT_H */

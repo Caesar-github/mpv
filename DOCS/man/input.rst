@@ -499,35 +499,29 @@ Input Commands that are Possibly Subject to Change
 
         - ``a vf set flip`` turn video upside-down on the ``a`` key
         - ``b vf set ""`` remove all video filters on ``b``
-        - ``c vf toggle lavfi=gradfun`` toggle debanding on ``c``
+        - ``c vf toggle gradfun`` toggle debanding on ``c``
 
     .. admonition:: Example how to toggle disabled filters at runtime
 
-        - Add something ``vf-add=@deband:!lavfi=[gradfun]`` to ``mpv.conf``. The
-          ``@deband:`` is the label, and ``deband`` is an arbitrary, user-given
-          name for this filter entry. The ``!`` before the filter name disables
-          the filter by default. Everything after this is the normal filter name
-          and the filter parameters.
+        - Add something like ``vf-add=@deband:!gradfun`` to ``mpv.conf``.
+          The ``@deband:`` is the label, an arbitrary, user-given name for this
+          filter entry. The ``!`` before the filter name disables the filter by
+          default. Everything after this is the normal filter name and possibly
+          filter parameters, like in the normal ``--vf`` syntax.
         - Add ``a vf toggle @deband`` to ``input.conf``. This toggles the
-          "disabled" flag for the filter identified with ``deband``.
+          "disabled" flag for the filter with the label ``deband`` when the
+          ``a`` key is hit.
 
 ``cycle-values ["!reverse"] <property> "<value1>" "<value2>" ...``
     Cycle through a list of values. Each invocation of the command will set the
-    given property to the next value in the list. The command maintains an
-    internal counter which value to pick next, and which is initially 0. It is
-    reset to 0 once the last value is reached.
-
-    The internal counter is associated using the property name and the value
-    list. If multiple commands (bound to different keys) use the same name
-    and value list, they will share the internal counter.
+    given property to the next value in the list. The command will use the
+    current value of the property/option, and use it to determine the current
+    position in the list of values. Once it has found it, it will set the
+    next value in the list (wrapping around to the first item if needed).
 
     The special argument ``!reverse`` can be used to cycle the value list in
-    reverse. Compared with a command that just lists the value in reverse, this
-    command will actually share the internal counter with the forward-cycling
-    key binding (as long as the rest of the arguments are the same).
-
-    Note that there is a static limit of (as of this writing) 10 arguments
-    (this limit could be raised on demand).
+    reverse. The only advantage is that you don't need to reverse the value
+    list yourself when adding a second key binding for cycling backwards.
 
 ``enable-section "<section>" [flags]``
     Enable all key bindings in the named input section.
@@ -729,7 +723,26 @@ Input Commands that are Possibly Subject to Change
     merely sets all option values listed within the profile.
 
 ``load-script "<path>"``
-    Load a script, similar to the ``--script`` option.
+    Load a script, similar to the ``--script`` option. Whether this waits for
+    the script to finish initialization or not changed multiple times, and the
+    future behavior is left undefined.
+
+``change-list "<option>" "<operation>" "<value>"``
+    This command changes list options as described in `List Options`_. The
+    ``<option>`` parameter is the normal option name, while ``<operation>`` is
+    the suffix or action used on the option.
+
+    Some operations take no value, but the command still requires the value
+    parameter. In these cases, the value must be an empty string.
+
+    .. admonition:: Example
+
+        ``change-list glsl-shaders append file.glsl``
+
+        Add a filename to the ``glsl-shaders`` list. The command line
+        equivalent is ``--glsl-shaders-append=file.glsl`` or alternatively
+        ``--glsl-shader=file.glsl``.
+
 
 Undocumented commands: ``tv-last-channel`` (TV/DVB only),
 ``ao-reload`` (experimental/internal).
@@ -743,6 +756,49 @@ events are supposed to be asynchronous, and the hook API provides an awkward
 and obscure way to handle events that require stricter coordination. There are
 no API stability guarantees made. Not following the protocol exactly can make
 the player freeze randomly. Basically, nobody should use this API.
+
+The C API is described in the header files. The Lua API is described in the
+Lua section.
+
+The following hooks are currently defined:
+
+``on_load``
+    Called when a file is to be opened, before anything is actually done.
+    For example, you could read and write the ``stream-open-filename``
+    property to redirect an URL to something else (consider support for
+    streaming sites which rarely give the user a direct media URL), or
+    you could set per-file options with by setting the property
+    ``file-local-options/<option name>``. The player will wait until all
+    hooks are run.
+
+``on_load_fail``
+    Called after after a file has been opened, but failed to. This can be
+    used to provide a fallback in case native demuxers failed to recognize
+    the file, instead of always running before the native demuxers like
+    ``on_load``. Demux will only be retried if ``stream-open-filename``
+    was changed.
+
+``on_preloaded``
+    Called after a file has been opened, and before tracks are selected and
+    decoders are created. This has some usefulness if an API users wants
+    to select tracks manually, based on the set of available tracks. It's
+    also useful to initialize ``--lavfi-complex`` in a specific way by API,
+    without having to "probe" the available streams at first.
+
+    Note that this does not yet apply default track selection. Which operations
+    exactly can be done and not be done, and what information is available and
+    what is not yet available yet, is all subject to change.
+
+``on_unload``
+    Run before closing a file, and before actually uninitializing
+    everything. It's not possible to resume playback in this state.
+
+Legacy hook API
+~~~~~~~~~~~~~~~
+
+.. warning::
+
+    The legacy API is deprecated and will be removed soon.
 
 There are two special commands involved. Also, the client must listen for
 client messages (``MPV_EVENT_CLIENT_MESSAGE`` in the C API).
@@ -765,7 +821,6 @@ client messages (``MPV_EVENT_CLIENT_MESSAGE`` in the C API).
        used to correctly handle multiple hooks registered by the same client,
        as long as the ``id`` argument is unique in the client)
     3. something undefined, used by the hook mechanism to track hook execution
-       (currently, it's the hook-name, but this might change without warning)
 
     Upon receiving this message, the client can handle the event. While doing
     this, the player core will still react to requests, but playback will
@@ -778,32 +833,6 @@ client messages (``MPV_EVENT_CLIENT_MESSAGE`` in the C API).
     Run the next hook in the global chain of hooks. The argument is the 3rd
     argument of the client message that starts hook execution for the
     current client.
-
-The following hooks are currently defined:
-
-``on_load``
-    Called when a file is to be opened, before anything is actually done.
-    For example, you could read and write the ``stream-open-filename``
-    property to redirect an URL to something else (consider support for
-    streaming sites which rarely give the user a direct media URL), or
-    you could set per-file options with by setting the property
-    ``file-local-options/<option name>``. The player will wait until all
-    hooks are run.
-
-``on_preloaded``
-    Called after a file has been opened, and before tracks are selected and
-    decoders are created. This has some usefulness if an API users wants
-    to select tracks manually, based on the set of available tracks. It's
-    also useful to initialize ``--lavfi-complex`` in a specific way by API,
-    without having to "probe" the available streams at first.
-
-    Note that this does not yet apply default track selection. Which operations
-    exactly can be done and not be done, and what information is available and
-    what is not yet available yet, is all subject to change.
-
-``on_unload``
-    Run before closing a file, and before actually uninitializing
-    everything. It's not possible to resume playback in this state.
 
 Input Command Prefixes
 ----------------------
@@ -1435,7 +1464,7 @@ Property list
 ``hwdec-interop``
     This returns the currently loaded hardware decoding/output interop driver.
     This is known only once the VO has opened (and possibly later). With some
-    VOs (like ``opengl``), this might be never known in advance, but only when
+    VOs (like ``gpu``), this might be never known in advance, but only when
     the decoder attempted to create the hw decoder successfully. (Using
     ``--gpu-hwdec-interop`` can load it eagerly.) If there are multiple
     drivers loaded, they will be separated by ``,``.
@@ -1565,12 +1594,12 @@ Property list
     redrawing and frame display being somewhat disconnected, and you might
     have to pause and force a redraw.
 
-    Sub-properties:
+    Sub-properties::
 
-    ``video-frame-info/picture-type``
-    ``video-frame-info/interlaced``
-    ``video-frame-info/tff``
-    ``video-frame-info/repeat``
+        video-frame-info/picture-type
+        video-frame-info/interlaced
+        video-frame-info/tff
+        video-frame-info/repeat
 
 ``container-fps``
     Container FPS. This can easily contain bogus values. For videos that use
@@ -2079,9 +2108,6 @@ Property list
     List of decoders supported. This lists decoders which can be passed to
     ``--vd`` and ``--ad``.
 
-    ``family``
-        Decoder driver. Usually ``lavc`` for libavcodec.
-
     ``codec``
         Canonical codec name, which identifies the format the decoder can
         handle.
@@ -2102,7 +2128,6 @@ Property list
 
         MPV_FORMAT_NODE_ARRAY
             MPV_FORMAT_NODE_MAP (for each decoder entry)
-                "family"        MPV_FORMAT_STRING
                 "codec"         MPV_FORMAT_STRING
                 "driver"        MPV_FORMAT_STRING
                 "description"   MPV_FORMAT_STRING
@@ -2111,6 +2136,10 @@ Property list
     List of libavcodec encoders. This has the same format as ``decoder-list``.
     The encoder names (``driver`` entries) can be passed to ``--ovc`` and
     ``--oac`` (without the ``lavc:`` prefix required by ``--vd`` and ``--ad``).
+
+``demuxer-lavf-list``
+    List of available libavformat demuxers' names. This can be used to check
+    for support for a specific format or use with ``--demuxer-lavf-format``.
 
 ``mpv-version``
     Return the mpv version/copyright string. Depending on how the binary was

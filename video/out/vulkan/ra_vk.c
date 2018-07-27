@@ -6,6 +6,12 @@
 
 static struct ra_fns ra_fns_vk;
 
+enum queue_type {
+    GRAPHICS,
+    COMPUTE,
+    TRANSFER,
+};
+
 // For ra.priv
 struct ra_vk {
     struct mpvk_ctx *vk;
@@ -22,51 +28,57 @@ struct mpvk_ctx *ra_vk_get(struct ra *ra)
     return p->vk;
 }
 
-// Returns a command buffer, or NULL on error
-static struct vk_cmd *vk_require_cmd(struct ra *ra)
-{
-    struct ra_vk *p = ra->priv;
-    struct mpvk_ctx *vk = ra_vk_get(ra);
-
-    if (!p->cmd)
-        p->cmd = vk_cmd_begin(vk, vk->pool);
-
-    return p->cmd;
-}
-
-// Note: This technically follows the flush() API, but we don't need
-// to expose that (and in fact, it's a bad idea) since we control flushing
-// behavior with ra_vk_present_frame already.
-static bool vk_flush(struct ra *ra, VkSemaphore *done)
+static void vk_submit(struct ra *ra)
 {
     struct ra_vk *p = ra->priv;
     struct mpvk_ctx *vk = ra_vk_get(ra);
 
     if (p->cmd) {
-        if (!vk_cmd_submit(vk, p->cmd, done))
-            return false;
+        vk_cmd_queue(vk, p->cmd);
         p->cmd = NULL;
     }
-
-    return true;
 }
 
-// The callback's *priv will always be set to `ra`
-static void vk_callback(struct ra *ra, vk_cb callback, void *arg)
+// Returns a command buffer, or NULL on error
+static struct vk_cmd *vk_require_cmd(struct ra *ra, enum queue_type type)
 {
     struct ra_vk *p = ra->priv;
     struct mpvk_ctx *vk = ra_vk_get(ra);
 
-    if (p->cmd) {
-        vk_cmd_callback(p->cmd, callback, ra, arg);
-    } else {
-        vk_dev_callback(vk, callback, ra, arg);
+    struct vk_cmdpool *pool;
+    switch (type) {
+    case GRAPHICS: pool = vk->pool_graphics; break;
+    case COMPUTE:  pool = vk->pool_compute;  break;
+
+    // GRAPHICS and COMPUTE also imply TRANSFER capability (vulkan spec)
+    case TRANSFER:
+        pool = vk->pool_transfer;
+        if (!pool)
+            pool = vk->pool_compute;
+        if (!pool)
+            pool = vk->pool_graphics;
+        break;
+    default: abort();
     }
+
+    assert(pool);
+    if (p->cmd && p->cmd->pool == pool)
+        return p->cmd;
+
+    vk_submit(ra);
+    p->cmd = vk_cmd_begin(vk, pool);
+    return p->cmd;
 }
 
 #define MAKE_LAZY_DESTRUCTOR(fun, argtype)                  \
     static void fun##_lazy(struct ra *ra, argtype *arg) {   \
-        vk_callback(ra, (vk_cb) fun, arg);                  \
+        struct ra_vk *p = ra->priv;                         \
+        struct mpvk_ctx *vk = ra_vk_get(ra);                \
+        if (p->cmd) {                                       \
+            vk_cmd_callback(p->cmd, (vk_cb) fun, ra, arg);  \
+        } else {                                            \
+            vk_dev_callback(vk, (vk_cb) fun, ra, arg);      \
+        }                                                   \
     }
 
 static void vk_destroy_ra(struct ra *ra)
@@ -74,8 +86,9 @@ static void vk_destroy_ra(struct ra *ra)
     struct ra_vk *p = ra->priv;
     struct mpvk_ctx *vk = ra_vk_get(ra);
 
-    vk_flush(ra, NULL);
-    mpvk_dev_wait_idle(vk);
+    vk_submit(ra);
+    mpvk_flush_commands(vk);
+    mpvk_poll_commands(vk, UINT64_MAX);
     ra_tex_free(ra, &p->clear_tex);
 
     talloc_free(ra);
@@ -195,8 +208,13 @@ struct ra *ra_create_vk(struct mpvk_ctx *vk, struct mp_log *log)
     ra->max_shmem = vk->limits.maxComputeSharedMemorySize;
     ra->max_pushc_size = vk->limits.maxPushConstantsSize;
 
-    if (vk->pool->props.queueFlags & VK_QUEUE_COMPUTE_BIT)
-        ra->caps |= RA_CAP_COMPUTE;
+    if (vk->pool_compute) {
+        ra->caps |= RA_CAP_COMPUTE | RA_CAP_NUM_GROUPS;
+        // If we have more compute queues than graphics queues, we probably
+        // want to be using them. (This seems mostly relevant for AMD)
+        if (vk->pool_compute->num_queues > vk->pool_graphics->num_queues)
+            ra->caps |= RA_CAP_PARALLEL_COMPUTE;
+    }
 
     if (!vk_setup_formats(ra))
         goto error;
@@ -204,8 +222,8 @@ struct ra *ra_create_vk(struct mpvk_ctx *vk, struct mp_log *log)
     // UBO support is required
     ra->caps |= RA_CAP_BUF_RO | RA_CAP_FRAGCOORD;
 
-    // textureGather is only supported in GLSL 400+
-    if (ra->glsl_version >= 400)
+    // textureGather requires the ImageGatherExtended capability
+    if (vk->features.shaderImageGatherExtended)
         ra->caps |= RA_CAP_GATHER;
 
     // Try creating a shader storage buffer
@@ -246,9 +264,13 @@ error:
 }
 
 // Boilerplate wrapper around vkCreateRenderPass to ensure passes remain
-// compatible
+// compatible. The renderpass will automatically transition the image out of
+// initialLayout and into finalLayout.
 static VkResult vk_create_render_pass(VkDevice dev, const struct ra_format *fmt,
-                                      bool load_fbo, VkRenderPass *out)
+                                      VkAttachmentLoadOp loadOp,
+                                      VkImageLayout initialLayout,
+                                      VkImageLayout finalLayout,
+                                      VkRenderPass *out)
 {
     struct vk_format *vk_fmt = fmt->priv;
     assert(fmt->renderable);
@@ -259,12 +281,10 @@ static VkResult vk_create_render_pass(VkDevice dev, const struct ra_format *fmt,
         .pAttachments = &(VkAttachmentDescription) {
             .format = vk_fmt->iformat,
             .samples = VK_SAMPLE_COUNT_1_BIT,
-            .loadOp = load_fbo ? VK_ATTACHMENT_LOAD_OP_LOAD
-                               : VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+            .loadOp = loadOp,
             .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-            .initialLayout = load_fbo ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
-                                      : VK_IMAGE_LAYOUT_UNDEFINED,
-            .finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            .initialLayout = initialLayout,
+            .finalLayout = finalLayout,
         },
         .subpassCount = 1,
         .pSubpasses = &(VkSubpassDescription) {
@@ -283,6 +303,7 @@ static VkResult vk_create_render_pass(VkDevice dev, const struct ra_format *fmt,
 // For ra_tex.priv
 struct ra_tex_vk {
     bool external_img;
+    enum queue_type upload_queue;
     VkImageType type;
     VkImage img;
     struct vk_memslice mem;
@@ -296,16 +317,34 @@ struct ra_tex_vk {
     struct ra_buf_pool pbo;
     // "current" metadata, can change during the course of execution
     VkImageLayout current_layout;
-    VkPipelineStageFlags current_stage;
     VkAccessFlags current_access;
+    // the signal guards reuse, and can be NULL
+    struct vk_signal *sig;
+    VkPipelineStageFlags sig_stage;
+    VkSemaphore ext_dep; // external semaphore, not owned by the ra_tex
 };
+
+void ra_tex_vk_external_dep(struct ra *ra, struct ra_tex *tex, VkSemaphore dep)
+{
+    struct ra_tex_vk *tex_vk = tex->priv;
+    assert(!tex_vk->ext_dep);
+    tex_vk->ext_dep = dep;
+}
 
 // Small helper to ease image barrier creation. if `discard` is set, the contents
 // of the image will be undefined after the barrier
-static void tex_barrier(struct vk_cmd *cmd, struct ra_tex_vk *tex_vk,
-                        VkPipelineStageFlags newStage, VkAccessFlags newAccess,
+static void tex_barrier(struct ra *ra, struct vk_cmd *cmd, struct ra_tex *tex,
+                        VkPipelineStageFlags stage, VkAccessFlags newAccess,
                         VkImageLayout newLayout, bool discard)
 {
+    struct mpvk_ctx *vk = ra_vk_get(ra);
+    struct ra_tex_vk *tex_vk = tex->priv;
+
+    if (tex_vk->ext_dep) {
+        vk_cmd_dep(cmd, tex_vk->ext_dep, stage);
+        tex_vk->ext_dep = NULL;
+    }
+
     VkImageMemoryBarrier imgBarrier = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
         .oldLayout = tex_vk->current_layout,
@@ -323,16 +362,41 @@ static void tex_barrier(struct vk_cmd *cmd, struct ra_tex_vk *tex_vk,
         imgBarrier.srcAccessMask = 0;
     }
 
-    if (imgBarrier.oldLayout != imgBarrier.newLayout ||
-        imgBarrier.srcAccessMask != imgBarrier.dstAccessMask)
-    {
-        vkCmdPipelineBarrier(cmd->buf, tex_vk->current_stage, newStage, 0,
-                             0, NULL, 0, NULL, 1, &imgBarrier);
+    VkEvent event = NULL;
+    vk_cmd_wait(vk, cmd, &tex_vk->sig, stage, &event);
+
+    bool need_trans = tex_vk->current_layout != newLayout ||
+                      tex_vk->current_access != newAccess;
+
+    // Transitioning to VK_IMAGE_LAYOUT_UNDEFINED is a pseudo-operation
+    // that for us means we don't need to perform the actual transition
+    if (need_trans && newLayout != VK_IMAGE_LAYOUT_UNDEFINED) {
+        if (event) {
+            vkCmdWaitEvents(cmd->buf, 1, &event, tex_vk->sig_stage,
+                            stage, 0, NULL, 0, NULL, 1, &imgBarrier);
+        } else {
+            // If we're not using an event, then the source stage is irrelevant
+            // because we're coming from a different queue anyway, so we can
+            // safely set it to TOP_OF_PIPE.
+            imgBarrier.srcAccessMask = 0;
+            vkCmdPipelineBarrier(cmd->buf, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                 stage, 0, 0, NULL, 0, NULL, 1, &imgBarrier);
+        }
     }
 
-    tex_vk->current_stage = newStage;
     tex_vk->current_layout = newLayout;
     tex_vk->current_access = newAccess;
+}
+
+static void tex_signal(struct ra *ra, struct vk_cmd *cmd, struct ra_tex *tex,
+                       VkPipelineStageFlags stage)
+{
+    struct ra_tex_vk *tex_vk = tex->priv;
+    struct mpvk_ctx *vk = ra_vk_get(ra);
+    assert(!tex_vk->sig);
+
+    tex_vk->sig = vk_cmd_signal(vk, cmd, stage);
+    tex_vk->sig_stage = stage;
 }
 
 static void vk_tex_destroy(struct ra *ra, struct ra_tex *tex)
@@ -344,6 +408,7 @@ static void vk_tex_destroy(struct ra *ra, struct ra_tex *tex)
     struct ra_tex_vk *tex_vk = tex->priv;
 
     ra_buf_pool_uninit(ra, &tex_vk->pbo);
+    vk_signal_destroy(vk, &tex_vk->sig);
     vkDestroyFramebuffer(vk->dev, tex_vk->framebuffer, MPVK_ALLOCATOR);
     vkDestroyRenderPass(vk->dev, tex_vk->dummyPass, MPVK_ALLOCATOR);
     vkDestroySampler(vk->dev, tex_vk->sampler, MPVK_ALLOCATOR);
@@ -368,7 +433,6 @@ static bool vk_init_image(struct ra *ra, struct ra_tex *tex)
     assert(tex_vk->img);
 
     tex_vk->current_layout = VK_IMAGE_LAYOUT_UNDEFINED;
-    tex_vk->current_stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
     tex_vk->current_access = 0;
 
     if (params->render_src || params->render_dst) {
@@ -415,7 +479,11 @@ static bool vk_init_image(struct ra *ra, struct ra_tex *tex)
         // Framebuffers need to be created against a specific render pass
         // layout, so we need to temporarily create a skeleton/dummy render
         // pass for vulkan to figure out the compatibility
-        VK(vk_create_render_pass(vk->dev, params->format, false, &tex_vk->dummyPass));
+        VK(vk_create_render_pass(vk->dev, params->format,
+                                 VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                                 VK_IMAGE_LAYOUT_UNDEFINED,
+                                 VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                 &tex_vk->dummyPass));
 
         VkFramebufferCreateInfo finfo = {
             .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
@@ -444,12 +512,14 @@ static struct ra_tex *vk_tex_create(struct ra *ra,
                                     const struct ra_tex_params *params)
 {
     struct mpvk_ctx *vk = ra_vk_get(ra);
+    assert(!params->format->dummy_format);
 
     struct ra_tex *tex = talloc_zero(NULL, struct ra_tex);
     tex->params = *params;
     tex->params.initial_data = NULL;
 
     struct ra_tex_vk *tex_vk = tex->priv = talloc_zero(tex, struct ra_tex_vk);
+    tex_vk->upload_queue = GRAPHICS;
 
     const struct vk_format *fmt = params->format->priv;
     switch (params->dimensions) {
@@ -470,6 +540,10 @@ static struct ra_tex *vk_tex_create(struct ra *ra,
         usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     if (params->host_mutable || params->blit_dst || params->initial_data)
         usage |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+
+    // Always use the transfer pool if available, for efficiency
+    if (params->host_mutable && vk->pool_transfer)
+        tex_vk->upload_queue = TRANSFER;
 
     // Double-check image usage support and fail immediately if invalid
     VkImageFormatProperties iprop;
@@ -498,6 +572,14 @@ static struct ra_tex *vk_tex_create(struct ra *ra,
         return NULL;
     }
 
+    // FIXME: Since we can't keep track of queue family ownership properly,
+    // and we don't know in advance what types of queue families this image
+    // will belong to, we're forced to share all of our images between all
+    // command pools.
+    uint32_t qfs[3] = {0};
+    for (int i = 0; i < vk->num_pools; i++)
+        qfs[i] = vk->pools[i]->qf;
+
     VkImageCreateInfo iinfo = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
         .imageType = tex_vk->type,
@@ -509,9 +591,10 @@ static struct ra_tex *vk_tex_create(struct ra *ra,
         .tiling = VK_IMAGE_TILING_OPTIMAL,
         .usage = usage,
         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-        .queueFamilyIndexCount = 1,
-        .pQueueFamilyIndices = &vk->pool->qf,
+        .sharingMode = vk->num_pools > 1 ? VK_SHARING_MODE_CONCURRENT
+                                         : VK_SHARING_MODE_EXCLUSIVE,
+        .queueFamilyIndexCount = vk->num_pools,
+        .pQueueFamilyIndices = qfs,
     };
 
     VK(vkCreateImage(vk->dev, &iinfo, MPVK_ALLOCATOR, &tex_vk->img));
@@ -602,6 +685,7 @@ struct ra_buf_vk {
     struct vk_bufslice slice;
     int refcount; // 1 = object allocated but not in use, > 1 = in use
     bool needsflush;
+    enum queue_type update_queue;
     // "current" metadata, can change during course of execution
     VkPipelineStageFlags current_stage;
     VkAccessFlags current_access;
@@ -631,6 +715,8 @@ static void buf_barrier(struct ra *ra, struct vk_cmd *cmd, struct ra_buf *buf,
         .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
         .srcAccessMask = buf_vk->current_access,
         .dstAccessMask = newAccess,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .buffer = buf_vk->slice.buf,
         .offset = offset,
         .size = size,
@@ -670,7 +756,7 @@ static void vk_buf_update(struct ra *ra, struct ra_buf *buf, ptrdiff_t offset,
         memcpy((void *)addr, data, size);
         buf_vk->needsflush = true;
     } else {
-        struct vk_cmd *cmd = vk_require_cmd(ra);
+        struct vk_cmd *cmd = vk_require_cmd(ra, buf_vk->update_queue);
         if (!cmd) {
             MP_ERR(ra, "Failed updating buffer!\n");
             return;
@@ -706,6 +792,9 @@ static struct ra_buf *vk_buf_create(struct ra *ra,
     case RA_BUF_TYPE_TEX_UPLOAD:
         bufFlags |= VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
         memFlags |= VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+        // Use TRANSFER-style updates for large enough buffers for efficiency
+        if (params->size > 1024*1024) // 1 MB
+            buf_vk->update_queue = TRANSFER;
         break;
     case RA_BUF_TYPE_UNIFORM:
         bufFlags |= VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
@@ -716,6 +805,7 @@ static struct ra_buf *vk_buf_create(struct ra *ra,
         bufFlags |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
         memFlags |= VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
         align = MP_ALIGN_UP(align, vk->limits.minStorageBufferOffsetAlignment);
+        buf_vk->update_queue = COMPUTE;
         break;
     case RA_BUF_TYPE_VERTEX:
         bufFlags |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
@@ -802,20 +892,22 @@ static bool vk_tex_upload(struct ra *ra,
     uint64_t size = region.bufferRowLength * region.bufferImageHeight *
                     region.imageExtent.depth;
 
-    struct vk_cmd *cmd = vk_require_cmd(ra);
+    struct vk_cmd *cmd = vk_require_cmd(ra, tex_vk->upload_queue);
     if (!cmd)
         goto error;
 
     buf_barrier(ra, cmd, buf, VK_PIPELINE_STAGE_TRANSFER_BIT,
                 VK_ACCESS_TRANSFER_READ_BIT, region.bufferOffset, size);
 
-    tex_barrier(cmd, tex_vk, VK_PIPELINE_STAGE_TRANSFER_BIT,
+    tex_barrier(ra, cmd, tex, VK_PIPELINE_STAGE_TRANSFER_BIT,
                 VK_ACCESS_TRANSFER_WRITE_BIT,
                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                 params->invalidate);
 
     vkCmdCopyBufferToImage(cmd->buf, buf_vk->slice.buf, tex_vk->img,
                            tex_vk->current_layout, 1, &region);
+
+    tex_signal(ra, cmd, tex, VK_PIPELINE_STAGE_TRANSFER_BIT);
 
     return true;
 
@@ -831,6 +923,8 @@ struct ra_renderpass_vk {
     VkPipeline pipe;
     VkPipelineLayout pipeLayout;
     VkRenderPass renderPass;
+    VkImageLayout initialLayout;
+    VkImageLayout finalLayout;
     // Descriptor set (bindings)
     VkDescriptorSetLayout dsLayout;
     VkDescriptorPool dsPool;
@@ -1158,8 +1252,27 @@ static struct ra_renderpass *vk_renderpass_create(struct ra *ra,
                 goto error;
             }
         }
-        VK(vk_create_render_pass(vk->dev, params->target_format,
-                                 params->enable_blend, &pass_vk->renderPass));
+
+        // This is the most common case, so optimize towards it. In this case,
+        // the renderpass will take care of almost all layout transitions
+        pass_vk->initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        pass_vk->finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        VkAttachmentLoadOp loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+
+        // If we're blending, then we need to explicitly load the previous
+        // contents of the color attachment
+        if (pass->params.enable_blend)
+            loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+
+        // If we're invalidating the target, we don't need to load or transition
+        if (pass->params.invalidate_target) {
+            pass_vk->initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        }
+
+        VK(vk_create_render_pass(vk->dev, params->target_format, loadOp,
+                                 pass_vk->initialLayout, pass_vk->finalLayout,
+                                 &pass_vk->renderPass));
 
         static const VkBlendFactor blendFactors[] = {
             [RA_BLEND_ZERO]                = VK_BLEND_FACTOR_ZERO,
@@ -1312,6 +1425,11 @@ error:
     return pass;
 }
 
+static const VkPipelineStageFlags passStages[] = {
+    [RA_RENDERPASS_TYPE_RASTER]  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+    [RA_RENDERPASS_TYPE_COMPUTE] = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+};
+
 static void vk_update_descriptor(struct ra *ra, struct vk_cmd *cmd,
                                  struct ra_renderpass *pass,
                                  struct ra_renderpass_input_val val,
@@ -1329,18 +1447,13 @@ static void vk_update_descriptor(struct ra *ra, struct vk_cmd *cmd,
         .descriptorType = dsType[inp->type],
     };
 
-    static const VkPipelineStageFlags passStages[] = {
-        [RA_RENDERPASS_TYPE_RASTER]  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-        [RA_RENDERPASS_TYPE_COMPUTE] = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-    };
-
     switch (inp->type) {
     case RA_VARTYPE_TEX: {
         struct ra_tex *tex = *(struct ra_tex **)val.data;
         struct ra_tex_vk *tex_vk = tex->priv;
 
         assert(tex->params.render_src);
-        tex_barrier(cmd, tex_vk, passStages[pass->params.type],
+        tex_barrier(ra, cmd, tex, passStages[pass->params.type],
                     VK_ACCESS_SHADER_READ_BIT,
                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, false);
 
@@ -1359,7 +1472,7 @@ static void vk_update_descriptor(struct ra *ra, struct vk_cmd *cmd,
         struct ra_tex_vk *tex_vk = tex->priv;
 
         assert(tex->params.storage_dst);
-        tex_barrier(cmd, tex_vk, passStages[pass->params.type],
+        tex_barrier(ra, cmd, tex, passStages[pass->params.type],
                     VK_ACCESS_SHADER_WRITE_BIT,
                     VK_IMAGE_LAYOUT_GENERAL, false);
 
@@ -1397,6 +1510,22 @@ static void vk_update_descriptor(struct ra *ra, struct vk_cmd *cmd,
     }
 }
 
+static void vk_release_descriptor(struct ra *ra, struct vk_cmd *cmd,
+                                  struct ra_renderpass *pass,
+                                  struct ra_renderpass_input_val val)
+{
+    struct ra_renderpass_input *inp = &pass->params.inputs[val.index];
+
+    switch (inp->type) {
+    case RA_VARTYPE_IMG_W:
+    case RA_VARTYPE_TEX: {
+        struct ra_tex *tex = *(struct ra_tex **)val.data;
+        tex_signal(ra, cmd, tex, passStages[pass->params.type]);
+        break;
+    }
+    }
+}
+
 static void vk_renderpass_run(struct ra *ra,
                               const struct ra_renderpass_run_params *params)
 {
@@ -1404,7 +1533,12 @@ static void vk_renderpass_run(struct ra *ra,
     struct ra_renderpass *pass = params->pass;
     struct ra_renderpass_vk *pass_vk = pass->priv;
 
-    struct vk_cmd *cmd = vk_require_cmd(ra);
+    static const enum queue_type types[] = {
+        [RA_RENDERPASS_TYPE_RASTER]  = GRAPHICS,
+        [RA_RENDERPASS_TYPE_COMPUTE] = COMPUTE,
+    };
+
+    struct vk_cmd *cmd = vk_require_cmd(ra, types[pass->params.type]);
     if (!cmd)
         goto error;
 
@@ -1469,13 +1603,9 @@ static void vk_renderpass_run(struct ra *ra,
         vkCmdBindVertexBuffers(cmd->buf, 0, 1, &buf_vk->slice.buf,
                                &buf_vk->slice.mem.offset);
 
-        if (pass->params.enable_blend) {
-            // Normally this transition is handled implicitly by the renderpass,
-            // but if we need to preserve the FBO we have to do it manually.
-            tex_barrier(cmd, tex_vk, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                        VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-                        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, false);
-        }
+        tex_barrier(ra, cmd, tex, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                    VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, pass_vk->initialLayout,
+                    pass->params.invalidate_target);
 
         VkViewport viewport = {
             .x = params->viewport.x0,
@@ -1504,13 +1634,20 @@ static void vk_renderpass_run(struct ra *ra,
         vkCmdEndRenderPass(cmd->buf);
 
         // The renderPass implicitly transitions the texture to this layout
-        tex_vk->current_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        tex_vk->current_access = VK_ACCESS_SHADER_READ_BIT;
-        tex_vk->current_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        tex_vk->current_layout = pass_vk->finalLayout;
+        tex_vk->current_access = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        tex_signal(ra, cmd, tex, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
         break;
     }
     default: abort();
     };
+
+    for (int i = 0; i < params->num_values; i++)
+        vk_release_descriptor(ra, cmd, pass, params->values[i]);
+
+    // flush the work so far into its own command buffer, for better cross-frame
+    // granularity
+    vk_submit(ra);
 
 error:
     return;
@@ -1525,11 +1662,11 @@ static void vk_blit(struct ra *ra, struct ra_tex *dst, struct ra_tex *src,
     struct ra_tex_vk *src_vk = src->priv;
     struct ra_tex_vk *dst_vk = dst->priv;
 
-    struct vk_cmd *cmd = vk_require_cmd(ra);
+    struct vk_cmd *cmd = vk_require_cmd(ra, GRAPHICS);
     if (!cmd)
         return;
 
-    tex_barrier(cmd, src_vk, VK_PIPELINE_STAGE_TRANSFER_BIT,
+    tex_barrier(ra, cmd, src, VK_PIPELINE_STAGE_TRANSFER_BIT,
                 VK_ACCESS_TRANSFER_READ_BIT,
                 VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                 false);
@@ -1539,20 +1676,46 @@ static void vk_blit(struct ra *ra, struct ra_tex *dst, struct ra_tex *src,
                    dst_rc->x1 == dst->params.w &&
                    dst_rc->y1 == dst->params.h;
 
-    tex_barrier(cmd, dst_vk, VK_PIPELINE_STAGE_TRANSFER_BIT,
+    tex_barrier(ra, cmd, dst, VK_PIPELINE_STAGE_TRANSFER_BIT,
                 VK_ACCESS_TRANSFER_WRITE_BIT,
                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                 discard);
 
-    VkImageBlit region = {
-        .srcSubresource = vk_layers,
-        .srcOffsets = {{src_rc->x0, src_rc->y0, 0}, {src_rc->x1, src_rc->y1, 1}},
-        .dstSubresource = vk_layers,
-        .dstOffsets = {{dst_rc->x0, dst_rc->y0, 0}, {dst_rc->x1, dst_rc->y1, 1}},
-    };
+    // Under certain conditions we can use vkCmdCopyImage instead of
+    // vkCmdBlitImage, namely when the blit operation does not require
+    // scaling. and the formats are compatible.
+    if (src->params.format->pixel_size == dst->params.format->pixel_size &&
+        mp_rect_w(*src_rc) == mp_rect_w(*dst_rc) &&
+        mp_rect_h(*src_rc) == mp_rect_h(*dst_rc) &&
+        mp_rect_w(*src_rc) >= 0 && mp_rect_h(*src_rc) >= 0)
+    {
+        VkImageCopy region = {
+            .srcSubresource = vk_layers,
+            .dstSubresource = vk_layers,
+            .srcOffset = {src_rc->x0, src_rc->y0, 0},
+            .dstOffset = {dst_rc->x0, dst_rc->y0, 0},
+            .extent = {mp_rect_w(*src_rc), mp_rect_h(*src_rc), 1},
+        };
 
-    vkCmdBlitImage(cmd->buf, src_vk->img, src_vk->current_layout, dst_vk->img,
-                   dst_vk->current_layout, 1, &region, VK_FILTER_NEAREST);
+        vkCmdCopyImage(cmd->buf, src_vk->img, src_vk->current_layout,
+                       dst_vk->img, dst_vk->current_layout, 1, &region);
+    } else {
+        VkImageBlit region = {
+            .srcSubresource = vk_layers,
+            .dstSubresource = vk_layers,
+            .srcOffsets = {{src_rc->x0, src_rc->y0, 0},
+                           {src_rc->x1, src_rc->y1, 1}},
+            .dstOffsets = {{dst_rc->x0, dst_rc->y0, 0},
+                           {dst_rc->x1, dst_rc->y1, 1}},
+        };
+
+        vkCmdBlitImage(cmd->buf, src_vk->img, src_vk->current_layout,
+                       dst_vk->img, dst_vk->current_layout, 1, &region,
+                       VK_FILTER_NEAREST);
+    }
+
+    tex_signal(ra, cmd, src, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    tex_signal(ra, cmd, dst, VK_PIPELINE_STAGE_TRANSFER_BIT);
 }
 
 static void vk_clear(struct ra *ra, struct ra_tex *tex, float color[4],
@@ -1562,14 +1725,14 @@ static void vk_clear(struct ra *ra, struct ra_tex *tex, float color[4],
     struct ra_tex_vk *tex_vk = tex->priv;
     assert(tex->params.blit_dst);
 
-    struct vk_cmd *cmd = vk_require_cmd(ra);
+    struct vk_cmd *cmd = vk_require_cmd(ra, GRAPHICS);
     if (!cmd)
         return;
 
     struct mp_rect full = {0, 0, tex->params.w, tex->params.h};
     if (!rc || mp_rect_equals(rc, &full)) {
         // To clear the entire image, we can use the efficient clear command
-        tex_barrier(cmd, tex_vk, VK_PIPELINE_STAGE_TRANSFER_BIT,
+        tex_barrier(ra, cmd, tex, VK_PIPELINE_STAGE_TRANSFER_BIT,
                     VK_ACCESS_TRANSFER_WRITE_BIT,
                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, true);
 
@@ -1579,6 +1742,8 @@ static void vk_clear(struct ra *ra, struct ra_tex *tex, float color[4],
 
         vkCmdClearColorImage(cmd->buf, tex_vk->img, tex_vk->current_layout,
                              &clearColor, 1, &vk_range);
+
+        tex_signal(ra, cmd, tex, VK_PIPELINE_STAGE_TRANSFER_BIT);
     } else {
         // To simulate per-region clearing, we blit from a 1x1 texture instead
         struct ra_tex_upload_params ul_params = {
@@ -1600,6 +1765,7 @@ static int vk_desc_namespace(enum ra_vartype type)
 
 struct vk_timer {
     VkQueryPool pool;
+    int index_seen; // keeps track of which indices have been used at least once
     int index;
     uint64_t result;
 };
@@ -1624,6 +1790,7 @@ static ra_timer *vk_timer_create(struct ra *ra)
     struct mpvk_ctx *vk = ra_vk_get(ra);
 
     struct vk_timer *timer = talloc_zero(NULL, struct vk_timer);
+    timer->index_seen = -1;
 
     struct VkQueryPoolCreateInfo qinfo = {
         .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
@@ -1643,7 +1810,7 @@ error:
 static void vk_timer_record(struct ra *ra, VkQueryPool pool, int index,
                             VkPipelineStageFlags stage)
 {
-    struct vk_cmd *cmd = vk_require_cmd(ra);
+    struct vk_cmd *cmd = vk_require_cmd(ra, GRAPHICS);
     if (!cmd)
         return;
 
@@ -1655,12 +1822,15 @@ static void vk_timer_start(struct ra *ra, ra_timer *ratimer)
     struct mpvk_ctx *vk = ra_vk_get(ra);
     struct vk_timer *timer = ratimer;
 
-    timer->index = (timer->index + 2) % VK_QUERY_POOL_SIZE;
-
+    VkResult res = VK_NOT_READY;
     uint64_t out[2];
-    VkResult res = vkGetQueryPoolResults(vk->dev, timer->pool, timer->index, 2,
-                                         sizeof(out), &out[0], sizeof(uint64_t),
-                                         VK_QUERY_RESULT_64_BIT);
+
+    if (timer->index <= timer->index_seen) {
+        res = vkGetQueryPoolResults(vk->dev, timer->pool, timer->index, 2,
+                                    sizeof(out), &out[0], sizeof(uint64_t),
+                                    VK_QUERY_RESULT_64_BIT);
+    }
+
     switch (res) {
     case VK_SUCCESS:
         timer->result = (out[1] - out[0]) * vk->limits.timestampPeriod;
@@ -1682,6 +1852,9 @@ static uint64_t vk_timer_stop(struct ra *ra, ra_timer *ratimer)
     struct vk_timer *timer = ratimer;
     vk_timer_record(ra, timer->pool, timer->index + 1,
                     VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+
+    timer->index_seen = MPMAX(timer->index_seen, timer->index);
+    timer->index = (timer->index + 2) % VK_QUERY_POOL_SIZE;
 
     return timer->result;
 }
@@ -1709,39 +1882,20 @@ static struct ra_fns ra_fns_vk = {
     .timer_stop             = vk_timer_stop,
 };
 
-static void present_cb(void *priv, int *inflight)
+struct vk_cmd *ra_vk_submit(struct ra *ra, struct ra_tex *tex)
 {
-    *inflight -= 1;
-}
-
-bool ra_vk_submit(struct ra *ra, struct ra_tex *tex, VkSemaphore acquired,
-                  VkSemaphore *done, int *inflight)
-{
-    struct vk_cmd *cmd = vk_require_cmd(ra);
+    struct ra_vk *p = ra->priv;
+    struct vk_cmd *cmd = vk_require_cmd(ra, GRAPHICS);
     if (!cmd)
-        goto error;
-
-    if (inflight) {
-        *inflight += 1;
-        vk_cmd_callback(cmd, (vk_cb)present_cb, NULL, inflight);
-    }
+        return NULL;
 
     struct ra_tex_vk *tex_vk = tex->priv;
     assert(tex_vk->external_img);
-    tex_barrier(cmd, tex_vk, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0,
-                VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, false);
+    tex_barrier(ra, cmd, tex, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                VK_ACCESS_MEMORY_READ_BIT, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                false);
 
-    // These are the only two stages that we use/support for actually
-    // outputting to swapchain imagechain images, so just add a dependency
-    // on both of them. In theory, we could maybe come up with some more
-    // advanced mechanism of tracking dynamic dependencies, but that seems
-    // like overkill.
-    vk_cmd_dep(cmd, acquired,
-               VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-               VK_PIPELINE_STAGE_TRANSFER_BIT);
-
-    return vk_flush(ra, done);
-
-error:
-    return false;
+    // Return this directly instead of going through vk_submit
+    p->cmd = NULL;
+    return cmd;
 }

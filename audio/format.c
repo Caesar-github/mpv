@@ -154,7 +154,7 @@ void af_fill_silence(void *dst, size_t bytes, int format)
 // If the formats are equal, 1024 is returned. If they are gravely incompatible
 // (like s16<->ac3), INT_MIN is returned. If there is implied loss of precision
 // (like s16->s8), a value <0 is returned.
-static int af_format_conversion_score(int dst_format, int src_format)
+int af_format_conversion_score(int dst_format, int src_format)
 {
     if (dst_format == AF_FORMAT_UNKNOWN || src_format == AF_FORMAT_UNKNOWN)
         return INT_MIN;
@@ -209,10 +209,11 @@ static int cmp_entry(const void *a, const void *b)
 // and the list is terminated with 0 (AF_FORMAT_UNKNOWN).
 // Keep in mind that this also returns formats with flipped interleaving
 // (e.g. for s16, it returns [s16, s16p, ...]).
-void af_get_best_sample_formats(int src_format, int out_formats[AF_FORMAT_COUNT])
+// out_formats must be an int[AF_FORMAT_COUNT + 1] array.
+void af_get_best_sample_formats(int src_format, int *out_formats)
 {
     int num = 0;
-    struct entry e[AF_FORMAT_COUNT];
+    struct entry e[AF_FORMAT_COUNT + 1];
     for (int fmt = 1; fmt < AF_FORMAT_COUNT; fmt++) {
         int score = af_format_conversion_score(fmt, src_format);
         if (score > INT_MIN)

@@ -96,7 +96,7 @@ enum tone_mapping {
 };
 
 // How many frames to average over for HDR peak detection
-#define PEAK_DETECT_FRAMES 100
+#define PEAK_DETECT_FRAMES 63
 
 struct gl_video_opts {
     int dumb_mode;
@@ -106,7 +106,7 @@ struct gl_video_opts {
     int gamma_auto;
     int target_prim;
     int target_trc;
-    int target_brightness;
+    int target_peak;
     int tone_mapping;
     int compute_hdr_peak;
     float tone_mapping_param;
@@ -146,6 +146,13 @@ extern const struct m_sub_options gl_video_conf;
 
 struct gl_video;
 struct vo_frame;
+struct voctrl_screenshot;
+
+enum {
+    RENDER_FRAME_SUBS = 1 << 0,
+    RENDER_FRAME_OSD = 2 << 0,
+    RENDER_FRAME_DEF = RENDER_FRAME_SUBS | RENDER_FRAME_OSD,
+};
 
 struct gl_video *gl_video_init(struct ra *ra, struct mp_log *log,
                                struct mpv_global *g);
@@ -153,9 +160,8 @@ void gl_video_uninit(struct gl_video *p);
 void gl_video_set_osd_source(struct gl_video *p, struct osd_state *osd);
 bool gl_video_check_format(struct gl_video *p, int mp_format);
 void gl_video_config(struct gl_video *p, struct mp_image_params *params);
-void gl_video_set_output_depth(struct gl_video *p, int r, int g, int b);
 void gl_video_render_frame(struct gl_video *p, struct vo_frame *frame,
-                           struct ra_fbo fbo);
+                           struct ra_fbo fbo, int flags);
 void gl_video_resize(struct gl_video *p,
                      struct mp_rect *src, struct mp_rect *dst,
                      struct mp_osd_res *osd);
@@ -165,6 +171,9 @@ void gl_video_set_clear_color(struct gl_video *p, struct m_color color);
 void gl_video_set_osd_pts(struct gl_video *p, double pts);
 bool gl_video_check_osd_change(struct gl_video *p, struct mp_osd_res *osd,
                                double pts);
+
+void gl_video_screenshot(struct gl_video *p, struct vo_frame *frame,
+                         struct voctrl_screenshot *args);
 
 float gl_video_scale_ambient_lux(float lmin, float lmax,
                                  float rmin, float rmax, float lux);

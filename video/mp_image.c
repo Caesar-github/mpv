@@ -40,8 +40,6 @@
 #include "sws_utils.h"
 #include "fmt-conversion.h"
 
-#include "video/filter/vf.h"
-
 const struct m_opt_choice_alternatives mp_spherical_names[] = {
     {"auto",        MP_SPHERICAL_AUTO},
     {"none",        MP_SPHERICAL_NONE},
@@ -67,7 +65,7 @@ static int mp_image_layout(int imgfmt, int w, int h, int stride_align,
 
     // Note: for non-mod-2 4:2:0 YUV frames, we have to allocate an additional
     //       top/right border. This is needed for correct handling of such
-    //       images in filter and VO code (e.g. vo_vdpau or vo_opengl).
+    //       images in filter and VO code (e.g. vo_vdpau or vo_gpu).
 
     for (int n = 0; n < MP_MAX_PLANES; n++) {
         int alloc_w = mp_chroma_div_up(w, desc.xs[n]);
@@ -210,6 +208,10 @@ static void mp_image_destructor(void *ptr)
         av_buffer_unref(&mpi->bufs[p]);
     av_buffer_unref(&mpi->hwctx);
     av_buffer_unref(&mpi->icc_profile);
+    av_buffer_unref(&mpi->a53_cc);
+    for (int n = 0; n < mpi->num_ff_side_data; n++)
+        av_buffer_unref(&mpi->ff_side_data[n].buf);
+    talloc_free(mpi->ff_side_data);
 }
 
 int mp_chroma_div_up(int size, int shift)
@@ -298,6 +300,15 @@ void mp_image_unref_data(struct mp_image *img)
     }
 }
 
+static void ref_buffer(bool *ok, AVBufferRef **dst)
+{
+    if (*dst) {
+        *dst = av_buffer_ref(*dst);
+        if (!*dst)
+            *ok = false;
+    }
+}
+
 // Return a new reference to img. The returned reference is owned by the caller,
 // while img is left untouched.
 struct mp_image *mp_image_new_ref(struct mp_image *img)
@@ -312,27 +323,20 @@ struct mp_image *mp_image_new_ref(struct mp_image *img)
     talloc_set_destructor(new, mp_image_destructor);
     *new = *img;
 
-    bool fail = false;
-    for (int p = 0; p < MP_MAX_PLANES; p++) {
-        if (new->bufs[p]) {
-            new->bufs[p] = av_buffer_ref(new->bufs[p]);
-            if (!new->bufs[p])
-                fail = true;
-        }
-    }
-    if (new->hwctx) {
-        new->hwctx = av_buffer_ref(new->hwctx);
-        if (!new->hwctx)
-            fail = true;
-    }
+    bool ok = true;
+    for (int p = 0; p < MP_MAX_PLANES; p++)
+        ref_buffer(&ok, &new->bufs[p]);
 
-    if (new->icc_profile) {
-        new->icc_profile = av_buffer_ref(new->icc_profile);
-        if (!new->icc_profile)
-            fail = true;
-    }
+    ref_buffer(&ok, &new->hwctx);
+    ref_buffer(&ok, &new->icc_profile);
+    ref_buffer(&ok, &new->a53_cc);
 
-    if (!fail)
+    new->ff_side_data = talloc_memdup(NULL, new->ff_side_data,
+                        new->num_ff_side_data * sizeof(new->ff_side_data[0]));
+    for (int n = 0; n < new->num_ff_side_data; n++)
+        ref_buffer(&ok, &new->ff_side_data[n].buf);
+
+    if (ok)
         return new;
 
     // Do this after _all_ bufs were changed; we don't want it to free bufs
@@ -365,6 +369,10 @@ struct mp_image *mp_image_new_dummy_ref(struct mp_image *img)
     for (int p = 0; p < MP_MAX_PLANES; p++)
         new->bufs[p] = NULL;
     new->hwctx = NULL;
+    new->icc_profile = NULL;
+    new->a53_cc = NULL;
+    new->num_ff_side_data = 0;
+    new->ff_side_data = NULL;
     return new;
 }
 
@@ -470,8 +478,7 @@ static void mp_image_copy_cb(struct mp_image *dst, struct mp_image *src,
         memcpy_pic_cb(dst->planes[n], src->planes[n], line_bytes, plane_h,
                       dst->stride[n], src->stride[n], cpy);
     }
-    // Watch out for AV_PIX_FMT_FLAG_PSEUDOPAL retardation
-    if ((dst->fmt.flags & MP_IMGFLAG_PAL) && dst->planes[1] && src->planes[1])
+    if (dst->fmt.flags & MP_IMGFLAG_PAL)
         memcpy(dst->planes[1], src->planes[1], AVPALETTE_SIZE);
 }
 
@@ -494,13 +501,13 @@ void mp_image_copy_attributes(struct mp_image *dst, struct mp_image *src)
     dst->dts = src->dts;
     dst->pkt_duration = src->pkt_duration;
     dst->params.rotate = src->params.rotate;
-    dst->params.stereo_in = src->params.stereo_in;
-    dst->params.stereo_out = src->params.stereo_out;
+    dst->params.stereo3d = src->params.stereo3d;
     dst->params.p_w = src->params.p_w;
     dst->params.p_h = src->params.p_h;
     dst->params.color = src->params.color;
     dst->params.chroma_location = src->params.chroma_location;
     dst->params.spherical = src->params.spherical;
+    dst->nominal_fps = src->nominal_fps;
     // ensure colorspace consistency
     if (mp_image_params_get_forced_csp(&dst->params) !=
         mp_image_params_get_forced_csp(&src->params))
@@ -622,21 +629,21 @@ char *mp_image_params_to_str_buf(char *b, size_t bs,
             mp_snprintf_cat(b, bs, "[%s]", mp_imgfmt_to_name(p->hw_subfmt));
         if (p->hw_flags)
             mp_snprintf_cat(b, bs, "[0x%x]", p->hw_flags);
-        mp_snprintf_cat(b, bs, " %s/%s/%s/%s",
+        mp_snprintf_cat(b, bs, " %s/%s/%s/%s/%s",
                         m_opt_choice_str(mp_csp_names, p->color.space),
                         m_opt_choice_str(mp_csp_prim_names, p->color.primaries),
                         m_opt_choice_str(mp_csp_trc_names, p->color.gamma),
-                        m_opt_choice_str(mp_csp_levels_names, p->color.levels));
+                        m_opt_choice_str(mp_csp_levels_names, p->color.levels),
+                        m_opt_choice_str(mp_csp_light_names, p->color.light));
         if (p->color.sig_peak)
             mp_snprintf_cat(b, bs, " SP=%f", p->color.sig_peak);
         mp_snprintf_cat(b, bs, " CL=%s",
                         m_opt_choice_str(mp_chroma_names, p->chroma_location));
         if (p->rotate)
             mp_snprintf_cat(b, bs, " rot=%d", p->rotate);
-        if (p->stereo_in > 0 || p->stereo_out > 0) {
-            mp_snprintf_cat(b, bs, " stereo=%s/%s",
-                            MP_STEREO3D_NAME_DEF(p->stereo_in, "?"),
-                            MP_STEREO3D_NAME_DEF(p->stereo_out, "?"));
+        if (p->stereo3d > 0) {
+            mp_snprintf_cat(b, bs, " stereo=%s",
+                            MP_STEREO3D_NAME_DEF(p->stereo3d, "?"));
         }
         if (p->spherical.type != MP_SPHERICAL_NONE) {
             const float *a = p->spherical.ref_angles;
@@ -699,8 +706,7 @@ bool mp_image_params_equal(const struct mp_image_params *p1,
            mp_colorspace_equal(p1->color, p2->color) &&
            p1->chroma_location == p2->chroma_location &&
            p1->rotate == p2->rotate &&
-           p1->stereo_in == p2->stereo_in &&
-           p1->stereo_out == p2->stereo_out &&
+           p1->stereo3d == p2->stereo3d &&
            mp_spherical_equal(&p1->spherical, &p2->spherical);
 }
 
@@ -868,14 +874,16 @@ struct mp_image *mp_image_from_av_frame(struct AVFrame *src)
     if (src->opaque_ref) {
         struct mp_image_params *p = (void *)src->opaque_ref->data;
         dst->params.rotate = p->rotate;
-        dst->params.stereo_in = p->stereo_in;
-        dst->params.stereo_out = p->stereo_out;
+        dst->params.stereo3d = p->stereo3d;
+        dst->params.spherical = p->spherical;
+        // Might be incorrect if colorspace changes.
+        dst->params.color.light = p->color.light;
     }
 
 #if LIBAVUTIL_VERSION_MICRO >= 100
     sd = av_frame_get_side_data(src, AV_FRAME_DATA_ICC_PROFILE);
     if (sd)
-        dst->icc_profile = av_buffer_ref(sd->buf);
+        dst->icc_profile = sd->buf;
 
     // Get the content light metadata if available
     sd = av_frame_get_side_data(src, AV_FRAME_DATA_CONTENT_LIGHT_LEVEL);
@@ -891,6 +899,19 @@ struct mp_image *mp_image_from_av_frame(struct AVFrame *src)
         if (mdm->has_luminance)
             dst->params.color.sig_peak = av_q2d(mdm->max_luminance) / MP_REF_WHITE;
     }
+
+    sd = av_frame_get_side_data(src, AV_FRAME_DATA_A53_CC);
+    if (sd)
+        dst->a53_cc = sd->buf;
+
+    for (int n = 0; n < src->nb_side_data; n++) {
+        sd = src->side_data[n];
+        struct mp_ff_side_data mpsd = {
+            .type = sd->type,
+            .buf = sd->buf,
+        };
+        MP_TARRAY_APPEND(NULL, dst->ff_side_data, dst->num_ff_side_data, mpsd);
+    }
 #endif
 
     if (dst->hwctx) {
@@ -902,7 +923,12 @@ struct mp_image *mp_image_from_av_frame(struct AVFrame *src)
             fns->complete_image_params(dst);
     }
 
-    return mp_image_new_ref(dst);
+    struct mp_image *res = mp_image_new_ref(dst);
+
+    // Allocated, but non-refcounted data.
+    talloc_free(dst->ff_side_data);
+
+    return res;
 }
 
 
@@ -962,10 +988,32 @@ struct AVFrame *mp_image_to_av_frame(struct mp_image *src)
 #if LIBAVUTIL_VERSION_MICRO >= 100
     if (src->icc_profile) {
         AVFrameSideData *sd =
-            ffmpeg_garbage(dst, AV_FRAME_DATA_ICC_PROFILE, new_ref->icc_profile);
+            av_frame_new_side_data_from_buf(dst, AV_FRAME_DATA_ICC_PROFILE,
+                                            new_ref->icc_profile);
         if (!sd)
             abort();
         new_ref->icc_profile = NULL;
+    }
+
+    if (src->params.color.sig_peak) {
+        AVContentLightMetadata *clm =
+            av_content_light_metadata_create_side_data(dst);
+        if (!clm)
+            abort();
+        clm->MaxCLL = src->params.color.sig_peak * MP_REF_WHITE;
+    }
+
+    // Add back side data, but only for types which are not specially handled
+    // above. Keep in mind that the types above will be out of sync anyway.
+    for (int n = 0; n < new_ref->num_ff_side_data; n++) {
+        struct mp_ff_side_data *mpsd = &new_ref->ff_side_data[n];
+        if (!av_frame_get_side_data(dst, mpsd->type)) {
+            AVFrameSideData *sd = av_frame_new_side_data_from_buf(dst, mpsd->type,
+                                                                  mpsd->buf);
+            if (!sd)
+                abort();
+            mpsd->buf = NULL;
+        }
     }
 #endif
 

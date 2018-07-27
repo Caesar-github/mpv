@@ -19,6 +19,94 @@ Interface changes
 
 ::
 
+ --- mpv 0.29.0 ---
+    - drop --opensles-sample-rate, as --audio-samplerate should be used if desired
+    - drop deprecated --videotoolbox-format, --ff-aid, --ff-vid, --ff-sid,
+      --ad-spdif-dtshd, --softvol options
+    - fix --external-files: strictly never select any tracks from them, unless
+      explicitly selected (this may or may not be expected)
+    - --ytdl is now always enabled, even for libmpv
+    - add a number of --audio-resample-* options, which should from now on be
+      used instead of --af-defaults=lavrresample:...
+    - deprecate --vf-defaults and --af-defaults. These didn't work with the
+      lavfi bridge, so they have very little use left. The only potential use
+      is with af_lavrresample (going to be deprecated, --audio-resample-... set
+      its defaults), and various hw deinterlacing filters (like vf_vavpp), for
+      which you will have to stop using --deinterlace=yes, and instead use the
+      vf toggle commands and the filter enable/disable flag to customize it.
+    - deprecate --af=lavrresample. Use the ``--audio-resample-...`` options to
+      customize resampling, or the libavfilter ``--af=aresample`` filter.
+    - add --osd-on-seek
+    - remove outfmt sub-parameter from "format" video filter (no replacement)
+    - some behavior changes in the video filter chain, including:
+        - before, using an incompatible filter with hwdec would disable hwdec;
+          now it disables the filter at runtime instead
+        - inserting an incompatible filter with hwdec at runtime would refuse
+          to insert the filter; now it will add it successfully, but disables
+          the filter slightly later
+    - some behavior changes in the audio filter chain, including:
+        - a manually inserted lavrresample filter is not necessarily used for
+          sample format conversion anymore, so it's pretty useless
+        - changing playback speed will not respect --af-defaults anymore
+        - having libavfilter based filters after the scaletempo or rubberband
+          filters is not supported anymore, and may desync if playback speed is
+          changed (libavfilter does not support the metadata for playback speed)
+        - the lavcac3enc filter does not auto detach itself anymore; instead it
+          passes through the data after converting it to the sample rate and
+          channel configuration the ac3 encoder expects; also, if the audio
+          format changes midstream in a way that causes the filter to switch
+          between PCM and AC3 output, the audio output won't be reconfigured,
+          and audio playback will fail due to libswresample being unable to
+          convert between PCM and AC3 (Note: the responsible developer didn't
+          give a shit. Later changes might have improved or worsened this.)
+        - inserting a filter that changes the output sample format will not
+          reconfigure the AO - you need to run an additional "ao-reload"
+          command to force this if you want that
+        - using "strong" gapless audio (--gapless-audio=yes) can fail if the
+          audio formats are not convertible (such as switching between PCM and
+          AC3 passthrough)
+        - if filters do not pass through PTS values correctly, A/V sync can
+          result over time. Some libavfilter filters are known to be affected by
+          this, such as af_loudnorm, which can desync over time, depending on
+          how the audio track was muxed (af_lavfi's fix-pts suboption can help).
+    - remove out-format sub-parameter from "format" audio filter (no replacement)
+    - --lavfi-complex now requires uniquely named filter pads. In addition,
+      unconnected filter pads are not allowed anymore (that means every filter
+      pad must be connected either to another filter, or to a video/audio track
+      or video/audio output). If they are disconnected at runtime, the stream
+      will probably stall.
+    - rename --vo=opengl-cb to --vo=libmpv (goes in hand with the opengl-cb
+      API deprecation, see client-api-changes.rst)
+    - deprecate the OpenGL cocoa backend, option choice --gpu-context=cocoa
+      when used with --gpu-api=opengl (use --vo=libmpv)
+    - make --deinterlace=yes always deinterlace, instead of trying to check
+      certain unreliable video metadata. Also flip the defaults of all builtin
+      HW deinterlace filters to always deinterlace.
+    - change vf_vavpp default to use the best deinterlace algorithm by default
+    - remove a compatibility hack that allowed CLI aliases to be set as property
+      (such as "sub-file"), deprecated in mpv 0.26.0
+    - deprecate the old command based hook API, and introduce a proper C API
+      (the high level Lua API for this does not change)
+    - rename the the lua-settings/ config directory to script-opts/
+    - the way the player waits for scripts getting loaded changes slightly. Now
+      scripts are loaded in parallel, and block the player from continuing
+      playback only in the player initialization phase. It could change again in
+      the future. (This kind of waiting was always a feature to prevent that
+      playback is started while scripts are only half-loaded.)
+    - deprecate --ovoffset, --oaoffset, --ovfirst, --oafirst
+    - remove the following encoding options: --ocopyts (now the default, old
+      timestamp handling is gone), --oneverdrop (now default), --oharddup (you
+      need to use --vf=fps=VALUE), --ofps, --oautofps, --omaxfps
+    - remove --video-stereo-mode. This option was broken out of laziness, and
+      nobody wants to fix it. Automatic 3D down-conversion to 2D is also broken,
+      although you can just insert the stereo3d filter manually. The obscurity
+      of 3D content doesn't justify such an option anyway.
+    - change cycle-values command to use the current value, instead of an
+      internal counter that remembered the current position.
+    - edition and disc title switching will now fully reload playback (may have
+      consequences for scripts, client API, or when using file-local options)
+    - remove deprecated ao/vo auto profiles. Consider using scripts like
+      auto-profiles.lua instead.
  --- mpv 0.28.0 ---
     - rename --hwdec=mediacodec option to mediacodec-copy, to reflect
       conventions followed by other hardware video decoding APIs
@@ -59,11 +147,12 @@ Interface changes
       now.
     - change the --hwdec option from a choice to a plain string (affects
       introspection of the option/property), also affects some properties
-    - rename --hwdec=rpi to --hwdec=mmal, sane for the -copy variant (no
+    - rename --hwdec=rpi to --hwdec=mmal, same for the -copy variant (no
       backwards compatibility)
-    - deprecate the --ff-aid, --ff-vid, -ff-sid options and properties (there is
+    - deprecate the --ff-aid, --ff-vid, --ff-sid options and properties (there is
       no replacement, but you can manually query the track property and use the
       "ff-index" field to find the mpv track ID to imitate this behavior)
+    - rename --no-ometadata to --no-ocopy-metadata
  --- mpv 0.27.0 ---
     - drop previously deprecated --field-dominance option
     - drop previously deprecated "osd" command

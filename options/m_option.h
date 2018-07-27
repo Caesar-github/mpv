@@ -32,6 +32,7 @@ typedef struct m_option m_option_t;
 struct m_config;
 struct mp_log;
 struct mpv_node;
+struct mpv_global;
 
 ///////////////////////////// Options types declarations ////////////////////
 
@@ -40,6 +41,7 @@ extern const m_option_type_t m_option_type_flag;
 extern const m_option_type_t m_option_type_dummy_flag;
 extern const m_option_type_t m_option_type_int;
 extern const m_option_type_t m_option_type_int64;
+extern const m_option_type_t m_option_type_byte_size;
 extern const m_option_type_t m_option_type_intpair;
 extern const m_option_type_t m_option_type_float;
 extern const m_option_type_t m_option_type_double;
@@ -121,14 +123,14 @@ struct m_obj_desc {
     const char *options_prefix;
     // For free use by the implementer of m_obj_list.get_desc
     const void *p;
-    // If not NULL, options which should be set before applying other options.
-    // This member is usually set by m_obj_list_find() only, and read by the
-    // option parser. It's not used anywhere else.
-    const char *init_options;
     // Don't list entry with "help"
     bool hidden;
-    // Callback to print custom help if "help" is passed
+    // Callback to print custom help if "vf=entry=help" is passed
     void (*print_help)(struct mp_log *log);
+    // Callback that allows you to override the static default values. The
+    // pointer p points to the struct described by options/priv_size, with
+    // priv_defaults already applied. You can write to it to set any defaults.
+    void (*set_defaults)(struct mpv_global *global, void *p);
     // Set by m_obj_list_find(). If the requested name is an old alias, this
     // is set to the old name (while the name field uses the new name).
     const char *replaced_name;
@@ -141,7 +143,7 @@ struct m_obj_list {
     bool (*get_desc)(struct m_obj_desc *dst, int index);
     const char *description;
     // Can be set to a NULL terminated array of aliases
-    const char *aliases[4][5];
+    const char *aliases[5][2];
     // Allow a trailing ",", which adds an entry with name=""
     bool allow_trailer;
     // Allow unknown entries, for which a dummy entry is inserted, and whose
@@ -153,6 +155,10 @@ struct m_obj_list {
     bool disallow_positional_parameters;
     // Each sub-item is backed by global options (for AOs and VOs).
     bool use_global_options;
+    // Callback to print additional custom help if "vf=help" is passed
+    void (*print_help_list)(struct mp_log *log);
+    // Callback to print help for _unknown_ entries with "vf=entry=help"
+    void (*print_unknown_entry_help)(struct mp_log *log, const char *name);
 };
 
 // Find entry by name
@@ -366,6 +372,7 @@ struct m_option {
     const char *deprecation_message;
 };
 
+char *format_file_size(int64_t size);
 
 // The option has a minimum set in \ref m_option::min.
 #define M_OPT_MIN               (1 << 0)
@@ -394,11 +401,13 @@ struct m_option {
 // Do not add as property.
 #define M_OPT_NOPROP            (1 << 6)
 
+// Enable special semantics for some options when parsing the string "help".
+#define M_OPT_HAVE_HELP         (1 << 7)
+
 // The following are also part of the M_OPT_* flags, and are used to update
 // certain groups of options.
-#define UPDATE_OPT_FIRST        (1 << 7)
-#define UPDATE_TERM             (1 << 7)  // terminal options
-#define UPDATE_DEINT            (1 << 8)  // --deinterlace
+#define UPDATE_OPT_FIRST        (1 << 8)
+#define UPDATE_TERM             (1 << 8)  // terminal options
 #define UPDATE_OSD              (1 << 10) // related to OSD rendering
 #define UPDATE_BUILTIN_SCRIPTS  (1 << 11) // osc/ytdl/stats
 #define UPDATE_IMGPAR           (1 << 12) // video image params overrides
@@ -408,7 +417,8 @@ struct m_option {
 #define UPDATE_SCREENSAVER      (1 << 16) // --stop-screensaver
 #define UPDATE_VOL              (1 << 17) // softvol related options
 #define UPDATE_LAVFI_COMPLEX    (1 << 18) // --lavfi-complex
-#define UPDATE_OPT_LAST         (1 << 18)
+#define UPDATE_VO_RESIZE        (1 << 19) // --android-surface-size
+#define UPDATE_OPT_LAST         (1 << 19)
 
 // All bits between _FIRST and _LAST (inclusive)
 #define UPDATE_OPTS_MASK \
@@ -431,6 +441,11 @@ struct m_option {
 // assume that the argument takes no parameter. In config files, these
 // options can be used without "=" and value.
 #define M_OPT_TYPE_OPTIONAL_PARAM       (1 << 0)
+
+// Behaves fundamentally like a choice or a superset of it (all allowed string
+// values are from a fixed set, although other types of values like numbers
+// might be allowed too). E.g. m_option_type_choice and m_option_type_flag.
+#define M_OPT_TYPE_CHOICE               (1 << 1)
 
 ///////////////////////////// Parser flags /////////////////////////////////
 
@@ -600,6 +615,9 @@ extern const char m_option_path_separator;
 #define OPT_FLOATRANGE(...) \
     OPT_RANGE_(float, __VA_ARGS__, .type = &m_option_type_float)
 
+#define OPT_DOUBLERANGE(...) \
+    OPT_RANGE_(double, __VA_ARGS__, .type = &m_option_type_double)
+
 #define OPT_INTPAIR(...) \
     OPT_GENERAL_NOTYPE(__VA_ARGS__, .type = &m_option_type_intpair)
 
@@ -663,6 +681,9 @@ extern const char m_option_path_separator;
 
 #define OPT_COLOR(...) \
     OPT_GENERAL(struct m_color, __VA_ARGS__, .type = &m_option_type_color)
+
+#define OPT_BYTE_SIZE(...) \
+    OPT_RANGE_(int64_t, __VA_ARGS__, .type = &m_option_type_byte_size)
 
 #define OPT_GEOMETRY(...) \
     OPT_GENERAL(struct m_geometry, __VA_ARGS__, .type = &m_option_type_geometry)

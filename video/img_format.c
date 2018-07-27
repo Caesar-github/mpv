@@ -36,8 +36,6 @@ struct mp_imgfmt_entry {
 static const struct mp_imgfmt_entry mp_imgfmt_list[] = {
     // not in ffmpeg
     {"vdpau_output",    IMGFMT_VDPAU_OUTPUT},
-    {"d3d11_nv12",      IMGFMT_D3D11NV12},
-    {"d3d11_rgb",       IMGFMT_D3D11RGB},
     // FFmpeg names have an annoying "_vld" suffix
     {"videotoolbox",    IMGFMT_VIDEOTOOLBOX},
     {"vaapi",           IMGFMT_VAAPI},
@@ -103,18 +101,10 @@ static struct mp_imgfmt_desc mp_only_imgfmt_desc(int mpfmt)
 {
     switch (mpfmt) {
     case IMGFMT_VDPAU_OUTPUT:
-    case IMGFMT_D3D11RGB:
         return (struct mp_imgfmt_desc) {
             .id = mpfmt,
             .avformat = AV_PIX_FMT_NONE,
             .flags = MP_IMGFLAG_BE | MP_IMGFLAG_LE | MP_IMGFLAG_RGB |
-                     MP_IMGFLAG_HWACCEL,
-        };
-    case IMGFMT_D3D11NV12:
-        return (struct mp_imgfmt_desc) {
-            .id = mpfmt,
-            .avformat = AV_PIX_FMT_NONE,
-            .flags = MP_IMGFLAG_BE | MP_IMGFLAG_LE | MP_IMGFLAG_YUV |
                      MP_IMGFLAG_HWACCEL,
         };
     }
@@ -222,9 +212,7 @@ struct mp_imgfmt_desc mp_imgfmt_get_desc(int mpfmt)
             desc.bytes[p] = desc.bpp[p] / 8;
     }
 
-    // PSEUDOPAL is a complete braindeath nightmare, however it seems various
-    // parts of FFmpeg expect that it has a palette allocated.
-    if (pd->flags & (AV_PIX_FMT_FLAG_PAL | AV_PIX_FMT_FLAG_PSEUDOPAL))
+    if (pd->flags & AV_PIX_FMT_FLAG_PAL)
         desc.flags |= MP_IMGFLAG_PAL;
 
     if ((desc.flags & (MP_IMGFLAG_YUV | MP_IMGFLAG_RGB))
@@ -484,6 +472,15 @@ int mp_imgfmt_select_best(int dst1, int dst2, int src)
     enum AVPixelFormat srcpxf = imgfmt2pixfmt(src);
     enum AVPixelFormat dstlist[] = {dst1pxf, dst2pxf, AV_PIX_FMT_NONE};
     return pixfmt2imgfmt(avcodec_find_best_pix_fmt_of_list(dstlist, srcpxf, 1, 0));
+}
+
+// Same as mp_imgfmt_select_best(), but with a list of dst formats.
+int mp_imgfmt_select_best_list(int *dst, int num_dst, int src)
+{
+    int best = 0;
+    for (int n = 0; n < num_dst; n++)
+        best = best ? mp_imgfmt_select_best(best, dst[n], src) : dst[n];
+    return best;
 }
 
 #if 0

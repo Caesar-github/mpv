@@ -313,9 +313,9 @@ static const struct gl_video_opts gl_video_opts_def = {
     .alpha_mode = ALPHA_BLEND_TILES,
     .background = {0, 0, 0, 255},
     .gamma = 1.0f,
-    .tone_mapping = TONE_MAPPING_MOBIUS,
+    .tone_mapping = TONE_MAPPING_HABLE,
     .tone_mapping_param = NAN,
-    .tone_mapping_desat = 1.0,
+    .tone_mapping_desat = 0.5,
     .early_flush = -1,
     .hwdec_interop = "auto",
 };
@@ -351,6 +351,7 @@ const struct m_sub_options gl_video_conf = {
         OPT_FLAG("gamma-auto", gamma_auto, 0),
         OPT_CHOICE_C("target-prim", target_prim, 0, mp_csp_prim_names),
         OPT_CHOICE_C("target-trc", target_trc, 0, mp_csp_trc_names),
+        OPT_INTRANGE("target-peak", target_peak, 0, 10, 10000),
         OPT_CHOICE("tone-mapping", tone_mapping, 0,
                    ({"clip",     TONE_MAPPING_CLIP},
                     {"mobius",   TONE_MAPPING_MOBIUS},
@@ -358,7 +359,10 @@ const struct m_sub_options gl_video_conf = {
                     {"hable",    TONE_MAPPING_HABLE},
                     {"gamma",    TONE_MAPPING_GAMMA},
                     {"linear",   TONE_MAPPING_LINEAR})),
-        OPT_FLAG("hdr-compute-peak", compute_hdr_peak, 0),
+        OPT_CHOICE("hdr-compute-peak", compute_hdr_peak, 0,
+                   ({"auto", 0},
+                    {"yes", 1},
+                    {"no", -1})),
         OPT_FLOAT("tone-mapping-param", tone_mapping_param, 0),
         OPT_FLOAT("tone-mapping-desaturate", tone_mapping_desat, 0),
         OPT_FLAG("gamut-warning", gamut_warning, 0),
@@ -529,9 +533,6 @@ static void uninit_rendering(struct gl_video *p)
     for (int n = 0; n < p->num_hook_textures; n++)
         ra_tex_free(p->ra, &p->hook_textures[n]);
 
-    for (int n = 0; n < 2; n++)
-        ra_tex_free(p->ra, &p->vdpau_deinterleave_tex[n]);
-
     gl_video_reset_surfaces(p);
     gl_video_reset_hooks(p);
 
@@ -548,6 +549,7 @@ struct mp_colorspace gl_video_get_output_colorspace(struct gl_video *p)
     return (struct mp_colorspace) {
         .primaries = p->opts.target_prim,
         .gamma = p->opts.target_trc,
+        .sig_peak = p->opts.target_peak / MP_REF_WHITE,
     };
 }
 
@@ -862,9 +864,6 @@ static void init_video(struct gl_video *p)
     }
     p->color_swizzle[4] = '\0';
 
-    // Format-dependent checks.
-    check_gl_features(p);
-
     mp_image_params_guess_csp(&p->image_params);
 
     av_lfg_init(&p->lfg, 1);
@@ -908,6 +907,9 @@ static void init_video(struct gl_video *p)
     }
 
     debug_check_gl(p, "after video texture creation");
+
+    // Format-dependent checks.
+    check_gl_features(p);
 
     gl_video_setup_hooks(p);
 }
@@ -1001,6 +1003,9 @@ static void uninit_video(struct gl_video *p)
     p->hwdec_active = false;
     p->hwdec_overlay = NULL;
     ra_hwdec_mapper_free(&p->hwdec_mapper);
+
+    for (int n = 0; n < 2; n++)
+        ra_tex_free(p->ra, &p->vdpau_deinterleave_tex[n]);
 }
 
 static void pass_record(struct gl_video *p, struct mp_pass_perf perf)
@@ -1148,12 +1153,15 @@ static void dispatch_compute(struct gl_video *p, int w, int h,
     int num_x = info.block_w > 0 ? (w + info.block_w - 1) / info.block_w : 1,
         num_y = info.block_h > 0 ? (h + info.block_h - 1) / info.block_h : 1;
 
+    if (!(p->ra->caps & RA_CAP_NUM_GROUPS))
+        PRELUDE("#define gl_NumWorkGroups uvec3(%d, %d, 1)\n", num_x, num_y);
+
     pass_record(p, gl_sc_dispatch_compute(p->sc, num_x, num_y, 1));
     cleanup_binds(p);
 }
 
 static struct mp_pass_perf render_pass_quad(struct gl_video *p,
-                                            struct ra_fbo fbo,
+                                            struct ra_fbo fbo, bool discard,
                                             const struct mp_rect *dst)
 {
     // The first element is reserved for `vec2 position`
@@ -1211,15 +1219,15 @@ static struct mp_pass_perf render_pass_quad(struct gl_video *p,
             &p->tmp_vertex[num_vertex_attribs * 1],
             vertex_stride);
 
-    return gl_sc_dispatch_draw(p->sc, fbo.tex, p->vao, num_vertex_attribs,
+    return gl_sc_dispatch_draw(p->sc, fbo.tex, discard, p->vao, num_vertex_attribs,
                                vertex_stride, p->tmp_vertex, num_vertices);
 }
 
 static void finish_pass_fbo(struct gl_video *p, struct ra_fbo fbo,
-                            const struct mp_rect *dst)
+                            bool discard, const struct mp_rect *dst)
 {
     pass_prepare_src_tex(p);
-    pass_record(p, render_pass_quad(p, fbo, dst));
+    pass_record(p, render_pass_quad(p, fbo, discard, dst));
     debug_check_gl(p, "after rendering");
     cleanup_binds(p);
 }
@@ -1237,6 +1245,11 @@ static void finish_pass_tex(struct gl_video *p, struct ra_tex **dst_tex,
         return;
     }
 
+    // If RA_CAP_PARALLEL_COMPUTE is set, try to prefer compute shaders
+    // over fragment shaders wherever possible.
+    if (!p->pass_compute.active && (p->ra->caps & RA_CAP_PARALLEL_COMPUTE))
+        pass_is_compute(p, 16, 16);
+
     if (p->pass_compute.active) {
         gl_sc_uniform_image2D_wo(p->sc, "out_image", *dst_tex);
         if (!p->pass_compute.directly_writes)
@@ -1248,7 +1261,7 @@ static void finish_pass_tex(struct gl_video *p, struct ra_tex **dst_tex,
         debug_check_gl(p, "after dispatching compute shader");
     } else {
         struct ra_fbo fbo = { .tex = *dst_tex, };
-        finish_pass_fbo(p, fbo, &(struct mp_rect){0, 0, w, h});
+        finish_pass_fbo(p, fbo, true, &(struct mp_rect){0, 0, w, h});
     }
 }
 
@@ -2384,6 +2397,7 @@ static void pass_colormanage(struct gl_video *p, struct mp_colorspace src, bool 
         .gamma = p->opts.target_trc,
         .primaries = p->opts.target_prim,
         .light = MP_CSP_LIGHT_DISPLAY,
+        .sig_peak = p->opts.target_peak / MP_REF_WHITE,
     };
 
     if (p->use_lut_3d) {
@@ -2403,6 +2417,7 @@ static void pass_colormanage(struct gl_video *p, struct mp_colorspace src, bool 
         if (gl_video_get_lut3d(p, prim_orig, trc_orig)) {
             dst.primaries = prim_orig;
             dst.gamma = trc_orig;
+            assert(dst.primaries && dst.gamma);
         }
     }
 
@@ -2437,19 +2452,22 @@ static void pass_colormanage(struct gl_video *p, struct mp_colorspace src, bool 
             dst.gamma = MP_CSP_TRC_GAMMA22;
     }
 
-    bool detect_peak = p->opts.compute_hdr_peak && mp_trc_is_hdr(src.gamma);
+    // If there's no specific signal peak known for the output display, infer
+    // it from the chosen transfer function
+    if (!dst.sig_peak)
+        dst.sig_peak = mp_trc_nom_peak(dst.gamma);
+
+    bool detect_peak = p->opts.compute_hdr_peak >= 0 && mp_trc_is_hdr(src.gamma);
     if (detect_peak && !p->hdr_peak_ssbo) {
         struct {
-            unsigned int sig_peak_raw;
-            unsigned int index;
-            unsigned int frame_max[PEAK_DETECT_FRAMES+1];
+            uint32_t counter;
+            uint32_t frame_idx;
+            uint32_t frame_num;
+            uint32_t frame_max[PEAK_DETECT_FRAMES+1];
+            uint32_t frame_sum[PEAK_DETECT_FRAMES+1];
+            uint32_t total_max;
+            uint32_t total_sum;
         } peak_ssbo = {0};
-
-        // Prefill with safe values
-        int safe = MP_REF_WHITE * mp_trc_nom_peak(p->image_params.color.gamma);
-        peak_ssbo.sig_peak_raw = PEAK_DETECT_FRAMES * safe;
-        for (int i = 0; i < PEAK_DETECT_FRAMES+1; i++)
-            peak_ssbo.frame_max[i] = safe;
 
         struct ra_buf_params params = {
             .type = RA_BUF_TYPE_SHADER_STORAGE,
@@ -2460,7 +2478,8 @@ static void pass_colormanage(struct gl_video *p, struct mp_colorspace src, bool 
         p->hdr_peak_ssbo = ra_buf_create(ra, &params);
         if (!p->hdr_peak_ssbo) {
             MP_WARN(p, "Failed to create HDR peak detection SSBO, disabling.\n");
-            detect_peak = (p->opts.compute_hdr_peak = false);
+            detect_peak = false;
+            p->opts.compute_hdr_peak = -1;
         }
     }
 
@@ -2468,9 +2487,15 @@ static void pass_colormanage(struct gl_video *p, struct mp_colorspace src, bool 
         pass_describe(p, "detect HDR peak");
         pass_is_compute(p, 8, 8); // 8x8 is good for performance
         gl_sc_ssbo(p->sc, "PeakDetect", p->hdr_peak_ssbo,
-            "uint sig_peak_raw;"
-            "uint index;"
-            "uint frame_max[%d];", PEAK_DETECT_FRAMES + 1
+            "uint counter;"
+            "uint frame_idx;"
+            "uint frame_num;"
+            "uint frame_max[%d];"
+            "uint frame_avg[%d];"
+            "uint total_max;"
+            "uint total_avg;",
+            PEAK_DETECT_FRAMES + 1,
+            PEAK_DETECT_FRAMES + 1
         );
     }
 
@@ -2603,7 +2628,10 @@ static void pass_dither(struct gl_video *p)
 static void pass_draw_osd(struct gl_video *p, int draw_flags, double pts,
                           struct mp_osd_res rect, struct ra_fbo fbo, bool cms)
 {
-    mpgl_osd_generate(p->osd, rect, pts, p->image_params.stereo_out, draw_flags);
+    if ((draw_flags & OSD_DRAW_SUB_ONLY) && (draw_flags & OSD_DRAW_OSD_ONLY))
+        return;
+
+    mpgl_osd_generate(p->osd, rect, pts, p->image_params.stereo3d, draw_flags);
 
     timer_pool_start(p->osd_timer);
     for (int n = 0; n < MAX_OSD_PARTS; n++) {
@@ -2672,7 +2700,9 @@ static void pass_render_frame_dumb(struct gl_video *p)
 
 // The main rendering function, takes care of everything up to and including
 // upscaling. p->image is rendered.
-static bool pass_render_frame(struct gl_video *p, struct mp_image *mpi, uint64_t id)
+// flags: bit set of RENDER_FRAME_* flags
+static bool pass_render_frame(struct gl_video *p, struct mp_image *mpi,
+                              uint64_t id, int flags)
 {
     // initialize the texture parameters and temporary variables
     p->texture_w = p->image_params.w;
@@ -2703,7 +2733,9 @@ static bool pass_render_frame(struct gl_video *p, struct mp_image *mpi, uint64_t
     if (vpts == MP_NOPTS_VALUE)
         vpts = p->osd_pts;
 
-    if (p->osd && p->opts.blend_subs == BLEND_SUBS_VIDEO) {
+    if (p->osd && p->opts.blend_subs == BLEND_SUBS_VIDEO &&
+        (flags & RENDER_FRAME_SUBS))
+    {
         double scale[2];
         get_scale_factors(p, false, scale);
         struct mp_osd_res rect = {
@@ -2722,7 +2754,9 @@ static bool pass_render_frame(struct gl_video *p, struct mp_image *mpi, uint64_t
 
     int vp_w = p->dst_rect.x1 - p->dst_rect.x0,
         vp_h = p->dst_rect.y1 - p->dst_rect.y0;
-    if (p->osd && p->opts.blend_subs == BLEND_SUBS_YES) {
+    if (p->osd && p->opts.blend_subs == BLEND_SUBS_YES &&
+        (flags & RENDER_FRAME_SUBS))
+    {
         // Recreate the real video size from the src/dst rects
         struct mp_osd_res rect = {
             .w = vp_w, .h = vp_h,
@@ -2799,17 +2833,18 @@ static void pass_draw_to_screen(struct gl_video *p, struct ra_fbo fbo)
 
     pass_dither(p);
     pass_describe(p, "output to screen");
-    finish_pass_fbo(p, fbo, &p->dst_rect);
+    finish_pass_fbo(p, fbo, false, &p->dst_rect);
 }
 
+// flags: bit set of RENDER_FRAME_* flags
 static bool update_surface(struct gl_video *p, struct mp_image *mpi,
-                           uint64_t id, struct surface *surf)
+                           uint64_t id, struct surface *surf, int flags)
 {
     int vp_w = p->dst_rect.x1 - p->dst_rect.x0,
         vp_h = p->dst_rect.y1 - p->dst_rect.y0;
 
     pass_info_reset(p, false);
-    if (!pass_render_frame(p, mpi, id))
+    if (!pass_render_frame(p, mpi, id, flags))
         return false;
 
     // Frame blending should always be done in linear light to preserve the
@@ -2827,8 +2862,9 @@ static bool update_surface(struct gl_video *p, struct mp_image *mpi,
 }
 
 // Draws an interpolate frame to fbo, based on the frame timing in t
+// flags: bit set of RENDER_FRAME_* flags
 static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
-                                       struct ra_fbo fbo)
+                                       struct ra_fbo fbo, int flags)
 {
     bool is_new = false;
 
@@ -2842,7 +2878,7 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
     // it manually + reset the queue if not
     if (p->surfaces[p->surface_now].id == 0) {
         struct surface *now = &p->surfaces[p->surface_now];
-        if (!update_surface(p, t->current, t->frame_id, now))
+        if (!update_surface(p, t->current, t->frame_id, now, flags))
             return;
         p->surface_idx = p->surface_now;
         is_new = true;
@@ -2900,7 +2936,7 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
 
         if (f_id > p->surfaces[p->surface_idx].id) {
             struct surface *dst = &p->surfaces[surface_dst];
-            if (!update_surface(p, f, f_id, dst))
+            if (!update_surface(p, f, f_id, dst, flags))
                 return;
             p->surface_idx = surface_dst;
             surface_dst = surface_wrap(surface_dst + 1);
@@ -3000,7 +3036,7 @@ static void gl_video_interpolate_frame(struct gl_video *p, struct vo_frame *t,
 }
 
 void gl_video_render_frame(struct gl_video *p, struct vo_frame *frame,
-                           struct ra_fbo fbo)
+                           struct ra_fbo fbo, int flags)
 {
     gl_video_update_options(p);
 
@@ -3043,7 +3079,7 @@ void gl_video_render_frame(struct gl_video *p, struct vo_frame *frame,
         }
 
         if (interpolate) {
-            gl_video_interpolate_frame(p, frame, fbo);
+            gl_video_interpolate_frame(p, frame, fbo, flags);
         } else {
             bool is_new = frame->frame_id != p->image.id;
 
@@ -3055,18 +3091,25 @@ void gl_video_render_frame(struct gl_video *p, struct vo_frame *frame,
                 p->output_tex_valid = false;
 
                 pass_info_reset(p, !is_new);
-                if (!pass_render_frame(p, frame->current, frame->frame_id))
+                if (!pass_render_frame(p, frame->current, frame->frame_id, flags))
                     goto done;
 
                 // For the non-interpolation case, we draw to a single "cache"
                 // texture to speed up subsequent re-draws (if any exist)
                 struct ra_fbo dest_fbo = fbo;
                 if (frame->num_vsyncs > 1 && frame->display_synced &&
-                    !p->dumb_mode && (p->ra->caps & RA_CAP_BLIT))
+                    !p->dumb_mode && (p->ra->caps & RA_CAP_BLIT) &&
+                    fbo.tex->params.blit_dst)
                 {
+                    // Attempt to use the same format as the destination FBO
+                    // if possible. Some RAs use a wrapped dummy format here,
+                    // so fall back to the fbo_format in that case.
+                    const struct ra_format *fmt = fbo.tex->params.format;
+                    if (fmt->dummy_format)
+                        fmt = p->fbo_format;
                     bool r = ra_tex_resize(p->ra, p->log, &p->output_tex,
                                            fbo.tex->params.w, fbo.tex->params.h,
-                                           p->fbo_format);
+                                           fmt);
                     if (r) {
                         dest_fbo = (struct ra_fbo) { p->output_tex };
                         p->output_tex_valid = true;
@@ -3076,7 +3119,7 @@ void gl_video_render_frame(struct gl_video *p, struct vo_frame *frame,
             }
 
             // "output tex valid" and "output tex needed" are equivalent
-            if (p->output_tex_valid) {
+            if (p->output_tex_valid && fbo.tex->params.blit_dst) {
                 pass_info_reset(p, true);
                 pass_describe(p, "redraw cached frame");
                 struct mp_rect src = p->dst_rect;
@@ -3097,19 +3140,25 @@ done:
 
     debug_check_gl(p, "after video rendering");
 
-    if (p->osd) {
+    if (p->osd && (flags & (RENDER_FRAME_SUBS | RENDER_FRAME_OSD))) {
         // If we haven't actually drawn anything so far, then we technically
         // need to consider this the start of a new pass. Let's call it a
         // redraw just because, since it's basically a blank frame anyway
         if (!has_frame)
             pass_info_reset(p, true);
 
-        pass_draw_osd(p, p->opts.blend_subs ? OSD_DRAW_OSD_ONLY : 0,
-                      p->osd_pts, p->osd_rect, fbo, true);
+        int osd_flags = p->opts.blend_subs ? OSD_DRAW_OSD_ONLY : 0;
+        if (!(flags & RENDER_FRAME_SUBS))
+            osd_flags |= OSD_DRAW_OSD_ONLY;
+        if (!(flags & RENDER_FRAME_OSD))
+            osd_flags |= OSD_DRAW_SUB_ONLY;
+
+        pass_draw_osd(p, osd_flags, p->osd_pts, p->osd_rect, fbo, true);
         debug_check_gl(p, "after OSD rendering");
     }
 
-    if (gl_sc_error_state(p->sc) || p->broken_frame) {
+    p->broken_frame |= gl_sc_error_state(p->sc);
+    if (p->broken_frame) {
         // Make the screen solid blue to make it visually clear that an
         // error has occurred
         float color[4] = {0.0, 0.05, 0.5, 1.0};
@@ -3118,6 +3167,100 @@ done:
 
     p->frames_rendered++;
     pass_report_performance(p);
+}
+
+void gl_video_screenshot(struct gl_video *p, struct vo_frame *frame,
+                         struct voctrl_screenshot *args)
+{
+    if (!p->ra->fns->tex_download)
+        return;
+
+    bool ok = false;
+    struct mp_image *res = NULL;
+    struct ra_tex *target = NULL;
+    struct mp_rect old_src = p->src_rect;
+    struct mp_rect old_dst = p->dst_rect;
+    struct mp_osd_res old_osd = p->osd_rect;
+    struct vo_frame *nframe = vo_frame_ref(frame);
+
+    // Disable interpolation and such.
+    nframe->redraw = true;
+    nframe->repeat = false;
+    nframe->still = true;
+    nframe->pts = 0;
+    nframe->duration = -1;
+
+    if (!args->scaled) {
+        int w, h;
+        mp_image_params_get_dsize(&p->image_params, &w, &h);
+        if (w < 1 || h < 1)
+            return;
+
+        if (p->image_params.rotate % 180 == 90)
+            MPSWAP(int, w, h);
+
+        struct mp_rect src = {0, 0, p->image_params.w, p->image_params.h};
+        struct mp_rect dst = {0, 0, w, h};
+        struct mp_osd_res osd = {.w = w, .h = h, .display_par = 1.0};
+        gl_video_resize(p, &src, &dst, &osd);
+    }
+
+    gl_video_reset_surfaces(p);
+
+    struct ra_tex_params params = {
+        .dimensions = 2,
+        .downloadable = true,
+        .w = p->osd_rect.w,
+        .h = p->osd_rect.h,
+        .render_dst = true,
+    };
+
+    params.format = ra_find_unorm_format(p->ra, 1, 4);
+    int mpfmt = IMGFMT_RGB0;
+    if (args->high_bit_depth && p->ra_format.component_bits > 8) {
+        const struct ra_format *fmt = ra_find_unorm_format(p->ra, 2, 4);
+        if (fmt && fmt->renderable) {
+            params.format = fmt;
+            mpfmt = IMGFMT_RGBA64;
+        }
+    }
+
+    if (!params.format || !params.format->renderable)
+        goto done;
+    target = ra_tex_create(p->ra, &params);
+    if (!target)
+        goto done;
+
+    int flags = 0;
+    if (args->subs)
+        flags |= RENDER_FRAME_SUBS;
+    if (args->osd)
+        flags |= RENDER_FRAME_OSD;
+    gl_video_render_frame(p, nframe, (struct ra_fbo){target}, flags);
+
+    res = mp_image_alloc(mpfmt, params.w, params.h);
+    if (!res)
+        goto done;
+
+    struct ra_tex_download_params download_params = {
+        .tex = target,
+        .dst = res->planes[0],
+        .stride = res->stride[0],
+    };
+    if (!p->ra->fns->tex_download(p->ra, &download_params))
+        goto done;
+
+    if (p->broken_frame)
+        goto done;
+
+    ok = true;
+done:
+    talloc_free(nframe);
+    ra_tex_free(p->ra, &target);
+    gl_video_resize(p, &old_src, &old_dst, &old_osd);
+    if (!ok)
+        TA_FREEP(&res);
+    args->res = res;
 }
 
 // Use this color instead of the global option.
@@ -3154,7 +3297,7 @@ void gl_video_resize(struct gl_video *p,
     gl_video_reset_surfaces(p);
 
     if (p->osd)
-        mpgl_osd_resize(p->osd, p->osd_rect, p->image_params.stereo_out);
+        mpgl_osd_resize(p->osd, p->osd_rect, p->image_params.stereo3d);
 }
 
 static void frame_perf_data(struct pass_info pass[], struct mp_frame_perf *out)
@@ -3205,7 +3348,7 @@ static void reinterleave_vdpau(struct gl_video *p,
         const struct ra_format *fmt = ra_find_unorm_format(p->ra, 1, comps);
         ra_tex_resize(p->ra, p->log, tex, w, h * 2, fmt);
         struct ra_fbo fbo = { *tex };
-        finish_pass_fbo(p, fbo, &(struct mp_rect){0, 0, w, h * 2});
+        finish_pass_fbo(p, fbo, true, &(struct mp_rect){0, 0, w, h * 2});
 
         output[n] = *tex;
     }
@@ -3333,7 +3476,7 @@ static bool test_fbo(struct gl_video *p, const struct ra_format *fmt)
 }
 
 // Return whether dumb-mode can be used without disabling any features.
-// Essentially, vo_opengl with mostly default settings will return true.
+// Essentially, vo_gpu with mostly default settings will return true.
 static bool check_dumb_mode(struct gl_video *p)
 {
     struct gl_video_opts *o = &p->opts;
@@ -3374,25 +3517,63 @@ static void check_gl_features(struct gl_video *p)
     bool have_texrg = rg_tex && !rg_tex->luminance_alpha;
     bool have_compute = ra->caps & RA_CAP_COMPUTE;
     bool have_ssbo = ra->caps & RA_CAP_BUF_RW;
+    bool have_fragcoord = ra->caps & RA_CAP_FRAGCOORD;
 
-    const char *auto_fbo_fmts[] = {"rgba16", "rgba16f", "rgba16hf",
+    const char *auto_fbo_fmts[] = {"rgba16f", "rgba16hf", "rgba16",
                                    "rgb10_a2", "rgba8", 0};
     const char *user_fbo_fmts[] = {p->opts.fbo_format, 0};
     const char **fbo_fmts = user_fbo_fmts[0] && strcmp(user_fbo_fmts[0], "auto")
                           ? user_fbo_fmts : auto_fbo_fmts;
+    bool user_specified_fbo_fmt = fbo_fmts == user_fbo_fmts;
+    bool fbo_test_result = false;
     bool have_fbo = false;
     p->fbo_format = NULL;
     for (int n = 0; fbo_fmts[n]; n++) {
         const char *fmt = fbo_fmts[n];
         const struct ra_format *f = ra_find_named_format(p->ra, fmt);
-        if (!f && fbo_fmts == user_fbo_fmts)
+        if (!f && user_specified_fbo_fmt)
             MP_WARN(p, "FBO format '%s' not found!\n", fmt);
-        if (f && f->renderable && f->linear_filter && test_fbo(p, f)) {
+        if (f && f->renderable && f->linear_filter &&
+            (fbo_test_result = test_fbo(p, f))) {
             MP_VERBOSE(p, "Using FBO format %s.\n", f->name);
             have_fbo = true;
             p->fbo_format = f;
             break;
         }
+
+        if (user_specified_fbo_fmt) {
+            MP_WARN(p, "User-specified FBO format '%s' failed to initialize! "
+                       "(exists=%d, renderable=%d, linear_filter=%d, "
+                       "fbo_test_result=%d)\n",
+                    fmt, !!f, f ? f->renderable : 0,  f ? f->linear_filter : 0,
+                    fbo_test_result);
+        }
+    }
+
+    if (!have_fragcoord && p->opts.dither_depth >= 0 &&
+        p->opts.dither_algo != DITHER_NONE)
+    {
+        p->opts.dither_algo = DITHER_NONE;
+        MP_WARN(p, "Disabling dithering (no gl_FragCoord).\n");
+    }
+    if (!have_fragcoord && p->opts.alpha_mode == ALPHA_BLEND_TILES) {
+        p->opts.alpha_mode = ALPHA_BLEND;
+        // Verbose, since this is the default setting
+        MP_VERBOSE(p, "Disabling alpha checkerboard (no gl_FragCoord).\n");
+    }
+    if (!have_fbo && have_compute) {
+        have_compute = false;
+        MP_WARN(p, "Force-disabling compute shaders as an FBO format was not "
+                   "available! See your FBO format configuration!\n");
+    }
+
+    bool have_compute_peak = have_compute && have_ssbo;
+    if (!have_compute_peak && p->opts.compute_hdr_peak >= 0) {
+        int msgl = p->opts.compute_hdr_peak == 1 ? MSGL_WARN : MSGL_V;
+        MP_MSG(p, msgl, "Disabling HDR peak computation (one or more of the "
+                        "following is not supported: compute shaders=%d, "
+                        "SSBO=%d).\n", have_compute, have_ssbo);
+        p->opts.compute_hdr_peak = -1;
     }
 
     p->forced_dumb_mode = p->opts.dumb_mode > 0 || !have_fbo || !have_texrg;
@@ -3414,6 +3595,7 @@ static void check_gl_features(struct gl_video *p)
             .alpha_mode = p->opts.alpha_mode,
             .use_rectangle = p->opts.use_rectangle,
             .background = p->opts.background,
+            .compute_hdr_peak = p->opts.compute_hdr_peak,
             .dither_algo = p->opts.dither_algo,
             .dither_depth = p->opts.dither_depth,
             .dither_size = p->opts.dither_size,
@@ -3478,23 +3660,6 @@ static void check_gl_features(struct gl_video *p)
     if (!have_mglsl && p->opts.deband) {
         p->opts.deband = 0;
         MP_WARN(p, "Disabling debanding (GLSL version too old).\n");
-    }
-    if ((!have_compute || !have_ssbo) && p->opts.compute_hdr_peak) {
-        p->opts.compute_hdr_peak = 0;
-        MP_WARN(p, "Disabling HDR peak computation (no compute shaders).\n");
-    }
-    if (!(ra->caps & RA_CAP_FRAGCOORD) && p->opts.dither_depth >= 0 &&
-        p->opts.dither_algo != DITHER_NONE)
-    {
-        p->opts.dither_algo = DITHER_NONE;
-        MP_WARN(p, "Disabling dithering (no gl_FragCoord).\n");
-    }
-    if (!(ra->caps & RA_CAP_FRAGCOORD) &&
-        p->opts.alpha_mode == ALPHA_BLEND_TILES)
-    {
-        p->opts.alpha_mode = ALPHA_BLEND;
-        // Verbose, since this is the default setting
-        MP_VERBOSE(p, "Disabling alpha checkerboard (no gl_FragCoord).\n");
     }
 }
 
@@ -3838,6 +4003,9 @@ static void gl_video_dr_free_buffer(void *opaque, uint8_t *data)
 struct mp_image *gl_video_get_image(struct gl_video *p, int imgfmt, int w, int h,
                                     int stride_align)
 {
+    if (!gl_video_check_format(p, imgfmt))
+        return NULL;
+
     int size = mp_image_get_alloc_size(imgfmt, w, h, stride_align);
     if (size < 0)
         return NULL;

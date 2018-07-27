@@ -93,10 +93,10 @@ static struct mp_log *get_av_log(void *ptr)
         AVCodecContext *s = ptr;
         if (s->codec) {
             if (s->codec->type == AVMEDIA_TYPE_AUDIO) {
-                if (s->codec->decode)
+                if (av_codec_is_decoder(s->codec))
                     return log_decaudio;
             } else if (s->codec->type == AVMEDIA_TYPE_VIDEO) {
-                if (s->codec->decode)
+                if (av_codec_is_decoder(s->codec))
                     return log_decvideo;
             }
         }
@@ -159,10 +159,7 @@ void init_libav(struct mpv_global *global)
     }
     pthread_mutex_unlock(&log_lock);
 
-    avcodec_register_all();
-    av_register_all();
     avformat_network_init();
-    avfilter_register_all();
 
 #if HAVE_LIBAVDEVICE
     avdevice_register_all();

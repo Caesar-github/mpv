@@ -19,16 +19,21 @@
 #include "osdep/macosx_application.h"
 #import "osdep/macosx_menubar_objc.h"
 
+@class CocoaCB;
 struct mpv_event;
+struct mpv_handle;
 
 @interface Application : NSApplication
 
+- (NSImage *)getMPVIcon;
 - (void)processEvent:(struct mpv_event *)event;
 - (void)queueCommand:(char *)cmd;
 - (void)stopMPV:(char *)cmd;
 - (void)openFiles:(NSArray *)filenames;
+- (void)setMpvHandle:(struct mpv_handle *)ctx;
+- (const struct m_sub_options *)getMacOSConf;
 
 @property(nonatomic, retain) MenuBar *menuBar;
-@property(nonatomic, retain) NSArray *files;
 @property(nonatomic, assign) size_t openCount;
+@property(nonatomic, retain) CocoaCB *cocoaCB;
 @end

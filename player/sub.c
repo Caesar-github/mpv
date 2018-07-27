@@ -33,8 +33,6 @@
 #include "sub/dec_sub.h"
 #include "demux/demux.h"
 #include "video/mp_image.h"
-#include "video/decode/dec_video.h"
-#include "video/filter/vf.h"
 
 #include "core.h"
 
@@ -84,19 +82,16 @@ void uninit_sub_all(struct MPContext *mpctx)
 static bool update_subtitle(struct MPContext *mpctx, double video_pts,
                             struct track *track)
 {
-    struct MPOpts *opts = mpctx->opts;
     struct dec_sub *dec_sub = track ? track->d_sub : NULL;
 
     if (!dec_sub || video_pts == MP_NOPTS_VALUE)
         return true;
 
     if (mpctx->vo_chain) {
-        struct mp_image_params params = mpctx->vo_chain->vf->input_params;
+        struct mp_image_params params = mpctx->vo_chain->filter->input_params;
         if (params.imgfmt)
             sub_control(dec_sub, SD_CTRL_SET_VIDEO_PARAMS, &params);
     }
-
-    video_pts -= opts->sub_delay;
 
     if (track->demuxer->fully_read && sub_can_preload(dec_sub)) {
         // Assume fully_read implies no interleaved audio/video streams.

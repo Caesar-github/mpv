@@ -34,11 +34,13 @@ local user_opts = {
     layout = "bottombar",
     seekbarstyle = "bar",       -- slider (diamond marker), knob (circle
                                 -- marker with guide), or bar (fill)
+    seekbarkeyframes = true,    -- use keyframes when dragging the seekbar
     title = "${media-title}",   -- string compatible with property-expansion
                                 -- to be shown as OSC title
     tooltipborder = 1,          -- border of tooltip in bottom/topbar
     timetotal = false,          -- display total time instead of remaining time?
     timems = false,             -- display timecodes with milliseconds?
+    seekranges = true,          -- display seek ranges?
     visibility = "auto",        -- only used at init to set visibility_mode(...)
     boxmaxchars = 80,           -- title crop threshold for box layout
 }
@@ -104,6 +106,7 @@ local state = {
     enabled = true,
     input_enabled = true,
     showhide_enabled = false,
+    dmx_cache = 0,
 }
 
 
@@ -1535,6 +1538,8 @@ function osc_init()
     end
     osc_param.playresx = osc_param.playresy * osc_param.display_aspect
 
+    -- stop seeking with the slider to prevent skipping files
+    state.active_element = nil
 
 
 
@@ -1757,6 +1762,9 @@ function osc_init()
         end
     end
     ne.slider.seekRangesF = function()
+        if not (user_opts.seekranges) then
+            return nil
+        end
         local cache_state = mp.get_property_native("demuxer-cache-state", nil)
         if not cache_state then
             return nil
@@ -1780,8 +1788,8 @@ function osc_init()
             local seekto = get_slider_value(element)
             if (element.state.lastseek == nil) or
                 (not (element.state.lastseek == seekto)) then
-                    mp.commandv("seek", seekto,
-                        "absolute-percent", "keyframes")
+                    mp.commandv("seek", seekto, "absolute-percent",
+                        user_opts.seekbarkeyframes and "keyframes" or "exact")
                     element.state.lastseek = seekto
             end
 
@@ -1834,34 +1842,24 @@ function osc_init()
     ne = new_element("cache", "button")
 
     ne.content = function ()
-        local dmx_cache = mp.get_property_number("demuxer-cache-duration")
-        local cache_used = mp.get_property_number("cache-used", 0)
-        local dmx_cache_state = mp.get_property_native("demuxer-cache-state", {})
-        local is_network = mp.get_property_native("demuxer-via-network")
-        if dmx_cache then
-            dmx_cache = string.format("%3.0fs", dmx_cache)
-        end
-        if dmx_cache_state["fw-bytes"] then
-            cache_used = cache_used + dmx_cache_state["fw-bytes"] / 1024
-        end
-        if cache_used > 0 then
-            local suffix = " KiB"
-            if (cache_used >= 1024) then
-                cache_used = cache_used/1024
-                suffix = " MiB"
-            end
-            cache_used = string.format("%5.1f%s", cache_used, suffix)
-        end
-        if (is_network and dmx_cache) or cache_used then
-            -- Only show dmx-cache-duration by itself if it's a network file.
-            -- Cache can be forced even for local files, so always show that.
-            return string.format("Cache: %s%s%s",
-                (dmx_cache and dmx_cache or ""),
-                ((dmx_cache and cache_used) and " + " or ""),
-                (cache_used or ""))
-        else
+        local cache_state = mp.get_property_native("demuxer-cache-state", {})
+        if not (cache_state["seekable-ranges"] and
+            #cache_state["seekable-ranges"] > 0) then
+            -- probably not a network stream
             return ""
         end
+        local dmx_cache = mp.get_property_number("demuxer-cache-duration")
+        if dmx_cache and (dmx_cache > state.dmx_cache * 1.1 or
+                dmx_cache < state.dmx_cache * 0.9) then
+            state.dmx_cache = dmx_cache
+        else
+            dmx_cache = state.dmx_cache
+        end
+        local min = math.floor(dmx_cache / 60)
+        local sec = dmx_cache % 60
+        return "Cache: " .. (min > 0 and
+            string.format("%sm%02.0fs", min, sec) or
+            string.format("%3.0fs", dmx_cache))
     end
 
     -- volume

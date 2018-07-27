@@ -82,7 +82,7 @@ static const struct ao_driver * const audio_out_drivers[] = {
 #if HAVE_OPENSLES
     &audio_out_opensles,
 #endif
-#if HAVE_SDL1 || HAVE_SDL2
+#if HAVE_SDL2
     &audio_out_sdl,
 #endif
 #if HAVE_SNDIO
@@ -93,9 +93,7 @@ static const struct ao_driver * const audio_out_drivers[] = {
     &audio_out_coreaudio_exclusive,
 #endif
     &audio_out_pcm,
-#if HAVE_ENCODING
     &audio_out_lavc,
-#endif
 #if HAVE_RSOUND
     &audio_out_rsound,
 #endif
@@ -232,6 +230,7 @@ static struct ao *ao_init(bool probing, struct mpv_global *global,
     if (ao->device_buffer)
         MP_VERBOSE(ao, "device buffer: %d samples.\n", ao->device_buffer);
     ao->buffer = MPMAX(ao->device_buffer, ao->def_buffer * ao->samplerate);
+    ao->buffer = MPMAX(ao->buffer, 1);
 
     int align = af_format_sample_alignment(ao->format);
     ao->buffer = (ao->buffer + align - 1) / align * align;
@@ -421,7 +420,7 @@ int ao_query_and_reset_events(struct ao *ao, int events)
     return atomic_fetch_and(&ao->events_, ~(unsigned)events) & events;
 }
 
-static void ao_add_events(struct ao *ao, int events)
+void ao_add_events(struct ao *ao, int events)
 {
     atomic_fetch_or(&ao->events_, events);
     ao->wakeup_cb(ao->wakeup_ctx);
