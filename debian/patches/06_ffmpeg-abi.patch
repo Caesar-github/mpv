@@ -1,7 +1,12 @@
 Description: Suppress ffmpeg version mismatch error
- Requiring an exact ffmpeg version isn't helpful in a distribution where all ABI
- issues should already be handled by package dependencies. Rebuilding every time
- ffmpeg is updated is also completely unmaintainable.
+ Requiring an exact ffmpeg version is usually not a good idea in a binary
+ distribution because:
+ - All FFmpeg security updates require a subsequent binNMU of mpv.
+ - Debian generated dependencies do not capture this dependency well (at least
+   without extra hacking).
+ - The requirement itself usually indicates an ABI violation.
+ For these reasons, remove the check and assume the current FFmpeg version is
+ compatible.
 Author: James Cowgill <jcowgill@debian.org>
 Bug-Debian: https://bugs.debian.org/831537
 ---
