@@ -20,7 +20,6 @@ override_dh_auto_configure:
 			--enable-cdda					\
 			--enable-dvdnav					\
 			--enable-dvdread				\
-			--enable-encoding				\
 			--enable-libmpv-shared				\
 			--enable-libsmbclient				\
 			--enable-sdl2					\
