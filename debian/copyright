@@ -7,7 +7,7 @@ Comment:
  are linked to the GPL-3+ libsmbclient library.
 
 Files: *
-Copyright: 2000-2017, The mplayer, mplayer2 and mpv Developers
+Copyright: 2000-2018, mpv/MPlayer/mplayer2 projects
 License: LGPL-2.1+
 
 Files: audio/out/ao_sndio.c
@@ -28,7 +28,7 @@ Files:
  osdep/win32/*
  player/client.c
  ta/*
-Copyright: 2000-2016, The mplayer, mplayer2 and mpv Developers
+Copyright: 2000-2018, mpv/MPlayer/mplayer2 projects
 License: ISC
 
 Files: osdep/android/strnlen.*
@@ -49,17 +49,11 @@ License: ISC
 
 Files:
  DOCS/man/*
- audio/audio.c
- audio/audio.h
- audio/filter/af.c
- audio/filter/af.h
  audio/filter/af_lavrresample.c
  audio/filter/equalizer.h
- audio/filter/tools.c
  audio/out/ao_jack.c
  audio/out/ao_oss.c
  demux/demux_tv.c
- player/audio.c
  stream/ai_alsa1x.c
  stream/ai_oss.c
  stream/ai_sndio.c
@@ -92,7 +86,7 @@ Files:
  video/out/x11_common.h
  video/vdpau.c
  video/vdpau_mixer.c
-Copyright: 2000-2017, The mplayer, mplayer2 and mpv Developers
+Copyright: 2000-2018, mpv/MPlayer/mplayer2 projects
 License: GPL-2+
 
 License: BSD-2-clause
