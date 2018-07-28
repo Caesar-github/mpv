@@ -1,8 +1,20 @@
-mpv (0.29.0-1) UNRELEASED; urgency=medium
+mpv (0.29.0-1) unstable; urgency=medium
 
-  *
+  * New upstream release. (Closes: #904629)
+    - player: add on_load_fail hook. (Closes: #898576)
+    - ytdl_hook: fix single-entry playlists. (Closes: #898279)
 
- -- James Cowgill <jcowgill@debian.org>  Fri, 27 Jul 2018 14:32:03 +0800
+  * debian/copyright: Update.
+  * debian/libmpv1.symbols: Add new symbols.
+  * debian/patches:
+    - Drop 04_waf-pie.patch - hopefully not needed in recent GCC.
+    - Drop 08_waf-python3.7.patch - applied in new waf.
+    - Rewrite patch description for 06_ffmpeg-abi.patch.
+    - Refresh patches.
+  * debian/rules:
+    - Remove --enable-encoding option.
+
+ -- James Cowgill <jcowgill@debian.org>  Sat, 28 Jul 2018 12:29:32 +0800
 
 mpv (0.28.2-3) unstable; urgency=medium
 
