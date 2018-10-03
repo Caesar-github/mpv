@@ -540,18 +540,14 @@ Program Behavior
 
     If the script can't do anything with an URL, it will do nothing.
 
-    The `try_ytdl_first` script option accepts a boolean 'yes' or 'no', and if
+    The ``try_ytdl_first`` script option accepts a boolean 'yes' or 'no', and if
     'yes' will try parsing the URL with youtube-dl first, instead of the default
     where it's only after mpv failed to open it. This mostly depends on whether
     most of your URLs need youtube-dl parsing.
 
-    The `exclude` script option accepts a ``|``-separated list of URL patterns
+    The ``exclude`` script option accepts a ``|``-separated list of URL patterns
     which mpv should not use with youtube-dl. The patterns are matched after
     the ``http(s)://`` part of the URL.
-
-    The `use_manifests` script option makes mpv use the master manifest URL for
-    formats like HLS and DASH, if available, allowing for video/audio selection
-    in runtime. It's disabled ("no") by default for performance reasons.
 
     ``^`` matches the beginning of the URL, ``$`` matches its end, and you
     should use ``%`` before any of the characters ``^$()%|,.[]*+-?`` to match
@@ -567,6 +563,9 @@ Program Behavior
 
     See more lua patterns here: https://www.lua.org/manual/5.1/manual.html#5.4.1
 
+    The ``use_manifests`` script option makes mpv use the master manifest URL for
+    formats like HLS and DASH, if available, allowing for video/audio selection
+    in runtime. It's disabled ("no") by default for performance reasons.
 
 ``--ytdl-format=<best|worst|mp4|webm|...>``
     Video format/quality that is directly passed to youtube-dl. The possible
@@ -4882,6 +4881,15 @@ The following video options are currently all specific to ``--vo=gpu`` and
 
     OS X only.
 
+``--cocoa-cb-sw-renderer=<yes|no|auto>``
+    Use the Apple Software Renderer when using cocoa-cb (default: auto). If set
+    to ``no`` the software renderer is never used and instead fails when a the
+    usual pixel format could not be created, ``yes`` will always only use the
+    software renderer, and ``auto`` only falls back to the software renderer
+    when the usual pixel format couldn't be created.
+
+    OS X only.
+
 ``--macos-title-bar-style=<dark|ultradark|light|mediumlight|auto>``
     Sets the styling of the title bar (default: dark).
     OS X and cocoa-cb only
@@ -5175,7 +5183,7 @@ The following video options are currently all specific to ``--vo=gpu`` and
         desaturating everything. Developed by John Hable for use in video
         games. Use this when you care about detail preservation more than
         color/brightness accuracy. This is roughly equivalent to
-        ``--hdr-tone-mapping=reinhard --tone-mapping-param=0.24``. If possible,
+        ``--tone-mapping=reinhard --tone-mapping-param=0.24``. If possible,
         you should also enable ``--hdr-compute-peak`` for the best results.
         (Default)
     gamma

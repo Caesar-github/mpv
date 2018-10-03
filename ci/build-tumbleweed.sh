@@ -1,8 +1,7 @@
 #!/bin/sh
 set -e
 
-./bootstrap.py
-./waf configure \
+python3 ./waf configure \
   --enable-cdda          \
   --enable-dvbin         \
   --enable-dvdnav        \
@@ -14,4 +13,4 @@ set -e
   --enable-shaderc       \
   --enable-vulkan        \
   --enable-zsh-comp
-./waf build --verbose
+python3 ./waf build --verbose

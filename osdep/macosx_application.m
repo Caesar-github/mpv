@@ -49,11 +49,14 @@ const struct m_sub_options macos_conf = {
         OPT_CHOICE_OR_INT("macos-fs-animation-duration",
                           macos_fs_animation_duration, 0, 0, 1000,
                           ({"default", -1})),
+        OPT_CHOICE("cocoa-cb-sw-renderer", cocoa_cb_sw_renderer, 0,
+                   ({"auto", -1}, {"no", 0}, {"yes", 1})),
         {0}
     },
     .size = sizeof(struct macos_opts),
     .defaults = &(const struct macos_opts){
         .macos_fs_animation_duration = -1,
+        .cocoa_cb_sw_renderer = -1,
     },
 };
 
@@ -124,8 +127,9 @@ static const char macosx_icon[] =
 
 - (NSImage *)getMPVIcon
 {
+    // The C string contains a trailing null, so we strip it away
     NSData *icon_data = [NSData dataWithBytesNoCopy:(void *)macosx_icon
-                                             length:sizeof(macosx_icon)
+                                             length:sizeof(macosx_icon) - 1
                                        freeWhenDone:NO];
     return [[NSImage alloc] initWithData:icon_data];
 }

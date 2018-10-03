@@ -162,6 +162,8 @@ static const struct format_hack format_hacks[] = {
     {"mp4", .skipinfo = true, .fix_editlists = true},
     {"matroska", .skipinfo = true},
 
+    {"v4l2", .no_seek = true},
+
     // In theory, such streams might contain timestamps, but virtually none do.
     {"h264", .if_flags = AVFMT_NOTIMESTAMPS },
     {"hevc", .if_flags = AVFMT_NOTIMESTAMPS },
@@ -428,6 +430,10 @@ static int lavf_check_file(demuxer_t *demuxer, enum demux_check check)
             int nsize = av_clip(avpd.buf_size * 2, INITIAL_PROBE_SIZE,
                                 PROBE_BUF_SIZE);
             bstr buf = stream_peek(s, nsize);
+            if (demuxer->params && demuxer->params->init_fragment.len) {
+                buf = demuxer->params->init_fragment;
+                buf.len = MPMIN(buf.len, nsize);
+            }
             if (buf.len <= avpd.buf_size)
                 final_probe = true;
             memcpy(avpd.buf, buf.start, buf.len);
