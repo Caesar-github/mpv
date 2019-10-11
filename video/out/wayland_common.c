@@ -179,7 +179,7 @@ static const struct wl_pointer_listener pointer_listener = {
 static int check_for_resize(struct vo_wayland_state *wl, wl_fixed_t x_w, wl_fixed_t y_w,
                             enum xdg_toplevel_resize_edge *edge)
 {
-    if (wl->touch_entries || wl->fullscreen || wl->maximized)
+    if (wl->touch_entries || wl->fullscreen)
         return 0;
 
     const int edge_pixels = 64;
@@ -805,8 +805,7 @@ static void registry_handle_add(void *data, struct wl_registry *reg, uint32_t id
     }
 
     if (!strcmp(interface, xdg_wm_base_interface.name) && found++) {
-        ver = MPMIN(ver, 2); /* We can use either 1 or 2 */
-        wl->shell = wl_registry_bind(reg, id, &xdg_wm_base_interface, ver);
+        wl->shell = wl_registry_bind(reg, id, &xdg_wm_base_interface, 1);
         xdg_wm_base_add_listener(wl->shell, &xdg_shell_listener, wl);
     }
 
@@ -883,7 +882,7 @@ static void handle_toplevel_config(void *data, struct xdg_toplevel *toplevel,
     struct mp_rect old_geometry = wl->geometry;
 
     int prev_fs_state = wl->fullscreen;
-    wl->maximized = false;
+    bool maximized = false;
     wl->fullscreen = false;
     enum xdg_toplevel_state *state;
     wl_array_for_each(state, states) {
@@ -894,14 +893,10 @@ static void handle_toplevel_config(void *data, struct xdg_toplevel *toplevel,
         case XDG_TOPLEVEL_STATE_RESIZING:
             wl->pending_vo_events |= VO_EVENT_LIVE_RESIZING;
             break;
-        case XDG_TOPLEVEL_STATE_ACTIVATED:
-            break;
-        case XDG_TOPLEVEL_STATE_TILED_TOP:
-        case XDG_TOPLEVEL_STATE_TILED_LEFT:
-        case XDG_TOPLEVEL_STATE_TILED_RIGHT:
-        case XDG_TOPLEVEL_STATE_TILED_BOTTOM:
         case XDG_TOPLEVEL_STATE_MAXIMIZED:
-            wl->maximized = true;
+            maximized = true;
+            break;
+        case XDG_TOPLEVEL_STATE_ACTIVATED:
             break;
         }
     }
@@ -914,7 +909,7 @@ static void handle_toplevel_config(void *data, struct xdg_toplevel *toplevel,
     if (width > 0 && height > 0) {
         if (!wl->fullscreen) {
             if (wl->vo->opts->keepaspect && wl->vo->opts->keepaspect_window &&
-                !wl->maximized) {
+                !maximized) {
                 if (width > height)
                     width  = height * wl->aspect_ratio;
                 else
@@ -1157,14 +1152,11 @@ int vo_wayland_reconfig(struct vo *vo)
     vo_calc_window_geometry(vo, &screenrc, &geo);
     vo_apply_window_geometry(vo, &geo);
 
-    if (!wl->configured || !wl->maximized) {
-        wl->geometry.x0 = 0;
-        wl->geometry.y0 = 0;
-        wl->geometry.x1 = vo->dwidth  / wl->scaling;
-        wl->geometry.y1 = vo->dheight / wl->scaling;
-        wl->window_size = wl->geometry;
-    }
-
+    wl->geometry.x0  = 0;
+    wl->geometry.y0  = 0;
+    wl->geometry.x1  = vo->dwidth / wl->scaling;
+    wl->geometry.y1  = vo->dheight / wl->scaling;
+    wl->window_size  = wl->geometry;
     wl->aspect_ratio = vo->dwidth / (float)vo->dheight;
 
     if (vo->opts->fullscreen) {
@@ -1326,7 +1318,7 @@ int vo_wayland_control(struct vo *vo, int *events, int request, void *arg)
     }
     case VOCTRL_SET_UNFS_WINDOW_SIZE: {
         int *s = arg;
-        if (!wl->fullscreen && !wl->maximized) {
+        if (!wl->fullscreen) {
             wl->geometry.x0 = 0;
             wl->geometry.y0 = 0;
             wl->geometry.x1 = s[0]/wl->scaling;
