@@ -31,11 +31,26 @@
 
 #include "packet.h"
 
+// Free any refcounted data dp holds (but don't free dp itself). This does not
+// care about pointers that are _not_ refcounted (like demux_packet.codec).
+// Normally, a user should use talloc_free(dp). This function is only for
+// annoyingly specific obscure use cases.
+void demux_packet_unref_contents(struct demux_packet *dp)
+{
+    if (dp->avpacket) {
+        assert(!dp->is_cached);
+        av_packet_unref(dp->avpacket);
+        talloc_free(dp->avpacket);
+        dp->avpacket = NULL;
+        dp->buffer = NULL;
+        dp->len = 0;
+    }
+}
+
 static void packet_destroy(void *ptr)
 {
     struct demux_packet *dp = ptr;
-    av_packet_unref(dp->avpacket);
-    mp_packet_tags_unref(dp->metadata);
+    demux_packet_unref_contents(dp);
 }
 
 // This actually preserves only data and side data, not PTS/DTS/pos/etc.
@@ -56,7 +71,6 @@ struct demux_packet *new_demux_packet_from_avpacket(struct AVPacket *avpkt)
         .end = MP_NOPTS_VALUE,
         .stream = -1,
         .avpacket = talloc_zero(dp, AVPacket),
-        .kf_seek_pts = MP_NOPTS_VALUE,
     };
     av_init_packet(dp->avpacket);
     int r = -1;
@@ -110,8 +124,10 @@ struct demux_packet *new_demux_packet(size_t len)
 void demux_packet_shorten(struct demux_packet *dp, size_t len)
 {
     assert(len <= dp->len);
-    av_shrink_packet(dp->avpacket, len);
-    dp->len = dp->avpacket->size;
+    if (dp->len) {
+        dp->len = len;
+        memset(dp->buffer + dp->len, 0, AV_INPUT_BUFFER_PADDING_SIZE);
+    }
 }
 
 void free_demux_packet(struct demux_packet *dp)
@@ -129,9 +145,10 @@ void demux_packet_copy_attribs(struct demux_packet *dst, struct demux_packet *sr
     dst->start = src->start;
     dst->end = src->end;
     dst->codec = src->codec;
+    dst->back_restart = src->back_restart;
+    dst->back_preroll = src->back_preroll;
     dst->keyframe = src->keyframe;
     dst->stream = src->stream;
-    mp_packet_tags_setref(&dst->metadata, src->metadata);
 }
 
 struct demux_packet *demux_copy_packet(struct demux_packet *dp)
@@ -149,7 +166,7 @@ struct demux_packet *demux_copy_packet(struct demux_packet *dp)
     return new;
 }
 
-#define ROUND_ALLOC(s) MP_ALIGN_UP(s, 64)
+#define ROUND_ALLOC(s) MP_ALIGN_UP((s), 16)
 
 // Attempt to estimate the total memory consumption of the given packet.
 // This is important if we store thousands of packets and not to exceed
@@ -162,11 +179,15 @@ struct demux_packet *demux_copy_packet(struct demux_packet *dp)
 size_t demux_packet_estimate_total_size(struct demux_packet *dp)
 {
     size_t size = ROUND_ALLOC(sizeof(struct demux_packet));
-    size += ROUND_ALLOC(dp->len);
+    size += 8 * sizeof(void *); // ta  overhead
+    size += 10 * sizeof(void *); // additional estimate for ta_ext_header
     if (dp->avpacket) {
+        assert(!dp->is_cached);
+        size += ROUND_ALLOC(dp->len);
         size += ROUND_ALLOC(sizeof(AVPacket));
+        size += 8 * sizeof(void *); // ta  overhead
         size += ROUND_ALLOC(sizeof(AVBufferRef));
-        size += 64; // upper bound estimate on sizeof(AVBuffer)
+        size += ROUND_ALLOC(64); // upper bound estimate on sizeof(AVBuffer)
         size += ROUND_ALLOC(dp->avpacket->side_data_elems *
                             sizeof(dp->avpacket->side_data[0]));
         for (int n = 0; n < dp->avpacket->side_data_elems; n++)

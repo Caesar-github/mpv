@@ -20,6 +20,8 @@
 
 #include <stdbool.h>
 
+#include "libmpv/client.h"
+
 struct MPContext;
 struct mp_cmd;
 struct mp_log;
@@ -43,12 +45,33 @@ struct mp_cmd_ctx {
     bool bar_osd;       // OSD bar requested
     bool seek_msg_osd;  // same as above, but for seek commands
     bool seek_bar_osd;
-    // Return values
+    // If mp_cmd_def.can_abort is set, this will be set.
+    struct mp_abort_entry *abort;
+    // Return values (to be set by command implementation, read by the
+    // completion callback).
     bool success;       // true by default
-    struct mpv_node *result;
+    struct mpv_node result;
+    // Command handlers can set this to false if returning from the command
+    // handler does not complete the command. It stops the common command code
+    // from signaling the completion automatically, and you can call
+    // mp_cmd_ctx_complete() to invoke on_completion() properly (including all
+    // the bookkeeping).
+    /// (Note that in no case you can call mp_cmd_ctx_complete() from within
+    // the command handler, because it frees the mp_cmd_ctx.)
+    bool completed;     // true by default
+    // This is managed by the common command code. For rules about how and where
+    // this is called see run_command() comments.
+    void (*on_completion)(struct mp_cmd_ctx *cmd);
+    void *on_completion_priv; // for free use by on_completion callback
 };
 
-int run_command(struct MPContext *mpctx, struct mp_cmd *cmd, struct mpv_node *res);
+void run_command(struct MPContext *mpctx, struct mp_cmd *cmd,
+                 struct mp_abort_entry *abort,
+                 void (*on_completion)(struct mp_cmd_ctx *cmd),
+                 void *on_completion_priv);
+void mp_cmd_ctx_complete(struct mp_cmd_ctx *cmd);
+PRINTF_ATTRIBUTE(3, 4)
+void mp_cmd_msg(struct mp_cmd_ctx *cmd, int status, const char *msg, ...);
 char *mp_property_expand_string(struct MPContext *mpctx, const char *str);
 char *mp_property_expand_escaped_string(struct MPContext *mpctx, const char *str);
 void property_print_help(struct MPContext *mpctx);
@@ -86,5 +109,7 @@ void mp_hook_add(struct MPContext *mpctx, const char *client, const char *name,
                  uint64_t user_id, int pri, bool legacy);
 
 void mark_seek(struct MPContext *mpctx);
+
+void mp_abort_cache_dumping(struct MPContext *mpctx);
 
 #endif /* MPLAYER_COMMAND_H */

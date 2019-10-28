@@ -32,6 +32,9 @@ struct image_writer_opts {
     int jpeg_progressive;
     int jpeg_baseline;
     int jpeg_source_chroma;
+    int webp_lossless;
+    int webp_quality;
+    int webp_compression;
     int tag_csp;
 };
 
@@ -60,12 +63,6 @@ int image_writer_format_from_ext(const char *ext);
  */
 bool write_image(struct mp_image *image, const struct image_writer_opts *opts,
                  const char *filename, struct mp_log *log);
-
-/* Return the image converted to the given format. If the pixel aspect ratio is
- * not 1:1, the image is scaled as well. Returns NULL on failure.
- */
-struct mp_image *convert_image(struct mp_image *image, int destfmt,
-                               struct mp_log *log);
 
 // Debugging helper.
 void dump_png(struct mp_image *image, const char *filename, struct mp_log *log);

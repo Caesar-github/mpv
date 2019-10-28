@@ -37,6 +37,7 @@
 #include "mpv_talloc.h"
 #include "osdep/io.h"
 #include "osdep/path.h"
+#include "misc/ctype.h"
 
 // In order of decreasing priority: the first has highest priority.
 static const mp_get_platform_path_cb path_resolvers[] = {
@@ -61,6 +62,19 @@ static const char *const config_dirs[] = {
     "global",
 };
 
+void mp_init_paths(struct mpv_global *global, struct MPOpts *opts)
+{
+    TA_FREEP(&global->configdir);
+
+    const char *force_configdir = getenv("MPV_HOME");
+    if (opts->force_configdir && opts->force_configdir[0])
+        force_configdir = opts->force_configdir;
+    if (!opts->load_config)
+        force_configdir = "";
+
+    global->configdir = talloc_strdup(global, force_configdir);
+}
+
 // Return a platform specific path using a path type as defined in osdep/path.h.
 // Keep in mind that the only way to free the return value is freeing talloc_ctx
 // (or its children), as this function can return a statically allocated string.
@@ -70,15 +84,10 @@ static const char *mp_get_platform_path(void *talloc_ctx,
 {
     assert(talloc_ctx);
 
-    const char *force_configdir = getenv("MPV_HOME");
-    if (global->opts->force_configdir && global->opts->force_configdir[0])
-        force_configdir = global->opts->force_configdir;
-    if (!global->opts->load_config)
-        force_configdir = "";
-    if (force_configdir) {
+    if (global->configdir) {
         for (int n = 0; n < MP_ARRAY_SIZE(config_dirs); n++) {
             if (strcmp(config_dirs[n], type) == 0)
-                return (n == 0 && force_configdir[0]) ? force_configdir : NULL;
+                return (n == 0 && global->configdir[0]) ? global->configdir : NULL;
         }
     }
 
@@ -315,12 +324,15 @@ bool mp_is_url(bstr path)
     int proto = bstr_find0(path, "://");
     if (proto < 1)
         return false;
-    // The protocol part must be alphanumeric, otherwise it's not an URL.
+    // Per RFC3986, the first character of the protocol must be alphabetic.
+    // The rest must be alphanumeric plus -, + and .
     for (int i = 0; i < proto; i++) {
         unsigned char c = path.start[i];
-        if (!(c >= 'a' && c <= 'z') && !(c >= 'A' && c <= 'Z') &&
-            !(c >= '0' && c <= '9') && c != '_')
+        if ((i == 0 && !mp_isalpha(c)) ||
+            (!mp_isalnum(c) && c != '.' && c != '-' && c != '+'))
+        {
             return false;
+        }
     }
     return true;
 }

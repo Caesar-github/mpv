@@ -50,7 +50,6 @@ struct mp_log_root {
     bool use_terminal;  // make accesses to stderr/stdout
     bool module;
     bool show_time;
-    bool termosd;       // use terminal control codes for status line
     int blank_lines;    // number of lines usable by status
     int status_lines;   // number of current status lines
     bool color;
@@ -127,19 +126,19 @@ static void update_loglevel(struct mp_log *log)
     pthread_mutex_unlock(&mp_msg_lock);
 }
 
-// Return whether the message at this verbosity level would be actually printed.
+// Get the current effective msg level.
 // Thread-safety: see mp_msg().
-bool mp_msg_test(struct mp_log *log, int lev)
+int mp_msg_level(struct mp_log *log)
 {
     struct mp_log_root *root = log->root;
     if (!root)
-        return false;
+        return -1;
     if (atomic_load_explicit(&log->reload_counter, memory_order_relaxed) !=
         atomic_load_explicit(&root->reload_counter, memory_order_relaxed))
     {
         update_loglevel(log);
     }
-    return lev <= log->level;
+    return log->level;
 }
 
 // Reposition cursor and clear lines for outputting the status line. In certain
@@ -361,7 +360,7 @@ void mp_msg_va(struct mp_log *log, int lev, const char *format, va_list va)
     } else if (lev == MSGL_STATUS && !test_terminal_level(log, lev)) {
         /* discard */
     } else {
-        if (lev == MSGL_STATUS && root->termosd)
+        if (lev == MSGL_STATUS)
             prepare_status_line(root, text);
 
         // Split away each line. Normally we require full lines; buffer partial
@@ -382,7 +381,7 @@ void mp_msg_va(struct mp_log *log, int lev, const char *format, va_list va)
 
         if (lev == MSGL_STATUS) {
             if (text[0])
-                print_terminal_line(log, lev, text, root->termosd ? "\r" : "\n");
+                print_terminal_line(log, lev, text, "\r");
         } else if (text[0]) {
             int size = strlen(text) + 1;
             if (talloc_get_size(log->partial) < size)
@@ -460,8 +459,6 @@ void mp_msg_init(struct mpv_global *global)
     struct mp_log *log = mp_log_new(root, &dummy, "");
 
     global->log = log;
-
-    mp_msg_update_msglevels(global);
 }
 
 // If opt is different from *current_path, reopen *file and update *current_path.
@@ -501,13 +498,9 @@ static void reopen_file(char *opt, char **current_path, FILE **file,
     talloc_free(tmp);
 }
 
-void mp_msg_update_msglevels(struct mpv_global *global)
+void mp_msg_update_msglevels(struct mpv_global *global, struct MPOpts *opts)
 {
     struct mp_log_root *root = global->log->root;
-    struct MPOpts *opts = global->opts;
-
-    if (!opts)
-        return;
 
     pthread_mutex_lock(&mp_msg_lock);
 
@@ -516,14 +509,11 @@ void mp_msg_update_msglevels(struct mpv_global *global)
     root->module = opts->msg_module;
     root->use_terminal = opts->use_terminal;
     root->show_time = opts->msg_time;
-    if (root->use_terminal) {
+    if (root->use_terminal)
         root->color = opts->msg_color && isatty(STDOUT_FILENO);
-        root->termosd = isatty(STDERR_FILENO);
-    }
 
     m_option_type_msglevels.free(&root->msg_levels);
-    m_option_type_msglevels.copy(NULL, &root->msg_levels,
-                                 &global->opts->msg_levels);
+    m_option_type_msglevels.copy(NULL, &root->msg_levels, &opts->msg_levels);
 
     atomic_fetch_add(&root->reload_counter, 1);
     pthread_mutex_unlock(&mp_msg_lock);
@@ -575,10 +565,6 @@ struct mp_log_buffer *mp_msg_log_buffer_new(struct mpv_global *global,
                                             void *wakeup_cb_ctx)
 {
     struct mp_log_root *root = global->log->root;
-
-#if !HAVE_ATOMICS
-    return NULL;
-#endif
 
     pthread_mutex_lock(&mp_msg_lock);
 

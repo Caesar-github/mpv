@@ -129,52 +129,70 @@ def build(ctx):
         ctx.wayland_protocol_header(proto_dir = ctx.env.WL_PROTO_DIR,
             protocol  = "unstable/idle-inhibit/idle-inhibit-unstable-v1",
             target    = "video/out/wayland/idle-inhibit-v1.h")
-        ctx.wayland_protocol_code(proto_dir = "video/out/wayland",
-            protocol          = "server-decoration",
-            vendored_protocol = True,
-            target            = "video/out/wayland/srv-decor.c")
-        ctx.wayland_protocol_header(proto_dir = "video/out/wayland",
-            protocol          = "server-decoration",
-            vendored_protocol = True,
-            target            = "video/out/wayland/srv-decor.h")
+        ctx.wayland_protocol_code(proto_dir = ctx.env.WL_PROTO_DIR,
+            protocol  = "stable/presentation-time/presentation-time",
+            target    = "video/out/wayland/presentation-time.c")
+        ctx.wayland_protocol_header(proto_dir = ctx.env.WL_PROTO_DIR,
+            protocol  = "stable/presentation-time/presentation-time",
+            target    = "video/out/wayland/presentation-time.h")
+        ctx.wayland_protocol_code(proto_dir = ctx.env.WL_PROTO_DIR,
+            protocol  = "unstable/xdg-decoration/xdg-decoration-unstable-v1",
+            target    = "video/out/wayland/xdg-decoration-v1.c")
+        ctx.wayland_protocol_header(proto_dir = ctx.env.WL_PROTO_DIR,
+            protocol  = "unstable/xdg-decoration/xdg-decoration-unstable-v1",
+            target    = "video/out/wayland/xdg-decoration-v1.h")
 
     ctx(features = "ebml_header", target = "ebml_types.h")
     ctx(features = "ebml_definitions", target = "ebml_defs.c")
 
     def swift(task):
-        src = ' '.join([x.abspath() for x in task.inputs])
+        src = [x.abspath() for x in task.inputs]
         bridge = ctx.path.find_node("osdep/macOS_swift_bridge.h").abspath()
         tgt = task.outputs[0].abspath()
         header = task.outputs[1].abspath()
         module = task.outputs[2].abspath()
+        module_name = os.path.basename(module).rsplit(".", 1)[0]
 
-        cmd = ('%s %s -module-name macOS_swift -emit-module-path %s '
-               '-import-objc-header %s -emit-objc-header-path %s -o %s %s '
-               '-I. -I%s') % (ctx.env.SWIFT, ctx.env.SWIFT_FLAGS, module,
-                              bridge, header, tgt, src, ctx.srcnode.abspath())
+        cmd = [ ctx.env.SWIFT ]
+        cmd.extend(ctx.env.SWIFT_FLAGS)
+        cmd.extend([
+            "-module-name", module_name,
+            "-emit-module-path", module,
+            "-import-objc-header", bridge,
+            "-emit-objc-header-path", header,
+            "-o", tgt,
+        ])
+        cmd.extend(src)
+        cmd.extend([ "-I.", "-I%s" % ctx.srcnode.abspath() ])
+
         return task.exec_command(cmd)
 
     if ctx.dependency_satisfied('macos-cocoa-cb'):
         swift_source = [
-            ( "osdep/macOS_mpv_helper.swift" ),
+            ( "osdep/macos/log_helper.swift" ),
+            ( "osdep/macos/libmpv_helper.swift" ),
+            ( "osdep/macos/mpv_helper.swift" ),
+            ( "osdep/macos/swift_extensions.swift" ),
+            ( "osdep/macos/swift_compat.swift" ),
             ( "video/out/cocoa-cb/events_view.swift" ),
             ( "video/out/cocoa-cb/video_layer.swift" ),
             ( "video/out/cocoa-cb/window.swift" ),
+            ( "video/out/cocoa-cb/title_bar.swift" ),
             ( "video/out/cocoa_cb_common.swift" ),
         ]
 
         ctx(
             rule   = swift,
             source = ctx.filtered_sources(swift_source),
-            target = ('osdep/macOS_swift.o '
-                      'osdep/macOS_swift.h '
-                      'osdep/macOS_swift.swiftmodule'),
+            target = [ "osdep/macOS_swift.o",
+                       "osdep/macOS_swift.h",
+                       "osdep/macOS_swift.swiftmodule" ],
             before = 'c',
         )
 
         ctx.env.append_value('LINKFLAGS', [
             '-Xlinker', '-add_ast_path',
-            '-Xlinker', '%s' % ctx.path.find_or_declare("osdep/macOS_swift.swiftmodule").abspath()
+            '-Xlinker', ctx.path.find_or_declare("osdep/macOS_swift.swiftmodule").abspath()
         ])
 
     if ctx.dependency_satisfied('cplayer'):
@@ -218,7 +236,6 @@ def build(ctx):
         ( "audio/decode/ad_spdif.c" ),
         ( "audio/filter/af_format.c" ),
         ( "audio/filter/af_lavcac3enc.c" ),
-        ( "audio/filter/af_lavrresample.c" ),
         ( "audio/filter/af_rubberband.c",        "rubberband" ),
         ( "audio/filter/af_scaletempo.c" ),
         ( "audio/fmt-conversion.c" ),
@@ -227,12 +244,10 @@ def build(ctx):
         ( "audio/out/ao_alsa.c",                 "alsa" ),
         ( "audio/out/ao_audiounit.m",            "audiounit" ),
         ( "audio/out/ao_coreaudio.c",            "coreaudio" ),
-        ( "audio/out/ao_coreaudio_chmap.c",      "audiounit" ),
-        ( "audio/out/ao_coreaudio_chmap.c",      "coreaudio" ),
+        ( "audio/out/ao_coreaudio_chmap.c",      "coreaudio || audiounit" ),
         ( "audio/out/ao_coreaudio_exclusive.c",  "coreaudio" ),
         ( "audio/out/ao_coreaudio_properties.c", "coreaudio" ),
-        ( "audio/out/ao_coreaudio_utils.c",      "audiounit" ),
-        ( "audio/out/ao_coreaudio_utils.c",      "coreaudio" ),
+        ( "audio/out/ao_coreaudio_utils.c",      "coreaudio || audiounit" ),
         ( "audio/out/ao_jack.c",                 "jack" ),
         ( "audio/out/ao_lavc.c" ),
         ( "audio/out/ao_null.c" ),
@@ -242,7 +257,7 @@ def build(ctx):
         ( "audio/out/ao_pcm.c" ),
         ( "audio/out/ao_pulse.c",                "pulse" ),
         ( "audio/out/ao_rsound.c",               "rsound" ),
-        ( "audio/out/ao_sdl.c",                  "sdl2" ),
+        ( "audio/out/ao_sdl.c",                  "sdl2-audio" ),
         ( "audio/out/ao_sndio.c",                "sndio" ),
         ( "audio/out/ao_wasapi.c",               "wasapi" ),
         ( "audio/out/ao_wasapi_changenotify.c",  "wasapi" ),
@@ -265,6 +280,7 @@ def build(ctx):
         ## Demuxers
         ( "demux/codec_tags.c" ),
         ( "demux/cue.c" ),
+        ( "demux/cache.c" ),
         ( "demux/demux.c" ),
         ( "demux/demux_cue.c" ),
         ( "demux/demux_disc.c" ),
@@ -276,10 +292,8 @@ def build(ctx):
         ( "demux/demux_mkv_timeline.c" ),
         ( "demux/demux_null.c" ),
         ( "demux/demux_playlist.c" ),
-        ( "demux/demux_rar.c" ),
         ( "demux/demux_raw.c" ),
         ( "demux/demux_timeline.c" ),
-        ( "demux/demux_tv.c",                    "tv" ),
         ( "demux/ebml.c" ),
         ( "demux/packet.c" ),
         ( "demux/timeline.c" ),
@@ -306,16 +320,19 @@ def build(ctx):
         ( ipc_c ),
         ( "input/keycodes.c" ),
         ( "input/pipe-win32.c",                  "win32-pipes" ),
+        ( "input/sdl_gamepad.c",                 "sdl2-gamepad" ),
 
         ## Misc
         ( "misc/bstr.c" ),
         ( "misc/charset_conv.c" ),
         ( "misc/dispatch.c" ),
         ( "misc/json.c" ),
+        ( "misc/natural_sort.c" ),
         ( "misc/node.c" ),
         ( "misc/rendezvous.c" ),
         ( "misc/ring.c" ),
         ( "misc/thread_pool.c" ),
+        ( "misc/thread_tools.c" ),
 
         ## Options
         ( "options/m_config.c" ),
@@ -345,24 +362,15 @@ def build(ctx):
         ( "player/video.c" ),
 
         ## Streams
-        ( "stream/ai_alsa1x.c",                  "alsa && audio-input" ),
-        ( "stream/ai_oss.c",                     "oss-audio && audio-input" ),
-        ( "stream/ai_sndio.c",                   "sndio && audio-input" ),
-        ( "stream/audio_in.c",                   "audio-input" ),
-        ( "stream/cache.c" ),
-        ( "stream/cache_file.c" ),
         ( "stream/cookies.c" ),
         ( "stream/dvb_tune.c",                   "dvbin" ),
-        ( "stream/frequencies.c",                "tv" ),
-        ( "stream/rar.c" ),
         ( "stream/stream.c" ),
         ( "stream/stream_avdevice.c" ),
         ( "stream/stream_bluray.c",              "libbluray" ),
         ( "stream/stream_cb.c" ),
         ( "stream/stream_cdda.c",                "cdda" ),
+        ( "stream/stream_concat.c" ),
         ( "stream/stream_dvb.c",                 "dvbin" ),
-        ( "stream/stream_dvd.c",                 "dvdread-common" ),
-        ( "stream/stream_dvd_common.c",          "dvdread-common" ),
         ( "stream/stream_dvdnav.c",              "dvdnav" ),
         ( "stream/stream_edl.c" ),
         ( "stream/stream_file.c" ),
@@ -371,12 +379,7 @@ def build(ctx):
         ( "stream/stream_memory.c" ),
         ( "stream/stream_mf.c" ),
         ( "stream/stream_null.c" ),
-        ( "stream/stream_rar.c" ),
         ( "stream/stream_smb.c",                 "libsmbclient" ),
-        ( "stream/stream_tv.c",                  "tv" ),
-        ( "stream/tv.c",                         "tv" ),
-        ( "stream/tvi_dummy.c",                  "tv" ),
-        ( "stream/tvi_v4l2.c",                   "tv-v4l2"),
 
         ## Subtitles
         ( "sub/ass_mp.c",                        "libass"),
@@ -397,9 +400,10 @@ def build(ctx):
         ( "video/decode/vd_lavc.c" ),
         ( "video/filter/refqueue.c" ),
         ( "video/filter/vf_d3d11vpp.c",          "d3d-hwaccel" ),
+        ( "video/filter/vf_fingerprint.c",       "zimg" ),
         ( "video/filter/vf_format.c" ),
         ( "video/filter/vf_sub.c" ),
-        ( "video/filter/vf_vapoursynth.c",       "vapoursynth-core" ),
+        ( "video/filter/vf_vapoursynth.c",       "vapoursynth" ),
         ( "video/filter/vf_vavpp.c",             "vaapi" ),
         ( "video/filter/vf_vdpaupp.c",           "vdpau" ),
         ( "video/fmt-conversion.c" ),
@@ -409,6 +413,7 @@ def build(ctx):
         ( "video/img_format.c" ),
         ( "video/mp_image.c" ),
         ( "video/mp_image_pool.c" ),
+        ( "video/out/android_common.c",          "android" ),
         ( "video/out/aspect.c" ),
         ( "video/out/bitmap_packer.c" ),
         ( "video/out/cocoa/events_view.m",       "cocoa" ),
@@ -427,6 +432,7 @@ def build(ctx):
         ( "video/out/filter_kernels.c" ),
         ( "video/out/gpu/context.c" ),
         ( "video/out/gpu/d3d11_helpers.c",       "d3d11 || egl-angle-win32" ),
+        ( "video/out/gpu/error_diffusion.c" ),
         ( "video/out/gpu/hwdec.c" ),
         ( "video/out/gpu/lcms.c" ),
         ( "video/out/gpu/libmpv_gpu.c" ),
@@ -439,35 +445,39 @@ def build(ctx):
         ( "video/out/gpu/utils.c" ),
         ( "video/out/gpu/video.c" ),
         ( "video/out/gpu/video_shaders.c" ),
+        ( "video/out/hwdec/hwdec_cuda.c",        "cuda-hwaccel" ),
+        ( "video/out/hwdec/hwdec_cuda_gl.c",     "cuda-hwaccel && gl" ),
+        ( "video/out/hwdec/hwdec_cuda_vk.c",     "cuda-hwaccel && vulkan" ),
+        ( "video/out/hwdec/hwdec_vaapi.c",       "vaapi-egl || vaapi-vulkan" ),
+        ( "video/out/hwdec/hwdec_vaapi_gl.c",    "vaapi-egl" ),
+        ( "video/out/hwdec/hwdec_vaapi_vk.c",    "vaapi-vulkan" ),
+        ( "video/out/placebo/ra_pl.c",           "libplacebo" ),
+        ( "video/out/placebo/utils.c",           "libplacebo" ),
         ( "video/out/opengl/angle_dynamic.c",    "egl-angle" ),
         ( "video/out/opengl/common.c",           "gl" ),
         ( "video/out/opengl/context.c",          "gl" ),
-        ( "video/out/opengl/context_android.c",  "android" ),
+        ( "video/out/opengl/context_android.c",  "egl-android" ),
         ( "video/out/opengl/context_angle.c",    "egl-angle-win32" ),
         ( "video/out/opengl/context_cocoa.c",    "gl-cocoa" ),
         ( "video/out/opengl/context_drm_egl.c",  "egl-drm" ),
         ( "video/out/opengl/context_dxinterop.c","gl-dxinterop" ),
         ( "video/out/opengl/context_glx.c",      "gl-x11" ),
-        ( "video/out/opengl/context_mali_fbdev.c","mali-fbdev" ),
         ( "video/out/opengl/context_rpi.c",      "rpi" ),
-        ( "video/out/opengl/context_vdpau.c",    "vdpau-gl-x11" ),
         ( "video/out/opengl/context_wayland.c",  "gl-wayland" ),
         ( "video/out/opengl/context_win.c",      "gl-win32" ),
         ( "video/out/opengl/context_x11egl.c",   "egl-x11" ),
         ( "video/out/opengl/egl_helpers.c",      "egl-helpers" ),
         ( "video/out/opengl/formats.c",          "gl" ),
-        ( "video/out/opengl/hwdec_cuda.c",       "cuda-hwaccel" ),
         ( "video/out/opengl/hwdec_d3d11egl.c",   "d3d-hwaccel && egl-angle" ),
-        ( "video/out/opengl/hwdec_d3d11eglrgb.c","d3d-hwaccel && egl-angle" ),
         ( "video/out/opengl/hwdec_drmprime_drm.c","drmprime && drm" ),
         ( "video/out/opengl/hwdec_dxva2egl.c",   "d3d9-hwaccel && egl-angle" ),
         ( "video/out/opengl/hwdec_dxva2gldx.c",  "gl-dxinterop-d3d9" ),
         ( "video/out/opengl/hwdec_ios.m",        "ios-gl" ),
         ( "video/out/opengl/hwdec_osx.c",        "videotoolbox-gl" ),
-        ( "video/out/opengl/hwdec_rpi.c",        "rpi" ),
-        ( "video/out/opengl/hwdec_vaegl.c",      "vaapi-egl" ),
+        ( "video/out/opengl/hwdec_rpi.c",        "rpi-mmal" ),
         ( "video/out/opengl/hwdec_vdpau.c",      "vdpau-gl-x11" ),
         ( "video/out/opengl/libmpv_gl.c",        "gl" ),
+        ( "video/out/opengl/oml_sync.c",         "egl-x11 || gl-x11" ),
         ( "video/out/opengl/ra_gl.c",            "gl" ),
         ( "video/out/opengl/utils.c",            "gl" ),
         ( "video/out/vo.c" ),
@@ -480,25 +490,24 @@ def build(ctx):
         ( "video/out/vo_libmpv.c" ),
         ( "video/out/vo_mediacodec_embed.c",     "android" ),
         ( "video/out/vo_null.c" ),
-        ( "video/out/vo_rpi.c",                  "rpi" ),
-        ( "video/out/vo_sdl.c",                  "sdl2" ),
+        ( "video/out/vo_rpi.c",                  "rpi-mmal" ),
+        ( "video/out/vo_sdl.c",                  "sdl2-video" ),
         ( "video/out/vo_tct.c" ),
         ( "video/out/vo_vaapi.c",                "vaapi-x11 && gpl" ),
         ( "video/out/vo_vdpau.c",                "vdpau" ),
+        ( "video/out/vo_wlshm.c",                "wayland && memfd_create" ),
         ( "video/out/vo_x11.c" ,                 "x11" ),
         ( "video/out/vo_xv.c",                   "xv" ),
         ( "video/out/vulkan/context.c",          "vulkan" ),
+        ( "video/out/vulkan/context_android.c",  "vulkan && android" ),
         ( "video/out/vulkan/context_wayland.c",  "vulkan && wayland" ),
         ( "video/out/vulkan/context_win.c",      "vulkan && win32-desktop" ),
         ( "video/out/vulkan/context_xlib.c",     "vulkan && x11" ),
-        ( "video/out/vulkan/formats.c",          "vulkan" ),
-        ( "video/out/vulkan/malloc.c",           "vulkan" ),
-        ( "video/out/vulkan/ra_vk.c",            "vulkan" ),
-        ( "video/out/vulkan/spirv_nvidia.c",     "vulkan" ),
         ( "video/out/vulkan/utils.c",            "vulkan" ),
         ( "video/out/w32_common.c",              "win32-desktop" ),
         ( "video/out/wayland/idle-inhibit-v1.c", "wayland" ),
-        ( "video/out/wayland/srv-decor.c",       "wayland" ),
+        ( "video/out/wayland/presentation-time.c", "wayland" ),
+        ( "video/out/wayland/xdg-decoration-v1.c", "wayland" ),
         ( "video/out/wayland/xdg-shell.c",       "wayland" ),
         ( "video/out/wayland_common.c",          "wayland" ),
         ( "video/out/win32/displayconfig.c",     "win32-desktop" ),
@@ -506,6 +515,7 @@ def build(ctx):
         ( "video/out/win_state.c"),
         ( "video/out/x11_common.c",              "x11" ),
         ( "video/sws_utils.c" ),
+        ( "video/zimg.c",                        "zimg" ),
         ( "video/vaapi.c",                       "vaapi" ),
         ( "video/vdpau.c",                       "vdpau" ),
         ( "video/vdpau_mixer.c",                 "vdpau" ),
@@ -585,12 +595,16 @@ def build(ctx):
         syms = True
         ctx.load("syms")
 
+    additional_objects = []
+    if ctx.dependency_satisfied('swift'):
+        additional_objects.append("osdep/macOS_swift.o")
+
     if ctx.dependency_satisfied('cplayer'):
         ctx(
             target       = "mpv",
             source       = main_fn_c,
             use          = ctx.dependencies_use() + ['objects'],
-            add_object   = "osdep/macOS_swift.o",
+            add_objects  = additional_objects,
             includes     = _all_includes(ctx),
             features     = "c cprogram" + (" syms" if syms else ""),
             export_symbols_def = "libmpv/mpv.def", # for syms=True
@@ -647,7 +661,7 @@ def build(ctx):
                 "target": "mpv",
                 "source":   ctx.filtered_sources(sources),
                 "use":      ctx.dependencies_use(),
-                "add_object": "osdep/macOS_swift.o",
+                "add_objects": additional_objects,
                 "includes": [ctx.bldnode.abspath(), ctx.srcnode.abspath()] + \
                              ctx.dependencies_includes(),
                 "features": features,
@@ -716,11 +730,8 @@ def build(ctx):
 
     if ctx.dependency_satisfied('cplayer'):
 
-        if ctx.dependency_satisfied('zsh-comp'):
-            ctx.zshcomp(target = "etc/_mpv", source = "TOOLS/zsh.pl")
-            ctx.install_files(
-                ctx.env.ZSHDIR,
-                ['etc/_mpv'])
+        if ctx.env.ZSHDIR:
+            ctx.install_as(ctx.env.ZSHDIR + '/_mpv', 'etc/_mpv.zsh')
 
         ctx.install_files(
             ctx.env.DATADIR + '/applications',

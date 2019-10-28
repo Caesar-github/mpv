@@ -36,6 +36,7 @@ struct mp_imgfmt_entry {
 static const struct mp_imgfmt_entry mp_imgfmt_list[] = {
     // not in ffmpeg
     {"vdpau_output",    IMGFMT_VDPAU_OUTPUT},
+    {"rgb30",           IMGFMT_RGB30},
     // FFmpeg names have an annoying "_vld" suffix
     {"videotoolbox",    IMGFMT_VIDEOTOOLBOX},
     {"vaapi",           IMGFMT_VAAPI},
@@ -106,6 +107,19 @@ static struct mp_imgfmt_desc mp_only_imgfmt_desc(int mpfmt)
             .avformat = AV_PIX_FMT_NONE,
             .flags = MP_IMGFLAG_BE | MP_IMGFLAG_LE | MP_IMGFLAG_RGB |
                      MP_IMGFLAG_HWACCEL,
+        };
+    case IMGFMT_RGB30:
+        return (struct mp_imgfmt_desc) {
+            .id = mpfmt,
+            .avformat = AV_PIX_FMT_NONE,
+            .flags = MP_IMGFLAG_BYTE_ALIGNED | MP_IMGFLAG_NE | MP_IMGFLAG_RGB,
+            .num_planes = 1,
+            .align_x = 1,
+            .align_y = 1,
+            .bytes = {4},
+            .bpp = {32},
+            .plane_bits = 30,
+            .component_bits = 10,
         };
     }
     return (struct mp_imgfmt_desc) {0};
@@ -309,6 +323,9 @@ static bool validate_regular_imgfmt(const struct mp_regular_imgfmt *fmt)
 
 enum mp_csp mp_imgfmt_get_forced_csp(int imgfmt)
 {
+    if (imgfmt == IMGFMT_RGB30)
+        return MP_CSP_RGB;
+
     enum AVPixelFormat pixfmt = imgfmt2pixfmt(imgfmt);
     const AVPixFmtDescriptor *pixdesc = av_pix_fmt_desc_get(pixfmt);
 
@@ -327,10 +344,13 @@ enum mp_csp mp_imgfmt_get_forced_csp(int imgfmt)
 
 enum mp_component_type mp_imgfmt_get_component_type(int imgfmt)
 {
+    if (imgfmt == IMGFMT_RGB30)
+        return MP_COMPONENT_TYPE_UINT;
+
     const AVPixFmtDescriptor *pixdesc =
         av_pix_fmt_desc_get(imgfmt2pixfmt(imgfmt));
 
-    if (!pixdesc)
+    if (!pixdesc || (pixdesc->flags & AV_PIX_FMT_FLAG_HWACCEL))
         return MP_COMPONENT_TYPE_UNKNOWN;
 
 #if LIBAVUTIL_VERSION_MICRO >= 100
@@ -526,9 +546,6 @@ int main(int argc, char **argv)
         printf("  planes=%d, chroma=%d:%d align=%d:%d bits=%d cbits=%d\n",
                d.num_planes, d.chroma_xs, d.chroma_ys, d.align_x, d.align_y,
                d.plane_bits, d.component_bits);
-        printf("  planes=%d, chroma=%d:%d align=%d:%d bits=%d cbits=%d\n",
-               d.num_planes, d.chroma_xs, d.chroma_ys, d.align_x, d.align_y,
-               d.plane_bits, d.component_bits);
         printf("  {");
         for (int n = 0; n < MP_MAX_PLANES; n++)
             printf("%d/%d/[%d:%d] ", d.bytes[n], d.bpp[n], d.xs[n], d.ys[n]);
@@ -539,24 +556,35 @@ int main(int argc, char **argv)
             fr->format = fmt;
             fr->width = 128;
             fr->height = 128;
-            int err = av_frame_get_buffer(fr, SWS_MIN_BYTE_ALIGN);
+            int err = av_frame_get_buffer(fr, MP_IMAGE_BYTE_ALIGN);
             assert(err >= 0);
             struct mp_image *mpi = mp_image_alloc(mpfmt, fr->width, fr->height);
             assert(mpi);
             // A rather fuzzy test, which might fail even if there's no bug.
             for (int n = 0; n < 4; n++) {
-                assert(!!mpi->planes[n] == !!fr->data[n]);
-                assert(mpi->stride[n] == fr->linesize[n]);
+                if (!!mpi->planes[n] != !!fr->data[n]) {
+                    printf("   Warning: p%d: %p %p\n", n,
+                           mpi->planes[n], fr->data[n]);
+                }
+                if (mpi->stride[n] != fr->linesize[n]) {
+                    printf("   Warning: p%d: %d %d\n", n,
+                           mpi->stride[n], fr->linesize[n]);
+                }
             }
             talloc_free(mpi);
             av_frame_free(&fr);
         }
         struct mp_regular_imgfmt reg;
         if (mp_get_regular_imgfmt(&reg, mpfmt)) {
-            printf("  Regular: %d planes, %d bytes per comp., %d bit-pad "
-                   "%dx%d chroma\n",
+            const char *type = "unknown";
+            switch (reg.component_type) {
+            case MP_COMPONENT_TYPE_UINT:  type = "uint"; break;
+            case MP_COMPONENT_TYPE_FLOAT: type = "float"; break;
+            }
+            printf("  Regular: %d planes, %d bytes per comp., %d bit-pad, "
+                   "%dx%d chroma, type=%s\n",
                    reg.num_planes, reg.component_size, reg.component_pad,
-                   reg.chroma_w, reg.chroma_h);
+                   reg.chroma_w, reg.chroma_h, type);
             for (int n = 0; n < reg.num_planes; n++) {
                 struct mp_regular_imgfmt_plane *plane = &reg.planes[n];
                 printf("     %d: {", n);

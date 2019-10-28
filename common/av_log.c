@@ -177,7 +177,9 @@ void uninit_libav(struct mpv_global *global)
     pthread_mutex_unlock(&log_lock);
 }
 
-#define V(x) (x)>>16, (x)>>8 & 255, (x) & 255
+#define V(x) AV_VERSION_MAJOR(x), \
+             AV_VERSION_MINOR(x), \
+             AV_VERSION_MICRO(x)
 
 struct lib {
     const char *name;
@@ -208,7 +210,8 @@ bool print_libav_versions(struct mp_log *log, int v)
         mp_msg(log, v, "   %-15s %d.%d.%d", l->name, V(l->buildv));
         if (l->buildv != l->runv) {
             mp_msg(log, v, " (runtime %d.%d.%d)", V(l->runv));
-            mismatch = true;
+            mismatch = l->buildv > l->runv ||
+                AV_VERSION_MAJOR(l->buildv) != AV_VERSION_MAJOR(l->runv);
         }
         mp_msg(log, v, "\n");
     }

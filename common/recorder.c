@@ -28,8 +28,6 @@
 
 #include "recorder.h"
 
-#define PTS_ADD(a, b) ((a) == MP_NOPTS_VALUE ? (a) : ((a) + (b)))
-
 // Maximum number of packets we buffer at most to attempt to resync streams.
 // Essentially, this should be higher than the highest supported keyframe
 // interval.
@@ -198,10 +196,10 @@ static void mux_packet(struct mp_recorder_sink *rst,
     struct demux_packet mpkt = *pkt;
 
     double diff = priv->rebase_ts - priv->base_ts;
-    mpkt.pts = PTS_ADD(mpkt.pts, diff);
-    mpkt.dts = PTS_ADD(mpkt.dts, diff);
+    mpkt.pts = MP_ADD_PTS(mpkt.pts, diff);
+    mpkt.dts = MP_ADD_PTS(mpkt.dts, diff);
 
-    rst->max_out_pts = MPMAX(rst->max_out_pts, pkt->pts);
+    rst->max_out_pts = MP_PTS_MAX(rst->max_out_pts, pkt->pts);
 
     AVPacket avpkt;
     mp_set_av_packet(&avpkt, &mpkt, &rst->av_stream->time_base);
@@ -254,13 +252,13 @@ static void check_restart(struct mp_recorder *priv)
     if (priv->muxing)
         return;
 
-    double min_ts = INFINITY;
+    double min_ts = MP_NOPTS_VALUE;
     double rebase_ts = 0;
     for (int n = 0; n < priv->num_streams; n++) {
         struct mp_recorder_sink *rst = priv->streams[n];
         int min_packets = rst->sh->type == STREAM_VIDEO ? QUEUE_MIN_PACKETS : 1;
 
-        rebase_ts = MPMAX(rebase_ts, rst->max_out_pts);
+        rebase_ts = MP_PTS_MAX(rebase_ts, rst->max_out_pts);
 
         if (rst->num_packets < min_packets) {
             if (!rst->proper_eof && rst->sh->type != STREAM_SUB)
@@ -269,11 +267,11 @@ static void check_restart(struct mp_recorder *priv)
         }
 
         for (int i = 0; i < min_packets; i++)
-            min_ts = MPMIN(min_ts, rst->packets[i]->pts);
+            min_ts = MP_PTS_MIN(min_ts, rst->packets[i]->pts);
     }
 
     // Subtitle only stream (wait longer) or stream without any PTS (fuck it).
-    if (!isfinite(min_ts))
+    if (min_ts == MP_NOPTS_VALUE)
         return;
 
     priv->rebase_ts = rebase_ts;
@@ -295,8 +293,6 @@ void mp_recorder_destroy(struct mp_recorder *priv)
     if (priv->opened) {
         for (int n = 0; n < priv->num_streams; n++) {
             struct mp_recorder_sink *rst = priv->streams[n];
-            if (!rst->proper_eof)
-                continue;
             mux_packets(rst, true);
         }
 
@@ -322,6 +318,7 @@ void mp_recorder_mark_discontinuity(struct mp_recorder *priv)
 
     for (int n = 0; n < priv->num_streams; n++) {
         struct mp_recorder_sink *rst = priv->streams[n];
+        mux_packets(rst, true);
         rst->discont = true;
         rst->proper_eof = false;
     }
@@ -331,12 +328,17 @@ void mp_recorder_mark_discontinuity(struct mp_recorder *priv)
 }
 
 // Get a stream for writing. The pointer is valid until mp_recorder is
-// destroyed. The stream is the index referencing the stream passed to
-// mp_recorder_create().
-struct mp_recorder_sink *mp_recorder_get_sink(struct mp_recorder *r, int stream)
+// destroyed. The stream ptr. is the same as one passed to
+// mp_recorder_create() (returns NULL if it wasn't).
+struct mp_recorder_sink *mp_recorder_get_sink(struct mp_recorder *r,
+                                              struct sh_stream *stream)
 {
-    assert(stream >= 0 && stream < r->num_streams);
-    return r->streams[stream];
+    for (int n = 0; n < r->num_streams; n++) {
+        struct mp_recorder_sink *rst = r->streams[n];
+        if (rst->sh == stream)
+            return rst;
+    }
+    return NULL;
 }
 
 // Pass a packet to the given stream. The function does not own the packet, but

@@ -24,16 +24,34 @@
 
 // Holds one packet/frame/whatever
 typedef struct demux_packet {
-    int len;
-    unsigned char *buffer;
-
     double pts;
     double dts;
     double duration;
+    int64_t pos;        // position in source file byte stream
+
+    union {
+        // Normally valid for packets.
+        struct {
+            unsigned char *buffer;
+            size_t len;
+        };
+
+        // Used if is_cached==true, special uses only.
+        struct {
+            uint64_t pos;
+        } cached_data;
+    };
+
+    int stream;         // source stream index (typically sh_stream.index)
+
     bool keyframe;
 
-    int64_t pos;        // position in source file byte stream
-    int stream;         // source stream index
+    // backward playback
+    bool back_restart : 1;  // restart point (reverse and return previous frames)
+    bool back_preroll : 1;  // initial discarded frame for smooth decoder reinit
+
+    // If true, cached_data is valid, while buffer/len are not.
+    bool is_cached : 1;
 
     // segmentation (ordered chapters, EDL)
     bool segmented;
@@ -43,8 +61,7 @@ typedef struct demux_packet {
     // private
     struct demux_packet *next;
     struct AVPacket *avpacket;   // keep the buffer allocation and sidedata
-    double kf_seek_pts; // demux.c internal: seek pts for keyframe range
-    struct mp_packet_tags *metadata; // timed metadata (demux.c internal)
+    uint64_t cum_pos; // demux.c internal: cumulative size until _start_ of pkt
 } demux_packet_t;
 
 struct AVBufferRef;
@@ -63,5 +80,7 @@ void demux_packet_copy_attribs(struct demux_packet *dst, struct demux_packet *sr
 int demux_packet_set_padding(struct demux_packet *dp, int start, int end);
 int demux_packet_add_blockadditional(struct demux_packet *dp, uint64_t id,
                                      void *data, size_t size);
+
+void demux_packet_unref_contents(struct demux_packet *dp);
 
 #endif /* MPLAYER_DEMUX_PACKET_H */

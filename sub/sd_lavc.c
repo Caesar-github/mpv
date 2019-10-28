@@ -147,10 +147,10 @@ static void convert_pal(uint32_t *colors, size_t count, bool gray)
 {
     for (int n = 0; n < count; n++) {
         uint32_t c = colors[n];
-        int b = c & 0xFF;
-        int g = (c >> 8) & 0xFF;
-        int r = (c >> 16) & 0xFF;
-        int a = (c >> 24) & 0xFF;
+        uint32_t b = c & 0xFF;
+        uint32_t g = (c >> 8) & 0xFF;
+        uint32_t r = (c >> 16) & 0xFF;
+        uint32_t a = (c >> 24) & 0xFF;
         if (gray)
             r = g = b = (r + g + b) / 3;
         // from straight to pre-multiplied alpha
@@ -383,14 +383,8 @@ static void decode(struct sd *sd, struct demux_packet *packet)
     }
 }
 
-static void get_bitmaps(struct sd *sd, struct mp_osd_res d, int format,
-                        double pts, struct sub_bitmaps *res)
+static struct sub *get_current(struct sd_lavc_priv *priv, double pts)
 {
-    struct sd_lavc_priv *priv = sd->priv;
-    struct mp_subtitle_opts *opts = sd->opts;
-
-    priv->current_pts = pts;
-
     struct sub *current = NULL;
     for (int n = 0; n < MAX_QUEUE; n++) {
         struct sub *sub = &priv->subs[n];
@@ -407,6 +401,19 @@ static void get_bitmaps(struct sd *sd, struct mp_osd_res d, int format,
             break;
         }
     }
+    return current;
+}
+
+static void get_bitmaps(struct sd *sd, struct mp_osd_res d, int format,
+                        double pts, struct sub_bitmaps *res)
+{
+    struct sd_lavc_priv *priv = sd->priv;
+    struct mp_subtitle_opts *opts = sd->opts;
+
+    priv->current_pts = pts;
+
+    struct sub *current = get_current(priv, pts);
+
     if (!current)
         return;
 
@@ -447,7 +454,59 @@ static void get_bitmaps(struct sd *sd, struct mp_osd_res d, int format,
         w = priv->video_params.w;
         h = priv->video_params.h;
     }
+
+    if (opts->sub_pos != 100 && opts->ass_style_override) {
+        int offset = (100 - opts->sub_pos) / 100.0 * h;
+
+        for (int n = 0; n < res->num_parts; n++) {
+            struct sub_bitmap *sub = &res->parts[n];
+
+            // Decide by heuristic whether this is a sub-title or something
+            // else (top-title, covering whole screen).
+            if (sub->y < h / 2)
+                continue;
+
+            // Allow moving up the subtitle, but only until it clips.
+            sub->y = MPMAX(sub->y - offset, 0);
+        }
+    }
+
     osd_rescale_bitmaps(res, w, h, d, video_par);
+
+    if (opts->sub_scale != 1.0 && opts->ass_style_override) {
+        for (int n = 0; n < res->num_parts; n++) {
+            struct sub_bitmap *sub = &res->parts[n];
+
+            float shit = (opts->sub_scale - 1.0f) / 2;
+
+            // Fortunately VO isn't supposed to give a FUCKING FUCK about
+            // whether the sub might e.g. go outside of the screen.
+            sub->x -= sub->dw * shit;
+            sub->y -= sub->dh * shit;
+            sub->dw += sub->dw * shit * 2;
+            sub->dh += sub->dh * shit * 2;
+        }
+    }
+
+}
+
+static struct sd_times get_times(struct sd *sd, double pts)
+{
+    struct sd_lavc_priv *priv = sd->priv;
+    struct sd_times res = { .start = MP_NOPTS_VALUE, .end = MP_NOPTS_VALUE };
+
+    if (pts == MP_NOPTS_VALUE)
+        return res;
+
+    struct sub *current = get_current(priv, pts);
+
+    if (!current)
+        return res;
+
+    res.start = current->pts;
+    res.end = current->endpts;
+
+    return res;
 }
 
 static bool accepts_packet(struct sd *sd, double min_pts)
@@ -589,6 +648,7 @@ const struct sd_functions sd_lavc = {
     .init = init,
     .decode = decode,
     .get_bitmaps = get_bitmaps,
+    .get_times = get_times,
     .accepts_packet = accepts_packet,
     .control = control,
     .reset = reset,

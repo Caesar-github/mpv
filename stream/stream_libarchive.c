@@ -20,6 +20,7 @@
 
 #include "misc/bstr.h"
 #include "common/common.h"
+#include "misc/thread_tools.h"
 #include "stream.h"
 
 #include "stream_libarchive.h"
@@ -242,9 +243,12 @@ struct mp_archive *mp_archive_new(struct mp_log *log, struct stream *src,
 {
     struct mp_archive *mpa = talloc_zero(NULL, struct mp_archive);
     mpa->log = log;
-    mpa->locale = newlocale(LC_ALL_MASK, "C.UTF-8", (locale_t)0);
-    if (!mpa->locale)
-        goto err;
+    mpa->locale = newlocale(LC_CTYPE_MASK, "C.UTF-8", (locale_t)0);
+    if (!mpa->locale) {
+        mpa->locale = newlocale(LC_CTYPE_MASK, "", (locale_t)0);
+        if (!mpa->locale)
+            goto err;
+    }
     mpa->arch = archive_read_new();
     mpa->primary_src = src;
     if (!mpa->arch)
@@ -357,6 +361,7 @@ static int reopen_archive(stream_t *s)
 {
     struct priv *p = s->priv;
     mp_archive_free(p->mpa);
+    s->pos = 0;
     p->mpa = mp_archive_new(s->log, p->src, MP_ARCHIVE_FLAG_UNSAFE);
     if (!p->mpa)
         return STREAM_ERROR;
@@ -419,9 +424,10 @@ static int archive_entry_seek(stream_t *s, int64_t newpos)
         MP_VERBOSE(s, "trying to reopen archive for performing seek\n");
         if (reopen_archive(s) < STREAM_OK)
             return -1;
-        s->pos = 0;
     }
     if (newpos > s->pos) {
+        if (!p->mpa && reopen_archive(s) < STREAM_OK)
+            return -1;
         // For seeking forwards, just keep reading data (there's no libarchive
         // skip function either).
         char buffer[4096];
@@ -466,9 +472,6 @@ static int archive_entry_control(stream_t *s, int cmd, void *arg)
 {
     struct priv *p = s->priv;
     switch (cmd) {
-    case STREAM_CTRL_GET_BASE_FILENAME:
-        *(char **)arg = talloc_strdup(NULL, p->src->url);
-        return STREAM_OK;
     case STREAM_CTRL_GET_SIZE:
         if (p->entry_size < 0)
             break;

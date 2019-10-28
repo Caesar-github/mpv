@@ -91,12 +91,17 @@ int reinit_video_filters(struct MPContext *mpctx)
 static void vo_chain_reset_state(struct vo_chain *vo_c)
 {
     vo_seek_reset(vo_c->vo);
+    vo_c->underrun = false;
 }
 
 void reset_video_state(struct MPContext *mpctx)
 {
-    if (mpctx->vo_chain)
+    if (mpctx->vo_chain) {
         vo_chain_reset_state(mpctx->vo_chain);
+        struct track *t = mpctx->vo_chain->track;
+        if (t && t->dec)
+            t->dec->play_dir = mpctx->play_dir;
+    }
 
     for (int n = 0; n < mpctx->num_next_frames; n++)
         mp_image_unrefp(&mpctx->next_frames[n]);
@@ -113,7 +118,6 @@ void reset_video_state(struct MPContext *mpctx)
     mpctx->mistimed_frames_total = 0;
     mpctx->drop_message_shown = 0;
     mpctx->display_sync_drift_dir = 0;
-    mpctx->display_sync_broken = false;
 
     mpctx->video_status = mpctx->vo_chain ? STATUS_SYNCING : STATUS_EOF;
 }
@@ -413,12 +417,12 @@ static int get_req_frames(struct MPContext *mpctx, bool eof)
     if (mpctx->opts->untimed || mpctx->video_out->driver->untimed)
         return 1;
 
+    // Normally require at least 2 frames, so we can compute a frame duration.
     int min = mpctx->opts->video_latency_hacks ? 1 : 2;
 
     // On the first frame, output a new frame as quickly as possible.
-    // But display-sync likes to have a correct frame duration always.
     if (mpctx->video_pts == MP_NOPTS_VALUE)
-        return mpctx->opts->video_sync == VS_DEFAULT ? 1 : min;
+        return min;
 
     int req = vo_get_num_req_frames(mpctx->video_out);
     return MPCLAMP(req, min, MP_ARRAY_SIZE(mpctx->next_frames) - 1);
@@ -483,6 +487,8 @@ static int video_output_image(struct MPContext *mpctx)
         }
         if (img) {
             double endpts = get_play_end_pts(mpctx);
+            if (endpts != MP_NOPTS_VALUE)
+                endpts *= mpctx->play_dir;
             if ((endpts != MP_NOPTS_VALUE && img->pts >= endpts) ||
                 mpctx->max_frames == 0)
             {
@@ -774,7 +780,7 @@ static void handle_display_sync_frame(struct MPContext *mpctx,
 
     mpctx->display_sync_active = false;
 
-    if (!VS_IS_DISP(mode) || mpctx->display_sync_broken)
+    if (!VS_IS_DISP(mode))
         return;
     bool resample = mode == VS_DISP_RESAMPLE || mode == VS_DISP_RESAMPLE_VDROP ||
                     mode == VS_DISP_RESAMPLE_NONE;
@@ -802,12 +808,6 @@ static void handle_display_sync_frame(struct MPContext *mpctx,
             mpctx->speed_factor_v = best;
     }
 
-    double av_diff = mpctx->last_av_difference;
-    if (fabs(av_diff) > 0.5) {
-        mpctx->display_sync_broken = true;
-        return;
-    }
-
     // Determine for how many vsyncs a frame should be displayed. This can be
     // e.g. 2 for 30hz on a 60hz display. It can also be 0 if the video
     // framerate is higher than the display framerate.
@@ -823,6 +823,7 @@ static void handle_display_sync_frame(struct MPContext *mpctx,
             mpctx->display_sync_error, mpctx->display_sync_error / vsync,
             mpctx->display_sync_error / frame_duration);
 
+    double av_diff = mpctx->last_av_difference;
     MP_STATS(mpctx, "value %f avdiff", av_diff);
 
     // Intended number of additional display frames to drop (<0) or repeat (>0)
@@ -997,8 +998,13 @@ void write_video(struct MPContext *mpctx)
     if (r < 0)
         goto error;
 
-    if (r == VD_WAIT) // Demuxer will wake us up for more packets to decode.
+    if (r == VD_WAIT) {
+        // Heuristic to detect underruns.
+        if (mpctx->video_status == STATUS_PLAYING && !vo_still_displaying(vo))
+            vo_c->underrun = true;
+        // Demuxer will wake us up for more packets to decode.
         return;
+    }
 
     if (r == VD_EOF) {
         if (check_for_hwdec_fallback(mpctx))
@@ -1030,12 +1036,13 @@ void write_video(struct MPContext *mpctx)
 
         // Wait for the VO to signal actual EOF, then exit if the frame timer
         // has expired.
+        bool has_frame = vo_has_frame(vo); // maybe not configured
         if (mpctx->video_status == STATUS_DRAINING &&
-            vo_is_ready_for_frame(vo, -1))
+            (vo_is_ready_for_frame(vo, -1) || !has_frame))
         {
             mpctx->time_frame -= get_relative_time(mpctx);
             mp_set_timeout(mpctx, mpctx->time_frame);
-            if (mpctx->time_frame <= 0) {
+            if (mpctx->time_frame <= 0 || !has_frame) {
                 MP_VERBOSE(mpctx, "video EOF reached\n");
                 mpctx->video_status = STATUS_EOF;
                 encode_lavc_stream_eof(mpctx->encode_lavc_ctx, STREAM_VIDEO);
@@ -1169,7 +1176,6 @@ void write_video(struct MPContext *mpctx)
             MP_VERBOSE(mpctx, "first video frame after restart shown\n");
         }
     }
-    screenshot_flip(mpctx);
 
     mp_notify(mpctx, MPV_EVENT_TICK, NULL);
 
@@ -1187,6 +1193,8 @@ void write_video(struct MPContext *mpctx)
         if (mpctx->max_frames > 0)
             mpctx->max_frames--;
     }
+
+    screenshot_flip(mpctx);
 
     mp_wakeup_core(mpctx);
     return;

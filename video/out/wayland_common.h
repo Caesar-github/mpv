@@ -25,6 +25,19 @@
 #include "vo.h"
 #include "input/event.h"
 
+struct wayland_opts {
+    int frame_offset;
+    int disable_vsync;
+};
+
+struct vo_wayland_sync {
+    int64_t ust;
+    int64_t msc;
+    int64_t sbc;
+    int64_t refresh_usec;
+    bool filled;
+};
+
 struct vo_wayland_output {
     struct vo_wayland_state *wl;
     uint32_t id;
@@ -48,6 +61,7 @@ struct vo_wayland_state {
     struct wl_shm        *shm;
     struct wl_compositor *compositor;
     struct wl_registry   *registry;
+    struct wayland_opts  *opts;
 
     /* State */
     struct mp_rect geometry;
@@ -56,6 +70,9 @@ struct vo_wayland_state {
     bool fullscreen;
     bool maximized;
     bool configured;
+    bool frame_wait;
+    bool hidden;
+    int timeout_count;
     int wakeup_pipe[2];
     int pending_vo_events;
     int mouse_x;
@@ -70,13 +87,27 @@ struct vo_wayland_state {
 
     /* Shell */
     struct wl_surface       *surface;
-    struct xdg_wm_base      *shell;
+    struct xdg_wm_base      *wm_base;
     struct xdg_toplevel     *xdg_toplevel;
     struct xdg_surface      *xdg_surface;
-    struct org_kde_kwin_server_decoration_manager *server_decoration_manager;
-    struct org_kde_kwin_server_decoration *server_decoration;
+    struct wp_presentation  *presentation;
+    struct wp_presentation_feedback *feedback;
+    struct zxdg_decoration_manager_v1 *xdg_decoration_manager;
+    struct zxdg_toplevel_decoration_v1 *xdg_toplevel_decoration;
     struct zwp_idle_inhibit_manager_v1 *idle_inhibit_manager;
     struct zwp_idle_inhibitor_v1 *idle_inhibitor;
+
+    /* Presentation Feedback */
+    struct vo_wayland_sync *sync;
+    int sync_size;
+    int64_t user_sbc;
+    int64_t last_ust;
+    int64_t last_msc;
+    int64_t last_sbc;
+    int64_t last_sbc_mp_time;
+    int64_t vsync_duration;
+    int64_t last_skipped_vsyncs;
+    int64_t last_queue_display_time;
 
     /* Input */
     struct wl_seat     *seat;
@@ -101,14 +132,21 @@ struct vo_wayland_state {
     struct wl_cursor       *default_cursor;
     struct wl_surface      *cursor_surface;
     int                     allocated_cursor_scale;
+    bool                    cursor_visible;
+    bool                    prev_fullscreen;
 };
 
 int vo_wayland_init(struct vo *vo);
 int vo_wayland_reconfig(struct vo *vo);
 int vo_wayland_control(struct vo *vo, int *events, int request, void *arg);
+int last_available_sync(struct vo_wayland_state *wl);
 void vo_wayland_check_events(struct vo *vo);
 void vo_wayland_uninit(struct vo *vo);
 void vo_wayland_wakeup(struct vo *vo);
 void vo_wayland_wait_events(struct vo *vo, int64_t until_time_us);
+void vo_wayland_wait_frame(struct vo_wayland_state *wl, int frame_offset);
+void wayland_sync_swap(struct vo_wayland_state *wl);
+void vo_wayland_sync_shift(struct vo_wayland_state *wl);
+void queue_new_sync(struct vo_wayland_state *wl);
 
 #endif /* MPLAYER_WAYLAND_COMMON_H */

@@ -40,13 +40,15 @@ struct sd_functions {
     void (*get_bitmaps)(struct sd *sd, struct mp_osd_res dim, int format,
                         double pts, struct sub_bitmaps *res);
     char *(*get_text)(struct sd *sd, double pts);
+    struct sd_times (*get_times)(struct sd *sd, double pts);
 };
 
 struct lavc_conv;
 struct lavc_conv *lavc_conv_create(struct mp_log *log, const char *codec_name,
                                    char *extradata, int extradata_len);
 char *lavc_conv_get_extradata(struct lavc_conv *priv);
-char **lavc_conv_decode(struct lavc_conv *priv, struct demux_packet *packet);
+char **lavc_conv_decode(struct lavc_conv *priv, struct demux_packet *packet,
+                        double *sub_pts, double *sub_duration);
 void lavc_conv_reset(struct lavc_conv *priv);
 void lavc_conv_uninit(struct lavc_conv *priv);
 

@@ -64,6 +64,8 @@ static const m_option_t style_opts[] = {
     OPT_FLAG("italic", italic, 0),
     OPT_CHOICE("justify", justify, 0,
                ({"auto", 0}, {"left", 1}, {"center", 2}, {"right", 3})),
+    OPT_CHOICE("font-provider", font_provider, 0,
+               ({"auto", 0}, {"none", 1}, {"fontconfig", 2})),
     {0}
 };
 
@@ -217,8 +219,10 @@ void osd_set_progbar(struct osd_state *osd, struct osd_progbar_state *s)
     osd_obj->progbar_state.value = s->value;
     osd_obj->progbar_state.num_stops = s->num_stops;
     MP_TARRAY_GROW(osd_obj, osd_obj->progbar_state.stops, s->num_stops);
-    memcpy(osd_obj->progbar_state.stops, s->stops,
-           sizeof(osd_obj->progbar_state.stops[0]) * s->num_stops);
+    if (s->num_stops) {
+        memcpy(osd_obj->progbar_state.stops, s->stops,
+               sizeof(osd_obj->progbar_state.stops[0]) * s->num_stops);
+    }
     osd_obj->osd_changed = true;
     osd->want_redraw_notification = true;
     pthread_mutex_unlock(&osd->lock);

@@ -248,7 +248,7 @@ static void x11_set_ewmh_state(struct vo_x11_state *x11, char *state, bool set)
     x11_send_ewmh_msg(x11, "_NET_WM_STATE", params);
 }
 
-static void vo_set_cursor_hidden(struct vo *vo, bool cursor_hidden)
+static void vo_update_cursor(struct vo *vo)
 {
     Cursor no_ptr;
     Pixmap bm_no;
@@ -258,16 +258,17 @@ static void vo_set_cursor_hidden(struct vo *vo, bool cursor_hidden)
     struct vo_x11_state *x11 = vo->x11;
     Display *disp = x11->display;
     Window win = x11->window;
+    bool should_hide = x11->has_focus && !x11->mouse_cursor_visible;
 
-    if (cursor_hidden == x11->mouse_cursor_hidden)
+    if (should_hide == x11->mouse_cursor_set)
         return;
 
-    x11->mouse_cursor_hidden = cursor_hidden;
+    x11->mouse_cursor_set = should_hide;
 
     if (x11->parent == x11->rootwin || !win)
         return;                 // do not hide if playing on the root window
 
-    if (x11->mouse_cursor_hidden) {
+    if (x11->mouse_cursor_set) {
         colormap = DefaultColormap(disp, DefaultScreen(disp));
         if (!XAllocNamedColor(disp, colormap, "black", &black, &dummy))
             return; // color alloc failed, give up
@@ -394,6 +395,8 @@ static void xrandr_read(struct vo_x11_state *x11)
         return;
     }
 
+    int primary_id = -1;
+    RROutput primary = XRRGetOutputPrimary(x11->display, x11->rootwin);
     for (int o = 0; o < r->noutput; o++) {
         RROutput output = r->outputs[o];
         XRRCrtcInfo *crtc = NULL;
@@ -426,6 +429,8 @@ static void xrandr_read(struct vo_x11_state *x11)
                 MP_VERBOSE(x11, "Display %d (%s): [%d, %d, %d, %d] @ %f FPS\n",
                            num, d.name, d.rc.x0, d.rc.y0, d.rc.x1, d.rc.y1, d.fps);
                 x11->displays[num] = d;
+                if (output == primary)
+                    primary_id = num;
             }
         }
     next:
@@ -433,6 +438,20 @@ static void xrandr_read(struct vo_x11_state *x11)
             XRRFreeCrtcInfo(crtc);
         if (out)
             XRRFreeOutputInfo(out);
+    }
+
+    for (int i = 0; i < x11->num_displays; i++) {
+        struct xrandr_display *d = &(x11->displays[i]);
+
+        if (i == primary_id) {
+            d->atom_id = 0;
+            continue;
+        }
+        if (primary_id > 0 && i < primary_id) {
+            d->atom_id = i+1;
+            continue;
+        }
+        d->atom_id = i;
     }
 
     XRRFreeScreenResources(r);
@@ -588,7 +607,8 @@ int vo_x11_init(struct vo *vo)
         dispName += 4;
     else if (strncmp(dispName, "localhost:", 10) == 0)
         dispName += 9;
-    x11->display_is_local = dispName[0] == ':' && atoi(dispName + 1) < 10;
+    x11->display_is_local = dispName[0] == ':' &&
+                            strtoul(dispName + 1, NULL, 10) < 10;
     MP_VERBOSE(x11, "X11 running at %dx%d (\"%s\" => %s display)\n",
                x11->ws_width, x11->ws_height, dispName,
                x11->display_is_local ? "local" : "remote");
@@ -751,9 +771,6 @@ void vo_x11_uninit(struct vo *vo)
     mp_input_put_key(x11->input_ctx, MP_INPUT_RELEASE_ALL);
 
     set_screensaver(x11, true);
-
-    if (x11->window != None)
-        vo_set_cursor_hidden(vo, false);
 
     if (x11->window != None && x11->window != x11->rootwin) {
         XUnmapWindow(x11->display, x11->window);
@@ -1039,6 +1056,17 @@ static void vo_x11_check_net_wm_state_fullscreen_change(struct vo *vo)
     }
 }
 
+// Releasing all keys on key-up or defocus is simpler and ensures no keys can
+// get "stuck".
+static void release_all_keys(struct vo *vo)
+{
+    struct vo_x11_state *x11 = vo->x11;
+
+    if (x11->no_autorepeat)
+        mp_input_put_key(x11->input_ctx, MP_INPUT_RELEASE_ALL);
+    x11->win_drag_button1_down = false;
+}
+
 void vo_x11_check_events(struct vo *vo)
 {
     struct vo_x11_state *x11 = vo->x11;
@@ -1090,16 +1118,18 @@ void vo_x11_check_events(struct vo *vo)
             }
             break;
         }
-        // Releasing all keys in these situations is simpler and ensures no
-        // keys can be get "stuck".
-        case FocusOut:
-        case KeyRelease:
-        {
-            if (x11->no_autorepeat)
-                mp_input_put_key(x11->input_ctx, MP_INPUT_RELEASE_ALL);
-            x11->win_drag_button1_down = false;
+        case FocusIn:
+            x11->has_focus = true;
+            vo_update_cursor(vo);
             break;
-        }
+        case FocusOut:
+            release_all_keys(vo);
+            x11->has_focus = false;
+            vo_update_cursor(vo);
+            break;
+        case KeyRelease:
+            release_all_keys(vo);
+            break;
         case MotionNotify:
             if (x11->win_drag_button1_down && !x11->fs &&
                 !mp_input_test_dragging(x11->input_ctx, Event.xmotion.x,
@@ -1412,10 +1442,10 @@ static void vo_x11_create_window(struct vo *vo, XVisualInfo *vis,
     Atom protos[1] = {XA(x11, WM_DELETE_WINDOW)};
     XSetWMProtocols(x11->display, x11->window, protos, 1);
 
-    if (x11->mouse_cursor_hidden) {
-        x11->mouse_cursor_hidden = false;
-        vo_set_cursor_hidden(vo, true);
-    }
+    x11->mouse_cursor_set = false;
+    x11->mouse_cursor_visible = true;
+    vo_update_cursor(vo);
+
     if (x11->xim) {
         x11->xic = XCreateIC(x11->xim,
                              XNInputStyle, XIMPreeditNone | XIMStatusNone,
@@ -1641,7 +1671,7 @@ static int get_icc_screen(struct vo *vo)
     struct vo_x11_state *x11 = vo->x11;
     int cx = x11->winrc.x0 + (x11->winrc.x1 - x11->winrc.x0)/2,
     cy = x11->winrc.y0 + (x11->winrc.y1 - x11->winrc.y0)/2;
-    int screen = 0; // xinerama screen number
+    int screen = x11->current_icc_screen; // xinerama screen number
     for (int n = 0; n < x11->num_displays; n++) {
         struct xrandr_display *disp = &x11->displays[n];
         if (mp_rect_contains(&disp->rc, cx, cy)) {
@@ -1839,10 +1869,11 @@ int vo_x11_control(struct vo *vo, int *events, int request, void *arg)
         if (!x11->pseudo_mapped)
             return VO_NOTAVAIL;
         int screen = get_icc_screen(vo);
+        int atom_id = x11->displays[screen].atom_id;
         char prop[80];
         snprintf(prop, sizeof(prop), "_ICC_PROFILE");
-        if (screen > 0)
-            mp_snprintf_cat(prop, sizeof(prop), "_%d", screen);
+        if (atom_id > 0)
+            mp_snprintf_cat(prop, sizeof(prop), "_%d", atom_id);
         x11->icc_profile_property = XAs(x11, prop);
         int len;
         MP_VERBOSE(x11, "Retrieving ICC profile for display: %d\n", screen);
@@ -1857,7 +1888,8 @@ int vo_x11_control(struct vo *vo, int *events, int request, void *arg)
         return VO_TRUE;
     }
     case VOCTRL_SET_CURSOR_VISIBILITY:
-        vo_set_cursor_hidden(vo, !(*(bool *)arg));
+        x11->mouse_cursor_visible = *(bool *)arg;
+        vo_update_cursor(vo);
         return VO_TRUE;
     case VOCTRL_KILL_SCREENSAVER:
         set_screensaver(x11, false);

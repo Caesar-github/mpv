@@ -24,6 +24,7 @@
 #include "common/msg.h"
 #include "common/tags.h"
 #include "common/av_common.h"
+#include "misc/thread_tools.h"
 #include "stream.h"
 #include "options/m_config.h"
 #include "options/m_option.h"
@@ -409,7 +410,7 @@ const stream_info_t stream_info_ffmpeg = {
   .protocols = (const char *const[]){
      "rtmp", "rtsp", "http", "https", "mms", "mmst", "mmsh", "mmshttp", "rtp",
      "httpproxy", "rtmpe", "rtmps", "rtmpt", "rtmpte", "rtmpts", "srtp",
-     "data",
+     "gopher", "data",
      NULL },
   .can_write = true,
   .is_safe = true,

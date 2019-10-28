@@ -112,15 +112,57 @@ With filters that support it, you can access parameters by their name.
 Available mpv-only filters are:
 
 ``format=fmt=<value>:colormatrix=<value>:...``
-    Restricts the color space for the next filter without doing any conversion.
-    Use together with the scale filter for a real conversion.
-
-    .. note::
-
-        For a list of available formats, see ``format=fmt=help``.
+    Applies video parameter overrides, with optional conversion. By default,
+    this overrides the video's parameters without conversion (except for the
+    ``fmt`` parameter), but can be made to perform an appropriate conversion
+    with ``convert=yes`` for parameters for which conversion is supported.
 
     ``<fmt>``
-        Format name, e.g. rgb15, bgr24, 420p, etc. (default: don't change).
+        Image format name, e.g. rgb15, bgr24, 420p, etc. (default: don't change).
+
+        This filter always performs conversion to the given format.
+
+        .. note::
+
+            For a list of available formats, use ``--vf=format=fmt=help``.
+
+    ``<convert=yes|no>``
+        Force conversion of color parameters (default: no).
+
+        If this is disabled (the default), the only conversion that is possibly
+        performed is format conversion if ``<fmt>`` is set. All other parameters
+        (like ``<colormatrix>``) are forced without conversion. This mode is
+        typically useful when files have been incorrectly tagged.
+
+        If this is enabled, libswscale or zimg is used if any of the parameters
+        mismatch. zimg is used of the input/output image formats are supported
+        by mpv's zimg wrapper, and if ``--sws-allow-zimg=yes`` is used. Both
+        libraries may not support all kinds of conversions. This typically
+        results in silent incorrect conversion. zimg has in many cases a better
+        chance of performing the conversion correctly.
+
+        In both cases, the color parameters are set on the output stage of the
+        image format conversion (if ``fmt`` was set). The difference is that
+        with ``convert=no``, the color parameters are not passed on to the
+        converter.
+
+        If input and output video parameters are the same, conversion is always
+        skipped.
+
+        .. admonition:: Examples
+
+            ``mpv test.mkv --vf=format:colormatrix=ycgco``
+                Results in incorrect colors (if test.mkv was tagged correctly).
+
+            ``mpv test.mkv --vf=format:colormatrix=ycgco:convert=yes --sws-allow-zimg``
+                Results in true conversion to ``ycgco``, assuming the renderer
+                supports it (``--vo=gpu`` normally does). You can add ``--vo=xv``
+                to force a VO which definitely does not support it, which should
+                show incorrect colors as confirmation.
+
+                Using ``--sws-allow-zimg=no`` (or disabling zimg at build time)
+                will use libswscale, which cannot perform this conversion as
+                of this writing.
 
     ``<colormatrix>``
         Controls the YUV to RGB color space conversion when playing video. There
@@ -216,7 +258,10 @@ Available mpv-only filters are:
        :srgb:         IEC 61966-2-4 (sRGB)
        :linear:       Linear light
        :gamma1.8:     Pure power curve (gamma 1.8)
+       :gamma2.0:     Pure power curve (gamma 2.0)
        :gamma2.2:     Pure power curve (gamma 2.2)
+       :gamma2.4:     Pure power curve (gamma 2.4)
+       :gamma2.6:     Pure power curve (gamma 2.6)
        :gamma2.8:     Pure power curve (gamma 2.8)
        :prophoto:     ProPhoto RGB (ROMM) curve
        :pq:           ITU-R BT.2100 PQ (Perceptual quantizer) curve
@@ -249,12 +294,13 @@ Available mpv-only filters are:
        :gamma1.2:     Scene-referred using a pure power OOTF (gamma=1.2)
 
     ``<stereo-in>``
-        Set the stereo mode the video is assumed to be encoded in. Takes the
-        same values as the ``--video-stereo-mode`` option.
+        Set the stereo mode the video is assumed to be encoded in. Use
+        ``--vf format:stereo-in=help`` to list all available modes. Check with
+        the ``stereo3d`` filter documentation to see what the names mean.
 
     ``<stereo-out>``
         Set the stereo mode the video should be displayed as. Takes the
-        same values as the ``--video-stereo-mode`` option.
+        same values as the ``stereo-in`` option.
 
     ``<rotate>``
         Set the rotation the video is assumed to be encoded with in degrees.
@@ -269,17 +315,6 @@ Available mpv-only filters are:
         Set the display aspect ratio of the video frame. This is a float,
         but values such as ``[16:9]`` can be passed too (``[...]`` for quoting
         to prevent the option parser from interpreting the ``:`` character).
-
-    ``<spherical-type>``
-        Type of the spherical projection:
-
-        :auto:      As indicated by the file (default)
-        :none:      Normal video
-        :equirect:  Equirectangular
-        :unknown:   Unknown projection
-
-    ``<spherical-yaw>``, ``<spherical-pitch>``, ``<spherical-roll>``
-        Reference angle in degree, if spherical video is used.
 
 ``lavfi=graph[:sws-flags[:o=opts]]``
     Filter video using FFmpeg's libavfilter.
@@ -360,22 +395,31 @@ Available mpv-only filters are:
     of that will return errors. As such, you can't use the full power of
     VapourSynth, but you can use certain filters.
 
-    If you just want to play video generated by a VapourSynth (i.e. using
-    a native VapourSynth video source), it's better to use ``vspipe`` and a
-    FIFO to feed the video to mpv. The same applies if the filter script
-    requires random frame access (see ``buffered-frames`` parameter).
+    .. warning::
 
-    This filter is experimental. If it turns out that it works well and is
-    used, it will be ported to libavfilter. Otherwise, it will be just removed.
+        Do not use this filter, unless you have expert knowledge in VapourSynth,
+        and know how to fix bugs in the mpv VapourSynth wrapper code.
+
+    If you just want to play video generated by VapourSynth (i.e. using
+    a native VapourSynth video source), it's better to use ``vspipe`` and a
+    pipe or FIFO to feed the video to mpv. The same applies if the filter script
+    requires random frame access (see ``buffered-frames`` parameter).
 
     ``file``
         Filename of the script source. Currently, this is always a python
-        script. The variable ``video_in`` is set to the mpv video source,
-        and it is expected that the script reads video from it. (Otherwise,
-        mpv will decode no video, and the video packet queue will overflow,
-        eventually leading to audio being stopped.) The script is also
-        expected to pass through timestamps using the ``_DurationNum`` and
-        ``_DurationDen`` frame properties.
+        script (``.vpy`` in VapourSynth convention).
+
+        The variable ``video_in`` is set to the mpv video source, and it is
+        expected that the script reads video from it. (Otherwise, mpv will
+        decode no video, and the video packet queue will overflow, eventually
+        leading to only audio playing, or worse.)
+
+        The filter graph created by the script is also expected to pass through
+        timestamps using the ``_DurationNum`` and ``_DurationDen`` frame
+        properties.
+
+        See the end of the option list for a full list of script variables
+        defined by mpv.
 
         .. admonition:: Example:
 
@@ -393,20 +437,60 @@ Available mpv-only filters are:
     ``buffered-frames``
         Maximum number of decoded video frames that should be buffered before
         the filter (default: 4). This specifies the maximum number of frames
-        the script can request in reverse direction.
+        the script can request in backward direction.
+
         E.g. if ``buffered-frames=5``, and the script just requested frame 15,
         it can still request frame 10, but frame 9 is not available anymore.
         If it requests frame 30, mpv will decode 15 more frames, and keep only
         frames 25-30.
 
+        The only reason why this buffer exists is to serve the random access
+        requests the VapourSynth filter can make.
+
+        The VapourSynth API has a ``getFrameAsync`` function, which takes an
+        absolute frame number. Source filters must respond to all requests. For
+        example, a source filter can request frame 2432, and then frame 3.
+        Source filters  typically implement this by pre-indexing the entire
+        file.
+
+        mpv on the other hand is stream oriented, and does not allow filters to
+        seek. (And it would not make sense to allow it, because it would ruin
+        performance.) Filters get frames sequentially in playback direction, and
+        cannot request them out of order.
+
+        To compensate for this mismatch, mpv allows the filter to access frames
+        within a certain window. ``buffered-frames`` controls the size of this
+        window. Most VapourSynth filters happen to work with this, because mpv
+        requests frames sequentially increasing from it, and most filters only
+        require frames "close" to the requested frame.
+
+        If the filter requests a frame that has a higher frame number than the
+        highest buffered frame, new frames will be decoded until the requested
+        frame number is reached. Excessive frames will be flushed out in a FIFO
+        manner (there are only at most ``buffered-frames`` in this buffer).
+
+        If the filter requests a frame that has a lower frame number than the
+        lowest buffered frame, the request cannot be satisfied, and an error
+        is returned to the filter. This kind of error is not supposed to happen
+        in a "proper" VapourSynth environment. What exactly happens depends on
+        the filters involved.
+
+        Increasing this buffer will not improve performance. Rather, it will
+        waste memory, and slow down seeks (when enough frames to fill the buffer
+        need to be decoded at once). It is only needed to prevent the error
+        described in the previous paragraph.
+
+        How many frames a filter requires depends on filter implementation
+        details, and mpv has no way of knowing. A scale filter might need only
+        1 frame, an interpolation filter may require a small number of frames,
+        and the ``Reverse`` filter will require an infinite number of frames.
+
+        If you want reliable operation to the full extend VapourSynth is
+        capable, use ``vspipe``.
+
         The actual number of buffered frames also depends on the value of the
         ``concurrent-frames`` option. Currently, both option values are
         multiplied to get the final buffer size.
-
-        (Normally, VapourSynth source filters must provide random access, but
-        mpv was made for playback, and does not provide frame-exact random
-        access. The way this video filter works is a compromise to make simple
-        filters work anyway.)
 
     ``concurrent-frames``
         Number of frames that should be requested in parallel. The
@@ -416,15 +500,25 @@ Available mpv-only filters are:
         making it higher than the number of cores can actually make it
         slower.
 
+        Technically, mpv will call the VapourSynth ``getFrameAsync`` function
+        in a loop, until there are ``concurrent-frames`` frames that have not
+        been returned by the filter yet. This also assumes that the rest of the
+        mpv filter chain reads the output of the ``vapoursynth`` filter quickly
+        enough. (For example, if you pause the player, filtering will stop very
+        soon, because the filtered frames are waiting in a queue.)
+
+        Actual concurrency depends on many other factors.
+
         By default, this uses the special value ``auto``, which sets the option
         to the number of detected logical CPU cores.
 
-    The following variables are defined by mpv:
+    The following ``.vpy`` script variables are defined by mpv:
 
     ``video_in``
-        The mpv video source as vapoursynth clip. Note that this has no length
-        set, which confuses many filters. Using ``Trim`` on the clip with a
-        high dummy length can turn it into a finite clip.
+        The mpv video source as vapoursynth clip. Note that this has an
+        incorrect (very high) length set, which confuses many filters. This is
+        necessary, because the true number of frames is unknown. You can use the
+        ``Trim`` filter on the clip to reduce the length.
 
     ``video_in_dw``, ``video_in_dh``
         Display size of the video. Can be different from video size if the
@@ -434,7 +528,7 @@ Available mpv-only filters are:
         FPS value as reported by file headers. This value can be wrong or
         completely broken (e.g. 0 or NaN). Even if the value is correct,
         if another filter changes the real FPS (by dropping or inserting
-        frames), the value of this variable might not be useful. Note that
+        frames), the value of this variable will not be useful. Note that
         the ``--fps`` command line option overrides this value.
 
         Useful for some filters which insist on having a FPS.
@@ -442,34 +536,10 @@ Available mpv-only filters are:
     ``display_fps``
         Refresh rate of the current display. Note that this value can be 0.
 
-``vapoursynth-lazy``
-    The same as ``vapoursynth``, but doesn't load Python scripts. Instead, a
-    custom backend using Lua and the raw VapourSynth API is used. The syntax
-    is completely different, and absolutely no convenience features are
-    provided. There's no type checking either, and you can trigger crashes.
-
-    .. admonition:: Example:
-
-        ::
-
-            video_out = invoke("morpho", "Open", {clip = video_in})
-
-    The special variable ``video_in`` is the mpv video source, while the
-    special variable ``video_out`` is used to read video from. The 1st argument
-    is the plugin (queried with ``getPluginByNs``), the 2nd is the filter name,
-    and the 3rd argument is a table with the arguments. Positional arguments
-    are not supported. The types must match exactly. Since Lua is terrible and
-    can't distinguish integers and floats, integer arguments must be prefixed
-    with ``i_``, in which case the prefix is removed and the argument is cast
-    to an integer. Should the argument's name start with ``i_``, you're out of
-    luck.
-
-    Clips (VSNodeRef) are passed as light userdata, so trying to pass any
-    other userdata type will result in hard crashes.
-
 ``vavpp``
-    VA-AP-API video post processing. Works with ``--vo=vaapi`` and ``--vo=gpu``
-    only. Currently deinterlaces. This filter is automatically inserted if
+    VA-API video post processing. Requires the system to support VA-API,
+    i.e. Linux/BSD only. Works with ``--vo=vaapi`` and ``--vo=gpu`` only.
+    Currently deinterlaces. This filter is automatically inserted if
     deinterlacing is requested (either using the ``d`` key, by default mapped to
     the command ``cycle deinterlace``, or the ``--deinterlace`` option).
 
@@ -569,3 +639,74 @@ Available mpv-only filters are:
         which algorithm is actually selected. ``none`` always falls back. On
         most if not all hardware, this option will probably do nothing, because
         a video processor usually supports all modes or none.
+
+``fingerprint=...``
+    Compute video frame fingerprints and provide them as metadata. Actually, it
+    currently barely deserved to be called ``fingerprint``, because it does not
+    compute "proper" fingerprints, only tiny downscaled images (but which can be
+    used to compute image hashes or for similarity matching).
+
+    The main purpose of this filter is to support the ``skip-logo.lua`` script.
+    If this script is dropped, or mpv ever gains a way to load user-defined
+    filters (other than VapourSynth), this filter will be removed. Due to the
+    "special" nature of this filter, it will be removed without warning.
+
+    The intended way to read from the filter is using ``vf-metadata`` (also
+    see ``clear-on-query`` filter parameter). The property will return a list
+    of key/value pairs as follows:
+
+    ::
+
+        fp0.pts = 1.2345
+        fp0.hex = 1234abcdef...bcde
+        fp1.pts = 1.4567
+        fp1.hex = abcdef1234...6789
+        ...
+        fpN.pts = ...
+        fpN.hex = ...
+        type = gray-hex-16x16
+
+    Each ``fp<N>`` entry is for a frame. The ``pts`` entry specifies the
+    timestamp of the frame (within the filter chain; in simple cases this is
+    the same as the display timestamp). The ``hex`` field is the hex encoded
+    fingerprint, whose size and meaning depend on the ``type`` filter option.
+    The ``type`` field has the same value as the option the filter was created
+    with.
+
+    This returns the frames that were filtered since the last query of the
+    property. If ``clear-on-query=no`` was set, a query doesn't reset the list
+    of frames. In both cases, a maximum of 10 frames is returned. If there are
+    more frames, the oldest frames are discarded. Frames are returned in filter
+    order.
+
+    (This doesn't return a structured list for the per-frame details because the
+    internals of the ``vf-metadata`` mechanism suck. The returned format may
+    change in the future.)
+
+    This filter uses zimg for speed and profit. However, it will fallback to
+    libswscale in a number of situations: lesser pixel formats, unaligned data
+    pointers or strides, or if zimg fails to initialize for unknown reasons. In
+    these cases, the filter will use more CPU. Also, it will output different
+    fingerprints, because libswscale cannot perform the full range expansion we
+    normally request from zimg. As a consequence, the filter may be slower and
+    not work correctly in random situations.
+
+    ``type=...``
+        What fingerprint to compute. Available types are:
+
+        :gray-hex-8x8:      grayscale, 8 bit, 8x8 size
+        :gray-hex-16x16:    grayscale, 8 bit, 16x16 size (default)
+
+        Both types simply remove all colors, downscale the image, concatenate
+        all pixel values to a byte array, and convert the array to a hex string.
+
+    ``clear-on-query=yes|no``
+        Clear the list of frame fingerprints if the ``vf-metadata`` property for
+        this filter is queried (default: yes). This requires some care by the
+        user. Some types of accesses might query the filter multiple times,
+        which leads to lost frames.
+
+    ``print=yes|no``
+        Print computed fingerprints the the terminal (default: no). This is
+        mostly for testing and such. Scripts should use ``vf-metadata`` to
+        read information from this filter instead.

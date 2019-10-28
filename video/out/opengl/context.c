@@ -306,11 +306,19 @@ void ra_gl_ctx_swap_buffers(struct ra_swapchain *sw)
             check_pattern(p, step);
     }
 
-    while (p->num_vsync_fences >= sw->ctx->opts.swapchain_depth) {
+    while (p->num_vsync_fences >= sw->ctx->vo->opts->swapchain_depth) {
         gl->ClientWaitSync(p->vsync_fences[0], GL_SYNC_FLUSH_COMMANDS_BIT, 1e9);
         gl->DeleteSync(p->vsync_fences[0]);
         MP_TARRAY_REMOVE_AT(p->vsync_fences, p->num_vsync_fences, 0);
     }
+}
+
+static void ra_gl_ctx_get_vsync(struct ra_swapchain *sw,
+                                struct vo_vsync_info *info)
+{
+    struct priv *p = sw->priv;
+    if (p->params.get_vsync)
+        p->params.get_vsync(sw->ctx, info);
 }
 
 static const struct ra_swapchain_fns ra_gl_swapchain_fns = {
@@ -318,4 +326,5 @@ static const struct ra_swapchain_fns ra_gl_swapchain_fns = {
     .start_frame   = ra_gl_ctx_start_frame,
     .submit_frame  = ra_gl_ctx_submit_frame,
     .swap_buffers  = ra_gl_ctx_swap_buffers,
+    .get_vsync     = ra_gl_ctx_get_vsync,
 };

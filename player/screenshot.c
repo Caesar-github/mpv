@@ -27,15 +27,18 @@
 #include "screenshot.h"
 #include "core.h"
 #include "command.h"
+#include "input/cmd.h"
 #include "misc/bstr.h"
 #include "misc/dispatch.h"
-#include "misc/thread_pool.h"
+#include "misc/node.h"
+#include "misc/thread_tools.h"
 #include "common/msg.h"
 #include "options/path.h"
 #include "video/mp_image.h"
 #include "video/mp_image_pool.h"
 #include "video/out/vo.h"
 #include "video/image_writer.h"
+#include "video/sws_utils.h"
 #include "sub/osd.h"
 
 #include "video/csputils.h"
@@ -46,13 +49,10 @@
 typedef struct screenshot_ctx {
     struct MPContext *mpctx;
 
-    int mode;
-    bool each_frame;
-    bool osd;
+    // Command to repeat in each-frame mode.
+    struct mp_cmd *each_frame;
 
     int frameno;
-
-    struct mp_thread_pool *thread_pool;
 } screenshot_ctx;
 
 void screenshot_init(struct MPContext *mpctx)
@@ -64,26 +64,6 @@ void screenshot_init(struct MPContext *mpctx)
     };
 }
 
-static void screenshot_msg(screenshot_ctx *ctx, int status, const char *msg,
-                           ...) PRINTF_ATTRIBUTE(3,4);
-
-static void screenshot_msg(screenshot_ctx *ctx, int status, const char *msg,
-                           ...)
-{
-    va_list ap;
-    char *s;
-
-    va_start(ap, msg);
-    s = talloc_vasprintf(NULL, msg, ap);
-    va_end(ap);
-
-    MP_MSG(ctx->mpctx, status, "%s\n", s);
-    if (ctx->osd && status <= MSGL_INFO)
-        set_osd_msg(ctx->mpctx, 1, ctx->mpctx->opts->osd_duration, "%s", s);
-
-    talloc_free(s);
-}
-
 static char *stripext(void *talloc_ctx, const char *s)
 {
     const char *end = strrchr(s, '.');
@@ -92,73 +72,27 @@ static char *stripext(void *talloc_ctx, const char *s)
     return talloc_asprintf(talloc_ctx, "%.*s", (int)(end - s), s);
 }
 
-struct screenshot_item {
-    bool on_thread;
-    struct MPContext *mpctx;
-    const char *filename;
-    struct mp_image *img;
-    struct image_writer_opts opts;
-};
-
-#define LOCK(item) if (item->on_thread) mp_dispatch_lock(item->mpctx->dispatch);
-#define UNLOCK(item) if (item->on_thread) mp_dispatch_unlock(item->mpctx->dispatch);
-
-static void write_screenshot_thread(void *arg)
+static bool write_screenshot(struct mp_cmd_ctx *cmd, struct mp_image *img,
+                             const char *filename, struct image_writer_opts *opts)
 {
-    struct screenshot_item *item = arg;
-    screenshot_ctx *ctx = item->mpctx->screenshot_ctx;
-
-    LOCK(item)
-    screenshot_msg(ctx, MSGL_INFO, "Screenshot: '%s'", item->filename);
-    UNLOCK(item)
-
-    if (!item->img || !write_image(item->img, &item->opts, item->filename,
-                                   item->mpctx->log))
-    {
-        LOCK(item)
-        screenshot_msg(ctx, MSGL_ERR, "Error writing screenshot!");
-        UNLOCK(item)
-    }
-
-    if (item->on_thread) {
-        mp_dispatch_lock(item->mpctx->dispatch);
-        screenshot_msg(ctx, MSGL_V, "Screenshot writing done.");
-        item->mpctx->outstanding_async -= 1;
-        mp_wakeup_core(item->mpctx);
-        mp_dispatch_unlock(item->mpctx->dispatch);
-    }
-
-    talloc_free(item);
-}
-
-static void write_screenshot(struct MPContext *mpctx, struct mp_image *img,
-                             const char *filename, struct image_writer_opts *opts,
-                             bool async)
-{
-    screenshot_ctx *ctx = mpctx->screenshot_ctx;
+    struct MPContext *mpctx = cmd->mpctx;
     struct image_writer_opts *gopts = mpctx->opts->screenshot_image_opts;
+    struct image_writer_opts opts_copy = opts ? *opts : *gopts;
 
-    struct screenshot_item *item = talloc_zero(NULL, struct screenshot_item);
-    *item = (struct screenshot_item){
-        .mpctx = mpctx,
-        .filename = talloc_strdup(item, filename),
-        .img = talloc_steal(item, mp_image_new_ref(img)),
-        .opts = opts ? *opts : *gopts,
-    };
+    mp_cmd_msg(cmd, MSGL_V, "Starting screenshot: '%s'", filename);
 
-    if (async) {
-        if (!ctx->thread_pool)
-            ctx->thread_pool = mp_thread_pool_create(ctx, 1);
-        if (ctx->thread_pool) {
-            item->on_thread = true;
-            mpctx->outstanding_async += 1;
-            mp_thread_pool_queue(ctx->thread_pool, write_screenshot_thread, item);
-            item = NULL;
-        }
+    mp_core_unlock(mpctx);
+
+    bool ok = img && write_image(img, &opts_copy, filename, mpctx->log);
+
+    mp_core_lock(mpctx);
+
+    if (ok) {
+        mp_cmd_msg(cmd, MSGL_INFO, "Screenshot: '%s'", filename);
+    } else {
+        mp_cmd_msg(cmd, MSGL_ERR, "Error writing screenshot!");
     }
-
-    if (item)
-        write_screenshot_thread(item);
+    return ok;
 }
 
 #ifdef _WIN32
@@ -334,8 +268,11 @@ error_exit:
     return NULL;
 }
 
-static char *gen_fname(screenshot_ctx *ctx, const char *file_ext)
+static char *gen_fname(struct mp_cmd_ctx *cmd, const char *file_ext)
 {
+    struct MPContext *mpctx = cmd->mpctx;
+    screenshot_ctx *ctx = mpctx->screenshot_ctx;
+
     int sequence = 0;
     for (;;) {
         int prev_sequence = sequence;
@@ -346,9 +283,9 @@ static char *gen_fname(screenshot_ctx *ctx, const char *file_ext)
                                    &ctx->frameno);
 
         if (!fname) {
-            screenshot_msg(ctx, MSGL_ERR, "Invalid screenshot filename "
-                           "template! Fix or remove the --screenshot-template "
-                           "option.");
+            mp_cmd_msg(cmd, MSGL_ERR, "Invalid screenshot filename "
+                       "template! Fix or remove the --screenshot-template "
+                       "option.");
             return NULL;
         }
 
@@ -372,8 +309,8 @@ static char *gen_fname(screenshot_ctx *ctx, const char *file_ext)
             return fname;
 
         if (sequence == prev_sequence) {
-            screenshot_msg(ctx, MSGL_ERR, "Can't save screenshot, file '%s' "
-                           "already exists!", fname);
+            mp_cmd_msg(cmd, MSGL_ERR, "Can't save screenshot, file '%s' "
+                       "already exists!", fname);
             talloc_free(fname);
             return NULL;
         }
@@ -432,7 +369,44 @@ static struct mp_image *screenshot_get(struct MPContext *mpctx, int mode,
     return image;
 }
 
-struct mp_image *screenshot_get_rgb(struct MPContext *mpctx, int mode)
+struct mp_image *convert_image(struct mp_image *image, int destfmt,
+                               struct mp_log *log)
+{
+    int d_w, d_h;
+    mp_image_params_get_dsize(&image->params, &d_w, &d_h);
+
+    struct mp_image_params p = {
+        .imgfmt = destfmt,
+        .w = d_w,
+        .h = d_h,
+        .p_w = 1,
+        .p_h = 1,
+    };
+    mp_image_params_guess_csp(&p);
+
+    if (mp_image_params_equal(&p, &image->params))
+        return mp_image_new_ref(image);
+
+    struct mp_image *dst = mp_image_alloc(p.imgfmt, p.w, p.h);
+    if (!dst) {
+        mp_err(log, "Out of memory.\n");
+        return NULL;
+    }
+    mp_image_copy_attributes(dst, image);
+
+    dst->params = p;
+
+    if (mp_image_swscale(dst, image, mp_sws_hq_flags) < 0) {
+        mp_err(log, "Error when converting image.\n");
+        talloc_free(dst);
+        return NULL;
+    }
+
+    return dst;
+}
+
+// mode is the same as in screenshot_get()
+static struct mp_image *screenshot_get_rgb(struct MPContext *mpctx, int mode)
 {
     struct mp_image *mpi = screenshot_get(mpctx, mode, false);
     if (!mpi)
@@ -442,13 +416,13 @@ struct mp_image *screenshot_get_rgb(struct MPContext *mpctx, int mode)
     return res;
 }
 
-void screenshot_to_file(struct MPContext *mpctx, const char *filename, int mode,
-                        bool osd, bool async)
+void cmd_screenshot_to_file(void *p)
 {
-    screenshot_ctx *ctx = mpctx->screenshot_ctx;
+    struct mp_cmd_ctx *cmd = p;
+    struct MPContext *mpctx = cmd->mpctx;
+    const char *filename = cmd->args[0].v.s;
+    int mode = cmd->args[1].v.i;
     struct image_writer_opts opts = *mpctx->opts->screenshot_image_opts;
-    bool old_osd = ctx->osd;
-    ctx->osd = osd;
 
     char *ext = mp_splitext(filename, NULL);
     int format = image_writer_format_from_ext(ext);
@@ -457,34 +431,41 @@ void screenshot_to_file(struct MPContext *mpctx, const char *filename, int mode,
     bool high_depth = image_writer_high_depth(&opts);
     struct mp_image *image = screenshot_get(mpctx, mode, high_depth);
     if (!image) {
-        screenshot_msg(ctx, MSGL_ERR, "Taking screenshot failed.");
-        goto end;
+        mp_cmd_msg(cmd, MSGL_ERR, "Taking screenshot failed.");
+        cmd->success = false;
+        return;
     }
-    write_screenshot(mpctx, image, filename, &opts, async);
+    cmd->success = write_screenshot(cmd, image, filename, &opts);
     talloc_free(image);
-
-end:
-    ctx->osd = old_osd;
 }
 
-void screenshot_request(struct MPContext *mpctx, int mode, bool each_frame,
-                        bool osd, bool async)
+void cmd_screenshot(void *p)
 {
+    struct mp_cmd_ctx *cmd = p;
+    struct MPContext *mpctx = cmd->mpctx;
+    int mode = cmd->args[0].v.i & 3;
+    bool each_frame_toggle = (cmd->args[0].v.i | cmd->args[1].v.i) & 8;
+    bool each_frame_mode = cmd->args[0].v.i & 16;
+
     screenshot_ctx *ctx = mpctx->screenshot_ctx;
 
     if (mode == MODE_SUBTITLES && osd_get_render_subs_in_filter(mpctx->osd))
         mode = 0;
 
-    if (each_frame) {
-        ctx->each_frame = !ctx->each_frame;
-        if (!ctx->each_frame)
-            return;
-    } else {
-        ctx->each_frame = false;
+    if (!each_frame_mode) {
+        if (each_frame_toggle) {
+            if (ctx->each_frame) {
+                TA_FREEP(&ctx->each_frame);
+                return;
+            }
+            ctx->each_frame = talloc_steal(ctx, mp_cmd_clone(cmd->cmd));
+            ctx->each_frame->args[0].v.i |= 16;
+        } else {
+            TA_FREEP(&ctx->each_frame);
+        }
     }
 
-    ctx->mode = mode;
-    ctx->osd = osd;
+    cmd->success = false;
 
     struct image_writer_opts *opts = mpctx->opts->screenshot_image_opts;
     bool high_depth = image_writer_high_depth(opts);
@@ -492,15 +473,51 @@ void screenshot_request(struct MPContext *mpctx, int mode, bool each_frame,
     struct mp_image *image = screenshot_get(mpctx, mode, high_depth);
 
     if (image) {
-        char *filename = gen_fname(ctx, image_writer_file_ext(opts));
+        char *filename = gen_fname(cmd, image_writer_file_ext(opts));
         if (filename)
-            write_screenshot(mpctx, image, filename, NULL, async);
+            cmd->success = write_screenshot(cmd, image, filename, NULL);
         talloc_free(filename);
     } else {
-        screenshot_msg(ctx, MSGL_ERR, "Taking screenshot failed.");
+        mp_cmd_msg(cmd, MSGL_ERR, "Taking screenshot failed.");
     }
 
     talloc_free(image);
+}
+
+void cmd_screenshot_raw(void *p)
+{
+    struct mp_cmd_ctx *cmd = p;
+    struct MPContext *mpctx = cmd->mpctx;
+    struct mpv_node *res = &cmd->result;
+
+    struct mp_image *img = screenshot_get_rgb(mpctx, cmd->args[0].v.i);
+    if (!img) {
+        cmd->success = false;
+        return;
+    }
+
+    node_init(res, MPV_FORMAT_NODE_MAP, NULL);
+    node_map_add_int64(res, "w", img->w);
+    node_map_add_int64(res, "h", img->h);
+    node_map_add_int64(res, "stride", img->stride[0]);
+    node_map_add_string(res, "format", "bgr0");
+    struct mpv_byte_array *ba =
+        node_map_add(res, "data", MPV_FORMAT_BYTE_ARRAY)->u.ba;
+    *ba = (struct mpv_byte_array){
+        .data = img->planes[0],
+        .size = img->stride[0] * img->h,
+    };
+    talloc_steal(ba, img);
+}
+
+static void screenshot_fin(struct mp_cmd_ctx *cmd)
+{
+    void **a = cmd->on_completion_priv;
+    struct MPContext *mpctx = a[0];
+    struct mp_waiter *waiter = a[1];
+
+    mp_waiter_wakeup(waiter, 0);
+    mp_wakeup_core(mpctx);
 }
 
 void screenshot_flip(struct MPContext *mpctx)
@@ -510,6 +527,14 @@ void screenshot_flip(struct MPContext *mpctx)
     if (!ctx->each_frame)
         return;
 
-    ctx->each_frame = false;
-    screenshot_request(mpctx, ctx->mode, true, ctx->osd, false);
+    struct mp_waiter wait = MP_WAITER_INITIALIZER;
+    void *a[] = {mpctx, &wait};
+    run_command(mpctx, mp_cmd_clone(ctx->each_frame), NULL, screenshot_fin, a);
+
+    // Block (in a reentrant way) until he screenshot was written. Otherwise,
+    // we could pile up screenshot requests forever.
+    while (!mp_waiter_poll(&wait))
+        mp_idle(mpctx);
+
+    mp_waiter_wait(&wait);
 }

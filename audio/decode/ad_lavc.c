@@ -37,6 +37,7 @@
 #include "demux/stheader.h"
 #include "filters/f_decoder_wrapper.h"
 #include "filters/filter_internal.h"
+#include "options/m_config.h"
 #include "options/options.h"
 
 struct priv {
@@ -80,8 +81,9 @@ static bool init(struct mp_filter *da, struct mp_codec_params *codec,
                  const char *decoder)
 {
     struct priv *ctx = da->priv;
-    struct MPOpts *mpopts = da->global->opts;
-    struct ad_lavc_params *opts = mpopts->ad_lavc_params;
+    struct MPOpts *mpopts = mp_get_config_group(ctx, da->global, GLOBAL_CONFIG);
+    struct ad_lavc_params *opts =
+        mp_get_config_group(ctx, da->global, &ad_lavc_conf);
     AVCodecContext *lavc_context;
     AVCodec *lavc_codec;
 
@@ -212,8 +214,10 @@ static bool receive_frame(struct mp_filter *da, struct mp_frame *out)
     double out_pts = mp_pts_from_av(priv->avframe->pts, &priv->codec_timebase);
 
     struct mp_aframe *mpframe = mp_aframe_from_avframe(priv->avframe);
-    if (!mpframe)
+    if (!mpframe) {
+        MP_ERR(da, "Converting libavcodec frame to mpv frame failed.\n");
         return true;
+    }
 
     if (priv->force_channel_map.num)
         mp_aframe_set_chmap(mpframe, &priv->force_channel_map);
@@ -252,7 +256,11 @@ static bool receive_frame(struct mp_filter *da, struct mp_frame *out)
         priv->trim_samples -= trim;
     }
 
-    *out = MAKE_FRAME(MP_FRAME_AUDIO, mpframe);
+    if (mp_aframe_get_size(mpframe) > 0) {
+        *out = MAKE_FRAME(MP_FRAME_AUDIO, mpframe);
+    } else {
+        talloc_free(mpframe);
+    }
 
     av_frame_unref(priv->avframe);
 

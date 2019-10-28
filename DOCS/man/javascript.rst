@@ -88,13 +88,18 @@ Scripting APIs - identical to Lua
 
 (LE) - Last-Error, indicates that ``mp.last_error()`` can be used after the
 call to test for success (empty string) or failure (non empty reason string).
-Otherwise, where the Lua APIs return ``nil`` on error, JS returns ``undefined``.
+Where the Lua APIs use ``nil`` to indicate error, JS APIs use ``undefined``.
 
 ``mp.command(string)`` (LE)
 
 ``mp.commandv(arg1, arg2, ...)`` (LE)
 
 ``mp.command_native(table [,def])`` (LE)
+
+``id = mp.command_native_async(table [,fn])`` (LE) Notes: ``id`` is true-thy on
+success, ``fn`` is called always a-sync, ``error`` is empty string on success.
+
+``mp.abort_async_command(id)``
 
 ``mp.get_property(name [,def])`` (LE)
 

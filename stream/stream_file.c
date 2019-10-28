@@ -34,6 +34,7 @@
 
 #include "common/common.h"
 #include "common/msg.h"
+#include "misc/thread_tools.h"
 #include "stream.h"
 #include "options/m_option.h"
 #include "options/path.h"
@@ -64,6 +65,7 @@ struct priv {
     bool regular_file;
     bool appending;
     int64_t orig_size;
+    struct mp_cancel *cancel;
 };
 
 // Total timeout = RETRY_TIMEOUT * MAX_RETRIES
@@ -84,7 +86,7 @@ static int fill_buffer(stream_t *s, char *buffer, int max_len)
 
 #ifndef __MINGW32__
     if (p->use_poll) {
-        int c = s->cancel ? mp_cancel_get_fd(s->cancel) : -1;
+        int c = mp_cancel_get_fd(p->cancel);
         struct pollfd fds[2] = {
             {.fd = p->fd, .events = POLLIN},
             {.fd = c, .events = POLLIN},
@@ -111,7 +113,7 @@ static int fill_buffer(stream_t *s, char *buffer, int max_len)
         if (!p->appending || p->use_poll)
             break;
 
-        if (mp_cancel_wait(s->cancel, RETRY_TIMEOUT))
+        if (mp_cancel_wait(p->cancel, RETRY_TIMEOUT))
             break;
     }
 
@@ -121,16 +123,7 @@ static int fill_buffer(stream_t *s, char *buffer, int max_len)
 static int write_buffer(stream_t *s, char *buffer, int len)
 {
     struct priv *p = s->priv;
-    int r = len;
-    int wr;
-    while (r > 0) {
-        wr = write(p->fd, buffer, r);
-        if (wr <= 0)
-            return -1;
-        r -= wr;
-        buffer += wr;
-    }
-    return len - r;
+    return write(p->fd, buffer, len);
 }
 
 static int seek(stream_t *s, int64_t newpos)
@@ -323,7 +316,6 @@ static int open_f(stream_t *stream)
     if (fstat(p->fd, &st) == 0) {
         if (S_ISDIR(st.st_mode)) {
             stream->is_directory = true;
-            stream->allow_caching = false;
             MP_INFO(stream, "This is a directory - adding to playlist.\n");
         } else if (S_ISREG(st.st_mode)) {
             p->regular_file = true;
@@ -359,6 +351,10 @@ static int open_f(stream_t *stream)
         stream->streaming = true;
 
     p->orig_size = get_size(stream);
+
+    p->cancel = mp_cancel_new(p);
+    if (stream->cancel)
+        mp_cancel_set_parent(p->cancel, stream->cancel);
 
     return STREAM_OK;
 }
