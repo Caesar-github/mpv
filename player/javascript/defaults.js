@@ -17,7 +17,7 @@ function new_cache() {
 }
 
 /**********************************************************************
- *  event handlers, property observers, idle, client messages, hooks
+ *  event handlers, property observers, idle, client messages, hooks, async
  *********************************************************************/
 var ehandlers = new_cache() // items of event-name: array of {maybe cb: fn}
 
@@ -136,6 +136,38 @@ mp.add_hook = function add_hook(name, pri, fn) {
     hooks.push(fn);
     // 50 (scripting docs default priority) maps to 0 (default in C API docs)
     return mp._hook_add(name, pri - 50, hooks.length);
+}
+
+// ----- async commands -----
+var async_callbacks = new_cache();  // items of id: fn
+var async_next_id = 1;
+
+mp.command_native_async = function command_native_async(node, cb) {
+    var id = async_next_id++;
+    cb = cb || function dummy() {};
+    if (!mp._command_native_async(id, node)) {
+        var le = mp.last_error();
+        setTimeout(cb, 0, false, undefined, le);  /* callback async */
+        mp._set_last_error(le);
+        return undefined;
+    }
+    async_callbacks[id] = cb;
+    return id;
+}
+
+function async_command_handler(ev) {
+    var cb = async_callbacks[ev.id];
+    delete async_callbacks[ev.id];
+    if (ev.error)
+        cb(false, undefined, ev.error);
+    else
+        cb(true, ev.result, "");
+}
+
+mp.abort_async_command = function abort_async_command(id) {
+    // cb will be invoked regardless, possibly with the abort result
+    if (async_callbacks[id])
+        mp._abort_async_command(id);
 }
 
 /**********************************************************************
@@ -519,6 +551,25 @@ mp.osd_message = function osd_message(text, duration) {
     mp.commandv("show_text", text, Math.round(1000 * (duration || -1)));
 }
 
+mp.utils.subprocess = function subprocess(t) {
+    var cmd = { name: "subprocess", capture_stdout: true };
+    var new_names = { cancellable: "playback_only", max_size: "capture_size" };
+    for (var k in t)
+        cmd[new_names[k] || k] = t[k];
+
+    var rv = mp.command_native(cmd);
+    if (mp.last_error())  /* typically on missing/incorrect args */
+        rv = { error_string: mp.last_error(), status: -1 };
+    if (rv.error_string)
+        rv.error = rv.error_string;
+    return rv;
+}
+
+mp.utils.subprocess_detached = function subprocess_detached(t) {
+    return mp.commandv.apply(null, ["run"].concat(t.args));
+}
+
+
 // ----- dump: like print, but expands objects/arrays recursively -----
 function replacer(k, v) {
     var t = typeof v;
@@ -557,6 +608,7 @@ g.exit = function() { mp.keep_running = false };  // user-facing too
 mp.register_event("shutdown", g.exit);
 mp.register_event("property-change", notify_observer);
 mp.register_event("hook", run_hook);
+mp.register_event("command-reply", async_command_handler);
 mp.register_event("client-message", dispatch_message);
 mp.register_script_message("key-binding", dispatch_key_binding);
 

@@ -199,7 +199,7 @@ int m_config_parse_mp_command_line(m_config_t *config, struct playlist *files,
             if (bstrcmp0(p.arg, "playlist") == 0) {
                 // append the playlist to the local args
                 char *param0 = bstrdup0(NULL, p.param);
-                struct playlist *pl = playlist_parse_file(param0, global);
+                struct playlist *pl = playlist_parse_file(param0, NULL, global);
                 talloc_free(param0);
                 if (!pl) {
                     MP_FATAL(config, "Error reading playlist '%.*s'\n",
@@ -218,43 +218,8 @@ int m_config_parse_mp_command_line(m_config_t *config, struct playlist *files,
         } else {
             // filename
             void *tmp = talloc_new(NULL);
-            bstr file = p.arg;
             char *file0 = bstrdup0(tmp, p.arg);
-#if HAVE_GPL
-            // expand DVD filename entries like dvd://1-3 into component titles
-            if (bstr_startswith0(file, "dvd://")) {
-                int offset = 6;
-                char *splitpos = strstr(file0 + offset, "-");
-                if (splitpos != NULL) {
-                    char *endpos;
-                    int start_title = strtol(file0 + offset, &endpos, 10);
-                    int end_title;
-                    //entries like dvd://-2 imply start at title 1
-                    if (start_title < 0) {
-                        end_title = abs(start_title);
-                        start_title = 1;
-                    } else
-                        end_title = strtol(splitpos + 1, &endpos, 10);
-
-                    #define dvd_range(a)  (a >= 0 && a < 255)
-                    if (dvd_range(start_title) && dvd_range(end_title)
-                            && (start_title < end_title)) {
-                        for (int j = start_title; j <= end_title; j++) {
-                            char *f = talloc_asprintf(tmp, "dvd://%d%s", j,
-                                                      endpos);
-                            playlist_add_file(files, f);
-                        }
-                    } else
-                        MP_ERR(config, "Invalid play entry %s\n", file0);
-
-                } else // dvd:// or dvd://x entry
-                    playlist_add_file(files, file0);
-            } else {
-                process_non_option(files, file0);
-            }
-#else
             process_non_option(files, file0);
-#endif
             talloc_free(tmp);
         }
     }
@@ -281,10 +246,8 @@ err_out:
  * during normal options parsing.
  */
 void m_config_preparse_command_line(m_config_t *config, struct mpv_global *global,
-                                    char **argv)
+                                    int *verbose, char **argv)
 {
-    struct MPOpts *opts = global->opts;
-
     struct parse_state p = {config, argv};
     while (split_opt_silent(&p) == 0) {
         if (p.is_opt) {
@@ -293,7 +256,7 @@ void m_config_preparse_command_line(m_config_t *config, struct mpv_global *globa
             int flags = M_SETOPT_FROM_CMDLINE | M_SETOPT_PRE_PARSE_ONLY;
             m_config_set_option_cli(config, p.arg, p.param, flags);
             if (bstrcmp0(p.arg, "v") == 0)
-                opts->verbose++;
+                (*verbose)++;
         }
     }
 

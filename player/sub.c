@@ -48,8 +48,10 @@ static int get_order(struct MPContext *mpctx, struct track *track)
 
 static void reset_subtitles(struct MPContext *mpctx, struct track *track)
 {
-    if (track->d_sub)
+    if (track->d_sub) {
         sub_reset(track->d_sub);
+        sub_set_play_dir(track->d_sub, mpctx->play_dir);
+    }
     term_osd_set_subs(mpctx, NULL);
 }
 
@@ -70,6 +72,8 @@ void uninit_sub(struct MPContext *mpctx, struct track *track)
         sub_select(track->d_sub, false);
         int order = get_order(mpctx, track);
         osd_set_sub(mpctx->osd, order, NULL);
+        sub_destroy(track->d_sub);
+        track->d_sub = NULL;
     }
 }
 
@@ -108,7 +112,7 @@ static bool update_subtitle(struct MPContext *mpctx, double video_pts,
         term_osd_set_subs(mpctx, sub_get_text(dec_sub, video_pts));
 
     // Handle displaying subtitles on VO with no video being played. This is
-    // quite differently, because normally subtitles are redrawn on new video
+    // quite different, because normally subtitles are redrawn on new video
     // frames, using the video frames' timestamps.
     if (mpctx->video_out && mpctx->video_status == STATUS_EOF) {
         if (osd_get_force_video_pts(mpctx->osd) != video_pts) {
@@ -182,7 +186,9 @@ void reinit_sub(struct MPContext *mpctx, struct track *track)
     if (!track || !track->stream || track->stream->type != STREAM_SUB)
         return;
 
-    if (!track->d_sub && !init_subdec(mpctx, track)) {
+    assert(!track->d_sub);
+
+    if (!init_subdec(mpctx, track)) {
         error_on_track(mpctx, track);
         return;
     }

@@ -204,10 +204,6 @@ static int control(struct ao *ao, enum aocontrol cmd, void *arg)
         }
         return CONTROL_ERROR;
     }
-#ifdef SNDCTL_DSP_GETPLAYVOL
-    case AOCONTROL_HAS_SOFT_VOLUME:
-        return CONTROL_TRUE;
-#endif
     }
     return CONTROL_UNKNOWN;
 }
@@ -336,19 +332,23 @@ static int reopen_device(struct ao *ao, bool allow_format_changes)
             mp_chmap_sel_add_map(&sel, &oss_layouts[n]);
         if (!ao_chmap_sel_adjust(ao, &sel, &channels))
             goto fail;
-        int reqchannels = channels.num;
+        int c, nchannels, reqchannels;
+        nchannels = reqchannels = channels.num;
         // We only use SNDCTL_DSP_CHANNELS for >2 channels, in case some drivers don't have it
         if (reqchannels > 2) {
-            int nchannels = reqchannels;
-            if (ioctl(p->audio_fd, SNDCTL_DSP_CHANNELS, &nchannels) == -1 ||
-                nchannels != reqchannels)
-            {
+            if (ioctl(p->audio_fd, SNDCTL_DSP_CHANNELS, &nchannels) == -1) {
                 MP_ERR(ao, "Failed to set audio device to %d channels.\n",
                        reqchannels);
                 goto fail;
             }
+            if (nchannels != reqchannels) {
+                // Fallback to stereo
+                nchannels = 2;
+                goto stereo;
+            }
         } else {
-            int c = reqchannels - 1;
+stereo:
+            c = nchannels - 1;
             if (ioctl(p->audio_fd, SNDCTL_DSP_STEREO, &c) == -1) {
                 MP_ERR(ao, "Failed to set audio device to %d channels.\n",
                        reqchannels);
@@ -649,7 +649,7 @@ const struct ao_driver audio_out_oss = {
         .oss_mixer_device = PATH_DEV_MIXER,
     },
     .options = (const struct m_option[]) {
-        OPT_STRING("mixer-device", oss_mixer_device, 0),
+        OPT_STRING("mixer-device", oss_mixer_device, M_OPT_FILE),
         OPT_STRING("mixer-channel", cfg_oss_mixer_channel, 0),
         {0}
     },

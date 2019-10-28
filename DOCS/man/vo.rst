@@ -308,7 +308,7 @@ Available video output drivers are:
     For tuning, refer to your copy of the file ``SDL_hints.h``.
 
     .. note:: This driver is for compatibility with systems that don't provide
-              proper graphics drivers, or which support GLES only.
+              proper graphics drivers.
 
     The following global options are supported by this video output:
 
@@ -415,6 +415,8 @@ Available video output drivers are:
             JPEG files, extension .jpeg.
         png
             PNG files.
+        webp
+            WebP files.
 
     ``--vo-image-png-compression=<0-9>``
         PNG compression factor (speed vs. file size tradeoff) (default: 7)
@@ -425,6 +427,12 @@ Available video output drivers are:
         JPEG quality factor (default: 90)
     ``--vo-image-jpeg-optimize=<0-100>``
         JPEG optimization factor (default: 100)
+    ``--vo-image-webp-lossless=<yes|no>``
+        Enable writing lossless WebP files (default: no)
+    ``--vo-image-webp-quality=<0-100>``
+        WebP quality (default: 75)
+    ``--vo-image-webp-compression=<0-6>``
+        WebP compression factor (default: 4)
     ``--vo-image-outdir=<dirname>``
         Specify the directory to save the image files to (default: ``./``).
 
@@ -479,28 +487,59 @@ Available video output drivers are:
     ``--drm-connector=[<gpu_number>.]<name>``
         Select the connector to use (usually this is a monitor.) If ``<name>``
         is empty or ``auto``, mpv renders the output on the first available
-        connector. Use ``--drm-connector=help`` to get list of available
+        connector. Use ``--drm-connector=help`` to get a list of available
         connectors. When using multiple graphic cards, use the ``<gpu_number>``
         argument to disambiguate.
         (default: empty)
 
-    ``--drm-mode=<number>``
-        Mode ID to use (resolution and frame rate).
-        (default: 0)
+    ``--drm-mode=<preferred|highest|N|WxH[@R]>``
+        Mode to use (resolution and frame rate).
+        Possible values:
 
-    ``--drm-osd-plane-id=<number>``
-        Select the DRM plane index to use for OSD (or OSD and video).
-        Index is zero based, and related to crtc.
-        When using this option with the drm_prime renderer, it will only affect
-        the OSD contents. Otherwise it will set OSD & video plane.
-        (default: primary plane)
+        :preferred: Use the preferred mode for the screen on the selected
+                    connector. (default)
+        :highest:   Use the mode with the highest resolution available on the
+                    selected connector.
+        :N:         Select mode by index.
+        :WxH[@R]:   Specify mode by width, height, and optionally refresh rate.
+                    In case several modes match, selects the mode that comes
+                    first in the EDID list of modes.
 
-    ``--drm-video-plane-id=<number>``
-        Select the DRM plane index to use for video layer.
-        Index is zero based, and related to crtc.
-        This option only has effect when using the drm_prime renderer (which
-        supports several layers) together with ``vo=gpu`` and ``gpu-context=drm``.
-        (default: first overlay plane)
+        Use ``--drm-mode=help`` to get a list of available modes for all active
+        connectors.
+
+    ``--drm-atomic=<no|auto>``
+        Toggle use of atomic modesetting. Mostly useful for debugging.
+
+        :no:    Use legacy modesetting.
+        :auto:  Use atomic modesetting, falling back to legacy modesetting if
+                not available. (default)
+
+        Note: Only affects ``gpu-context=drm``. ``vo=drm`` supports legacy
+        modesetting only.
+
+    ``--drm-draw-plane=<primary|overlay|N>``
+        Select the DRM plane to which video and OSD is drawn to, under normal
+        circumstances. The plane can be specified as ``primary``, which will
+        pick the first applicable primary plane; ``overlay``, which will pick
+        the first applicable overlay plane; or by index. The index is zero
+        based, and related to the CRTC.
+        (default: primary)
+
+        When using this option with the drmprime-drm hwdec interop, only the OSD
+        is rendered to this plane.
+
+    ``--drm-drmprime-video-plane=<primary|overlay|N>``
+        Select the DRM plane to use for video with the drmprime-drm hwdec
+        interop (used by e.g. the rkmpp hwdec on RockChip SoCs, and v4l2 hwdec:s
+        on various other SoC:s). The plane is unused otherwise. This option
+        accepts the same values as ``--drm-draw-plane``. (default: overlay)
+
+        To be able to successfully play 4K video on various SoCs you might need
+        to set ``--drm-draw-plane=overlay --drm-drmprime-video-plane=primary``
+        and setting ``--drm-draw-surface-size=1920x1080``, to render the OSD at a
+        lower resolution (the video when handled by the hwdec will be on the
+        drmprime-video plane and at full 4K resolution)
 
     ``--drm-format=<xrgb8888|xrgb2101010>``
         Select the DRM format to use (default: xrgb8888). This allows you to
@@ -509,17 +548,23 @@ Available video output drivers are:
         xrgb2101010 is a packed 30 bits per pixel/10 bits per channel packed RGB
         format with 2 bits of padding.
 
-        Unless you have an intel graphics card, a recent kernel and a recent
-        version of mesa (>=18) xrgb2101010 is unlikely to work for you.
+        There are cases when xrgb2101010 will work with the ``drm`` VO, but not
+        with the ``drm`` backend for the ``gpu`` VO. This is because with the
+        ``gpu`` VO, in addition to requiring support in your DRM driver,
+        requires support for xrgb2101010 in your EGL driver
 
-        This currently only has an effect when used together with the ``drm``
-        backend for the ``gpu`` VO. The ``drm`` VO always uses xrgb8888.
+    ``--drm-draw-surface-size=<[WxH]>``
+        Sets the size of the surface used on the draw plane. The surface will
+        then be upscaled to the current screen resolution. This option can be
+        useful when used together with the drmprime-drm hwdec interop at high
+        resolutions, as it allows scaling the draw plane (which in this case
+        only handles the OSD) down to a size the GPU can handle.
 
-    ``--drm-osd-size=<[WxH]>``
-        Sets the OSD OpenGL size to the specified size. OSD will then be upscaled
-        to the current screen resolution. This option can be useful when using
-        several layers in high resolutions with a GPU which cannot handle it.
-        Note : this option is only available with DRM atomic support.
+        When used without the drmprime-drm hwdec interop this option will just
+        cause the video to get rendered at a different resolution and then
+        scaled to screen size.
+
+        Note: this option is only available with DRM atomic support.
         (default: display resolution)
 
 ``mediacodec_embed`` (Android)
@@ -531,5 +576,11 @@ Available video output drivers are:
     many of mpv's features (subtitle rendering, OSD/OSC, video filters, etc)
     are not available with this driver.
 
-    To use hardware decoding with ``--vo-gpu`` instead, use
+    To use hardware decoding with ``--vo=gpu`` instead, use
     ``--hwdec=mediacodec-copy`` along with ``--gpu-context=android``.
+
+``wlshm`` (Wayland only)
+    Shared memory video output driver without hardware acceleration that works
+    whenever Wayland is present.
+
+    .. note:: This is a fallback only, and should not be normally used.

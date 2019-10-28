@@ -17,6 +17,7 @@
 
 #include <libavutil/common.h>
 
+#include "common/common.h"
 #include "stream.h"
 
 struct priv {
@@ -42,27 +43,20 @@ static int seek(stream_t *s, int64_t newpos)
 static int control(stream_t *s, int cmd, void *arg)
 {
     struct priv *p = s->priv;
-    switch(cmd) {
-    case STREAM_CTRL_GET_SIZE:
+    if (cmd == STREAM_CTRL_GET_SIZE) {
         *(int64_t *)arg = p->data.len;
-        return 1;
-    case STREAM_CTRL_SET_CONTENTS: ;
-        bstr *data = (bstr *)arg;
-        talloc_free(p->data.start);
-        p->data = bstrdup(s, *data);
         return 1;
     }
     return STREAM_UNSUPPORTED;
 }
 
-static int open_f(stream_t *stream)
+static int open2(stream_t *stream, struct stream_open_args *args)
 {
     stream->fill_buffer = fill_buffer;
     stream->seek = seek;
     stream->seekable = true;
     stream->control = control;
     stream->read_chunk = 1024 * 1024;
-    stream->allow_caching = false;
 
     struct priv *p = talloc_zero(stream, struct priv);
     stream->priv = p;
@@ -72,7 +66,11 @@ static int open_f(stream_t *stream)
     bool use_hex = bstr_eatstart0(&data, "hex://");
     if (!use_hex)
         bstr_eatstart0(&data, "memory://");
-    stream_control(stream, STREAM_CTRL_SET_CONTENTS, &data);
+
+    if (args->special_arg)
+        data = *(bstr *)args->special_arg;
+
+    p->data = bstrdup(stream, data);
 
     if (use_hex && !bstr_decode_hex(stream, p->data, &p->data)) {
         MP_FATAL(stream, "Invalid data.\n");
@@ -84,6 +82,24 @@ static int open_f(stream_t *stream)
 
 const stream_info_t stream_info_memory = {
     .name = "memory",
-    .open = open_f,
+    .open2 = open2,
     .protocols = (const char*const[]){ "memory", "hex", NULL },
 };
+
+struct stream *stream_memory_open(struct mpv_global *global, void *data, int len)
+{
+    assert(len >= 0);
+
+    struct stream_open_args sargs = {
+        .global = global,
+        .url = "memory://",
+        .flags = STREAM_READ | STREAM_SILENT,
+        .sinfo = &stream_info_memory,
+        .special_arg = &(bstr){data, len},
+    };
+
+    struct stream *s = NULL;
+    stream_create_with_args(&sargs, &s);
+    MP_HANDLE_OOM(s);
+    return s;
+}

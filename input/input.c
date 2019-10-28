@@ -153,9 +153,6 @@ struct input_ctx {
 
     struct cmd_queue cmd_queue;
 
-    void (*cancel)(void *cancel_ctx);
-    void *cancel_ctx;
-
     void (*wakeup_cb)(void *ctx);
     void *wakeup_ctx;
 };
@@ -176,6 +173,7 @@ struct input_opts {
     int ar_rate;
     int use_alt_gr;
     int use_appleremote;
+    int use_gamepad;
     int use_media_keys;
     int default_bindings;
     int enable_mouse_movements;
@@ -202,6 +200,9 @@ const struct m_sub_options input_config = {
 #if HAVE_COCOA
         OPT_FLAG("input-appleremote", use_appleremote, 0),
 #endif
+#if HAVE_SDL2_GAMEPAD
+        OPT_FLAG("input-gamepad", use_gamepad, 0),
+#endif
         OPT_FLAG("window-dragging", allow_win_drag, 0),
         OPT_REPLACED("input-x11-keyboard", "input-vo-keyboard"),
         {0}
@@ -217,6 +218,9 @@ const struct m_sub_options input_config = {
         .use_media_keys = 1,
 #if HAVE_COCOA
         .use_appleremote = 1,
+#endif
+#if HAVE_SDL2_GAMEPAD
+        .use_gamepad = 1,
 #endif
         .default_bindings = 1,
         .vo_key_input = 1,
@@ -531,13 +535,11 @@ static void release_down_cmd(struct input_ctx *ictx, bool drop_current)
 }
 
 // We don't want the append to the command queue indefinitely, because that
-// could lead to situations where recovery would take too long. On the other
-// hand, don't drop commands that will abort playback.
+// could lead to situations where recovery would take too long.
 static bool should_drop_cmd(struct input_ctx *ictx, struct mp_cmd *cmd)
 {
     struct cmd_queue *queue = &ictx->cmd_queue;
-    return queue_count_cmds(queue) >= ictx->opts->key_fifo_size &&
-           !mp_input_is_abort_cmd(cmd);
+    return queue_count_cmds(queue) >= ictx->opts->key_fifo_size;
 }
 
 static struct mp_cmd *resolve_key(struct input_ctx *ictx, int code)
@@ -883,26 +885,10 @@ static void adjust_max_wait_time(struct input_ctx *ictx, double *time)
     }
 }
 
-static bool test_abort_cmd(struct input_ctx *ictx, struct mp_cmd *new)
-{
-    if (!mp_input_is_maybe_abort_cmd(new))
-        return false;
-    if (mp_input_is_abort_cmd(new))
-        return true;
-    // Abort only if there are going to be at least 2 commands in the queue.
-    for (struct mp_cmd *cmd = ictx->cmd_queue.first; cmd; cmd = cmd->queue_next) {
-        if (mp_input_is_maybe_abort_cmd(cmd))
-            return true;
-    }
-    return false;
-}
-
 int mp_input_queue_cmd(struct input_ctx *ictx, mp_cmd_t *cmd)
 {
     input_lock(ictx);
     if (cmd) {
-        if (ictx->cancel && test_abort_cmd(ictx, cmd))
-            ictx->cancel(ictx->cancel_ctx);
         queue_add_tail(&ictx->cmd_queue, cmd);
         mp_input_wakeup(ictx);
     }
@@ -1391,8 +1377,17 @@ void mp_input_load_config(struct input_ctx *ictx)
     }
 
 #if HAVE_WIN32_PIPES
-    if (ictx->global->opts->input_file && *ictx->global->opts->input_file)
-        mp_input_pipe_add(ictx, ictx->global->opts->input_file);
+    char *ifile;
+    mp_read_option_raw(ictx->global, "input-file", &m_option_type_string, &ifile);
+    if (ifile && ifile[0])
+        mp_input_pipe_add(ictx, ifile);
+    talloc_free(ifile);
+#endif
+
+#if HAVE_SDL2_GAMEPAD
+    if (ictx->opts->use_gamepad) {
+        mp_input_sdl_gamepad_add(ictx);
+    }
 #endif
 
     input_unlock(ictx);
@@ -1423,14 +1418,6 @@ void mp_input_uninit(struct input_ctx *ictx)
     talloc_free(ictx);
 }
 
-void mp_input_set_cancel(struct input_ctx *ictx, void (*cb)(void *c), void *c)
-{
-    input_lock(ictx);
-    ictx->cancel = cb;
-    ictx->cancel_ctx = c;
-    input_unlock(ictx);
-}
-
 bool mp_input_use_alt_gr(struct input_ctx *ictx)
 {
     input_lock(ictx);
@@ -1456,6 +1443,44 @@ struct mp_cmd *mp_input_parse_cmd(struct input_ctx *ictx, bstr str,
 void mp_input_run_cmd(struct input_ctx *ictx, const char **cmd)
 {
     mp_input_queue_cmd(ictx, mp_input_parse_cmd_strv(ictx->log, cmd));
+}
+
+void mp_input_bind_key(struct input_ctx *ictx, int key, bstr command)
+{
+    struct cmd_bind_section *bs = ictx->cmd_bind_sections;
+    struct cmd_bind *bind = NULL;
+
+    for (int n = 0; n < bs->num_binds; n++) {
+        struct cmd_bind *b = &bs->binds[n];
+        if (bind_matches_key(b, 1, &key) && b->is_builtin == false) {
+            bind = b;
+            break;
+        }
+    }
+
+    if (!bind) {
+        struct cmd_bind empty = {{0}};
+        MP_TARRAY_APPEND(bs, bs->binds, bs->num_binds, empty);
+        bind = &bs->binds[bs->num_binds - 1];
+    }
+
+    bind_dealloc(bind);
+
+    *bind = (struct cmd_bind) {
+        .cmd = bstrdup0(bs->binds, command),
+        .location = talloc_strdup(bs->binds, "keybind-command"),
+        .owner = bs,
+        .is_builtin = false,
+        .num_keys = 1,
+    };
+    memcpy(bind->keys, &key, 1 * sizeof(bind->keys[0]));
+    if (mp_msg_test(ictx->log, MSGL_DEBUG)) {
+        char *s = mp_input_get_key_combo_name(&key, 1);
+        MP_TRACE(ictx, "add:section='%s' key='%s'%s cmd='%s' location='%s'\n",
+                 bind->owner->section, s, bind->is_builtin ? " builtin" : "",
+                 bind->cmd, bind->location);
+        talloc_free(s);
+    }
 }
 
 struct mp_input_src_internal {

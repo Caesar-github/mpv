@@ -37,8 +37,10 @@
 #define GLX_CONTEXT_ES2_PROFILE_BIT_EXT         0x00000004
 #endif
 
+#include "osdep/timer.h"
 #include "video/out/x11_common.h"
 #include "context.h"
+#include "oml_sync.h"
 #include "utils.h"
 
 struct priv {
@@ -46,6 +48,9 @@ struct priv {
     XVisualInfo *vinfo;
     GLXContext context;
     GLXFBConfig fbc;
+
+    Bool (*XGetSyncValues)(Display*, GLXDrawable, int64_t*, int64_t*, int64_t*);
+    struct oml_sync sync;
 };
 
 static void glx_uninit(struct ra_ctx *ctx)
@@ -161,6 +166,13 @@ static bool create_context_x11_gl3(struct ra_ctx *ctx, GL *gl, int gl_version,
 
     mpgl_load_functions(gl, (void *)glXGetProcAddressARB, glxstr, vo->log);
 
+    if (gl_check_extension(glxstr, "GLX_OML_sync_control")) {
+        p->XGetSyncValues =
+            (void *)glXGetProcAddressARB((const GLubyte *)"glXGetSyncValuesOML");
+    }
+    if (p->XGetSyncValues)
+        MP_VERBOSE(vo, "Using GLX_OML_sync_control.\n");
+
     return true;
 }
 
@@ -208,9 +220,34 @@ static void set_glx_attrib(int *attribs, int name, int value)
     }
 }
 
+static void update_vsync_oml(struct ra_ctx *ctx)
+{
+    struct priv *p = ctx->priv;
+
+    assert(p->XGetSyncValues);
+
+    int64_t ust, msc, sbc;
+    if (!p->XGetSyncValues(ctx->vo->x11->display, ctx->vo->x11->window,
+                           &ust, &msc, &sbc))
+        ust = msc = sbc = -1;
+
+    oml_sync_swap(&p->sync, ust, msc, sbc);
+}
+
 static void glx_swap_buffers(struct ra_ctx *ctx)
 {
+    struct priv *p = ctx->priv;
+
     glXSwapBuffers(ctx->vo->x11->display, ctx->vo->x11->window);
+
+    if (p->XGetSyncValues)
+        update_vsync_oml(ctx);
+}
+
+static void glx_get_vsync(struct ra_ctx *ctx, struct vo_vsync_info *info)
+{
+    struct priv *p = ctx->priv;
+    oml_sync_get_info(&p->sync, info);
 }
 
 static bool glx_init(struct ra_ctx *ctx)
@@ -296,6 +333,7 @@ static bool glx_init(struct ra_ctx *ctx)
 
     struct ra_gl_ctx_params params = {
         .swap_buffers = glx_swap_buffers,
+        .get_vsync    = glx_get_vsync,
     };
 
     if (!ra_gl_ctx_init(ctx, gl, params))
@@ -308,20 +346,6 @@ uninit:
     return false;
 }
 
-static bool glx_init_probe(struct ra_ctx *ctx)
-{
-    if (!glx_init(ctx))
-        return false;
-
-    struct priv *p = ctx->priv;
-    if (!(p->gl.mpgl_caps & MPGL_CAP_VDPAU)) {
-        MP_VERBOSE(ctx, "No vdpau support found - probing more things.\n");
-        glx_uninit(ctx);
-        return false;
-    }
-
-    return true;
-}
 
 static void resize(struct ra_ctx *ctx)
 {
@@ -361,16 +385,5 @@ const struct ra_ctx_fns ra_ctx_glx = {
     .wakeup         = glx_wakeup,
     .wait_events    = glx_wait_events,
     .init           = glx_init,
-    .uninit         = glx_uninit,
-};
-
-const struct ra_ctx_fns ra_ctx_glx_probe = {
-    .type           = "opengl",
-    .name           = "x11probe",
-    .reconfig       = glx_reconfig,
-    .control        = glx_control,
-    .wakeup         = glx_wakeup,
-    .wait_events    = glx_wait_events,
-    .init           = glx_init_probe,
     .uninit         = glx_uninit,
 };

@@ -35,7 +35,6 @@
 
 /* OpenGL */
 extern const struct ra_ctx_fns ra_ctx_glx;
-extern const struct ra_ctx_fns ra_ctx_glx_probe;
 extern const struct ra_ctx_fns ra_ctx_x11_egl;
 extern const struct ra_ctx_fns ra_ctx_drm_egl;
 extern const struct ra_ctx_fns ra_ctx_cocoa;
@@ -45,13 +44,12 @@ extern const struct ra_ctx_fns ra_ctx_angle;
 extern const struct ra_ctx_fns ra_ctx_dxgl;
 extern const struct ra_ctx_fns ra_ctx_rpi;
 extern const struct ra_ctx_fns ra_ctx_android;
-extern const struct ra_ctx_fns ra_ctx_mali_fbdev;
-extern const struct ra_ctx_fns ra_ctx_vdpauglx;
 
 /* Vulkan */
 extern const struct ra_ctx_fns ra_ctx_vulkan_wayland;
 extern const struct ra_ctx_fns ra_ctx_vulkan_win;
 extern const struct ra_ctx_fns ra_ctx_vulkan_xlib;
+extern const struct ra_ctx_fnd ra_ctx_vulkan_android;
 
 /* Direct3D 11 */
 extern const struct ra_ctx_fns ra_ctx_d3d11;
@@ -62,7 +60,7 @@ static const struct ra_ctx_fns *contexts[] = {
 #endif
 
 // OpenGL contexts:
-#if HAVE_ANDROID
+#if HAVE_EGL_ANDROID
     &ra_ctx_android,
 #endif
 #if HAVE_RPI
@@ -80,8 +78,8 @@ static const struct ra_ctx_fns *contexts[] = {
 #if HAVE_GL_DXINTEROP
     &ra_ctx_dxgl,
 #endif
-#if HAVE_GL_X11
-    &ra_ctx_glx_probe,
+#if HAVE_GL_WAYLAND
+    &ra_ctx_wayland_egl,
 #endif
 #if HAVE_EGL_X11
     &ra_ctx_x11_egl,
@@ -89,22 +87,16 @@ static const struct ra_ctx_fns *contexts[] = {
 #if HAVE_GL_X11
     &ra_ctx_glx,
 #endif
-#if HAVE_GL_WAYLAND
-    &ra_ctx_wayland_egl,
-#endif
 #if HAVE_EGL_DRM
     &ra_ctx_drm_egl,
-#endif
-#if HAVE_MALI_FBDEV
-    &ra_ctx_mali_fbdev,
-#endif
-#if HAVE_VDPAU_GL_X11
-    &ra_ctx_vdpauglx,
 #endif
 
 // Vulkan contexts:
 #if HAVE_VULKAN
 
+#if HAVE_ANDROID
+    &ra_ctx_vulkan_android,
+#endif
 #if HAVE_WIN32_DESKTOP
     &ra_ctx_vulkan_win,
 #endif

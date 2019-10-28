@@ -177,8 +177,7 @@ static int init(struct sd *sd)
         ass_set_style_overrides(ctx->ass_library, opts->ass_force_style_list);
 
     ctx->ass_track = ass_new_track(ctx->ass_library);
-    if (!ctx->is_converted)
-        ctx->ass_track->track_type = TRACK_TYPE_ASS;
+    ctx->ass_track->track_type = TRACK_TYPE_ASS;
 
     ctx->shadow_track = ass_new_track(ctx->ass_library);
     ctx->shadow_track->PlayResX = 384;
@@ -234,20 +233,27 @@ static void decode(struct sd *sd, struct demux_packet *packet)
         if (!sd->opts->sub_clear_on_seek && packet->pos >= 0 &&
             check_packet_seen(sd, packet->pos))
             return;
-        if (packet->duration < 0) {
+
+        double sub_pts = 0;
+        double sub_duration = 0;
+        char **r = lavc_conv_decode(ctx->converter, packet, &sub_pts,
+                                    &sub_duration);
+        if (packet->duration < 0 || sub_duration == UINT32_MAX) {
             if (!ctx->duration_unknown) {
                 MP_WARN(sd, "Subtitle with unknown duration.\n");
                 ctx->duration_unknown = true;
             }
-            packet->duration = UNKNOWN_DURATION;
+            sub_duration = UNKNOWN_DURATION;
         }
-        char **r = lavc_conv_decode(ctx->converter, packet);
+
         for (int n = 0; r && r[n]; n++) {
             char *ass_line = r[n];
             if (sd->opts->sub_filter_SDH)
                 ass_line = filter_SDH(sd, track->event_format, 0, ass_line, 0);
             if (ass_line)
-                ass_process_data(track, ass_line, strlen(ass_line));
+                ass_process_chunk(track, ass_line, strlen(ass_line),
+                                  llrint(sub_pts * 1000),
+                                  llrint(sub_duration * 1000));
             if (sd->opts->sub_filter_SDH)
                 talloc_free(ass_line);
         }
@@ -587,6 +593,35 @@ static char *get_text(struct sd *sd, double pts)
     return ctx->last_text;
 }
 
+static struct sd_times get_times(struct sd *sd, double pts)
+{
+    struct sd_ass_priv *ctx = sd->priv;
+    ASS_Track *track = ctx->ass_track;
+    struct sd_times res = { .start = MP_NOPTS_VALUE, .end = MP_NOPTS_VALUE };
+
+    if (pts == MP_NOPTS_VALUE || ctx->duration_unknown)
+        return res;
+
+    long long ipts = find_timestamp(sd, pts);
+
+    for (int i = 0; i < track->n_events; ++i) {
+        ASS_Event *event = track->events + i;
+        if (ipts >= event->Start && ipts < event->Start + event->Duration) {
+            double start = event->Start / 1000.0;
+            double end = event->Duration == UNKNOWN_DURATION ?
+                MP_NOPTS_VALUE : (event->Start + event->Duration) / 1000.0;
+
+            if (res.start == MP_NOPTS_VALUE || res.start > start)
+                res.start = start;
+
+            if (res.end == MP_NOPTS_VALUE || res.end < end)
+                res.end = end;
+        }
+    }
+
+    return res;
+}
+
 static void fill_plaintext(struct sd *sd, double pts)
 {
     struct sd_ass_priv *ctx = sd->priv;
@@ -681,6 +716,7 @@ const struct sd_functions sd_ass = {
     .decode = decode,
     .get_bitmaps = get_bitmaps,
     .get_text = get_text,
+    .get_times = get_times,
     .control = control,
     .reset = reset,
     .select = enable_output,

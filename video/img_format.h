@@ -115,6 +115,7 @@ struct mp_regular_imgfmt_plane {
     uint8_t num_components;
     // 1 is luminance/red/gray, 2 is green/Cb, 3 is blue/Cr, 4 is alpha.
     // 0 is used for padding (undefined contents).
+    // It is guaranteed that non-0 values occur only once in the whole format.
     uint8_t components[MP_NUM_COMPONENTS];
 };
 
@@ -163,6 +164,9 @@ enum mp_imgfmt {
     // Like IMGFMT_NV12, but with 10 bits per component (and 6 bits of padding)
     IMGFMT_P010,
 
+    // Like IMGFMT_NV12, but for 4:4:4
+    IMGFMT_NV24,
+
     // RGB/BGR Formats
 
     // Byte accessed (low address to high address)
@@ -187,6 +191,9 @@ enum mp_imgfmt {
 
     // Accessed with bit-shifts after endian-swapping the uint16_t pixel
     IMGFMT_RGB565,              // 5r 6g 5b (MSB to LSB)
+
+    // Accessed with bit-shifts, uint32_t units.
+    IMGFMT_RGB30,               // 2pad 10r 10g 10b (MSG to LSB)
 
     // Hardware accelerated formats. Plane data points to special data
     // structures, instead of pixel data.

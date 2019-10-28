@@ -2,6 +2,9 @@
 
 #include "filter.h"
 
+struct mp_image;
+struct mp_image_params;
+
 // A filter which automatically creates and uses a conversion filter based on
 // the filter settings, or passes through data unchanged if no conversion is
 // required.
@@ -20,6 +23,14 @@ struct mp_autoconvert {
 // (to free this, free the filter itself, mp_autoconvert.f)
 struct mp_autoconvert *mp_autoconvert_create(struct mp_filter *parent);
 
+// Require that output frames have the following params set.
+// This implicitly clears the image format list, and calls
+// mp_autoconvert_add_imgfmt() with the values in *p.
+// Idempotent on subsequent calls (no reinit forced if parameters don't change).
+// Mixing this with other format-altering calls has undefined effects.
+void mp_autoconvert_set_target_image_params(struct mp_autoconvert *c,
+                                            struct mp_image_params *p);
+
 // Add the imgfmt as allowed video image format, and error on non-video frames.
 // Each call adds to the list of allowed formats. Before the first call, all
 // formats are allowed (even non-video).
@@ -27,11 +38,25 @@ struct mp_autoconvert *mp_autoconvert_create(struct mp_filter *parent);
 // otherwise must be 0.
 void mp_autoconvert_add_imgfmt(struct mp_autoconvert *c, int imgfmt, int subfmt);
 
-// Add the formats supported by the hwdec interops (or essentially refine them),
-// and trigger conversion if hw_subfmts mismatch. This is mostly a hack for
-// D3D11/ANGLE (which supports NV12 only).
-// Must be called mp_autoconvert_add_imgfmt(), and overrides them where formats
-// collide.
+// Add all sw image formats. The effect is that hardware video image formats are
+// disallowed. The semantics are the same as calling mp_autoconvert_add_imgfmt()
+// for each sw format that exists.
+// No need to do this if you add sw formats with mp_autoconvert_add_imgfmt(),
+// as the normal semantics will exclude other formats (including hw ones).
+void mp_autoconvert_add_all_sw_imgfmts(struct mp_autoconvert *c);
+
+// Approximate test for whether the input would be accepted for conversion
+// according to the current settings. If false is returned, conversion will
+// definitely fail; if true is returned, it might succeed, but with no hard
+// guarantee. This is mainly intended for better error reporting to the user.
+// The result is "approximate" because it could still fail at runtime.
+// The mp_image is not mutated.
+// This function is relatively slow.
+// Accepting mp_image instead of any mp_frame is the result of laziness.
+bool mp_autoconvert_probe_input_video(struct mp_autoconvert *c,
+                                      struct mp_image *img);
+
+// This is pointless.
 struct mp_hwdec_devices;
 void mp_autoconvert_add_vo_hwdec_subfmts(struct mp_autoconvert *c,
                                          struct mp_hwdec_devices *devs);
@@ -55,6 +80,3 @@ void mp_autoconvert_clear(struct mp_autoconvert *c);
 
 // See mp_autoconvert.on_audio_format_change.
 void mp_autoconvert_format_change_continue(struct mp_autoconvert *c);
-
-// vf_d3d11vpp.c
-struct mp_filter *vf_d3d11_create_outconv(struct mp_filter *parent);

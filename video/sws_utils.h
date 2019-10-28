@@ -11,7 +11,7 @@ struct mpv_global;
 // libswscale currently requires 16 bytes alignment for row pointers and
 // strides. Otherwise, it will print warnings and use slow codepaths.
 // Guaranteed to be a power of 2 and > 1.
-#define SWS_MIN_BYTE_ALIGN 16
+#define SWS_MIN_BYTE_ALIGN MP_IMAGE_BYTE_ALIGN
 
 extern const int mp_sws_hq_flags;
 extern const int mp_sws_fast_flags;
@@ -31,6 +31,7 @@ struct mp_sws_context {
     // mp_sws_scale() will handle the changes transparently.
     int flags;
     int brightness, contrast, saturation;
+    bool allow_zimg; // use zimg if available (ignores filters and all)
     bool force_reload;
     // These are also implicitly set by mp_sws_scale(), and thus optional.
     // Setting them before that call makes sense when using mp_sws_reinit().
@@ -46,8 +47,10 @@ struct mp_sws_context {
     struct SwsContext *sws;
     bool supports_csp;
 
-    // Contains parameters for which sws is valid
-    struct mp_sws_context *cached;
+    // Private.
+    struct mp_sws_context *cached; // contains parameters for which sws is valid
+    struct mp_zimg_context *zimg;
+    bool opts_allow_zimg, zimg_ok;
 };
 
 struct mp_sws_context *mp_sws_alloc(void *talloc_ctx);
@@ -55,6 +58,9 @@ int mp_sws_reinit(struct mp_sws_context *ctx);
 void mp_sws_set_from_cmdline(struct mp_sws_context *ctx, struct mpv_global *g);
 int mp_sws_scale(struct mp_sws_context *ctx, struct mp_image *dst,
                  struct mp_image *src);
+
+bool mp_sws_supports_formats(struct mp_sws_context *ctx,
+                             int imgfmt_out, int imgfmt_in);
 
 struct mp_image *mp_img_swap_to_native(struct mp_image *img);
 

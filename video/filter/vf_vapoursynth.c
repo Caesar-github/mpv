@@ -54,6 +54,7 @@ struct vapoursynth_opts {
 struct priv {
     struct mp_log *log;
     struct vapoursynth_opts *opts;
+    char *script_path;
 
     VSCore *vscore;
     const VSAPI *vsapi;
@@ -62,13 +63,8 @@ struct priv {
 
     const struct script_driver *drv;
     // drv_vss
+    bool vs_initialized;
     struct VSScript *se;
-    // drv_lazy
-    struct lua_State *ls;
-    VSNodeRef **gc_noderef;
-    int num_gc_noderef;
-    VSMap **gc_map;
-    int num_gc_map;
 
     struct mp_filter *f;
     struct mp_pin *in_pin;
@@ -272,14 +268,6 @@ static void VS_CC vs_frame_done(void *userData, const VSFrameRef *f, int n,
 {
     struct priv *p = userData;
 
-    pthread_mutex_lock(&p->lock);
-
-    // If these assertions fail, n is an unrequested frame (or filtered twice).
-    assert(n >= p->out_frameno && n < p->out_frameno + p->max_requests);
-    int index = n - p->out_frameno;
-    MP_TRACE(p, "filtered frame %d (%d)\n", n, index);
-    assert(p->requested[index] == &dummy_img);
-
     struct mp_image *res = NULL;
     if (f) {
         struct mp_image img = map_vs_frame(p, f, false);
@@ -299,6 +287,15 @@ static void VS_CC vs_frame_done(void *userData, const VSFrameRef *f, int n,
         res = mp_image_new_copy(&img);
         p->vsapi->freeFrame(f);
     }
+
+    pthread_mutex_lock(&p->lock);
+
+    // If these assertions fail, n is an unrequested frame (or filtered twice).
+    assert(n >= p->out_frameno && n < p->out_frameno + p->max_requests);
+    int index = n - p->out_frameno;
+    MP_TRACE(p, "filtered frame %d (%d)\n", n, index);
+    assert(p->requested[index] == &dummy_img);
+
     if (!res && !p->shutdown) {
         if (p->eof) {
             res = (struct mp_image *)&dummy_img_eof;
@@ -535,11 +532,14 @@ static const VSFrameRef *VS_CC infiltGetFrame(int frameno, int activationReason,
                 p->vsapi->setFilterError("Could not allocate VS frame", frameCtx);
                 break;
             }
+
+            pthread_mutex_unlock(&p->lock);
             struct mp_image vsframe = map_vs_frame(p, ret, true);
             mp_image_copy(&vsframe, img);
             int res = 1e6;
             int dur = img->pkt_duration * res + 0.5;
             set_vs_frame_props(p, ret, img, dur, res);
+            pthread_mutex_lock(&p->lock);
             break;
         }
         pthread_cond_wait(&p->wakeup, &p->lock);
@@ -759,8 +759,7 @@ static struct mp_filter *vf_vapoursynth_create(struct mp_filter *parent,
         MP_FATAL(p, "'file' parameter must be set.\n");
         goto error;
     }
-    talloc_steal(p, p->opts->file);
-    p->opts->file = mp_get_user_path(p, f->global, p->opts->file);
+    p->script_path = mp_get_user_path(p, f->global, p->opts->file);
 
     p->max_requests = p->opts->maxrequests;
     if (p->max_requests < 0)
@@ -808,8 +807,6 @@ static const m_option_t vf_opts_fields[] = {
     {0}
 };
 
-#if HAVE_VAPOURSYNTH
-
 #include <VSScript.h>
 
 static int drv_vss_init(struct priv *p)
@@ -818,12 +815,15 @@ static int drv_vss_init(struct priv *p)
         MP_FATAL(p, "Could not initialize VapourSynth scripting.\n");
         return -1;
     }
+    p->vs_initialized = true;
     return 0;
 }
 
 static void drv_vss_uninit(struct priv *p)
 {
-    vsscript_finalize();
+    if (p->vs_initialized)
+        vsscript_finalize();
+    p->vs_initialized = false;
 }
 
 static int drv_vss_load_core(struct priv *p)
@@ -841,7 +841,7 @@ static int drv_vss_load(struct priv *p, VSMap *vars)
 {
     vsscript_setVariable(p->se, vars);
 
-    if (vsscript_evaluateFile(&p->se, p->opts->file, 0)) {
+    if (vsscript_evaluateFile(&p->se, p->script_path, 0)) {
         MP_FATAL(p, "Script evaluation failed:\n%s\n", vsscript_getError(p->se));
         return -1;
     }
@@ -868,7 +868,7 @@ static const struct script_driver drv_vss = {
 
 const struct mp_user_filter_entry vf_vapoursynth = {
     .desc = {
-        .description = "VapourSynth bridge (Python)",
+        .description = "VapourSynth bridge",
         .name = "vapoursynth",
         .priv_size = sizeof(OPT_BASE_STRUCT),
         .priv_defaults = &(const OPT_BASE_STRUCT){
@@ -878,241 +878,3 @@ const struct mp_user_filter_entry vf_vapoursynth = {
     },
     .create = vf_vapoursynth_create,
 };
-
-#endif
-
-#if HAVE_VAPOURSYNTH_LAZY
-
-#include <lua.h>
-#include <lualib.h>
-#include <lauxlib.h>
-
-#if LUA_VERSION_NUM <= 501
-#define mp_cpcall lua_cpcall
-#define FUCKYOUOHGODWHY(L) lua_pushvalue(L, LUA_GLOBALSINDEX)
-#else
-// Curse whoever had this stupid idea. Curse whoever thought it would be a good
-// idea not to include an emulated lua_cpcall() even more.
-static int mp_cpcall (lua_State *L, lua_CFunction func, void *ud)
-{
-    lua_pushcfunction(L, func); // doesn't allocate in 5.2 (but does in 5.1)
-    lua_pushlightuserdata(L, ud);
-    return lua_pcall(L, 1, 0, 0);
-}
-// Hey, let's replace old mechanisms with something slightly different!
-#define FUCKYOUOHGODWHY lua_pushglobaltable
-#endif
-
-static int drv_lazy_init(struct priv *p)
-{
-    p->ls = luaL_newstate();
-    if (!p->ls)
-        return -1;
-    luaL_openlibs(p->ls);
-    p->vsapi = getVapourSynthAPI(VAPOURSYNTH_API_VERSION);
-    p->vscore = p->vsapi ? p->vsapi->createCore(0) : NULL;
-    if (!p->vscore) {
-        MP_FATAL(p, "Could not load VapourSynth.\n");
-        lua_close(p->ls);
-        return -1;
-    }
-    return 0;
-}
-
-static void drv_lazy_uninit(struct priv *p)
-{
-    lua_close(p->ls);
-    p->vsapi->freeCore(p->vscore);
-}
-
-static int drv_lazy_load_core(struct priv *p)
-{
-    // not needed
-    return 0;
-}
-
-static struct priv *get_priv(lua_State *L)
-{
-    lua_getfield(L, LUA_REGISTRYINDEX, "p"); // p
-    struct priv *p = lua_touserdata(L, -1); // p
-    lua_pop(L, 1); // -
-    return p;
-}
-
-static void vsmap_to_table(lua_State *L, int index, VSMap *map)
-{
-    struct priv *p = get_priv(L);
-    const VSAPI *vsapi = p->vsapi;
-    for (int n = 0; n < vsapi->propNumKeys(map); n++) {
-        const char *key = vsapi->propGetKey(map, n);
-        VSPropTypes t = vsapi->propGetType(map, key);
-        switch (t) {
-        case ptInt:
-            lua_pushnumber(L, vsapi->propGetInt(map, key, 0, NULL));
-            break;
-        case ptFloat:
-            lua_pushnumber(L, vsapi->propGetFloat(map, key, 0, NULL));
-            break;
-        case ptNode: {
-            VSNodeRef *r = vsapi->propGetNode(map, key, 0, NULL);
-            MP_TARRAY_APPEND(p, p->gc_noderef, p->num_gc_noderef, r);
-            lua_pushlightuserdata(L, r);
-            break;
-        }
-        default:
-            luaL_error(L, "unknown map type");
-        }
-        lua_setfield(L, index, key);
-    }
-}
-
-static VSMap *table_to_vsmap(lua_State *L, int index)
-{
-    struct priv *p = get_priv(L);
-    const VSAPI *vsapi = p->vsapi;
-    assert(index > 0);
-    VSMap *map = vsapi->createMap();
-    MP_TARRAY_APPEND(p, p->gc_map, p->num_gc_map, map);
-    if (!map)
-        luaL_error(L, "out of memory");
-    lua_pushnil(L); // nil
-    while (lua_next(L, index) != 0) { // key value
-        if (lua_type(L, -2) != LUA_TSTRING) {
-            luaL_error(L, "key must be a string, but got %s",
-                       lua_typename(L, -2));
-        }
-        const char *key = lua_tostring(L, -2);
-        switch (lua_type(L, -1)) {
-        case LUA_TNUMBER: {
-            // gross hack because we hate everything
-            if (strncmp(key, "i_", 2) == 0) {
-                vsapi->propSetInt(map, key + 2, lua_tointeger(L, -1), 0);
-            } else {
-                vsapi->propSetFloat(map, key, lua_tonumber(L, -1), 0);
-            }
-            break;
-        }
-        case LUA_TSTRING: {
-            const char *s = lua_tostring(L, -1);
-            vsapi->propSetData(map, key, s, strlen(s), 0);
-            break;
-        }
-        case LUA_TLIGHTUSERDATA: { // assume it's VSNodeRef*
-            VSNodeRef *node = lua_touserdata(L, -1);
-            vsapi->propSetNode(map, key, node, 0);
-            break;
-        }
-        default:
-            luaL_error(L, "unknown type");
-            break;
-        }
-        lua_pop(L, 1); // key
-    }
-    return map;
-}
-
-static int l_invoke(lua_State *L)
-{
-    struct priv *p = get_priv(L);
-    const VSAPI *vsapi = p->vsapi;
-
-    VSPlugin *plugin = vsapi->getPluginByNs(luaL_checkstring(L, 1), p->vscore);
-    if (!plugin)
-        luaL_error(L, "plugin not found");
-    VSMap *map = table_to_vsmap(L, 3);
-    VSMap *r = vsapi->invoke(plugin, luaL_checkstring(L, 2), map);
-    MP_TARRAY_APPEND(p, p->gc_map, p->num_gc_map, r);
-    if (!r)
-        luaL_error(L, "?");
-    const char *err = vsapi->getError(r);
-    if (err)
-        luaL_error(L, "error calling invoke(): %s", err);
-    int err2 = 0;
-    VSNodeRef *node = vsapi->propGetNode(r, "clip", 0, &err2);
-    MP_TARRAY_APPEND(p, p->gc_noderef, p->num_gc_noderef, node);
-    if (node)
-        lua_pushlightuserdata(L, node);
-    return 1;
-}
-
-struct load_ctx {
-    struct priv *p;
-    VSMap *vars;
-    int status;
-};
-
-static int load_stuff(lua_State *L)
-{
-    struct load_ctx *ctx = lua_touserdata(L, -1);
-    lua_pop(L, 1); // -
-    struct priv *p = ctx->p;
-
-    // setup stuff; should be idempotent
-    lua_pushlightuserdata(L, p);
-    lua_setfield(L, LUA_REGISTRYINDEX, "p"); // -
-    lua_pushcfunction(L, l_invoke);
-    lua_setglobal(L, "invoke");
-
-    FUCKYOUOHGODWHY(L);
-    vsmap_to_table(L, lua_gettop(L), ctx->vars);
-    if (luaL_dofile(L, p->opts->file))
-        lua_error(L);
-    lua_pop(L, 1);
-
-    lua_getglobal(L, "video_out"); // video_out
-    if (!lua_islightuserdata(L, -1))
-        luaL_error(L, "video_out not set or has wrong type");
-    p->out_node = p->vsapi->cloneNodeRef(lua_touserdata(L, -1));
-    return 0;
-}
-
-static int drv_lazy_load(struct priv *p, VSMap *vars)
-{
-    struct load_ctx ctx = {p, vars, 0};
-    if (mp_cpcall(p->ls, load_stuff, &ctx)) {
-        MP_FATAL(p, "filter creation failed: %s\n", lua_tostring(p->ls, -1));
-        lua_pop(p->ls, 1);
-        ctx.status = -1;
-    }
-    assert(lua_gettop(p->ls) == 0);
-    return ctx.status;
-}
-
-static void drv_lazy_unload(struct priv *p)
-{
-    for (int n = 0; n < p->num_gc_noderef; n++) {
-        VSNodeRef *ref = p->gc_noderef[n];
-        if (ref)
-            p->vsapi->freeNode(ref);
-    }
-    p->num_gc_noderef = 0;
-    for (int n = 0; n < p->num_gc_map; n++) {
-        VSMap *map = p->gc_map[n];
-        if (map)
-            p->vsapi->freeMap(map);
-    }
-    p->num_gc_map = 0;
-}
-
-static const struct script_driver drv_lazy = {
-    .init = drv_lazy_init,
-    .uninit = drv_lazy_uninit,
-    .load_core = drv_lazy_load_core,
-    .load = drv_lazy_load,
-    .unload = drv_lazy_unload,
-};
-
-const struct mp_user_filter_entry vf_vapoursynth_lazy = {
-    .desc = {
-        .description = "VapourSynth bridge (Lua)",
-        .name = "vapoursynth-lazy",
-        .priv_size = sizeof(OPT_BASE_STRUCT),
-        .priv_defaults = &(const OPT_BASE_STRUCT){
-            .drv = &drv_lazy,
-        },
-        .options = vf_opts_fields,
-    },
-    .create = vf_vapoursynth_create,
-};
-
-#endif

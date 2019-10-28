@@ -193,10 +193,6 @@ double mp_input_get_delay(struct input_ctx *ictx);
 // Wake up sleeping input loop from another thread.
 void mp_input_wakeup(struct input_ctx *ictx);
 
-// Used to asynchronously abort playback. Needed because the core still can
-// block on network in some situations.
-void mp_input_set_cancel(struct input_ctx *ictx, void (*cb)(void *c), void *c);
-
 // If this returns true, use Right Alt key as Alt Gr to produce special
 // characters. If false, count Right Alt as the modifier Alt key.
 bool mp_input_use_alt_gr(struct input_ctx *ictx);
@@ -207,9 +203,14 @@ bool mp_input_use_media_keys(struct input_ctx *ictx);
 // Like mp_input_parse_cmd_strv, but also run the command.
 void mp_input_run_cmd(struct input_ctx *ictx, const char **cmd);
 
+// Binds a command to a key.
+void mp_input_bind_key(struct input_ctx *ictx, int key, bstr command);
+
 void mp_input_set_repeat_info(struct input_ctx *ictx, int rate, int delay);
 
 void mp_input_pipe_add(struct input_ctx *ictx, const char *filename);
+
+void mp_input_sdl_gamepad_add(struct input_ctx *ictx);
 
 struct mp_ipc_ctx;
 struct mp_client_api;

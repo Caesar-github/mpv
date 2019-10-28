@@ -19,9 +19,15 @@
  * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include <unistd.h>
-#include <errno.h>
 #include <assert.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <limits.h>
+#include <unistd.h>
 
 #include "mpv_talloc.h"
 
@@ -626,41 +632,6 @@ char *mp_win32_getcwd(char *buf, size_t size)
     return buf;
 }
 
-FILE *mp_tmpfile(void)
-{
-    // Reserve a file name in the format %TMP%\mpvXXXX.TMP
-    wchar_t tmp_path[MAX_PATH + 1];
-    if (!GetTempPathW(MAX_PATH + 1, tmp_path))
-        return NULL;
-    wchar_t tmp_name[MAX_PATH + 1];
-    if (!GetTempFileNameW(tmp_path, L"mpv", 0, tmp_name))
-        return NULL;
-
-    // Create the file. FILE_ATTRIBUTE_TEMPORARY indicates the file will be
-    // short-lived. Windows should avoid flushing it to disk while there is
-    // sufficient cache.
-    HANDLE file = CreateFileW(tmp_name, GENERIC_READ | GENERIC_WRITE | DELETE,
-        FILE_SHARE_READ | FILE_SHARE_DELETE, NULL, CREATE_ALWAYS,
-        FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE, NULL);
-    if (file == INVALID_HANDLE_VALUE) {
-        DeleteFileW(tmp_name);
-        return NULL;
-    }
-
-    int fd = _open_osfhandle((intptr_t)file, 0);
-    if (fd < 0) {
-        CloseHandle(file);
-        return NULL;
-    }
-    FILE *fp = fdopen(fd, "w+b");
-    if (!fp) {
-        close(fd);
-        return NULL;
-    }
-
-    return fp;
-}
-
 static char **utf8_environ;
 static void *utf8_environ_ctx;
 
@@ -814,3 +785,29 @@ void freelocale(locale_t locobj)
 }
 
 #endif // __MINGW32__
+
+int mp_mkostemps(char *template, int suffixlen, int flags)
+{
+    size_t len = strlen(template);
+    char *t = len >= 6 + suffixlen ? &template[len - (6 + suffixlen)] : NULL;
+    if (!t || strncmp(t, "XXXXXX", 6) != 0) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    for (size_t fuckshit = 0; fuckshit < UINT32_MAX; fuckshit++) {
+        // Using a random value may make it require fewer iterations (even if
+        // not truly random; just a counter would be sufficient).
+        size_t fuckmess = rand();
+        char crap[7] = "";
+        snprintf(crap, sizeof(crap), "%06zx", fuckmess);
+        memcpy(t, crap, 6);
+
+        int res = open(template, O_RDWR | O_CREAT | O_EXCL | flags, 0600);
+        if (res >= 0 || errno != EEXIST)
+            return res;
+    }
+
+    errno = EEXIST;
+    return -1;
+}

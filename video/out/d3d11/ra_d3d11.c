@@ -4,7 +4,7 @@
 #include <d3d11sdklayers.h>
 #include <dxgi1_2.h>
 #include <d3dcompiler.h>
-#include <crossc.h>
+#include <spirv_cross_c.h>
 
 #include "common/msg.h"
 #include "osdep/io.h"
@@ -233,6 +233,9 @@ static void setup_formats(struct ra *ra)
             .pixel_size     = d3dfmt->bytes,
             .linear_filter  = (support & sup_filter) == sup_filter,
             .renderable     = (support & sup_render) == sup_render,
+            // TODO: Check whether it's a storage format
+            // https://docs.microsoft.com/en-us/windows/desktop/direct3d12/typed-unordered-access-view-loads
+            .storable       = true,
         };
 
         if (support & D3D11_FORMAT_SUPPORT_TEXTURE1D)
@@ -383,14 +386,16 @@ static struct ra_tex *tex_create(struct ra *ra,
     struct d3d_tex *tex_p = tex->priv = talloc_zero(tex, struct d3d_tex);
     DXGI_FORMAT fmt = fmt_to_dxgi(params->format);
 
+    D3D11_SUBRESOURCE_DATA data;
     D3D11_SUBRESOURCE_DATA *pdata = NULL;
     if (params->initial_data) {
-        pdata = &(D3D11_SUBRESOURCE_DATA) {
+        data = (D3D11_SUBRESOURCE_DATA) {
             .pSysMem = params->initial_data,
             .SysMemPitch = params->w * params->format->pixel_size,
         };
         if (params->dimensions >= 3)
-            pdata->SysMemSlicePitch = pdata->SysMemPitch * params->h;
+            data.SysMemSlicePitch = data.SysMemPitch * params->h;
+        pdata = &data;
     }
 
     D3D11_USAGE usage = D3D11_USAGE_DEFAULT;
@@ -561,8 +566,10 @@ struct ra_tex *ra_d3d11_wrap_tex(struct ra *ra, ID3D11Resource *res)
         goto error;
     }
 
-    if (bind_flags & D3D11_BIND_SHADER_RESOURCE)
+    if (bind_flags & D3D11_BIND_SHADER_RESOURCE) {
         params->render_src = params->blit_src = true;
+        params->src_linear = params->format->linear_filter;
+    }
     if (bind_flags & D3D11_BIND_RENDER_TARGET)
         params->render_dst = params->blit_dst = true;
     if (bind_flags & D3D11_BIND_UNORDERED_ACCESS)
@@ -642,7 +649,8 @@ static bool tex_upload(struct ra *ra, const struct ra_tex_upload_params *params)
     ptrdiff_t stride = tex->params.dimensions >= 2 ? tex->params.w : 0;
     ptrdiff_t pitch = tex->params.dimensions >= 3 ? stride * tex->params.h : 0;
     bool invalidate = true;
-    D3D11_BOX *rc = NULL;
+    D3D11_BOX rc;
+    D3D11_BOX *prc = NULL;
 
     if (tex->params.dimensions == 2) {
         stride = params->stride;
@@ -650,7 +658,7 @@ static bool tex_upload(struct ra *ra, const struct ra_tex_upload_params *params)
         if (params->rc && (params->rc->x0 != 0 || params->rc->y0 != 0 ||
             params->rc->x1 != tex->params.w || params->rc->y1 != tex->params.h))
         {
-            rc = &(D3D11_BOX) {
+            rc = (D3D11_BOX) {
                 .left = params->rc->x0,
                 .top = params->rc->y0,
                 .front = 0,
@@ -658,6 +666,7 @@ static bool tex_upload(struct ra *ra, const struct ra_tex_upload_params *params)
                 .bottom = params->rc->y1,
                 .back = 1,
             };
+            prc = &rc;
             invalidate = params->invalidate;
         }
     }
@@ -665,11 +674,11 @@ static bool tex_upload(struct ra *ra, const struct ra_tex_upload_params *params)
     int subresource = tex_p->array_slice >= 0 ? tex_p->array_slice : 0;
     if (p->ctx1) {
         ID3D11DeviceContext1_UpdateSubresource1(p->ctx1, tex_p->res,
-            subresource, rc, src, stride, pitch,
+            subresource, prc, src, stride, pitch,
             invalidate ? D3D11_COPY_DISCARD : 0);
     } else {
         ID3D11DeviceContext_UpdateSubresource(p->ctx, tex_p->res, subresource,
-            rc, src, stride, pitch);
+            prc, src, stride, pitch);
     }
 
     return true;
@@ -734,9 +743,12 @@ static struct ra_buf *buf_create(struct ra *ra,
 
     struct d3d_buf *buf_p = buf->priv = talloc_zero(buf, struct d3d_buf);
 
+    D3D11_SUBRESOURCE_DATA data;
     D3D11_SUBRESOURCE_DATA *pdata = NULL;
-    if (params->initial_data)
-        pdata = &(D3D11_SUBRESOURCE_DATA) { .pSysMem = params->initial_data };
+    if (params->initial_data) {
+        data = (D3D11_SUBRESOURCE_DATA) { .pSysMem = params->initial_data };
+        pdata = &data;
+    }
 
     D3D11_BUFFER_DESC desc = { .ByteWidth = params->size };
     switch (params->type) {
@@ -1241,7 +1253,7 @@ static void blit(struct ra *ra, struct ra_tex *dst, struct ra_tex *src,
     }
 }
 
-static int desc_namespace(enum ra_vartype type)
+static int desc_namespace(struct ra *ra, enum ra_vartype type)
 {
     // Images and SSBOs both use UAV bindings
     if (type == RA_VARTYPE_IMG_W)
@@ -1255,19 +1267,23 @@ static bool compile_glsl(struct ra *ra, enum glsl_shader type,
     struct ra_d3d11 *p = ra->priv;
     struct spirv_compiler *spirv = p->spirv;
     void *ta_ctx = talloc_new(NULL);
-    crossc_compiler *cross = NULL;
+    spvc_result sc_res = SPVC_SUCCESS;
+    spvc_context sc_ctx = NULL;
+    spvc_parsed_ir sc_ir = NULL;
+    spvc_compiler sc_compiler = NULL;
+    spvc_compiler_options sc_opts = NULL;
     const char *hlsl = NULL;
     ID3DBlob *errors = NULL;
     bool success = false;
     HRESULT hr;
 
-    int cross_shader_model;
+    int sc_shader_model;
     if (p->fl >= D3D_FEATURE_LEVEL_11_0) {
-        cross_shader_model = 50;
+        sc_shader_model = 50;
     } else if (p->fl >= D3D_FEATURE_LEVEL_10_1) {
-        cross_shader_model = 41;
+        sc_shader_model = 41;
     } else {
-        cross_shader_model = 40;
+        sc_shader_model = 40;
     }
 
     int64_t start_us = mp_time_us();
@@ -1278,17 +1294,42 @@ static bool compile_glsl(struct ra *ra, enum glsl_shader type,
 
     int64_t shaderc_us = mp_time_us();
 
-    cross = crossc_hlsl_create((uint32_t*)spv_module.start,
-                               spv_module.len / sizeof(uint32_t));
-
-    crossc_hlsl_set_shader_model(cross, cross_shader_model);
-    crossc_set_flip_vert_y(cross, type == GLSL_SHADER_VERTEX);
-
-    hlsl = crossc_compile(cross);
-    if (!hlsl) {
-        MP_ERR(ra, "SPIRV-Cross failed: %s\n", crossc_strerror(cross));
+    sc_res = spvc_context_create(&sc_ctx);
+    if (sc_res != SPVC_SUCCESS)
         goto done;
+
+    sc_res = spvc_context_parse_spirv(sc_ctx, (SpvId *)spv_module.start,
+                                      spv_module.len / sizeof(SpvId), &sc_ir);
+    if (sc_res != SPVC_SUCCESS)
+        goto done;
+
+    sc_res = spvc_context_create_compiler(sc_ctx, SPVC_BACKEND_HLSL, sc_ir,
+                                          SPVC_CAPTURE_MODE_TAKE_OWNERSHIP,
+                                          &sc_compiler);
+    if (sc_res != SPVC_SUCCESS)
+        goto done;
+
+    sc_res = spvc_compiler_create_compiler_options(sc_compiler, &sc_opts);
+    if (sc_res != SPVC_SUCCESS)
+        goto done;
+    sc_res = spvc_compiler_options_set_uint(sc_opts,
+        SPVC_COMPILER_OPTION_HLSL_SHADER_MODEL, sc_shader_model);
+    if (sc_res != SPVC_SUCCESS)
+        goto done;
+    if (type == GLSL_SHADER_VERTEX) {
+        // FLIP_VERTEX_Y is only valid for vertex shaders
+        sc_res = spvc_compiler_options_set_bool(sc_opts,
+            SPVC_COMPILER_OPTION_FLIP_VERTEX_Y, SPVC_TRUE);
+        if (sc_res != SPVC_SUCCESS)
+            goto done;
     }
+    sc_res = spvc_compiler_install_compiler_options(sc_compiler, sc_opts);
+    if (sc_res != SPVC_SUCCESS)
+        goto done;
+
+    sc_res = spvc_compiler_compile(sc_compiler, &hlsl);
+    if (sc_res != SPVC_SUCCESS)
+        goto done;
 
     int64_t cross_us = mp_time_us();
 
@@ -1312,7 +1353,11 @@ static bool compile_glsl(struct ra *ra, enum glsl_shader type,
                d3dcompile_us - cross_us);
 
     success = true;
-done:;
+done:
+    if (sc_res != SPVC_SUCCESS) {
+        MP_MSG(ra, MSGL_ERR, "SPIRV-Cross failed: %s\n",
+               spvc_context_get_last_error_string(sc_ctx));
+    }
     int level = success ? MSGL_DEBUG : MSGL_ERR;
     MP_MSG(ra, level, "GLSL source:\n");
     mp_log_source(ra->log, level, glsl);
@@ -1321,7 +1366,8 @@ done:;
         mp_log_source(ra->log, level, hlsl);
     }
     SAFE_RELEASE(errors);
-    crossc_destroy(cross);
+    if (sc_ctx)
+        spvc_context_destroy(sc_ctx);
     talloc_free(ta_ctx);
     return success;
 }
@@ -1418,14 +1464,16 @@ static size_t vbuf_upload(struct ra *ra, void *data, size_t size)
 }
 
 static const char cache_magic[4] = "RD11";
-static const int cache_version = 2;
+static const int cache_version = 3;
 
 struct cache_header {
     char magic[sizeof(cache_magic)];
     int cache_version;
     char compiler[SPIRV_NAME_MAX_LEN];
     int spv_compiler_version;
-    uint32_t cross_version;
+    unsigned spvc_compiler_major;
+    unsigned spvc_compiler_minor;
+    unsigned spvc_compiler_patch;
     struct dll_version d3d_compiler_version;
     int feature_level;
     size_t vert_bytecode_len;
@@ -1449,6 +1497,9 @@ static void load_cached_program(struct ra *ra,
     struct cache_header *header = (struct cache_header *)cache.start;
     cache = bstr_cut(cache, sizeof(*header));
 
+    unsigned spvc_major, spvc_minor, spvc_patch;
+    spvc_get_version(&spvc_major, &spvc_minor, &spvc_patch);
+
     if (strncmp(header->magic, cache_magic, sizeof(cache_magic)) != 0)
         return;
     if (header->cache_version != cache_version)
@@ -1457,7 +1508,11 @@ static void load_cached_program(struct ra *ra,
         return;
     if (header->spv_compiler_version != spirv->compiler_version)
         return;
-    if (header->cross_version != crossc_version())
+    if (header->spvc_compiler_major != spvc_major)
+        return;
+    if (header->spvc_compiler_minor != spvc_minor)
+        return;
+    if (header->spvc_compiler_patch != spvc_patch)
         return;
     if (!dll_version_equal(header->d3d_compiler_version, p->d3d_compiler_ver))
         return;
@@ -1491,10 +1546,15 @@ static void save_cached_program(struct ra *ra, struct ra_renderpass *pass,
     struct ra_d3d11 *p = ra->priv;
     struct spirv_compiler *spirv = p->spirv;
 
+    unsigned spvc_major, spvc_minor, spvc_patch;
+    spvc_get_version(&spvc_major, &spvc_minor, &spvc_patch);
+
     struct cache_header header = {
         .cache_version = cache_version,
         .spv_compiler_version = p->spirv->compiler_version,
-        .cross_version = crossc_version(),
+        .spvc_compiler_major = spvc_major,
+        .spvc_compiler_minor = spvc_minor,
+        .spvc_compiler_patch = spvc_patch,
         .d3d_compiler_version = p->d3d_compiler_ver,
         .feature_level = p->fl,
         .vert_bytecode_len = vert_bc.len,

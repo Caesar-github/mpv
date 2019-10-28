@@ -33,7 +33,7 @@
 #include <glob.h>
 #endif
 
-#ifdef __ANDROID__
+#if HAVE_ANDROID
 #  include <unistd.h>
 #  include <stdio.h>
 
@@ -58,7 +58,7 @@ static inline int mp_fseeko(FILE* fp, off64_t offset, int whence) {
 }
 #define fseeko(f,p,w) mp_fseeko((f), (p), (w))
 
-#endif // __ANDROID__
+#endif // HAVE_ANDROID
 
 #ifndef O_BINARY
 #define O_BINARY 0
@@ -104,7 +104,6 @@ struct dirent *mp_readdir(DIR *dir);
 int mp_closedir(DIR *dir);
 int mp_mkdir(const char *path, int mode);
 char *mp_win32_getcwd(char *buf, size_t size);
-FILE *mp_tmpfile(void);
 char *mp_getenv(const char *name);
 off_t mp_lseek(int fd, off_t offset, int whence);
 
@@ -161,7 +160,6 @@ void mp_globfree(mp_glob_t *pglob);
 #define closedir(...) mp_closedir(__VA_ARGS__)
 #define mkdir(...) mp_mkdir(__VA_ARGS__)
 #define getcwd(...) mp_win32_getcwd(__VA_ARGS__)
-#define tmpfile(...) mp_tmpfile(__VA_ARGS__)
 #define getenv(...) mp_getenv(__VA_ARGS__)
 
 #undef lseek
@@ -195,7 +193,7 @@ int msync(void *addr, size_t length, int flags);
 
 // These are stubs since there is not anything that helps with this on Windows.
 #define locale_t int
-#define LC_ALL_MASK 0
+#define LC_CTYPE_MASK 0
 locale_t newlocale(int, const char *, locale_t);
 locale_t uselocale(locale_t);
 void freelocale(locale_t);
@@ -205,5 +203,7 @@ void freelocale(locale_t);
 #include <sys/mman.h>
 
 #endif /* __MINGW32__ */
+
+int mp_mkostemps(char *template, int suffixlen, int flags);
 
 #endif

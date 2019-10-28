@@ -30,7 +30,10 @@ local safe_protos = Set {
 }
 
 local function exec(args)
-    local ret = utils.subprocess({args = args})
+    local ret = mp.command_native({name = "subprocess",
+                                   args = args,
+                                   capture_stdout = true,
+                                   capture_stderr = true})
     return ret.status, ret.stdout, ret, ret.killed_by_us
 end
 
@@ -222,12 +225,18 @@ local function edl_track_joined(fragments, protocol, is_live, base)
     local offset = 1
     local parts = {}
 
-    if (protocol == "http_dash_segments") and
-        not fragments[1].duration and not is_live then
+    if (protocol == "http_dash_segments") and not is_live then
+        msg.debug("Using dash")
+        local args = ""
+
         -- assume MP4 DASH initialization segment
-        table.insert(parts,
-            "!mp4_dash,init=" .. edl_escape(join_url(base, fragments[1])))
-        offset = 2
+        if not fragments[1].duration then
+            msg.debug("Using init segment")
+            args = args .. ",init=" .. edl_escape(join_url(base, fragments[1]))
+            offset = 2
+        end
+
+        table.insert(parts, "!mp4_dash" .. args)
 
         -- Check remaining fragments for duration;
         -- if not available in all, give up.
@@ -303,6 +312,8 @@ local function add_single_video(json)
 
     -- DASH/split tracks
     elseif reqfmts then
+        local streams = {}
+
         for _, track in pairs(reqfmts) do
             local edl_track = nil
             edl_track = edl_track_joined(track.fragments,
@@ -313,13 +324,22 @@ local function add_single_video(json)
             end
             if track.vcodec and track.vcodec ~= "none" then
                 -- video track
-                streamurl = edl_track or track.url
+                streams[#streams + 1] = edl_track or track.url
             elseif track.vcodec == "none" then
-                -- according to ytdl, if vcodec is None, it's audio
-                mp.commandv("audio-add",
-                    edl_track or track.url, "auto",
-                    track.format_note or "")
+                -- audio track
+                streams[#streams + 1] = edl_track or track.url
             end
+        end
+
+        if #streams > 1 then
+            -- merge them via EDL
+            for i = 1, #streams do
+                streams[i] = "!no_clip;!no_chapters;" .. edl_escape(streams[i])
+            end
+            streamurl = "edl://" ..
+                        table.concat(streams, ";!new_stream;") .. ";"
+        else
+            streamurl = streams[1]
         end
 
     elseif not (json.url == nil) then
@@ -399,8 +419,8 @@ local function add_single_video(json)
 
     -- set aspect ratio for anamorphic video
     if not (json.stretched_ratio == nil) and
-        not option_was_set("video-aspect") then
-        mp.set_property('file-local-options/video-aspect', json.stretched_ratio)
+        not option_was_set("video-aspect-override") then
+        mp.set_property('file-local-options/video-aspect-override', json.stretched_ratio)
     end
 
     local stream_opts = mp.get_property_native("file-local-options/stream-lavf-o", {})
@@ -427,6 +447,26 @@ local function add_single_video(json)
     end
 
     mp.set_property_native("file-local-options/stream-lavf-o", stream_opts)
+end
+
+local function check_version(ytdl_path)
+    local command = {
+        name = "subprocess",
+        capture_stdout = true,
+        args = {ytdl_path, "--version"}
+    }
+    local version_string = mp.command_native(command).stdout
+    local year, month, day = string.match(version_string, "(%d+).(%d+).(%d+)")
+
+    -- sanity check
+    if (tonumber(year) < 2000) or (tonumber(month) > 12) or
+        (tonumber(day) > 31) then
+        return
+    end
+    local version_ts = os.time{year=year, month=month, day=day}
+    if (os.difftime(os.time(), version_ts) > 60*60*24*90) then
+        msg.warn("It appears that your youtube-dl version is severely out of date.")
+    end
 end
 
 function run_ytdl_hook(url)
@@ -461,9 +501,7 @@ function run_ytdl_hook(url)
 
     -- Checks if video option is "no", change format accordingly,
     -- but only if user didn't explicitly set one
-    if (mp.get_property("options/vid") == "no")
-        and not option_was_set("ytdl-format") then
-
+    if (mp.get_property("options/vid") == "no") and (#format == 0) then
         format = "bestaudio/best"
         msg.verbose("Video disabled. Only using audio")
     end
@@ -504,8 +542,11 @@ function run_ytdl_hook(url)
     end
 
     if (es < 0) or (json == nil) or (json == "") then
+        -- trim our stderr to avoid spurious newlines
+        ytdl_err = result.stderr:gsub("^%s*(.-)%s*$", "%1")
+        msg.error(ytdl_err)
         local err = "youtube-dl failed: "
-        if result.error and result.error == "init" then
+        if result.error_string and result.error_string == "init" then
             err = err .. "not found or not enough permissions"
         elseif not result.killed_by_us then
             err = err .. "unexpected error ocurred"
@@ -513,6 +554,9 @@ function run_ytdl_hook(url)
             err = string.format("%s returned '%d'", err, es)
         end
         msg.error(err)
+        if string.find(ytdl_err, "yt%-dl%.org/bug") then
+            check_version(ytdl.path)
+        end
         return
     end
 
@@ -520,6 +564,7 @@ function run_ytdl_hook(url)
 
     if (json == nil) then
         msg.error("failed to parse JSON data: " .. err)
+        check_version(ytdl.path)
         return
     end
 
@@ -644,6 +689,12 @@ function run_ytdl_hook(url)
             end
 
             mp.set_property("stream-open-filename", "memory://" .. table.concat(playlist, "\n"))
+
+            -- This disables mpv's mushy playlist security code, which will
+            -- break links that will be resolved to EDL later (because EDL is
+            -- not considered "safe", and the playlist entries got tagged as
+            -- network originating due to the playlist redirection).
+            mp.set_property_native("file-local-options/load-unsafe-playlists", true)
         end
 
     else -- probably a video

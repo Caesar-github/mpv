@@ -226,7 +226,7 @@ static bool resize(struct vo *vo)
 
     for (int i = 0; i < 2; i++) {
         if (!getMyXImage(p, i))
-            return -1;
+            return false;
     }
 
     const struct fmt_entry *fmte = mp_to_x_fmt;
@@ -241,10 +241,11 @@ static bool resize(struct vo *vo)
     }
     if (!fmte->mpfmt) {
         MP_ERR(vo, "X server image format not supported, use another VO.\n");
-        return -1;
+        return false;
     }
 
     mp_sws_set_from_cmdline(p->sws, vo->global);
+    p->sws->allow_zimg = true;
     p->sws->dst = (struct mp_image_params) {
         .imgfmt = fmte->mpfmt,
         .w = p->dst_w,
@@ -376,6 +377,7 @@ static int preinit(struct vo *vo)
     struct priv *p = vo->priv;
     p->vo = vo;
     p->sws = mp_sws_alloc(vo);
+    p->sws->log = vo->log;
 
     if (!vo_x11_init(vo))
         goto error;

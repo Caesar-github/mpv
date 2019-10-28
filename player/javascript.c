@@ -37,7 +37,6 @@
 #include "input/input.h"
 #include "options/path.h"
 #include "misc/bstr.h"
-#include "osdep/subprocess.h"
 #include "osdep/timer.h"
 #include "osdep/threads.h"
 #include "osdep/getpid.h"
@@ -75,6 +74,11 @@ static mpv_handle *jclient(js_State *J)
 {
     return jctx(J)->client;
 }
+
+static void pushnode(js_State *J, mpv_node *node);
+static void makenode(void *ta_ctx, mpv_node *dst, js_State *J, int idx);
+static int jsL_checkint(js_State *J, int idx);
+static uint64_t jsL_checkuint64(js_State *J, int idx);
 
 /**********************************************************************
  *  conventions, MuJS notes and vm errors
@@ -372,7 +376,7 @@ static void push_file_content(js_State *J, const char *fname, int limit)
 // utils.read_file(..). args: fname [,max]. returns [up to max] bytes as string.
 static void script_read_file(js_State *J)
 {
-    int limit = js_isundefined(J, 2) ? -1 : js_tonumber(J, 2);
+    int limit = js_isundefined(J, 2) ? -1 : jsL_checkint(J, 2);
     push_file_content(J, js_tostring(J, 1), limit);
 }
 
@@ -501,11 +505,6 @@ error_out:
 /**********************************************************************
  *  Main mp.* scripting APIs and helpers
  *********************************************************************/
-static void pushnode(js_State *J, mpv_node *node);
-static void makenode(void *ta_ctx, mpv_node *dst, js_State *J, int idx);
-static int jsL_checkint(js_State *J, int idx);
-static int64_t jsL_checkint64(js_State *J, int idx);
-
 // Return the index in opts of stack[idx] (or of def if undefined), else throws.
 static int checkopt(js_State *J, int idx, const char *def, const char *opts[],
                     const char *desc)
@@ -686,7 +685,7 @@ static void script__observe_property(js_State *J)
                              MPV_FORMAT_STRING, MPV_FORMAT_DOUBLE};
 
     mpv_format f = mf[checkopt(J, 3, "none", fmts, "observe type")];
-    int e = mpv_observe_property(jclient(J), js_tonumber(J, 1),
+    int e = mpv_observe_property(jclient(J), jsL_checkuint64(J, 1),
                                              js_tostring(J, 2),
                                              f);
     push_status(J, e);
@@ -695,7 +694,7 @@ static void script__observe_property(js_State *J)
 // args: id
 static void script__unobserve_property(js_State *J)
 {
-    int e = mpv_unobserve_property(jclient(J), js_tonumber(J, 1));
+    int e = mpv_unobserve_property(jclient(J), jsL_checkuint64(J, 1));
     push_status(J, e);
 }
 
@@ -710,6 +709,22 @@ static void script_command_native(js_State *J, void *af)
         pushnode(J, presult_node);
 }
 
+// args: async-command-id, native-command
+static void script__command_native_async(js_State *J, void *af)
+{
+    uint64_t id = jsL_checkuint64(J, 1);
+    struct mpv_node node;
+    makenode(af, &node, J, 2);
+    push_status(J, mpv_command_node_async(jclient(J), id, &node));
+}
+
+// args: async-command-id
+static void script__abort_async_command(js_State *J)
+{
+    mpv_abort_async_command(jclient(J), jsL_checkuint64(J, 1));
+    push_success(J);
+}
+
 // args: none, result in millisec
 static void script_get_time_ms(js_State *J)
 {
@@ -719,8 +734,8 @@ static void script_get_time_ms(js_State *J)
 static void script_set_osd_ass(js_State *J)
 {
     struct script_ctx *ctx = jctx(J);
-    int res_x = js_tonumber(J, 1);
-    int res_y = js_tonumber(J, 2);
+    int res_x = jsL_checkint(J, 1);
+    int res_y = jsL_checkint(J, 2);
     const char *text = js_tostring(J, 3);
     osd_set_external(ctx->mpctx->osd, ctx->client, res_x, res_y, (char *)text);
     mp_wakeup_core(ctx->mpctx);
@@ -772,8 +787,8 @@ static void script_input_set_section_mouse_area(js_State *J)
 {
     char *section = (char *)js_tostring(J, 1);
     mp_input_set_section_mouse_area(jctx(J)->mpctx->input, section,
-        js_tonumber(J, 2), js_tonumber(J, 3),   // x0, y0
-        js_tonumber(J, 4), js_tonumber(J, 5));  // x1, y1
+        jsL_checkint(J, 2), jsL_checkint(J, 3),   // x0, y0
+        jsL_checkint(J, 4), jsL_checkint(J, 5));  // x1, y1
     push_success(J);
 }
 
@@ -799,14 +814,14 @@ static void script__hook_add(js_State *J)
 {
     const char *name = js_tostring(J, 1);
     int pri = jsL_checkint(J, 2);
-    uint64_t id = jsL_checkint64(J, 3);
+    uint64_t id = jsL_checkuint64(J, 3);
     push_status(J, mpv_hook_add(jclient(J), id, name, pri));
 }
 
 // args: id (uint)
 static void script__hook_continue(js_State *J)
 {
-    push_status(J, mpv_hook_continue(jclient(J), jsL_checkint64(J, 1)));
+    push_status(J, mpv_hook_continue(jclient(J), jsL_checkuint64(J, 1)));
 }
 
 /**********************************************************************
@@ -911,103 +926,6 @@ static void script_get_user_path(js_State *J, void *af)
     js_pushstring(J, mp_get_user_path(af, jctx(J)->mpctx->global, path));
 }
 
-struct subprocess_cb_ctx {
-    struct mp_log *log;
-    void *talloc_ctx;
-    int64_t max_size;
-    bstr output;
-    bstr err;
-};
-
-static void subprocess_stdout(void *p, char *data, size_t size)
-{
-    struct subprocess_cb_ctx *ctx = p;
-    if (ctx->output.len < ctx->max_size)
-        bstr_xappend(ctx->talloc_ctx, &ctx->output, (bstr){data, size});
-}
-
-static void subprocess_stderr(void *p, char *data, size_t size)
-{
-    struct subprocess_cb_ctx *ctx = p;
-    if (ctx->err.len < ctx->max_size)
-        bstr_xappend(ctx->talloc_ctx, &ctx->err, (bstr){data, size});
-    MP_INFO(ctx, "%.*s", (int)size, data);
-}
-
-// args: client invocation args object. TODO: use common backend for js/lua
-static void af_subprocess_common(js_State *J, int detach, void *af)
-{
-    struct script_ctx *ctx = jctx(J);
-    if (!js_isobject(J, 1))
-        js_error(J, "argument must be an object");
-
-    js_getproperty(J, 1, "args"); // args
-    int num_args = js_getlength(J, -1);
-    if (!num_args) // not using js_isarray to also accept array-like objects
-        js_error(J, "args must be an non-empty array");
-    char *args[256];
-    if (num_args > MP_ARRAY_SIZE(args) - 1) // last needs to be NULL
-        js_error(J, "too many arguments");
-    if (num_args < 1)
-        js_error(J, "program name missing");
-
-    for (int n = 0; n < num_args; n++) {
-        js_getindex(J, -1, n);
-        if (js_isundefined(J, -1))
-            js_error(J, "program arguments must be strings");
-        args[n] = talloc_strdup(af, js_tostring(J, -1));
-        js_pop(J, 1); // args
-    }
-    args[num_args] = NULL;
-
-    if (detach) {
-        mp_subprocess_detached(ctx->log, args);
-        push_success(J);
-        return;
-    }
-
-    struct mp_cancel *cancel = NULL;
-    if (js_hasproperty(J, 1, "cancellable") ? js_toboolean(J, -1) : true)
-        cancel = ctx->mpctx->playback_abort;
-
-    int64_t max_size = js_hasproperty(J, 1, "max_size") ? js_tointeger(J, -1)
-                                                        : 16 * 1024 * 1024;
-    struct subprocess_cb_ctx cb_ctx = {
-        .log = ctx->log,
-        .talloc_ctx = af,
-        .max_size = max_size,
-    };
-
-    char *error = NULL;
-    int status = mp_subprocess(args, cancel, &cb_ctx, subprocess_stdout,
-                               subprocess_stderr, &error);
-
-    js_newobject(J); // res
-    if (error) {
-        js_pushstring(J, error); // res e
-        js_setproperty(J, -2, "error"); // res
-    }
-    js_pushnumber(J, status); // res s
-    js_setproperty(J, -2, "status"); // res
-    js_pushlstring(J, cb_ctx.output.start, cb_ctx.output.len); // res d
-    js_setproperty(J, -2, "stdout"); // res
-    js_pushlstring(J, cb_ctx.err.start, cb_ctx.err.len);
-    js_setproperty(J, -2, "stderr");
-    js_pushboolean(J, status == MP_SUBPROCESS_EKILLED_BY_US); // res b
-    js_setproperty(J, -2, "killed_by_us"); // res
-}
-
-// args: client invocation args object (same also for _detached)
-static void script_subprocess(js_State *J, void *af)
-{
-    af_subprocess_common(J, 0, af);
-}
-
-static void script_subprocess_detached(js_State *J, void *af)
-{
-    af_subprocess_common(J, 1, af);
-}
-
 // args: none
 static void script_getpid(js_State *J)
 {
@@ -1075,6 +993,9 @@ static void pushnode(js_State *J, mpv_node *node)
     case MPV_FORMAT_INT64:  js_pushnumber(J, node->u.int64); break;
     case MPV_FORMAT_DOUBLE: js_pushnumber(J, node->u.double_); break;
     case MPV_FORMAT_FLAG:   js_pushboolean(J, node->u.flag); break;
+    case MPV_FORMAT_BYTE_ARRAY:
+        js_pushlstring(J, node->u.ba->data, node->u.ba->size);
+        break;
     case MPV_FORMAT_NODE_ARRAY:
         js_newarray(J);
         len = node->u.list->num;
@@ -1124,15 +1045,15 @@ static int jsL_checkint(js_State *J, int idx)
 {
     double d = js_tonumber(J, idx);
     if (!(d >= INT_MIN && d <= INT_MAX))
-        js_error(J, "integer out of range at index %d", idx);
+        js_error(J, "int out of range at index %d", idx);
     return d;
 }
 
-static int64_t jsL_checkint64(js_State *J, int idx)
+static uint64_t jsL_checkuint64(js_State *J, int idx)
 {
     double d = js_tonumber(J, idx);
-    if (!(d >= INT64_MIN && d <= INT64_MAX))
-        js_error(J, "integer out of range at index %d", idx);
+    if (!(d >= 0 && d <= UINT64_MAX))
+        js_error(J, "uint64 out of range at index %d", idx);
     return d;
 }
 
@@ -1283,6 +1204,13 @@ static void script_wait_event(js_State *J)
         js_setproperty(J, -2, "hook_id");  // reply.hook_id (is a number)
         break;
     }
+
+    case MPV_EVENT_COMMAND_REPLY: {
+        mpv_event_command *cmd = event->data;
+        pushnode(J, &cmd->result);
+        js_setproperty(J, -2, "result");  // reply.result (mpv node)
+        break;
+    }
     }  // switch (event->event_id)
 
     assert(top == js_gettop(J) - 1);
@@ -1310,6 +1238,8 @@ static const struct fn_entry main_fns[] = {
     FN_ENTRY(command, 1),
     FN_ENTRY(commandv, 0),
     AF_ENTRY(command_native, 2),
+    AF_ENTRY(_command_native_async, 2),
+    FN_ENTRY(_abort_async_command, 1),
     FN_ENTRY(get_property_bool, 2),
     FN_ENTRY(get_property_number, 2),
     AF_ENTRY(get_property_native, 2),
@@ -1343,8 +1273,6 @@ static const struct fn_entry utils_fns[] = {
     FN_ENTRY(split_path, 1),
     AF_ENTRY(join_path, 2),
     AF_ENTRY(get_user_path, 1),
-    AF_ENTRY(subprocess, 1),
-    AF_ENTRY(subprocess_detached, 1),
     FN_ENTRY(getpid, 0),
 
     FN_ENTRY(read_file, 2),
