@@ -37,7 +37,7 @@ Build-Depends:
  libva-dev,
  libvdpau-dev,
  libvulkan-dev [linux-any],
- libwayland-dev [linux-any],
+ libwayland-dev (>= 1.15.0) [linux-any],
  libx11-dev,
  libxinerama-dev,
  libxkbcommon-dev [linux-any],
