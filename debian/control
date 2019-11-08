@@ -19,6 +19,7 @@ Build-Depends:
  libbluray-dev,
  libcaca-dev,
  libcdio-paranoia-dev,
+ libdrm-dev (>= 2.4.74),
  libdvdnav-dev,
  libegl1-mesa-dev [linux-any],
  libgbm-dev,
