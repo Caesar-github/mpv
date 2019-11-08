@@ -19,7 +19,6 @@ override_dh_auto_configure:
 			--zshdir=/usr/share/zsh/vendor-completions	\
 			--enable-cdda					\
 			--enable-dvdnav					\
-			--enable-dvdread				\
 			--enable-libmpv-shared				\
 			--enable-libsmbclient				\
 			--enable-sdl2					\
