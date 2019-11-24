@@ -1,8 +1,29 @@
-mpv (0.30.0-1) UNRELEASED; urgency=medium
+mpv (0.30.0-1) unstable; urgency=medium
 
-  *
+  [ James Cowgill ]
+  * New upstream release. (Closes: #945367)
 
- -- James Cowgill <jcowgill@debian.org>  Mon, 28 Oct 2019 18:27:54 +0000
+  * d/copyright: Updates for 0.30.0.
+  * d/control:
+    - Use debhelper compat 12.
+    - Bump minimum libwayland-dev version.
+    - Drop libvulkan-dev.
+    - Add build-dependency on libdrm-dev.
+    - Bump standards version to 4.4.1.
+  * d/libmpv1.symbols:
+    - Add new symbols found in 0.30.0.
+    - Add Build-Depends-Package field.
+  * d/patches:
+    - Drop 02_fix-config-path.patch.
+    - Refresh patches.
+  * d/rules:
+    - Drop --enable-zsh-comp.
+    - Drop --enable-libdvdread.
+
+  [ Ondřej Nový ]
+  * d/control: Use debhelper-compat instead of debian/compat.
+
+ -- James Cowgill <jcowgill@debian.org>  Sun, 24 Nov 2019 17:29:57 +0000
 
 mpv (0.29.1-1) unstable; urgency=medium
 
