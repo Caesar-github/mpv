@@ -100,6 +100,7 @@ struct xvctx {
 #define MP_FOURCC_I420  MP_FOURCC('I', '4', '2', '0')
 #define MP_FOURCC_IYUV  MP_FOURCC('I', 'Y', 'U', 'V')
 #define MP_FOURCC_UYVY  MP_FOURCC('U', 'Y', 'V', 'Y')
+#define MP_FOURCC_NV12  MP_FOURCC('N', 'V', '1', '2')
 
 struct fmt_entry {
     int imgfmt;
@@ -109,6 +110,7 @@ static const struct fmt_entry fmt_table[] = {
     {IMGFMT_420P,       MP_FOURCC_YV12},
     {IMGFMT_420P,       MP_FOURCC_I420},
     {IMGFMT_UYVY,       MP_FOURCC_UYVY},
+    {IMGFMT_NV12,       MP_FOURCC_NV12},
     {0}
 };
 
