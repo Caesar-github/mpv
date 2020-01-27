@@ -43,15 +43,15 @@ enum {
     VO_EVENT_AMBIENT_LIGHTING_CHANGED   = 1 << 4,
     // Special mechanism for making resizing with Cocoa react faster
     VO_EVENT_LIVE_RESIZING              = 1 << 5,
-    // Window fullscreen state changed via external influence.
-    VO_EVENT_FULLSCREEN_STATE           = 1 << 6,
+    // For VOCTRL_GET_HIDPI_SCALE changes.
+    VO_EVENT_DPI                        = 1 << 6,
     // Special thing for encode mode (vo_driver.initially_blocked).
     // Part of VO_EVENTS_USER to make vo_is_ready_for_frame() work properly.
     VO_EVENT_INITIAL_UNBLOCK            = 1 << 7,
 
     // Set of events the player core may be interested in.
-    VO_EVENTS_USER = VO_EVENT_RESIZE | VO_EVENT_WIN_STATE |
-                     VO_EVENT_FULLSCREEN_STATE | VO_EVENT_INITIAL_UNBLOCK,
+    VO_EVENTS_USER = VO_EVENT_RESIZE | VO_EVENT_WIN_STATE | VO_EVENT_DPI |
+                     VO_EVENT_INITIAL_UNBLOCK,
 };
 
 enum mp_voctrl {
@@ -67,6 +67,10 @@ enum mp_voctrl {
     VOCTRL_SET_PANSCAN,
     VOCTRL_SET_EQUALIZER,
 
+    // Trigger by any change to mp_vo_opts. This is for convenience. In theory,
+    // you could install your own listener.
+    VOCTRL_VO_OPTS_CHANGED,
+
     /* private to vo_gpu */
     VOCTRL_LOAD_HWDEC_API,
 
@@ -79,13 +83,6 @@ enum mp_voctrl {
     VOCTRL_PREINIT,
     VOCTRL_UNINIT,
     VOCTRL_RECONFIG,
-
-    VOCTRL_FULLSCREEN,
-    VOCTRL_ONTOP,
-    VOCTRL_BORDER,
-    VOCTRL_ALL_WORKSPACES,
-
-    VOCTRL_GET_FULLSCREEN,
 
     VOCTRL_UPDATE_WINDOW_TITLE,         // char*
     VOCTRL_UPDATE_PLAYBACK_STATE,       // struct voctrl_playback_state*
@@ -101,8 +98,6 @@ enum mp_voctrl {
     // these must access the not-fullscreened window size only).
     VOCTRL_GET_UNFS_WINDOW_SIZE,        // int[2] (w/h)
     VOCTRL_SET_UNFS_WINDOW_SIZE,        // int[2] (w/h)
-
-    VOCTRL_GET_WIN_STATE,               // int* (VO_WIN_STATE_* flags)
 
     // char *** (NULL terminated array compatible with CONF_TYPE_STRING_LIST)
     // names for displays the window is on
@@ -121,15 +116,13 @@ enum mp_voctrl {
     VOCTRL_GET_ICC_PROFILE,             // bstr*
     VOCTRL_GET_AMBIENT_LUX,             // int*
     VOCTRL_GET_DISPLAY_FPS,             // double*
+    VOCTRL_GET_HIDPI_SCALE,             // double*
 
     VOCTRL_GET_PREF_DEINT,              // int*
 
     /* private to vo_gpu */
     VOCTRL_EXTERNAL_RESIZE,
 };
-
-// VOCTRL_GET_WIN_STATE
-#define VO_WIN_STATE_MINIMIZED 1
 
 #define VO_TRUE         true
 #define VO_FALSE        false

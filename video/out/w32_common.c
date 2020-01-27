@@ -26,6 +26,7 @@
 #include <shobjidl.h>
 #include <avrt.h>
 
+#include "options/m_config.h"
 #include "options/options.h"
 #include "input/keycodes.h"
 #include "input/input.h"
@@ -74,6 +75,7 @@ struct vo_w32_state {
     struct mp_log *log;
     struct vo *vo;
     struct mp_vo_opts *opts;
+    struct m_config_cache *opts_cache;
     struct input_ctx *input_ctx;
 
     pthread_t thread;
@@ -839,7 +841,9 @@ static bool update_fullscreen_state(struct vo_w32_state *w32)
     }
 
     bool toggle_fs = w32->current_fs != new_fs;
-    w32->current_fs = new_fs;
+    w32->opts->fullscreen = w32->current_fs = new_fs;
+    m_config_cache_write_opt(w32->opts_cache,
+                             &w32->opts->fullscreen);
 
     if (toggle_fs) {
         if (w32->current_fs) {
@@ -863,6 +867,57 @@ static bool update_fullscreen_state(struct vo_w32_state *w32)
     return toggle_fs;
 }
 
+static void update_minimized_state(struct vo_w32_state *w32)
+{
+    if (w32->parent)
+        return;
+
+    if (!!IsMinimized(w32->window) != w32->opts->window_minimized) {
+        if (w32->opts->window_minimized) {
+            ShowWindow(w32->window, SW_SHOWMINNOACTIVE);
+        } else {
+            ShowWindow(w32->window, SW_RESTORE);
+        }
+    }
+}
+
+static void update_maximized_state(struct vo_w32_state *w32)
+{
+    if (w32->parent)
+        return;
+
+    // Don't change the maximized state in fullscreen for now. In future, this
+    // should be made to apply the maximized state on leaving fullscreen.
+    if (w32->current_fs)
+        return;
+
+    WINDOWPLACEMENT wp = { .length = sizeof wp };
+    GetWindowPlacement(w32->window, &wp);
+
+    if (wp.showCmd == SW_SHOWMINIMIZED) {
+        // When the window is minimized, setting this property just changes
+        // whether it will be maximized when it's restored
+        if (w32->opts->window_maximized) {
+            wp.flags |= WPF_RESTORETOMAXIMIZED;
+        } else {
+            wp.flags &= ~WPF_RESTORETOMAXIMIZED;
+        }
+        SetWindowPlacement(w32->window, &wp);
+    } else if ((wp.showCmd == SW_SHOWMAXIMIZED) != w32->opts->window_maximized) {
+        if (w32->opts->window_maximized) {
+            ShowWindow(w32->window, SW_SHOWMAXIMIZED);
+        } else {
+            ShowWindow(w32->window, SW_SHOWNOACTIVATE);
+        }
+    }
+}
+
+static bool is_visible(HWND window)
+{
+    // Unlike IsWindowVisible, this doesn't check the window's parents
+    return GetWindowLongPtrW(window, GWL_STYLE) & WS_VISIBLE;
+}
+
 static void update_window_state(struct vo_w32_state *w32)
 {
     if (w32->parent)
@@ -873,7 +928,19 @@ static void update_window_state(struct vo_w32_state *w32)
 
     SetWindowPos(w32->window, w32->opts->ontop ? HWND_TOPMOST : HWND_NOTOPMOST,
                  wr.left, wr.top, rect_w(wr), rect_h(wr),
-                 SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+                 SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+
+    // Show the window if it's not yet visible
+    if (!is_visible(w32->window)) {
+        if (w32->opts->window_minimized) {
+            ShowWindow(w32->window, SW_SHOWMINIMIZED);
+            update_maximized_state(w32); // Set the WPF_RESTORETOMAXIMIZED flag
+        } else if (w32->opts->window_maximized) {
+            ShowWindow(w32->window, SW_SHOWMAXIMIZED);
+        } else {
+            ShowWindow(w32->window, SW_SHOW);
+        }
+    }
 
     // Notify the taskbar about the fullscreen state only after the window
     // is visible, to make sure the taskbar item has already been created
@@ -986,7 +1053,28 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam,
             MP_VERBOSE(w32, "resize window: %d:%d\n", w, h);
         }
 
-        // Window may have been minimized or restored
+        // Window may have been minimized, maximized or restored
+        if (is_visible(w32->window)) {
+            WINDOWPLACEMENT wp = { .length = sizeof wp };
+            GetWindowPlacement(w32->window, &wp);
+
+            bool is_minimized = wp.showCmd == SW_SHOWMINIMIZED;
+            if (w32->opts->window_minimized != is_minimized) {
+                w32->opts->window_minimized = is_minimized;
+                m_config_cache_write_opt(w32->opts_cache,
+                                         &w32->opts->window_minimized);
+            }
+
+            bool is_maximized = wp.showCmd == SW_SHOWMAXIMIZED ||
+                (wp.showCmd == SW_SHOWMINIMIZED &&
+                    (wp.flags & WPF_RESTORETOMAXIMIZED));
+            if (w32->opts->window_maximized != is_maximized) {
+                w32->opts->window_maximized = is_maximized;
+                m_config_cache_write_opt(w32->opts_cache,
+                                         &w32->opts->window_maximized);
+            }
+        }
+
         signal_events(w32, VO_EVENT_WIN_STATE);
 
         update_display_info(w32);
@@ -1047,7 +1135,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam,
             if (IsMaximized(w32->window) && w32->current_fs) {
                 w32->toggle_fs = true;
                 reinit_window_state(w32);
-                signal_events(w32, VO_EVENT_FULLSCREEN_STATE);
+
                 return 0;
             }
             break;
@@ -1074,11 +1162,12 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam,
             return 0;
         }
 
-        // Handle all other WM_SYSKEYDOWN messages as WM_KEYDOWN
-    case WM_KEYDOWN:
         handle_key_down(w32, wParam, HIWORD(lParam));
         if (wParam == VK_F10)
             return 0;
+        break;
+    case WM_KEYDOWN:
+        handle_key_down(w32, wParam, HIWORD(lParam));
         break;
     case WM_SYSKEYUP:
     case WM_KEYUP:
@@ -1482,10 +1571,11 @@ int vo_w32_init(struct vo *vo)
     *w32 = (struct vo_w32_state){
         .log = mp_log_new(w32, vo->log, "win32"),
         .vo = vo,
-        .opts = vo->opts,
+        .opts_cache = m_config_cache_alloc(w32, vo->global, &vo_sub_opts),
         .input_ctx = vo->input_ctx,
         .dispatch = mp_dispatch_create(w32),
     };
+    w32->opts = w32->opts_cache->opts;
     vo->w32 = w32;
 
     if (pthread_create(&w32->thread, NULL, gui_thread, w32))
@@ -1560,20 +1650,30 @@ static char **get_disp_names(struct vo_w32_state *w32)
 static int gui_thread_control(struct vo_w32_state *w32, int request, void *arg)
 {
     switch (request) {
-    case VOCTRL_FULLSCREEN:
-        if (w32->opts->fullscreen != w32->current_fs)
-            reinit_window_state(w32);
+    case VOCTRL_VO_OPTS_CHANGED: {
+        void *changed_option;
+
+        while (m_config_cache_get_next_changed(w32->opts_cache,
+                                               &changed_option))
+        {
+            struct mp_vo_opts *vo_opts = w32->opts_cache->opts;
+
+            if (changed_option == &vo_opts->fullscreen) {
+                reinit_window_state(w32);
+            } else if (changed_option == &vo_opts->ontop) {
+                update_window_state(w32);
+            } else if (changed_option == &vo_opts->border) {
+                update_window_style(w32);
+                update_window_state(w32);
+            } else if (changed_option == &vo_opts->window_minimized) {
+                update_minimized_state(w32);
+            } else if (changed_option == &vo_opts->window_maximized) {
+                update_maximized_state(w32);
+            }
+        }
+
         return VO_TRUE;
-    case VOCTRL_ONTOP:
-        update_window_state(w32);
-        return VO_TRUE;
-    case VOCTRL_BORDER:
-        update_window_style(w32);
-        update_window_state(w32);
-        return VO_TRUE;
-    case VOCTRL_GET_FULLSCREEN:
-        *(bool *)arg = w32->current_fs;
-        return VO_TRUE;
+    }
     case VOCTRL_GET_UNFS_WINDOW_SIZE: {
         int *s = arg;
 
@@ -1600,9 +1700,6 @@ static int gui_thread_control(struct vo_w32_state *w32, int request, void *arg)
         reinit_window_state(w32);
         return VO_TRUE;
     }
-    case VOCTRL_GET_WIN_STATE:
-        *(int *)arg = IsIconic(w32->window) ? VO_WIN_STATE_MINIMIZED : 0;
-        return VO_TRUE;
     case VOCTRL_SET_CURSOR_VISIBILITY:
         w32->cursor_visible = *(bool *)arg;
 

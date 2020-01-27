@@ -54,6 +54,8 @@
 // mp_wait_events() was called.
 void mp_wait_events(struct MPContext *mpctx)
 {
+    mp_client_send_property_changes(mpctx);
+
     bool sleeping = mpctx->sleeptime > 0;
     if (sleeping)
         MP_STATS(mpctx, "start sleep");
@@ -103,8 +105,7 @@ void mp_core_unlock(struct MPContext *mpctx)
     mp_dispatch_unlock(mpctx->dispatch);
 }
 
-// Process any queued input, whether it's user input, or requests from client
-// API threads. This also resets the "wakeup" flag used with mp_wait_events().
+// Process any queued user input.
 void mp_process_input(struct MPContext *mpctx)
 {
     for (;;) {
@@ -144,16 +145,12 @@ void update_core_idle_state(struct MPContext *mpctx)
 void set_pause_state(struct MPContext *mpctx, bool user_pause)
 {
     struct MPOpts *opts = mpctx->opts;
-    bool send_update = false;
 
-    if (opts->pause != user_pause)
-        send_update = true;
     opts->pause = user_pause;
 
     bool internal_paused = opts->pause || mpctx->paused_for_cache;
     if (internal_paused != mpctx->paused) {
         mpctx->paused = internal_paused;
-        send_update = true;
 
         if (mpctx->ao && mpctx->ao_chain) {
             if (internal_paused) {
@@ -177,12 +174,15 @@ void set_pause_state(struct MPContext *mpctx, bool user_pause)
         } else {
             (void)get_relative_time(mpctx); // ignore time that passed during pause
         }
+
+        // For some reason, these events are supposed to be sent even if only
+        // the internal pause state changed (and "pause" property didn't)... OK.
+        mp_notify(mpctx, opts->pause ? MPV_EVENT_PAUSE : MPV_EVENT_UNPAUSE, 0);
     }
 
     update_core_idle_state(mpctx);
 
-    if (send_update)
-        mp_notify(mpctx, opts->pause ? MPV_EVENT_PAUSE : MPV_EVENT_UNPAUSE, 0);
+    m_config_notify_change_opt_ptr(mpctx->mconfig, &opts->pause);
 }
 
 void update_internal_pause_state(struct MPContext *mpctx)
@@ -465,16 +465,26 @@ void queue_seek(struct MPContext *mpctx, enum seek_type type, double amount,
 void execute_queued_seek(struct MPContext *mpctx)
 {
     if (mpctx->seek.type) {
+        bool queued_hr_seek = mpctx->seek.exact != MPSEEK_KEYFRAME;
         // Let explicitly imprecise seeks cancel precise seeks:
-        if (mpctx->hrseek_active && mpctx->seek.exact == MPSEEK_KEYFRAME)
+        if (mpctx->hrseek_active && !queued_hr_seek)
             mpctx->start_timestamp = -1e9;
-        /* If the user seeks continuously (keeps arrow key down)
-         * try to finish showing a frame from one location before doing
-         * another seek (which could lead to unchanging display). */
-        bool delay = mpctx->seek.flags & MPSEEK_FLAG_DELAY;
-        if (delay && mpctx->video_status < STATUS_PLAYING &&
+        // If the user seeks continuously (keeps arrow key down) try to finish
+        // showing a frame from one location before doing another seek (instead
+        // of never updating the screen).
+        if ((mpctx->seek.flags & MPSEEK_FLAG_DELAY) &&
             mp_time_sec() - mpctx->start_timestamp < 0.3)
-            return;
+        {
+            // Wait until a video frame is available and has been shown.
+            if (mpctx->video_status < STATUS_PLAYING)
+                return;
+            // On A/V hr-seeks, always wait for the full result, to avoid corner
+            // cases when seeking past EOF (we want it to determine that EOF
+            // actually happened, instead of overwriting it with the new seek).
+            if (mpctx->hrseek_active && queued_hr_seek && mpctx->vo_chain &&
+                mpctx->ao_chain && !mpctx->restart_complete)
+                return;
+        }
         mp_seek(mpctx, mpctx->seek);
         mpctx->seek = (struct seek_params){0};
     }
@@ -691,8 +701,7 @@ static void handle_update_cache(struct MPContext *mpctx)
     mpctx->demux_underrun |= s.underrun;
 
     int cache_buffer = 100;
-    bool use_pause_on_low_cache = demux_is_network_cached(mpctx->demuxer) &&
-                                  opts->cache_pause && mpctx->play_dir > 0;
+    bool use_pause_on_low_cache = opts->cache_pause && mpctx->play_dir > 0;
 
     if (!mpctx->restart_complete) {
         // Audio or video is restarting, and initial buffering is enabled. Make
@@ -838,14 +847,8 @@ static void handle_vo_events(struct MPContext *mpctx)
         mp_notify(mpctx, MP_EVENT_WIN_RESIZE, NULL);
     if (events & VO_EVENT_WIN_STATE)
         mp_notify(mpctx, MP_EVENT_WIN_STATE, NULL);
-    if (events & VO_EVENT_FULLSCREEN_STATE) {
-        // The only purpose of this is to update the fullscreen flag on the
-        // playloop side if it changes "from outside" on the VO.
-        int fs = mpctx->opts->vo->fullscreen;
-        vo_control(vo, VOCTRL_GET_FULLSCREEN, &fs);
-        m_config_set_option_raw_direct(mpctx->mconfig,
-            m_config_get_co(mpctx->mconfig, bstr0("fullscreen")), &fs, 0);
-    }
+    if (events & VO_EVENT_DPI)
+        mp_notify(mpctx, MP_EVENT_WIN_STATE2, NULL);
 }
 
 static void handle_sstep(struct MPContext *mpctx)
@@ -882,8 +885,10 @@ static void handle_loop_file(struct MPContext *mpctx)
         target = ab[0];
         prec = MPSEEK_EXACT;
     } else if (opts->loop_file) {
-        if (opts->loop_file > 0)
+        if (opts->loop_file > 0) {
             opts->loop_file--;
+            m_config_notify_change_opt_ptr(mpctx->mconfig, &opts->loop_file);
+        }
         target = get_start_time(mpctx, mpctx->play_dir);
     }
 
@@ -1033,6 +1038,7 @@ int handle_force_window(struct MPContext *mpctx, bool force)
 
 err:
     mpctx->opts->force_vo = 0;
+    m_config_notify_change_opt_ptr(mpctx->mconfig, &mpctx->opts->force_vo);
     uninit_video_out(mpctx);
     MP_FATAL(mpctx, "Error opening/initializing the VO window.\n");
     return -1;
@@ -1056,7 +1062,6 @@ static void handle_dummy_ticks(struct MPContext *mpctx)
 static void handle_playback_time(struct MPContext *mpctx)
 {
     if (mpctx->vo_chain &&
-        !mpctx->vo_chain->is_coverart &&
         !mpctx->vo_chain->is_sparse &&
         mpctx->video_status >= STATUS_PLAYING &&
         mpctx->video_status < STATUS_EOF)
@@ -1117,6 +1122,7 @@ static void handle_playback_restart(struct MPContext *mpctx)
         // actually play the audio, but resume seeking immediately.
         if (mpctx->seek.type && mpctx->video_status == STATUS_PLAYING) {
             handle_playback_time(mpctx);
+            mpctx->seek.flags &= ~MPSEEK_FLAG_DELAY; // immediately
             execute_queued_seek(mpctx);
             return;
         }
@@ -1166,6 +1172,9 @@ static void handle_playback_restart(struct MPContext *mpctx)
 
 static void handle_eof(struct MPContext *mpctx)
 {
+    if (mpctx->seek.type)
+        return;
+
     /* Don't quit while paused and we're displaying the last video frame. On the
      * other hand, if we don't have a video frame, then the user probably seeked
      * outside of the video, and we do want to quit. */
@@ -1225,6 +1234,8 @@ void run_playloop(struct MPContext *mpctx)
 
     update_core_idle_state(mpctx);
 
+    execute_queued_seek(mpctx);
+
     if (mpctx->stop_play)
         return;
 
@@ -1232,6 +1243,7 @@ void run_playloop(struct MPContext *mpctx)
 
     if (mp_filter_run(mpctx->filter_root))
         mp_wakeup_core(mpctx);
+
     mp_wait_events(mpctx);
 
     handle_update_cache(mpctx);
@@ -1241,8 +1253,6 @@ void run_playloop(struct MPContext *mpctx)
     handle_chapter_change(mpctx);
 
     handle_force_window(mpctx, false);
-
-    execute_queued_seek(mpctx);
 }
 
 void mp_idle(struct MPContext *mpctx)

@@ -63,6 +63,216 @@ static bool load_d3d11_functions(struct mp_log *log)
     return true;
 }
 
+#define D3D11_DXGI_ENUM(prefix, define) { case prefix ## define: return #define; }
+
+static const char *d3d11_get_format_name(DXGI_FORMAT fmt)
+{
+    switch (fmt) {
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, UNKNOWN);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R32G32B32A32_TYPELESS);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R32G32B32A32_FLOAT);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R32G32B32A32_UINT);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R32G32B32A32_SINT);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R32G32B32_TYPELESS);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R32G32B32_FLOAT);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R32G32B32_UINT);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R32G32B32_SINT);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R16G16B16A16_TYPELESS);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R16G16B16A16_FLOAT);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R16G16B16A16_UNORM);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R16G16B16A16_UINT);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R16G16B16A16_SNORM);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R16G16B16A16_SINT);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R32G32_TYPELESS);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R32G32_FLOAT);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R32G32_UINT);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R32G32_SINT);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R32G8X24_TYPELESS);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, D32_FLOAT_S8X24_UINT);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R32_FLOAT_X8X24_TYPELESS);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, X32_TYPELESS_G8X24_UINT);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R10G10B10A2_TYPELESS);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R10G10B10A2_UNORM);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R10G10B10A2_UINT);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R11G11B10_FLOAT);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R8G8B8A8_TYPELESS);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R8G8B8A8_UNORM);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R8G8B8A8_UNORM_SRGB);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R8G8B8A8_UINT);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R8G8B8A8_SNORM);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R8G8B8A8_SINT);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R16G16_TYPELESS);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R16G16_FLOAT);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R16G16_UNORM);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R16G16_UINT);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R16G16_SNORM);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R16G16_SINT);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R32_TYPELESS);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, D32_FLOAT);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R32_FLOAT);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R32_UINT);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R32_SINT);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R24G8_TYPELESS);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, D24_UNORM_S8_UINT);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R24_UNORM_X8_TYPELESS);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, X24_TYPELESS_G8_UINT);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R8G8_TYPELESS);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R8G8_UNORM);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R8G8_UINT);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R8G8_SNORM);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R8G8_SINT);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R16_TYPELESS);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R16_FLOAT);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, D16_UNORM);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R16_UNORM);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R16_UINT);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R16_SNORM);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R16_SINT);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R8_TYPELESS);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R8_UNORM);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R8_UINT);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R8_SNORM);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R8_SINT);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, A8_UNORM);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R1_UNORM);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R9G9B9E5_SHAREDEXP);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R8G8_B8G8_UNORM);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, G8R8_G8B8_UNORM);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, BC1_TYPELESS);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, BC1_UNORM);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, BC1_UNORM_SRGB);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, BC2_TYPELESS);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, BC2_UNORM);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, BC2_UNORM_SRGB);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, BC3_TYPELESS);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, BC3_UNORM);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, BC3_UNORM_SRGB);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, BC4_TYPELESS);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, BC4_UNORM);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, BC4_SNORM);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, BC5_TYPELESS);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, BC5_UNORM);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, BC5_SNORM);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, B5G6R5_UNORM);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, B5G5R5A1_UNORM);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, B8G8R8A8_UNORM);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, B8G8R8X8_UNORM);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, R10G10B10_XR_BIAS_A2_UNORM);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, B8G8R8A8_TYPELESS);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, B8G8R8A8_UNORM_SRGB);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, B8G8R8X8_TYPELESS);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, B8G8R8X8_UNORM_SRGB);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, BC6H_TYPELESS);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, BC6H_UF16);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, BC6H_SF16);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, BC7_TYPELESS);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, BC7_UNORM);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, BC7_UNORM_SRGB);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, AYUV);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, Y410);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, Y416);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, NV12);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, P010);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, P016);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, 420_OPAQUE);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, YUY2);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, Y210);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, Y216);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, NV11);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, AI44);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, IA44);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, P8);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, A8P8);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, B4G4R4A4_UNORM);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, P208);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, V208);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, V408);
+    D3D11_DXGI_ENUM(DXGI_FORMAT_, FORCE_UINT);
+    default:
+        return "<Unknown>";
+    }
+}
+
+static const char *d3d11_get_csp_name(DXGI_COLOR_SPACE_TYPE csp)
+{
+    switch (csp) {
+    D3D11_DXGI_ENUM(DXGI_COLOR_SPACE_, RGB_FULL_G22_NONE_P709);
+    D3D11_DXGI_ENUM(DXGI_COLOR_SPACE_, RGB_FULL_G10_NONE_P709);
+    D3D11_DXGI_ENUM(DXGI_COLOR_SPACE_, RGB_STUDIO_G22_NONE_P709);
+    D3D11_DXGI_ENUM(DXGI_COLOR_SPACE_, RGB_STUDIO_G22_NONE_P2020);
+    D3D11_DXGI_ENUM(DXGI_COLOR_SPACE_, RESERVED);
+    D3D11_DXGI_ENUM(DXGI_COLOR_SPACE_, YCBCR_FULL_G22_NONE_P709_X601);
+    D3D11_DXGI_ENUM(DXGI_COLOR_SPACE_, YCBCR_STUDIO_G22_LEFT_P601);
+    D3D11_DXGI_ENUM(DXGI_COLOR_SPACE_, YCBCR_FULL_G22_LEFT_P601);
+    D3D11_DXGI_ENUM(DXGI_COLOR_SPACE_, YCBCR_STUDIO_G22_LEFT_P709);
+    D3D11_DXGI_ENUM(DXGI_COLOR_SPACE_, YCBCR_FULL_G22_LEFT_P709);
+    D3D11_DXGI_ENUM(DXGI_COLOR_SPACE_, YCBCR_STUDIO_G22_LEFT_P2020);
+    D3D11_DXGI_ENUM(DXGI_COLOR_SPACE_, YCBCR_FULL_G22_LEFT_P2020);
+    D3D11_DXGI_ENUM(DXGI_COLOR_SPACE_, RGB_FULL_G2084_NONE_P2020);
+    D3D11_DXGI_ENUM(DXGI_COLOR_SPACE_, YCBCR_STUDIO_G2084_LEFT_P2020);
+    D3D11_DXGI_ENUM(DXGI_COLOR_SPACE_, RGB_STUDIO_G2084_NONE_P2020);
+    D3D11_DXGI_ENUM(DXGI_COLOR_SPACE_, YCBCR_STUDIO_G22_TOPLEFT_P2020);
+    D3D11_DXGI_ENUM(DXGI_COLOR_SPACE_, YCBCR_STUDIO_G2084_TOPLEFT_P2020);
+    D3D11_DXGI_ENUM(DXGI_COLOR_SPACE_, RGB_FULL_G22_NONE_P2020);
+    D3D11_DXGI_ENUM(DXGI_COLOR_SPACE_, YCBCR_STUDIO_GHLG_TOPLEFT_P2020);
+    D3D11_DXGI_ENUM(DXGI_COLOR_SPACE_, YCBCR_FULL_GHLG_TOPLEFT_P2020);
+    D3D11_DXGI_ENUM(DXGI_COLOR_SPACE_, RGB_STUDIO_G24_NONE_P709);
+    D3D11_DXGI_ENUM(DXGI_COLOR_SPACE_, RGB_STUDIO_G24_NONE_P2020);
+    D3D11_DXGI_ENUM(DXGI_COLOR_SPACE_, YCBCR_STUDIO_G24_LEFT_P709);
+    D3D11_DXGI_ENUM(DXGI_COLOR_SPACE_, YCBCR_STUDIO_G24_LEFT_P2020);
+    D3D11_DXGI_ENUM(DXGI_COLOR_SPACE_, YCBCR_STUDIO_G24_TOPLEFT_P2020);
+    D3D11_DXGI_ENUM(DXGI_COLOR_SPACE_, CUSTOM);
+    default:
+        return "<Unknown>";
+    }
+}
+
+static bool d3d11_get_mp_csp(DXGI_COLOR_SPACE_TYPE csp,
+                             struct mp_colorspace *mp_csp)
+{
+    if (!mp_csp)
+        return false;
+
+    // Colorspaces utilizing gamma 2.2 (G22) are set to
+    // AUTO as that keeps the current default flow regarding
+    // SDR transfer function handling.
+    // (no adjustment is done unless the user has a CMS LUT).
+    //
+    // Additionally, only set primary information with colorspaces
+    // utilizing non-709 primaries to keep the current behavior
+    // regarding not doing conversion from BT.601 to BT.709.
+    switch (csp) {
+    case DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709:
+        *mp_csp = (struct mp_colorspace){
+            .gamma     = MP_CSP_TRC_AUTO,
+            .primaries = MP_CSP_PRIM_AUTO,
+        };
+        break;
+    case DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709:
+        *mp_csp = (struct mp_colorspace) {
+            .gamma     = MP_CSP_TRC_LINEAR,
+            .primaries = MP_CSP_PRIM_AUTO,
+        };
+        break;
+    case DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020:
+        *mp_csp = (struct mp_colorspace) {
+            .gamma     = MP_CSP_TRC_PQ,
+            .primaries = MP_CSP_PRIM_BT_2020,
+        };
+        break;
+    case DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P2020:
+        *mp_csp = (struct mp_colorspace) {
+            .gamma     = MP_CSP_TRC_AUTO,
+            .primaries = MP_CSP_PRIM_BT_2020,
+        };
+        break;
+    default:
+        return false;
+    }
+
+    return true;
+}
+
 static bool query_output_format_and_colorspace(struct mp_log *log,
                                                IDXGISwapChain *swapchain,
                                                DXGI_FORMAT *out_fmt,
@@ -104,11 +314,13 @@ static bool query_output_format_and_colorspace(struct mp_log *log,
 
     monitor_name = mp_to_utf8(NULL, desc.DeviceName);
 
-    mp_verbose(log, "Queried output: %s, %ldx%ld @ %d bits, colorspace: %d\n",
+    mp_verbose(log, "Queried output: %s, %ldx%ld @ %d bits, colorspace: %s (%d)\n",
                monitor_name,
                desc.DesktopCoordinates.right - desc.DesktopCoordinates.left,
                desc.DesktopCoordinates.bottom - desc.DesktopCoordinates.top,
-               desc.BitsPerColor, desc.ColorSpace);
+               desc.BitsPerColor,
+               d3d11_get_csp_name(desc.ColorSpace),
+               desc.ColorSpace);
 
     *out_cspace = desc.ColorSpace;
 
@@ -492,13 +704,82 @@ static bool update_swapchain_format(struct mp_log *log,
     return true;
 }
 
+static bool update_swapchain_color_space(struct mp_log *log,
+                                         IDXGISwapChain *swapchain,
+                                         DXGI_COLOR_SPACE_TYPE color_space)
+{
+    IDXGISwapChain4 *swapchain4 = NULL;
+    const char *csp_name = d3d11_get_csp_name(color_space);
+    bool success = false;
+    HRESULT hr = E_FAIL;
+    unsigned int csp_support_flags;
+
+    hr = IDXGISwapChain_QueryInterface(swapchain, &IID_IDXGISwapChain4,
+                                       (void *)&(swapchain4));
+    if (FAILED(hr)) {
+        mp_err(log, "Failed to create v4 swapchain for color space "
+                    "configuration (%s)!\n",
+               mp_HRESULT_to_str(hr));
+        goto done;
+    }
+
+    hr = IDXGISwapChain4_CheckColorSpaceSupport(swapchain4,
+                                                color_space,
+                                                &csp_support_flags);
+    if (FAILED(hr)) {
+        mp_err(log, "Failed to check color space support for color space "
+                    "%s (%d): %s!\n",
+               csp_name, color_space, mp_HRESULT_to_str(hr));
+        goto done;
+    }
+
+    mp_verbose(log,
+               "Swapchain capabilities for color space %s (%d): "
+               "normal: %s, overlay: %s\n",
+               csp_name, color_space,
+               (csp_support_flags & DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT) ?
+               "yes" : "no",
+               (csp_support_flags & DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_OVERLAY_PRESENT) ?
+               "yes" : "no");
+
+    if (!(csp_support_flags & DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT)) {
+        mp_err(log, "Color space %s (%d) is not supported by this swapchain!\n",
+               csp_name, color_space);
+        goto done;
+    }
+
+    hr = IDXGISwapChain4_SetColorSpace1(swapchain4, color_space);
+    if (FAILED(hr)) {
+        mp_err(log, "Failed to set color space %s (%d) for this swapchain "
+                    "(%s)!\n",
+               csp_name, color_space, mp_HRESULT_to_str(hr));
+        goto done;
+    }
+
+    mp_verbose(log, "Swapchain successfully configured to color space %s (%d)!\n",
+               csp_name, color_space);
+
+    success = true;
+
+done:
+    SAFE_RELEASE(swapchain4);
+    return success;
+}
+
 static bool configure_created_swapchain(struct mp_log *log,
                                         IDXGISwapChain *swapchain,
-                                        DXGI_FORMAT requested_format)
+                                        DXGI_FORMAT requested_format,
+                                        DXGI_COLOR_SPACE_TYPE requested_csp,
+                                        struct mp_colorspace *configured_csp)
 {
     DXGI_FORMAT probed_format = DXGI_FORMAT_UNKNOWN;
     DXGI_FORMAT selected_format = DXGI_FORMAT_UNKNOWN;
-    DXGI_COLOR_SPACE_TYPE probed_colorspace;
+    DXGI_COLOR_SPACE_TYPE probed_colorspace = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
+    DXGI_COLOR_SPACE_TYPE selected_colorspace;
+    const char *format_name = NULL;
+    const char *csp_name = NULL;
+    struct mp_colorspace mp_csp = { 0 };
+    bool mp_csp_mapped = false;
 
     query_output_format_and_colorspace(log, swapchain,
                                        &probed_format,
@@ -509,12 +790,57 @@ static bool configure_created_swapchain(struct mp_log *log,
                       requested_format :
                       (probed_format != DXGI_FORMAT_UNKNOWN ?
                        probed_format : DXGI_FORMAT_R8G8B8A8_UNORM);
+    selected_colorspace = requested_csp != -1 ?
+                          requested_csp : probed_colorspace;
+    format_name   = d3d11_get_format_name(selected_format);
+    csp_name      = d3d11_get_csp_name(selected_colorspace);
+    mp_csp_mapped = d3d11_get_mp_csp(selected_colorspace, &mp_csp);
 
-    mp_verbose(log, "Selected swapchain format %d, attempting "
+    mp_verbose(log, "Selected swapchain format %s (%d), attempting "
                     "to utilize it.\n",
-               selected_format);
+               format_name, selected_format);
 
-    return update_swapchain_format(log, swapchain, selected_format);
+    if (!update_swapchain_format(log, swapchain, selected_format)) {
+        return false;
+    }
+
+    if (!IsWindows10OrGreater()) {
+        // On older than Windows 10, query_output_format_and_colorspace
+        // will not change probed_colorspace, and even if a user sets
+        // a colorspace it will not get applied. Thus warn user in case a
+        // value was specifically set and finish.
+        if (requested_csp != -1) {
+            mp_warn(log, "User selected a D3D11 color space %s (%d), "
+                         "but configuration of color spaces is only supported"
+                         "from Windows 10! The default configuration has been "
+                         "left as-is.\n",
+                    csp_name, selected_colorspace);
+        }
+
+        return true;
+    }
+
+    if (!mp_csp_mapped) {
+        mp_warn(log, "Color space %s (%d) does not have an mpv color space "
+                     "mapping! Overriding to standard sRGB!\n",
+                csp_name, selected_colorspace);
+        selected_colorspace = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
+        d3d11_get_mp_csp(selected_colorspace, &mp_csp);
+    }
+
+    mp_verbose(log, "Selected swapchain color space %s (%d), attempting to "
+                    "utilize it.\n",
+               csp_name, selected_colorspace);
+
+    if (!update_swapchain_color_space(log, swapchain, selected_colorspace)) {
+        return false;
+    }
+
+    if (configured_csp) {
+        *configured_csp = mp_csp;
+    }
+
+    return true;
 }
 
 // Create a Direct3D 11 swapchain
@@ -589,7 +915,9 @@ bool mp_d3d11_create_swapchain(ID3D11Device *dev, struct mp_log *log,
         mp_verbose(log, "Using DXGI 1.1\n");
     }
 
-    configure_created_swapchain(log, swapchain, opts->format);
+    configure_created_swapchain(log, swapchain, opts->format,
+                                opts->color_space,
+                                opts->configured_csp);
 
     DXGI_SWAP_CHAIN_DESC scd = {0};
     IDXGISwapChain_GetDesc(swapchain, &scd);

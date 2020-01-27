@@ -26,8 +26,9 @@ struct playlist_param {
 };
 
 struct playlist_entry {
-    struct playlist_entry *prev, *next;
+    // Invariant: (pl && pl->entries[pl_index] == this) || (!pl && pl_index < 0)
     struct playlist *pl;
+    int pl_index;
 
     char *filename;
 
@@ -41,6 +42,9 @@ struct playlist_entry {
     char **redirects;
     int num_redirects;
 
+    // Used for unshuffling: the pl_index before it was shuffled. -1 => unknown.
+    int original_index;
+
     // Set to true if playback didn't seem to work, or if the file could be
     // played only for a very short time. This is used to make playlist
     // navigation just work in case the user has unplayable files in the
@@ -53,24 +57,20 @@ struct playlist_entry {
     // Additional refcount. Normally (reserved==0), the entry is owned by the
     // playlist, and this can be used to keep the entry alive.
     int reserved;
+    // Any flags from STREAM_ORIGIN_FLAGS. 0 if unknown.
     // Used to reject loading of unsafe entries from external playlists.
-    // Can have any of the following bit flags set:
-    //  STREAM_SAFE_ONLY: only allow streams marked with is_safe
-    //  STREAM_NETWORK_ONLY: only allow streams marked with is_network
-    // The value 0 allows everything.
     int stream_flags;
 };
 
 struct playlist {
-    struct playlist_entry *first, *last;
+    struct playlist_entry **entries;
+    int num_entries;
 
     // This provides some sort of stable iterator. If this entry is removed from
     // the playlist, current is set to the next element (or NULL), and
     // current_was_replaced is set to true.
     struct playlist_entry *current;
     bool current_was_replaced;
-
-    bool disable_safety;
 };
 
 void playlist_entry_add_param(struct playlist_entry *e, bstr name, bstr value);
@@ -80,20 +80,25 @@ void playlist_entry_add_params(struct playlist_entry *e,
 
 struct playlist_entry *playlist_entry_new(const char *filename);
 
-void playlist_insert(struct playlist *pl, struct playlist_entry *after,
-                     struct playlist_entry *add);
 void playlist_add(struct playlist *pl, struct playlist_entry *add);
 void playlist_remove(struct playlist *pl, struct playlist_entry *entry);
 void playlist_clear(struct playlist *pl);
+void playlist_clear_except_current(struct playlist *pl);
 
 void playlist_move(struct playlist *pl, struct playlist_entry *entry,
                    struct playlist_entry *at);
 
 void playlist_add_file(struct playlist *pl, const char *filename);
 void playlist_shuffle(struct playlist *pl);
+void playlist_unshuffle(struct playlist *pl);
+struct playlist_entry *playlist_get_first(struct playlist *pl);
+struct playlist_entry *playlist_get_last(struct playlist *pl);
 struct playlist_entry *playlist_get_next(struct playlist *pl, int direction);
+struct playlist_entry *playlist_entry_get_rel(struct playlist_entry *e,
+                                              int direction);
 void playlist_add_base_path(struct playlist *pl, bstr base_path);
 void playlist_add_redirect(struct playlist *pl, const char *redirected_from);
+void playlist_set_stream_flags(struct playlist *pl, int flags);
 void playlist_transfer_entries(struct playlist *pl, struct playlist *source_pl);
 void playlist_append_entries(struct playlist *pl, struct playlist *source_pl);
 

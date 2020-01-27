@@ -24,8 +24,6 @@
 #include <stdio.h>
 #include <limits.h>
 
-#include <libavutil/common.h>
-
 #include "mpv_talloc.h"
 #include "bitmap_packer.h"
 #include "common/common.h"
@@ -51,7 +49,7 @@ void packer_get_bb(struct bitmap_packer *packer, struct pos out_bb[2])
 #define HEIGHT_SORT_BITS 4
 static int size_index(int s)
 {
-    int n = av_log2_16bit(s);
+    int n = mp_log2(s);
     return (n << HEIGHT_SORT_BITS)
        + ((- 1 - (s << HEIGHT_SORT_BITS >> n)) & ((1 << HEIGHT_SORT_BITS) - 1));
 }
@@ -93,7 +91,7 @@ static int pack_rectangles(struct pos *in, struct pos *out, int num_rects,
         bins[i] = bins[i << HEIGHT_SORT_BITS] - sizes[i << HEIGHT_SORT_BITS];
     struct {
         int size, x, bottom;
-    } stack[16] = {{15, 0, h}}, s = {};
+    } stack[16] = {{15, 0, h}}, s = {0};
     int stackpos = 1;
     int y;
     while (stackpos) {
@@ -116,9 +114,9 @@ static int pack_rectangles(struct pos *in, struct pos *out, int num_rects,
                 if (maxy < 0)
                     stack[stackpos++] = s;
                 s.x = right;
-                maxy = FFMAX(maxy, bottom);
+                maxy = MPMAX(maxy, bottom);
             }
-            *used_width = FFMAX(*used_width, s.x);
+            *used_width = MPMAX(*used_width, s.x);
             if (maxy > 0)
                 s.bottom = maxy;
         }
@@ -144,21 +142,21 @@ int packer_pack(struct bitmap_packer *packer)
             fprintf(stderr, "Invalid OSD / subtitle bitmap size\n");
             abort();
         }
-        xmax = FFMAX(xmax, in[i].x);
-        ymax = FFMAX(ymax, in[i].y);
+        xmax = MPMAX(xmax, in[i].x);
+        ymax = MPMAX(ymax, in[i].y);
     }
     if (xmax > packer->w)
-        packer->w = 1 << (av_log2(xmax - 1) + 1);
+        packer->w = 1 << (mp_log2(xmax - 1) + 1);
     if (ymax > packer->h)
-        packer->h = 1 << (av_log2(ymax - 1) + 1);
+        packer->h = 1 << (mp_log2(ymax - 1) + 1);
     while (1) {
         int used_width = 0;
         int y = pack_rectangles(in, packer->result, packer->count,
                                 packer->w, packer->h,
                                 packer->scratch, &used_width);
         if (y >= 0) {
-            packer->used_width = FFMIN(used_width, packer->w);
-            packer->used_height = FFMIN(y, packer->h);
+            packer->used_width = MPMIN(used_width, packer->w);
+            packer->used_height = MPMIN(y, packer->h);
             assert(packer->w == 0 || IS_POWER_OF_2(packer->w));
             assert(packer->h == 0 || IS_POWER_OF_2(packer->h));
             if (packer->padding) {
@@ -172,9 +170,9 @@ int packer_pack(struct bitmap_packer *packer)
         int w_max = packer->w_max > 0 ? packer->w_max : INT_MAX;
         int h_max = packer->h_max > 0 ? packer->h_max : INT_MAX;
         if (packer->w <= packer->h && packer->w != w_max)
-            packer->w = FFMIN(packer->w * 2, w_max);
+            packer->w = MPMIN(packer->w * 2, w_max);
         else if (packer->h != h_max)
-            packer->h = FFMIN(packer->h * 2, h_max);
+            packer->h = MPMIN(packer->h * 2, h_max);
         else {
             packer->w = w_orig;
             packer->h = h_orig;
@@ -188,7 +186,7 @@ void packer_set_size(struct bitmap_packer *packer, int size)
     packer->count = size;
     if (size <= packer->asize)
         return;
-    packer->asize = FFMAX(packer->asize * 2, size);
+    packer->asize = MPMAX(packer->asize * 2, size);
     talloc_free(packer->result);
     talloc_free(packer->scratch);
     packer->in = talloc_realloc(packer, packer->in, struct pos, packer->asize);

@@ -171,7 +171,6 @@ struct vo_chain {
 
     struct mp_output_chain *filter;
 
-    //struct vf_chain *vf;
     struct vo *vo;
 
     struct track *track;
@@ -185,6 +184,7 @@ struct vo_chain {
     bool is_sparse;
 
     bool underrun;
+    bool underrun_signaled;
 };
 
 // Like vo_chain, for audio.
@@ -208,6 +208,8 @@ struct ao_chain {
     struct track *track;
     struct mp_pin *filter_src;
     struct mp_pin *dec_src;
+
+    double delay;
 
     bool underrun;
 };
@@ -342,6 +344,7 @@ typedef struct MPContext {
     // Timing error (in seconds) due to rounding on vsync boundaries
     double display_sync_error;
     double audio_drop_throttle;
+    bool audio_drop_deprecated_msg;
     // Number of mistimed frames.
     int mistimed_frames_total;
     bool hrseek_active;     // skip all data until hrseek_pts
@@ -621,7 +624,7 @@ struct mp_scripting {
     const char *file_ext;   // e.g. "lua"
     int (*load)(struct mpv_handle *client, const char *filename);
 };
-void mp_load_scripts(struct MPContext *mpctx);
+bool mp_load_scripts(struct MPContext *mpctx);
 void mp_load_builtin_scripts(struct MPContext *mpctx);
 int mp_load_user_script(struct MPContext *mpctx, const char *fname);
 

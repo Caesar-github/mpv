@@ -23,6 +23,7 @@
 #include <poll.h>
 #include <unistd.h>
 
+#include <drm_fourcc.h>
 #include <libswscale/swscale.h>
 
 #include "drm_common.h"
@@ -85,7 +86,7 @@ struct priv {
     unsigned int fb_queue_len;
     struct framebuffer *cur_fb;
 
-    uint32_t depth;
+    uint32_t drm_format;
     enum mp_imgfmt imgfmt;
 
     int32_t screen_w;
@@ -139,8 +140,13 @@ static bool fb_setup_single(struct vo *vo, int fd, struct framebuffer *buf)
     buf->handle = creq.handle;
 
     // create framebuffer object for the dumb-buffer
-    if (drmModeAddFB(fd, buf->width, buf->height, p->depth, creq.bpp, buf->stride,
-                     buf->handle, &buf->fb)) {
+    int ret = drmModeAddFB2(fd, buf->width, buf->height,
+                            p->drm_format,
+                            (uint32_t[4]){buf->handle, 0, 0, 0},
+                            (uint32_t[4]){buf->stride, 0, 0, 0},
+                            (uint32_t[4]){0, 0, 0, 0},
+                            &buf->fb, 0);
+    if (ret) {
         MP_ERR(vo, "Cannot create framebuffer: %s\n", mp_strerror(errno));
         goto err;
     }
@@ -303,7 +309,6 @@ static int reconfig(struct vo *vo, struct mp_image_params *params)
     int w = p->dst.x1 - p->dst.x0;
     int h = p->dst.y1 - p->dst.y0;
 
-    mp_sws_set_from_cmdline(p->sws, vo->global);
     p->sws->src = *params;
     p->sws->dst = (struct mp_image_params) {
         .imgfmt = p->imgfmt,
@@ -391,7 +396,7 @@ static void draw_image(struct vo *vo, mp_image_t *mpi, struct framebuffer *front
             osd_draw_on_image(vo->osd, p->osd, 0, 0, p->cur_frame);
         }
 
-        if (p->depth == 30) {
+        if (p->drm_format == DRM_FORMAT_XRGB2101010) {
             // Pack GBRP10 image into XRGB2101010 for DRM
             const int w = p->cur_frame->w;
             const int h = p->cur_frame->h;
@@ -414,7 +419,7 @@ static void draw_image(struct vo *vo, mp_image_t *mpi, struct framebuffer *front
                 r_ptr += r_padding;
                 fbuf_ptr += fbuf_padding;
             }
-        } else {
+        } else { // p->drm_format == DRM_FORMAT_XRGB8888
             memcpy_pic(front_buf->map, p->cur_frame->planes[0],
                        p->cur_frame->w * BYTES_PER_PIXEL, p->cur_frame->h,
                        front_buf->stride,
@@ -490,6 +495,7 @@ static void queue_flip(struct vo *vo, struct kms_frame *frame)
     data->vsync = &p->vsync;
     data->vsync_info = &p->vsync_info;
     data->waiting_for_flip = &p->waiting_for_flip;
+    data->log = vo->log;
 
     ret = drmModePageFlip(p->kms->fd, p->kms->crtc_id,
                           p->cur_fb->fb,
@@ -554,6 +560,8 @@ static int preinit(struct vo *vo)
 {
     struct priv *p = vo->priv;
     p->sws = mp_sws_alloc(vo);
+    p->sws->log = vo->log;
+    mp_sws_enable_cmdline_opts(p->sws, vo->global);
     p->ev.version = DRM_EVENT_CONTEXT_VERSION;
     p->ev.page_flip_handler = &drm_pflip_cb;
 
@@ -575,10 +583,10 @@ static int preinit(struct vo *vo)
     }
 
     if (vo->opts->drm_opts->drm_format == DRM_OPTS_FORMAT_XRGB2101010) {
-        p->depth = 30;
+        p->drm_format = DRM_FORMAT_XRGB2101010;
         p->imgfmt = IMGFMT_XRGB2101010;
     } else {
-        p->depth = 24;
+        p->drm_format = DRM_FORMAT_XRGB8888;;
         p->imgfmt = IMGFMT_XRGB8888;
     }
 
@@ -589,8 +597,9 @@ static int preinit(struct vo *vo)
         goto err;
     }
 
-    uint64_t has_dumb;
-    if (drmGetCap(p->kms->fd, DRM_CAP_DUMB_BUFFER, &has_dumb) < 0) {
+    uint64_t has_dumb = 0;
+    if (drmGetCap(p->kms->fd, DRM_CAP_DUMB_BUFFER, &has_dumb) < 0
+        || has_dumb == 0) {
         MP_ERR(vo, "Card \"%d\" does not support dumb buffers.\n",
                p->kms->card_no);
         goto err;

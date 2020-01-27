@@ -35,6 +35,7 @@ struct m_sub_options;
 struct m_obj_desc;
 struct m_obj_settings;
 struct mp_log;
+struct mp_dispatch_queue;
 
 // Config option
 struct m_config_option {
@@ -71,15 +72,13 @@ typedef struct m_config {
     int (*includefunc)(void *ctx, char *filename, int flags);
     void *includefunc_ctx;
 
-    // Can intercept option write accesses.
-    int (*option_set_callback)(void *ctx, struct m_config_option *co,
-                               void *data, int flags);
-    void *option_set_callback_cb;
-
     // Notification after an option was successfully written to.
     // Uses flags as set in UPDATE_OPTS_MASK.
+    // self_update==true means the update was caused by a call to
+    // m_config_notify_change_opt_ptr(). If false, it's caused either by
+    // m_config_set_option_*() (and similar) calls or external updates.
     void (*option_change_callback)(void *ctx, struct m_config_option *co,
-                                   int flags);
+                                   int flags, bool self_update);
     void *option_change_callback_ctx;
 
     // For the command line parser
@@ -88,7 +87,8 @@ typedef struct m_config {
     void *optstruct; // struct mpopts or other
 
     // Private. Non-NULL if data was allocated. m_config_option.data uses it.
-    struct m_config_data *data;
+    // API users call m_config_set_update_dispatch_queue() to get async updates.
+    struct m_config_cache *cache;
 
     // Private. Thread-safe shadow memory; only set for the main m_config.
     struct m_config_shadow *shadow;
@@ -96,16 +96,10 @@ typedef struct m_config {
 
 // Create a new config object.
 //  talloc_ctx: talloc parent context for the m_config allocation
-//  size: size of the optstruct (where option values are stored)
-//        size==0 creates a config object with no option struct allocated
-//  defaults: if not NULL, points to a struct of same type as optstruct, which
-//            contains default values for all options
-//  options: list of options. Each option defines a member of the optstruct
-//           and a corresponding option switch or sub-option field.
-// Note that the m_config object will keep pointers to defaults and options.
+//  root: description of all options
+// Note that the m_config object will keep pointers to root and log.
 struct m_config *m_config_new(void *talloc_ctx, struct mp_log *log,
-                              size_t size, const void *defaults,
-                              const struct m_option *options);
+                              const struct m_sub_options *root);
 
 // Create a m_config for the given desc. This is for --af/--vf, which have
 // different sub-options for every filter (represented by separate desc
@@ -150,13 +144,9 @@ enum {
     M_SETOPT_FROM_CMDLINE = 8,      // Mark as set by command line
     M_SETOPT_BACKUP = 16,           // Call m_config_backup_opt() before
     M_SETOPT_PRESERVE_CMDLINE = 32, // Don't set if already marked as FROM_CMDLINE
-    M_SETOPT_NO_FIXED = 64,         // Reject M_OPT_FIXED options
     M_SETOPT_NO_PRE_PARSE = 128,    // Reject M_OPT_PREPARSE options
     M_SETOPT_NO_OVERWRITE = 256,    // Skip options marked with FROM_*
 };
-
-// Flags for safe option setting during runtime.
-#define M_SETOPT_RUNTIME M_SETOPT_NO_FIXED
 
 // Set the named option to the given string. This is for command line and config
 // file use only.
@@ -172,12 +162,6 @@ int m_config_set_option_raw(struct m_config *config, struct m_config_option *co,
                             void *data, int flags);
 
 void m_config_mark_co_flags(struct m_config_option *co, int flags);
-
-// Unlike m_config_set_option_raw() this does not go through the property layer
-// via config.option_set_callback.
-int m_config_set_option_raw_direct(struct m_config *config,
-                                   struct m_config_option *co,
-                                   void *data, int flags);
 
 // Convert the mpv_node to raw option data, then call m_config_set_option_raw().
 struct mpv_node;
@@ -209,12 +193,12 @@ const char *m_config_get_positional_option(const struct m_config *config, int n)
 int m_config_option_requires_param(struct m_config *config, bstr name);
 
 // Notify m_config_cache users that the option has (probably) changed its value.
-void m_config_notify_change_co(struct m_config *config,
-                               struct m_config_option *co);
-// Like m_config_notify_change_co(), but automatically find the option by its
-// pointer within the global option struct (config->optstruct). In practice,
-// it means it works only on fields in MPContext.opts.
+// This will force a self-notification back to config->option_change_callback.
 void m_config_notify_change_opt_ptr(struct m_config *config, void *ptr);
+
+// Exactly like m_config_notify_change_opt_ptr(), but the option change callback
+// (config->option_change_callback()) is invoked with self_update=false, if at all.
+void m_config_notify_change_opt_ptr_notify(struct m_config *config, void *ptr);
 
 // Return all (visible) option names as NULL terminated string list.
 char **m_config_list_options(void *ta_parent, const struct m_config *config);
@@ -273,38 +257,40 @@ int m_config_set_profile(struct m_config *config, char *name, int flags);
 
 struct mpv_node m_config_get_profiles(struct m_config *config);
 
+// Run async option updates here. This will call option_change_callback() on it.
+void m_config_set_update_dispatch_queue(struct m_config *config,
+                                        struct mp_dispatch_queue *dispatch);
+
 // This can be used to create and synchronize per-thread option structs,
 // which then can be read without synchronization. No concurrent access to
 // the cache itself is allowed.
 struct m_config_cache {
     // The struct as indicated by m_config_cache_alloc's group parameter.
-    // (Internally the same as data->gdata[0]->udata.)
+    // (Internally the same as internal->gdata[0]->udata.)
     void *opts;
+    // Accumulated change flags. The user can set this to 0 to unset all flags.
+    // They are set when calling any of the update functions. A flag is only set
+    // once the new value is visible in ->opts.
+    uint64_t change_flags;
 
-    // Internal.
-    struct m_config_shadow *shadow; // real data
-    struct m_config_data *data;     // copy for the cache user
-    bool in_list;                   // registered as listener with root config
-    // --- Implicitly synchronized by setting/unsetting wakeup_cb.
-    struct mp_dispatch_queue *wakeup_dispatch_queue;
-    void (*wakeup_dispatch_cb)(void *ctx);
-    void *wakeup_dispatch_cb_ctx;
-    // --- Protected by shadow->lock
-    void (*wakeup_cb)(void *ctx);
-    void *wakeup_cb_ctx;
+    // Set to non-NULL for logging all option changes as they are retrieved
+    // with one of the update functions (like m_config_cache_update()).
+    struct mp_log *debug;
+
+    // Do not access.
+    struct config_cache *internal;
 };
-
-#define GLOBAL_CONFIG NULL
 
 // Create a mirror copy from the global options.
 // Keep in mind that a m_config_cache object is not thread-safe; it merely
 // provides thread-safe access to the global options. All API functions for
 // the same m_config_cache object must synchronized, unless otherwise noted.
+// This does not create an initial change event (m_config_cache_update() will
+// return false), but note that a change might be asynchronously signaled at any
+// time.
 //  ta_parent: parent for the returned allocation
 //  global: option data source
-//  group: the option group to return. This can be GLOBAL_CONFIG for the global
-//         option struct (MPOpts), or m_sub_options used in a certain
-//         OPT_SUBSTRUCT() item.
+//  group: the option group to return
 struct m_config_cache *m_config_cache_alloc(void *ta_parent,
                                             struct mpv_global *global,
                                             const struct m_sub_options *group);
@@ -330,18 +316,51 @@ void m_config_cache_set_dispatch_change_cb(struct m_config_cache *cache,
 // some options have changed).
 // Keep in mind that while the cache->opts pointer does not change, the option
 // data itself will (e.g. string options might be reallocated).
+// New change flags are or-ed into cache->change_flags with this call (if you
+// use them, you should probably do cache->change_flags=0 before this call).
 bool m_config_cache_update(struct m_config_cache *cache);
+
+// Check for changes and return fine grained change information.
+// Warning: this conflicts with m_config_cache_update(). If you call
+//          m_config_cache_update(), all options will be marked as "not changed",
+//          and this function will return false. Also, calling this function and
+//          then m_config_cache_update() is not supported, and may skip updating
+//          some fields.
+// This returns true as long as there is a changed option, and false if all
+// changed options have been returned.
+// If multiple options have changed, the new option value is visible only once
+// this function has returned the change for it.
+//  out_ptr: pointer to a void*, which is set to the cache->opts field associated
+//           with the changed option if the function returns true; set to NULL
+//           if no option changed.
+//  returns: *out_ptr!=NULL (true if there was a changed option)
+bool m_config_cache_get_next_changed(struct m_config_cache *cache, void **out_ptr);
+
+// Copy the option field pointed to by ptr to the global option storage. This
+// is sort of similar to m_config_set_option_raw(), except doesn't require
+// access to the main thread. (And you can't pass any flags.)
+// You write the new value to the option struct, and then call this function
+// with the pointer to it. You will not get a change notification for it (though
+// you might still get a redundant wakeup callback).
+// Changing the option struct and not calling this function before any update
+// function (like m_config_cache_update()) will leave the value inconsistent,
+// and will possibly (but not necessarily) overwrite it with the next update
+// call.
+//  ptr: points to any field in cache->opts that is managed by an option. If
+//       this is not the case, the function crashes for your own good.
+//  returns: if true, this was an update; if false, shadow had same value
+bool m_config_cache_write_opt(struct m_config_cache *cache, void *ptr);
 
 // Like m_config_cache_alloc(), but return the struct (m_config_cache->opts)
 // directly, with no way to update the config. Basically this returns a copy
 // with a snapshot of the current option values.
-// group==GLOBAL_CONFIG is a special case, and always returns the root group.
 void *mp_get_config_group(void *ta_parent, struct mpv_global *global,
                           const struct m_sub_options *group);
 
 // Read a single global option in a thread-safe way. For multiple options,
 // use m_config_cache. The option must exist and match the provided type (the
 // type is used as a sanity check only). Performs semi-expensive lookup.
+// Warning: new code must not use this.
 void mp_read_option_raw(struct mpv_global *global, const char *name,
                         const struct m_option_type *type, void *dst);
 

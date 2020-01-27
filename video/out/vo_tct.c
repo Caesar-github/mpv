@@ -36,15 +36,15 @@
 
 #define ALGO_PLAIN 1
 #define ALGO_HALF_BLOCKS 2
-#define ESC_HIDE_CURSOR "\e[?25l"
-#define ESC_RESTORE_CURSOR "\e[?25h"
-#define ESC_CLEAR_SCREEN "\e[2J"
-#define ESC_CLEAR_COLORS "\e[0m"
-#define ESC_GOTOXY "\e[%d;%df"
-#define ESC_COLOR_BG "\e[48;2;%d;%d;%dm"
-#define ESC_COLOR_FG "\e[38;2;%d;%d;%dm"
-#define ESC_COLOR256_BG "\e[48;5;%dm"
-#define ESC_COLOR256_FG "\e[38;5;%dm"
+#define ESC_HIDE_CURSOR "\033[?25l"
+#define ESC_RESTORE_CURSOR "\033[?25h"
+#define ESC_CLEAR_SCREEN "\033[2J"
+#define ESC_CLEAR_COLORS "\033[0m"
+#define ESC_GOTOXY "\033[%d;%df"
+#define ESC_COLOR_BG "\033[48;2;%d;%d;%dm"
+#define ESC_COLOR_FG "\033[38;2;%d;%d;%dm"
+#define ESC_COLOR256_BG "\033[48;5;%dm"
+#define ESC_COLOR256_FG "\033[38;5;%dm"
 #define DEFAULT_WIDTH 80
 #define DEFAULT_HEIGHT 25
 
@@ -207,7 +207,6 @@ static int reconfig(struct vo *vo, struct mp_image_params *params)
     if (p->buffer)
         free(p->buffer);
 
-    mp_sws_set_from_cmdline(p->sws, vo->global);
     p->sws->src = *params;
     p->sws->dst = (struct mp_image_params) {
         .imgfmt = IMGFMT,
@@ -265,8 +264,6 @@ static void uninit(struct vo *vo)
     struct priv *p = vo->priv;
     if (p->buffer)
         talloc_free(p->buffer);
-    if (p->sws)
-        talloc_free(p->sws);
 }
 
 static int preinit(struct vo *vo)
@@ -278,6 +275,8 @@ static int preinit(struct vo *vo)
     struct priv *p = vo->priv;
     p->opts = mp_get_config_group(vo, vo->global, &vo_tct_conf);
     p->sws = mp_sws_alloc(vo);
+    p->sws->log = vo->log;
+    mp_sws_enable_cmdline_opts(p->sws, vo->global);
     return 0;
 }
 

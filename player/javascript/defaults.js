@@ -170,6 +170,84 @@ mp.abort_async_command = function abort_async_command(id) {
         mp._abort_async_command(id);
 }
 
+// shared-script-properties - always an object, even if without properties
+function shared_script_property_set(name, val) {
+    if (arguments.length > 1)
+        return mp.commandv("change-list", "shared-script-properties", "append", "" + name + "=" + val);
+    else
+        return mp.commandv("change-list", "shared-script-properties", "remove", name);
+}
+
+function shared_script_property_get(name) {
+    return mp.get_property_native("shared-script-properties")[name];
+}
+
+function shared_script_property_observe(name, cb) {
+    return mp.observe_property("shared-script-properties", "native",
+        function shared_props_cb(_name, val) { cb(name, val[name]) }
+    );
+}
+
+mp.utils.shared_script_property_set = shared_script_property_set;
+mp.utils.shared_script_property_get = shared_script_property_get;
+mp.utils.shared_script_property_observe = shared_script_property_observe;
+
+// osd-ass
+var next_assid = 1;
+mp.create_osd_overlay = function create_osd_overlay(format) {
+    return {
+        format: format || "ass-events",
+        id: next_assid++,
+        data: "",
+        res_x: 0,
+        res_y: 720,
+        z: 0,
+
+        update: function ass_update() {
+            mp.command_native({
+                name: "osd-overlay",
+                format: this.format,
+                id: this.id,
+                data: this.data,
+                res_x: Math.round(this.res_x),
+                res_y: Math.round(this.res_y),
+                z: this.z,
+            });
+            return mp.last_error() ? undefined : true;
+        },
+
+        remove: function ass_remove() {
+            mp.command_native({
+                name: "osd-overlay",
+                id: this.id,
+                format: "none",
+                data: "",
+            });
+            return mp.last_error() ? undefined : true;
+        },
+    };
+}
+
+// osd-ass legacy API
+mp.set_osd_ass = function set_osd_ass(res_x, res_y, data) {
+    if (!mp._legacy_overlay)
+        mp._legacy_overlay = mp.create_osd_overlay("ass-events");
+    mp._legacy_overlay.res_x = res_x;
+    mp._legacy_overlay.res_y = res_y;
+    mp._legacy_overlay.data = data;
+    return mp._legacy_overlay.update();
+}
+
+// the following return undefined on error, null passthrough, or legacy object
+mp.get_osd_size = function get_osd_size() {
+    var d = mp.get_property_native("osd-dimensions");
+    return d && {width: d.w, height: d.h, aspect: d.aspect};
+}
+mp.get_osd_margins = function get_osd_margins() {
+    var d = mp.get_property_native("osd-dimensions");
+    return d && {left: d.ml, right: d.mr, top: d.mt, bottom: d.mb};
+}
+
 /**********************************************************************
  *  key bindings
  *********************************************************************/
@@ -177,13 +255,14 @@ mp.abort_async_command = function abort_async_command(id) {
 // {cb: fn, forced: bool, maybe input: str, repeatable: bool, complex: bool}
 var binds = new_cache();
 
-function dispatch_key_binding(name, state) {
+function dispatch_key_binding(name, state, key_name) {
     var cb = binds[name] ? binds[name].cb : false;
     if (cb)  // "script-binding [<script_name>/]<name>" command was invoked
-        cb(state);
+        cb(state, key_name);
 }
 
-function update_input_sections() {
+var binds_tid = 0;  // flush timer id. actual id's are always true-thy
+mp.flush_key_bindings = function flush_key_bindings() {
     var def = [], forced = [];
     for (var n in binds)  // Array.join() will later skip undefined .input
         (binds[n].forced ? forced : def).push(binds[n].input);
@@ -195,6 +274,14 @@ function update_input_sections() {
     sect = "input_forced_" + mp.script_name;
     mp.commandv("define-section", sect, forced.join("\n"), "force");
     mp.commandv("enable-section", sect, "allow-hide-cursor+allow-vo-dragging");
+
+    clearTimeout(binds_tid);  // cancel future flush if called directly
+    binds_tid = 0;
+}
+
+function sched_bindings_flush() {
+    if (!binds_tid)
+        binds_tid = setTimeout(mp.flush_key_bindings, 0);  // fires on idle
 }
 
 // name/opts maybe omitted. opts: object with optional bool members: repeatable,
@@ -204,8 +291,10 @@ function add_binding(forced, key, name, fn, opts) {
     if (typeof name == "function") {  // as if "name" is not part of the args
         opts = fn;
         fn = name;
-        name = "__keybinding" + next_bid++;  // new unique binding name
+        name = false;
     }
+    if (!name)
+        name = "__keybinding" + next_bid++;  // new unique binding name
     var key_data = {forced: forced};
     switch (typeof opts) {  // merge opts into key_data
         case "string": key_data[opts] = true; break;
@@ -217,10 +306,11 @@ function add_binding(forced, key, name, fn, opts) {
             fn({event: "press", is_mouse: false});
         });
         var KEY_STATES = { u: "up", d: "down", r: "repeat", p: "press" };
-        key_data.cb = function key_cb(state) {
+        key_data.cb = function key_cb(state, key_name) {
             fn({
                 event: KEY_STATES[state[0]] || "unknown",
-                is_mouse: state[1] == "m"
+                is_mouse: state[1] == "m",
+                key_name: key_name || undefined
             });
         }
     } else {
@@ -238,7 +328,7 @@ function add_binding(forced, key, name, fn, opts) {
     if (key)
         key_data.input = key + " script-binding " + mp.script_name + "/" + name;
     binds[name] = key_data;  // used by user and/or our (key) script-binding
-    update_input_sections();
+    sched_bindings_flush();
 }
 
 mp.add_key_binding = add_binding.bind(null, false);
@@ -247,7 +337,7 @@ mp.add_forced_key_binding = add_binding.bind(null, true);
 mp.remove_key_binding = function(name) {
     mp.unregister_script_message(name);
     delete binds[name];
-    update_input_sections();
+    sched_bindings_flush();
 }
 
 /**********************************************************************
@@ -372,6 +462,8 @@ function process_timers() {
  - Module id supports mpv path enhancements, e.g. ~/foo, ~~/bar, ~~desktop/baz
  *********************************************************************/
 
+mp.module_paths = ["~~/scripts/modules.js"];  // global modules search paths
+
 // Internal meta top-dirs. Users should not rely on these names.
 var MODULES_META = "~~modules",
     SCRIPTDIR_META = "~~scriptdir",  // relative script path -> meta absolute id
@@ -386,10 +478,14 @@ function resolve_module_file(id) {
         return mp.utils.join_path(main_script[0], rest);
 
     if (base == MODULES_META) {
-        var path = mp.find_config_file("scripts/modules.js/" + rest);
-        if (!path)
-            throw(Error("Cannot find module file '" + rest + "'"));
-        return path;
+        for (var i = 0; i < mp.module_paths.length; i++) {
+            try {
+                var f = mp.utils.join_path(mp.module_paths[i], rest);
+                mp.utils.read_file(f, 1);  // throws on any error
+                return f;
+            } catch (e) {}
+        }
+        throw(Error("Cannot find module file '" + rest + "'"));
     }
 
     return id + ".js";
@@ -480,13 +576,13 @@ g.require = new_require(SCRIPTDIR_META + "/" + main_script[1]);
 /**********************************************************************
  *  mp.options
  *********************************************************************/
-function read_options(opts, id) {
-    id = String(typeof id != "undefined" ? id : mp.get_script_name());
+function read_options(opts, id, on_update, conf_override) {
+    id = String(id ? id : mp.get_script_name());
     mp.msg.debug("reading options for " + id);
 
     var conf, fname = "~~/script-opts/" + id + ".conf";
     try {
-        conf = mp.utils.read_file(fname);
+        conf = arguments.length > 3 ? conf_override : mp.utils.read_file(fname);
     } catch (e) {
         mp.msg.verbose(fname + " not found.");
     }
@@ -525,6 +621,20 @@ function read_options(opts, id) {
         else
             mp.msg.error(info, "Error: can't convert '" + val + "' to " + type);
     });
+
+    if (on_update) {
+        mp.observe_property("options/script-opts", "native", function(_n, _v) {
+            var saved = JSON.parse(JSON.stringify(opts));  // clone
+            var changelist = {}, changed = false;
+            read_options(opts, id, 0, conf);  // re-apply orig-file + script-opts
+            for (var key in opts) {
+                if (opts[key] != saved[key])  // type always stays the same
+                    changelist[key] = changed = true;
+            }
+            if (changed)
+                on_update(changelist);
+        });
+    }
 }
 
 mp.options = { read_options: read_options };

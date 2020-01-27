@@ -22,8 +22,6 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-#include <libavutil/common.h>
-
 #include "mpv_talloc.h"
 
 #include "common/common.h"
@@ -34,7 +32,7 @@ int bstrcmp(struct bstr str1, struct bstr str2)
 {
     int ret = 0;
     if (str1.len && str2.len)
-        ret = memcmp(str1.start, str2.start, FFMIN(str1.len, str2.len));
+        ret = memcmp(str1.start, str2.start, MPMIN(str1.len, str2.len));
 
     if (!ret) {
         if (str1.len == str2.len)
@@ -51,7 +49,7 @@ int bstrcasecmp(struct bstr str1, struct bstr str2)
 {
     int ret = 0;
     if (str1.len && str2.len)
-        ret = strncasecmp(str1.start, str2.start, FFMIN(str1.len, str2.len));
+        ret = strncasecmp(str1.start, str2.start, MPMIN(str1.len, str2.len));
 
     if (!ret) {
         if (str1.len == str2.len)
@@ -157,9 +155,9 @@ struct bstr bstr_splice(struct bstr str, int start, int end)
         start += str.len;
     if (end < 0)
         end += str.len;
-    end = FFMIN(end, str.len);
-    start = FFMAX(start, 0);
-    end = FFMAX(end, start);
+    end = MPMIN(end, str.len);
+    start = MPMAX(start, 0);
+    end = MPMAX(end, start);
     str.start += start;
     str.len = end - start;
     return str;
@@ -169,7 +167,7 @@ long long bstrtoll(struct bstr str, struct bstr *rest, int base)
 {
     str = bstr_lstrip(str);
     char buf[51];
-    int len = FFMIN(str.len, 50);
+    int len = MPMIN(str.len, 50);
     memcpy(buf, str.start, len);
     buf[len] = 0;
     char *endptr;
@@ -183,35 +181,13 @@ double bstrtod(struct bstr str, struct bstr *rest)
 {
     str = bstr_lstrip(str);
     char buf[101];
-    int len = FFMIN(str.len, 100);
+    int len = MPMIN(str.len, 100);
     memcpy(buf, str.start, len);
     buf[len] = 0;
     char *endptr;
     double r = strtod(buf, &endptr);
     if (rest)
         *rest = bstr_cut(str, endptr - buf);
-    return r;
-}
-
-struct bstr *bstr_splitlines(void *talloc_ctx, struct bstr str)
-{
-    if (str.len == 0)
-        return NULL;
-    int count = 0;
-    for (int i = 0; i < str.len; i++)
-        if (str.start[i] == '\n')
-            count++;
-    if (str.start[str.len - 1] != '\n')
-        count++;
-    struct bstr *r = talloc_array_ptrtype(talloc_ctx, r, count);
-    unsigned char *p = str.start;
-    for (int i = 0; i < count - 1; i++) {
-        r[i].start = p;
-        while (*p++ != '\n');
-        r[i].len = p - r[i].start;
-    }
-    r[count - 1].start = p;
-    r[count - 1].len = str.start + str.len - p;
     return r;
 }
 
@@ -272,7 +248,7 @@ int bstr_parse_utf8_code_length(unsigned char b)
 {
     if (b < 128)
         return 1;
-    int bytes = 7 - av_log2(b ^ 255);
+    int bytes = 7 - mp_log2(b ^ 255);
     return (bytes >= 2 && bytes <= 4) ? bytes : -1;
 }
 

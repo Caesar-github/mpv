@@ -29,7 +29,7 @@ struct priv {
     int cur; // streams[cur] is the stream for current stream.pos
 };
 
-static int fill_buffer(struct stream *s, char* buffer, int len)
+static int fill_buffer(struct stream *s, void *buffer, int len)
 {
     struct priv *p = s->priv;
 
@@ -73,14 +73,10 @@ static int seek(struct stream *s, int64_t newpos)
     return ok;
 }
 
-static int control(struct stream *s, int cmd, void *arg)
+static int64_t get_size(struct stream *s)
 {
     struct priv *p = s->priv;
-    if (cmd == STREAM_CTRL_GET_SIZE && p->size >= 0) {
-        *(int64_t *)arg = p->size;
-        return 1;
-    }
-    return STREAM_UNSUPPORTED;
+    return p->size;
 }
 
 static void s_close(struct stream *s)
@@ -91,13 +87,25 @@ static void s_close(struct stream *s)
         free_stream(p->streams[n]);
 }
 
+// Return the "worst" origin value of the two. cur can be 0 to mean unset.
+static int combine_origin(int cur, int new)
+{
+    if (cur == STREAM_ORIGIN_UNSAFE || new == STREAM_ORIGIN_UNSAFE)
+        return STREAM_ORIGIN_UNSAFE;
+    if (cur == STREAM_ORIGIN_NET || new == STREAM_ORIGIN_NET)
+        return STREAM_ORIGIN_NET;
+    if (cur == STREAM_ORIGIN_FS || new == STREAM_ORIGIN_FS)
+        return STREAM_ORIGIN_FS;
+    return new; // including cur==0
+}
+
 static int open2(struct stream *stream, struct stream_open_args *args)
 {
     struct priv *p = talloc_zero(stream, struct priv);
     stream->priv = p;
 
     stream->fill_buffer = fill_buffer;
-    stream->control = control;
+    stream->get_size = get_size;
     stream->close = s_close;
 
     stream->seekable = true;
@@ -108,10 +116,10 @@ static int open2(struct stream *stream, struct stream_open_args *args)
         return STREAM_ERROR;
     }
 
+    stream->stream_origin = 0;
+
     for (int n = 0; n < list->num_streams; n++) {
         struct stream *sub = list->streams[n];
-
-        stream->read_chunk = MPMAX(stream->read_chunk, sub->read_chunk);
 
         int64_t size = stream_get_size(sub);
         if (n != list->num_streams - 1 && size < 0) {
@@ -124,6 +132,9 @@ static int open2(struct stream *stream, struct stream_open_args *args)
 
         if (!sub->seekable)
             stream->seekable = false;
+
+        stream->stream_origin =
+            combine_origin(stream->stream_origin, sub->stream_origin);
 
         MP_TARRAY_APPEND(p, p->streams, p->num_streams, sub);
     }
@@ -157,7 +168,7 @@ struct stream *stream_concat_open(struct mpv_global *global, struct mp_cancel *c
         .global = global,
         .cancel = c,
         .url = "concat://",
-        .flags = STREAM_READ | STREAM_SILENT,
+        .flags = STREAM_READ | STREAM_SILENT | STREAM_ORIGIN_DIRECT,
         .sinfo = &stream_info_concat,
         .special_arg = &arg,
     };

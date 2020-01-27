@@ -107,6 +107,7 @@ struct image {
     struct ra_tex *tex;
     int w, h; // logical size (after transformation)
     struct gl_transform transform; // rendering transformation
+    int padding; // number of leading padding components (e.g. 2 = rg is padding)
 };
 
 // A named image, for user scripting purposes
@@ -215,7 +216,6 @@ struct gl_video {
     struct ra_tex *error_diffusion_tex[2];
     struct ra_tex *screen_tex;
     struct ra_tex *output_tex;
-    struct ra_tex *vdpau_deinterleave_tex[2];
     struct ra_tex **hook_textures;
     int num_hook_textures;
     int idx_hook_textures;
@@ -290,6 +290,8 @@ struct gl_video {
 
     bool dsi_warned;
     bool broken_frame; // temporary error state
+
+    bool colorspace_override_warned;
 };
 
 static const struct gl_video_opts gl_video_opts_def = {
@@ -753,19 +755,12 @@ static void pass_get_images(struct gl_video *p, struct video_image *vimg,
         chroma.t[1] = ls_h < 1 ? ls_h * -cy / 2 : 0;
     }
 
-    int msb_valid_bits =
-        p->ra_format.component_bits + MPMIN(p->ra_format.component_pad, 0);
-    // The existing code assumes we just have a single tex multiplier for
-    // all of the planes. This may change in the future
-    float tex_mul = 1.0 / mp_get_csp_mul(p->image_params.color.space,
-                                         msb_valid_bits,
-                                         p->ra_format.component_bits);
-
     memset(img, 0, 4 * sizeof(img[0]));
     for (int n = 0; n < p->plane_count; n++) {
         struct texplane *t = &vimg->planes[n];
 
         enum plane_type type = PLANE_NONE;
+        int padding = 0;
         for (int i = 0; i < 4; i++) {
             int c = p->ra_format.components[n][i];
             enum plane_type ctype;
@@ -781,7 +776,15 @@ static void pass_get_images(struct gl_video *p, struct video_image *vimg,
                 ctype = c == 1 ? PLANE_LUMA : PLANE_CHROMA;
             }
             type = merge_plane_types(type, ctype);
+            if (!c && padding == i)
+                padding = i + 1;
         }
+
+        int msb_valid_bits =
+            p->ra_format.component_bits + MPMIN(p->ra_format.component_pad, 0);
+        int csp = type == PLANE_ALPHA ? MP_CSP_RGB : p->image_params.color.space;
+        float tex_mul =
+            1.0 / mp_get_csp_mul(csp, msb_valid_bits, p->ra_format.component_bits);
 
         img[n] = (struct image){
             .type = type,
@@ -789,6 +792,7 @@ static void pass_get_images(struct gl_video *p, struct video_image *vimg,
             .multiplier = tex_mul,
             .w = t->w,
             .h = t->h,
+            .padding = padding,
         };
 
         for (int i = 0; i < 4; i++)
@@ -1039,9 +1043,6 @@ static void uninit_video(struct gl_video *p)
     p->hwdec_active = false;
     p->hwdec_overlay = NULL;
     ra_hwdec_mapper_free(&p->hwdec_mapper);
-
-    for (int n = 0; n < 2; n++)
-        ra_tex_free(p->ra, &p->vdpau_deinterleave_tex[n]);
 }
 
 static void pass_record(struct gl_video *p, struct mp_pass_perf perf)
@@ -1320,6 +1321,7 @@ static void copy_image(struct gl_video *p, int *offset, struct image img)
 {
     int count = img.components;
     assert(*offset + count <= 4);
+    assert(img.padding + count <= 4);
 
     int id = pass_bind(p, img);
     char src[5] = {0};
@@ -1327,7 +1329,7 @@ static void copy_image(struct gl_video *p, int *offset, struct image img)
     const char *tex_fmt = get_tex_swizzle(&img);
     const char *dst_fmt = "rgba";
     for (int i = 0; i < count; i++) {
-        src[i] = tex_fmt[i];
+        src[i] = tex_fmt[img.padding + i];
         dst[i] = dst_fmt[*offset + i];
     }
 
@@ -1368,9 +1370,22 @@ static void hook_prelude(struct gl_video *p, const char *name, int id,
     GLSLHF("#define %s_map texmap%d\n", name, id);
     GLSLHF("#define %s_mul %f\n", name, img.multiplier);
 
+    char crap[5] = "";
+    snprintf(crap, sizeof(crap), "%s", get_tex_swizzle(&img));
+
+    // Remove leading padding by rotating the swizzle mask.
+    int len = strlen(crap);
+    for (int n = 0; n < img.padding; n++) {
+        if (len) {
+            char f = crap[0];
+            memmove(crap, crap + 1, len - 1);
+            crap[len - 1] = f;
+        }
+    }
+
     // Set up the sampling functions
     GLSLHF("#define %s_tex(pos) (%s_mul * vec4(texture(%s_raw, pos)).%s)\n",
-           name, name, name, get_tex_swizzle(&img));
+           name, name, name, crap);
 
     // Since the extra matrix multiplication impacts performance,
     // skip it unless the texture was actually rotated
@@ -1672,25 +1687,26 @@ static void reinit_scaler(struct gl_video *p, struct scaler *scaler,
 
     uninit_scaler(p, scaler);
 
-    scaler->conf = *conf;
+    const struct filter_kernel *t_kernel = mp_find_filter_kernel(conf->kernel.name);
+    const struct filter_window *t_window = mp_find_filter_window(conf->window.name);
     bool is_tscale = scaler->index == SCALER_TSCALE;
+
+    scaler->conf = *conf;
     scaler->conf.kernel.name = (char *)handle_scaler_opt(conf->kernel.name, is_tscale);
-    scaler->conf.window.name = (char *)handle_scaler_opt(conf->window.name, is_tscale);
+    scaler->conf.window.name = t_window ? (char *)t_window->name : NULL;
     scaler->scale_factor = scale_factor;
     scaler->insufficient = false;
     scaler->initialized = true;
-
-    const struct filter_kernel *t_kernel = mp_find_filter_kernel(conf->kernel.name);
     if (!t_kernel)
         return;
 
     scaler->kernel_storage = *t_kernel;
     scaler->kernel = &scaler->kernel_storage;
 
-    const char *win = conf->window.name;
-    if (!win || !win[0])
-        win = t_kernel->window; // fall back to the scaler's default window
-    const struct filter_window *t_window = mp_find_filter_window(win);
+    if (!t_window) {
+        // fall back to the scaler's default window if available
+        t_window = mp_find_filter_window(t_kernel->window);
+    }
     if (t_window)
         scaler->kernel->w = *t_window;
 
@@ -2477,18 +2493,43 @@ static void pass_scale_main(struct gl_video *p)
 // rendering)
 // If OSD is true, ignore any changes that may have been made to the video
 // by previous passes (i.e. linear scaling)
-static void pass_colormanage(struct gl_video *p, struct mp_colorspace src, bool osd)
+static void pass_colormanage(struct gl_video *p, struct mp_colorspace src,
+                             struct mp_colorspace fbo_csp, bool osd)
 {
     struct ra *ra = p->ra;
 
-    // Figure out the target color space from the options, or auto-guess if
-    // none were set
+    // Configure the destination according to the FBO color space,
+    // unless specific transfer function, primaries or target peak
+    // is set. If values are set to _AUTO, the most likely intended
+    // values are guesstimated later in this function.
     struct mp_colorspace dst = {
-        .gamma = p->opts.target_trc,
-        .primaries = p->opts.target_prim,
+        .gamma = p->opts.target_trc == MP_CSP_TRC_AUTO ?
+                 fbo_csp.gamma : p->opts.target_trc,
+        .primaries = p->opts.target_prim == MP_CSP_PRIM_AUTO ?
+                     fbo_csp.primaries : p->opts.target_prim,
         .light = MP_CSP_LIGHT_DISPLAY,
-        .sig_peak = p->opts.target_peak / MP_REF_WHITE,
+        .sig_peak = !p->opts.target_peak ?
+                    fbo_csp.sig_peak : p->opts.target_peak / MP_REF_WHITE,
     };
+
+    if (!p->colorspace_override_warned &&
+        ((fbo_csp.gamma && dst.gamma != fbo_csp.gamma) ||
+         (fbo_csp.primaries && dst.primaries != fbo_csp.primaries)))
+    {
+        MP_WARN(p, "One or more colorspace value is being overridden "
+                   "by user while the FBO provides colorspace information: "
+                   "transfer function: (dst: %s, fbo: %s), "
+                   "primaries: (dst: %s, fbo: %s). "
+                   "Rendering can lead to incorrect results!\n",
+                m_opt_choice_str(mp_csp_trc_names,  dst.gamma),
+                m_opt_choice_str(mp_csp_trc_names,  fbo_csp.gamma),
+                m_opt_choice_str(mp_csp_prim_names, dst.primaries),
+                m_opt_choice_str(mp_csp_prim_names, fbo_csp.primaries));
+        p->colorspace_override_warned = true;
+    }
+
+    if (dst.gamma == MP_CSP_TRC_HLG)
+        dst.light = MP_CSP_LIGHT_SCENE_HLG;
 
     if (p->use_lut_3d) {
         // The 3DLUT is always generated against the video's original source
@@ -2585,6 +2626,8 @@ static void pass_colormanage(struct gl_video *p, struct mp_colorspace src, bool 
             "uint frame_max;"
             "uint counter;"
         );
+    } else {
+        tone_map.compute_peak = -1;
     }
 
     // Adapt from src to dst as necessary
@@ -2721,6 +2764,9 @@ static void pass_dither(struct gl_video *p)
         debug_check_gl(p, "dither setup");
 
         talloc_free(temp);
+
+        if (!p->dither_texture)
+            return;
     }
 
     GLSLF("// dithering\n");
@@ -2756,13 +2802,17 @@ static void pass_dither(struct gl_video *p)
 
 // Draws the OSD, in scene-referred colors.. If cms is true, subtitles are
 // instead adapted to the display's gamut.
-static void pass_draw_osd(struct gl_video *p, int draw_flags, double pts,
-                          struct mp_osd_res rect, struct ra_fbo fbo, bool cms)
+static void pass_draw_osd(struct gl_video *p, int osd_flags, int frame_flags,
+                          double pts, struct mp_osd_res rect, struct ra_fbo fbo,
+                          bool cms)
 {
-    if ((draw_flags & OSD_DRAW_SUB_ONLY) && (draw_flags & OSD_DRAW_OSD_ONLY))
+    if (frame_flags & RENDER_FRAME_VF_SUBS)
+        osd_flags |= OSD_DRAW_SUB_FILTER;
+
+    if ((osd_flags & OSD_DRAW_SUB_ONLY) && (osd_flags & OSD_DRAW_OSD_ONLY))
         return;
 
-    mpgl_osd_generate(p->osd, rect, pts, p->image_params.stereo3d, draw_flags);
+    mpgl_osd_generate(p->osd, rect, pts, p->image_params.stereo3d, osd_flags);
 
     timer_pool_start(p->osd_timer);
     for (int n = 0; n < MAX_OSD_PARTS; n++) {
@@ -2778,7 +2828,7 @@ static void pass_draw_osd(struct gl_video *p, int draw_flags, double pts,
                 .light = MP_CSP_LIGHT_DISPLAY,
             };
 
-            pass_colormanage(p, csp_srgb, true);
+            pass_colormanage(p, csp_srgb, fbo.color_space, true);
         }
         mpgl_osd_draw_finish(p->osd, n, p->sc, fbo);
     }
@@ -2875,7 +2925,7 @@ static bool pass_render_frame(struct gl_video *p, struct mp_image *mpi,
         };
         finish_pass_tex(p, &p->blend_subs_tex, rect.w, rect.h);
         struct ra_fbo fbo = { p->blend_subs_tex };
-        pass_draw_osd(p, OSD_DRAW_SUB_ONLY, vpts, rect, fbo, false);
+        pass_draw_osd(p, OSD_DRAW_SUB_ONLY, flags, vpts, rect, fbo, false);
         pass_read_tex(p, p->blend_subs_tex);
         pass_describe(p, "blend subs video");
     }
@@ -2907,7 +2957,7 @@ static bool pass_render_frame(struct gl_video *p, struct mp_image *mpi,
         }
         finish_pass_tex(p, &p->blend_subs_tex, p->texture_w, p->texture_h);
         struct ra_fbo fbo = { p->blend_subs_tex };
-        pass_draw_osd(p, OSD_DRAW_SUB_ONLY, vpts, rect, fbo, false);
+        pass_draw_osd(p, OSD_DRAW_SUB_ONLY, flags, vpts, rect, fbo, false);
         pass_read_tex(p, p->blend_subs_tex);
         pass_describe(p, "blend subs");
     }
@@ -2929,7 +2979,7 @@ static void pass_draw_to_screen(struct gl_video *p, struct ra_fbo fbo)
         GLSL(color.rgb = pow(color.rgb, vec3(user_gamma));)
     }
 
-    pass_colormanage(p, p->image_params.color, false);
+    pass_colormanage(p, p->image_params.color, fbo.color_space, false);
 
     // Since finish_pass_fbo doesn't work with compute shaders, and neither
     // does the checkerboard/dither code, we may need an indirection via
@@ -3177,11 +3227,9 @@ void gl_video_render_frame(struct gl_video *p, struct vo_frame *frame,
 
     bool has_frame = !!frame->current;
 
-    if (!has_frame || !mp_rect_equals(&p->dst_rect, &target_rc)) {
-        struct m_color c = p->clear_color;
-        float color[4] = {c.r / 255.0, c.g / 255.0, c.b / 255.0, c.a / 255.0};
-        p->ra->fns->clear(p->ra, fbo.tex, color, &target_rc);
-    }
+    struct m_color c = p->clear_color;
+    float clear_color[4] = {c.r / 255.0, c.g / 255.0, c.b / 255.0, c.a / 255.0};
+    p->ra->fns->clear(p->ra, fbo.tex, clear_color, &target_rc);
 
     if (p->hwdec_overlay) {
         if (has_frame) {
@@ -3284,7 +3332,7 @@ done:
         if (!(flags & RENDER_FRAME_OSD))
             osd_flags |= OSD_DRAW_SUB_ONLY;
 
-        pass_draw_osd(p, osd_flags, p->osd_pts, p->osd_rect, fbo, true);
+        pass_draw_osd(p, osd_flags, flags, p->osd_pts, p->osd_rect, fbo, true);
         debug_check_gl(p, "after OSD rendering");
     }
 
@@ -3453,42 +3501,6 @@ void gl_video_perfdata(struct gl_video *p, struct voctrl_performance_data *out)
     frame_perf_data(p->pass_redraw, &out->redraw);
 }
 
-// This assumes nv12, with textures set to GL_NEAREST filtering.
-static void reinterleave_vdpau(struct gl_video *p,
-                               struct ra_tex *input[4], struct ra_tex *output[2])
-{
-    for (int n = 0; n < 2; n++) {
-        struct ra_tex **tex = &p->vdpau_deinterleave_tex[n];
-        // This is an array of the 2 to-merge planes.
-        struct ra_tex **src = &input[n * 2];
-        int w = src[0]->params.w;
-        int h = src[0]->params.h;
-        int ids[2];
-        for (int t = 0; t < 2; t++) {
-            ids[t] = pass_bind(p, (struct image){
-                .tex = src[t],
-                .multiplier = 1.0,
-                .transform = identity_trans,
-                .w = w,
-                .h = h,
-            });
-        }
-
-        pass_describe(p, "vdpau reinterleaving");
-        GLSLF("color = fract(gl_FragCoord.y * 0.5) < 0.5\n");
-        GLSLF("      ? texture(texture%d, texcoord%d)\n", ids[0], ids[0]);
-        GLSLF("      : texture(texture%d, texcoord%d);", ids[1], ids[1]);
-
-        int comps = n == 0 ? 1 : 2;
-        const struct ra_format *fmt = ra_find_unorm_format(p->ra, 1, comps);
-        ra_tex_resize(p->ra, p->log, tex, w, h * 2, fmt);
-        struct ra_fbo fbo = { *tex };
-        finish_pass_fbo(p, fbo, true, &(struct mp_rect){0, 0, w, h * 2});
-
-        output[n] = *tex;
-    }
-}
-
 // Returns false on failure.
 static bool pass_upload_image(struct gl_video *p, struct mp_image *mpi, uint64_t id)
 {
@@ -3525,11 +3537,6 @@ static bool pass_upload_image(struct gl_video *p, struct mp_image *mpi, uint64_t
             struct mp_image layout = {0};
             mp_image_set_params(&layout, &p->image_params);
             struct ra_tex **tex = p->hwdec_mapper->tex;
-            struct ra_tex *tmp[4] = {0};
-            if (p->hwdec_mapper->vdpau_fields) {
-                reinterleave_vdpau(p, tex, tmp);
-                tex = tmp;
-            }
             for (int n = 0; n < p->plane_count; n++) {
                 vimg->planes[n] = (struct texplane){
                     .w = mp_image_plane_w(&layout, n),
@@ -4149,7 +4156,7 @@ static void *gl_video_dr_alloc_buffer(struct gl_video *p, size_t size)
     p->dr_buffers[p->num_dr_buffers++] = (struct dr_buffer){ .buf = buf };
 
     return buf->data;
-};
+}
 
 static void gl_video_dr_free_buffer(void *opaque, uint8_t *data)
 {

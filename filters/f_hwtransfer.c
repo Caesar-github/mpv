@@ -19,65 +19,92 @@ struct priv {
     int last_upload_fmt;
     int last_sw_fmt;
 
+    // Hardware wrapper format, e.g. IMGFMT_VAAPI.
+    int hw_imgfmt;
+
+    // List of supported underlying surface formats.
+    int *fmts;
+    int num_fmts;
+    // List of supported upload image formats. May contain duplicate entries
+    // (which should be ignored).
+    int *upload_fmts;
+    int num_upload_fmts;
+    // For fmts[n], fmt_upload_index[n] gives the index of the first supported
+    // upload format in upload_fmts[], and fmt_upload_num[n] gives the number
+    // of formats at this position.
+    int *fmt_upload_index;
+    int *fmt_upload_num;
+
     struct mp_hwupload public;
 };
 
-static bool update_format_decision(struct priv *p, int input_fmt)
-{
-    struct mp_hwupload *u = &p->public;
+struct ffmpeg_and_other_bugs {
+    int imgfmt;                             // hw format
+    const int *const whitelist_formats;     // if non-NULL, allow only these
+                                            // sw formats
+    bool force_same_upload_fmt;             // force upload fmt == sw fmt
+};
 
+// This garbage is so complex and buggy. Hardcoding knowledge makes it work,
+// trying to use the dynamic information returned by the API does not. So fuck
+// this shit, I'll just whitelist the cases that work, what the fuck.
+static const struct ffmpeg_and_other_bugs shitlist[] = {
+    {
+        .imgfmt = IMGFMT_VAAPI,
+        .whitelist_formats = (const int[]){IMGFMT_NV12, IMGFMT_P010, IMGFMT_BGRA,
+                                           IMGFMT_ABGR, IMGFMT_RGB0, 0},
+        .force_same_upload_fmt = true,
+    },
+    {0}
+};
+
+static bool select_format(struct priv *p, int input_fmt, int *out_sw_fmt,
+                          int *out_upload_fmt)
+{
     if (!input_fmt)
         return false;
 
-    if (input_fmt == p->last_input_fmt)
-        return true;
-
-    p->last_input_fmt = 0;
-
-    int res = mp_imgfmt_select_best_list(u->upload_fmts, u->num_upload_fmts,
-                                         input_fmt);
-
-    if (!res)
+    // First find the closest sw fmt. Some hwdec APIs return crazy lists of
+    // "supported" formats, which then are not supported or crash (???), so
+    // the this is a good way to avoid problems.
+    // (Actually we should just have hardcoded everything instead of relying on
+    // this fragile bullshit FFmpeg API and the fragile bullshit hwdec drivers.)
+    int sw_fmt = mp_imgfmt_select_best_list(p->fmts, p->num_fmts, input_fmt);
+    if (!sw_fmt)
         return false;
 
-    // Find which sw format we should use.
-    // NOTE: if there are ever any hw APIs that actually do expensive
-    // conversions on mismatching format uploads, we should probably first look
-    // which sw format is preferred?
+    // Dumb, but find index for p->fmts[index]==sw_fmt.
     int index = -1;
-    for (int n = 0; n < u->num_upload_fmts; n++) {
-        if (u->upload_fmts[n] == res)
+    for (int n = 0; n < p->num_fmts; n++) {
+        if (p->fmts[n] == sw_fmt)
             index = n;
     }
-
     if (index < 0)
         return false;
 
-    for (int n = 0; n < u->num_fmts; n++) {
-        if (index >= u->fmt_upload_index[n] &&
-            index < u->fmt_upload_index[n] + u->fmt_upload_num[n])
-        {
-            p->last_input_fmt = input_fmt;
-            p->last_upload_fmt = u->upload_fmts[index];
-            p->last_sw_fmt = u->fmts[n];
-            MP_INFO(u->f, "upload %s -> %s (%s)\n",
-                    mp_imgfmt_to_name(p->last_input_fmt),
-                    mp_imgfmt_to_name(p->last_upload_fmt),
-                    mp_imgfmt_to_name(p->last_sw_fmt));
-            return true;
-        }
-    }
+    // Now check the available upload formats. This is the format our sw frame
+    // has to be in, and which the upload API will take (probably).
 
-    return false;
+    int *upload_fmts = &p->upload_fmts[p->fmt_upload_index[index]];
+    int num_upload_fmts = p->fmt_upload_num[index];
+
+    int up_fmt = mp_imgfmt_select_best_list(upload_fmts, num_upload_fmts,
+                                            input_fmt);
+    if (!up_fmt)
+        return false;
+
+    *out_sw_fmt = sw_fmt;
+    *out_upload_fmt = up_fmt;
+    return true;
 }
 
 int mp_hwupload_find_upload_format(struct mp_hwupload *u, int imgfmt)
 {
     struct priv *p = u->f->priv;
 
-    if (!update_format_decision(p, imgfmt))
-        return 0;
-    return p->last_upload_fmt;
+    int sw = 0, up = 0;
+    select_format(p, imgfmt, &sw, &up);
+    return up;
 }
 
 static void process(struct mp_filter *f)
@@ -109,14 +136,27 @@ static void process(struct mp_filter *f)
         goto error;
     }
 
-    if (!update_format_decision(p, src->imgfmt)) {
-        MP_ERR(f, "no hw upload format found\n");
-        goto error;
+    if (src->imgfmt != p->last_input_fmt) {
+        if (!select_format(p, src->imgfmt, &p->last_sw_fmt, &p->last_upload_fmt))
+        {
+            MP_ERR(f, "no hw upload format found\n");
+            goto error;
+        }
+        if (src->imgfmt != p->last_upload_fmt) {
+            // Should not fail; if it does, mp_hwupload_find_upload_format()
+            // does not return the src->imgfmt format.
+            MP_ERR(f, "input format not an upload format\n");
+            goto error;
+        }
+        p->last_input_fmt = src->imgfmt;
+        MP_INFO(f, "upload %s -> %s[%s]\n",
+                mp_imgfmt_to_name(p->last_input_fmt),
+                mp_imgfmt_to_name(p->hw_imgfmt),
+                mp_imgfmt_to_name(p->last_sw_fmt));
     }
 
-    if (!mp_update_av_hw_frames_pool(&p->hw_pool, p->av_device_ctx,
-                                     p->public.hw_imgfmt, p->last_sw_fmt,
-                                     src->w, src->h))
+    if (!mp_update_av_hw_frames_pool(&p->hw_pool, p->av_device_ctx, p->hw_imgfmt,
+                                     p->last_sw_fmt, src->w, src->h))
     {
         MP_ERR(f, "failed to create frame pool\n");
         goto error;
@@ -175,9 +215,9 @@ static bool probe_formats(struct mp_hwupload *u, int hw_imgfmt)
 {
     struct priv *p = u->f->priv;
 
-    u->hw_imgfmt = hw_imgfmt;
-    u->num_fmts = 0;
-    u->num_upload_fmts = 0;
+    p->hw_imgfmt = hw_imgfmt;
+    p->num_fmts = 0;
+    p->num_upload_fmts = 0;
 
     struct mp_stream_info *info = mp_filter_find_stream_info(u->f);
     if (!info || !info->hwdec_devs) {
@@ -221,6 +261,14 @@ static bool probe_formats(struct mp_hwupload *u, int hw_imgfmt)
     // supported formats. This should be relatively cheap as we don't create
     // any real frames (although some backends do for probing info).
 
+    const struct ffmpeg_and_other_bugs *bugs = NULL;
+    for (int n = 0; shitlist[n].imgfmt; n++) {
+        if (shitlist[n].imgfmt == hw_imgfmt) {
+            bugs = &shitlist[n];
+            break;
+        }
+    }
+
     for (int n = 0; cstr->valid_sw_formats &&
                     cstr->valid_sw_formats[n] != AV_PIX_FMT_NONE; n++)
     {
@@ -228,12 +276,28 @@ static bool probe_formats(struct mp_hwupload *u, int hw_imgfmt)
         if (!imgfmt)
             continue;
 
-        MP_VERBOSE(u->f, "looking at format %s\n", mp_imgfmt_to_name(imgfmt));
+        MP_VERBOSE(u->f, "looking at format %s/%s\n",
+                   mp_imgfmt_to_name(hw_imgfmt),
+                   mp_imgfmt_to_name(imgfmt));
+
+        if (bugs && bugs->whitelist_formats) {
+            bool found = false;
+            for (int i = 0; bugs->whitelist_formats[i]; i++) {
+                if (bugs->whitelist_formats[i] == imgfmt) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                MP_VERBOSE(u->f, "... skipping blacklisted format\n");
+                continue;
+            }
+        }
 
         // Creates an AVHWFramesContexts with the given parameters.
         AVBufferRef *frames = NULL;
         if (!mp_update_av_hw_frames_pool(&frames, ctx->av_device_ref,
-                                        hw_imgfmt, imgfmt, 128, 128))
+                                         hw_imgfmt, imgfmt, 128, 128))
         {
             MP_WARN(u->f, "failed to allocate pool\n");
             continue;
@@ -243,24 +307,31 @@ static bool probe_formats(struct mp_hwupload *u, int hw_imgfmt)
         if (av_hwframe_transfer_get_formats(frames,
                             AV_HWFRAME_TRANSFER_DIRECTION_TO, &fmts, 0) >= 0)
         {
-            int index = u->num_fmts;
-            MP_TARRAY_APPEND(p, u->fmts, u->num_fmts, imgfmt);
-            MP_TARRAY_GROW(p, u->fmt_upload_index, index);
-            MP_TARRAY_GROW(p, u->fmt_upload_num, index);
+            int index = p->num_fmts;
+            MP_TARRAY_APPEND(p, p->fmts, p->num_fmts, imgfmt);
+            MP_TARRAY_GROW(p, p->fmt_upload_index, index);
+            MP_TARRAY_GROW(p, p->fmt_upload_num, index);
 
-            u->fmt_upload_index[index] = u->num_upload_fmts;
+            p->fmt_upload_index[index] = p->num_upload_fmts;
 
             for (int i = 0; fmts[i] != AV_PIX_FMT_NONE; i++) {
                 int fmt = pixfmt2imgfmt(fmts[i]);
                 if (!fmt)
                     continue;
-                MP_VERBOSE(u->f, "supports %s\n", mp_imgfmt_to_name(fmt));
-                if (vo_supports(ctx, hw_imgfmt, fmt))
-                    MP_TARRAY_APPEND(p, u->upload_fmts, u->num_upload_fmts, fmt);
+                MP_VERBOSE(u->f, "  supports %s\n", mp_imgfmt_to_name(fmt));
+                if (bugs && bugs->force_same_upload_fmt && imgfmt != fmt) {
+                    MP_VERBOSE(u->f, "  ... skipping blacklisted format\n");
+                    continue;
+                }
+                if (!vo_supports(ctx, hw_imgfmt, fmt)) {
+                    MP_VERBOSE(u->f, "  ... not supported by VO\n");
+                    continue;
+                }
+                MP_TARRAY_APPEND(p, p->upload_fmts, p->num_upload_fmts, fmt);
             }
 
-            u->fmt_upload_num[index] =
-                u->num_upload_fmts - u->fmt_upload_index[index];
+            p->fmt_upload_num[index] =
+                p->num_upload_fmts - p->fmt_upload_index[index];
 
             av_free(fmts);
         }
@@ -272,7 +343,7 @@ static bool probe_formats(struct mp_hwupload *u, int hw_imgfmt)
     if (!p->av_device_ctx)
         return false;
 
-    return u->num_upload_fmts > 0;
+    return p->num_upload_fmts > 0;
 }
 
 struct mp_hwupload *mp_hwupload_create(struct mp_filter *parent, int hw_imgfmt)

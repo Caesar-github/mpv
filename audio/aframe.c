@@ -410,10 +410,16 @@ void mp_aframe_skip_samples(struct mp_aframe *f, int samples)
 {
     assert(samples >= 0 && samples <= mp_aframe_get_size(f));
 
+    if (av_frame_make_writable(f->av_frame) < 0)
+        return; // go complain to ffmpeg
+
     int num_planes = mp_aframe_get_planes(f);
     size_t sstride = mp_aframe_get_sstride(f);
-    for (int n = 0; n < num_planes; n++)
-        f->av_frame->extended_data[n] += samples * sstride;
+    for (int n = 0; n < num_planes; n++) {
+        memmove(f->av_frame->extended_data[n],
+                f->av_frame->extended_data[n] + samples * sstride,
+                (f->av_frame->nb_samples - samples) * sstride);
+    }
 
     f->av_frame->nb_samples -= samples;
 
@@ -592,7 +598,11 @@ int mp_aframe_pool_allocate(struct mp_aframe_pool *pool, struct mp_aframe *frame
 {
     int planes = mp_aframe_get_planes(frame);
     size_t sstride = mp_aframe_get_sstride(frame);
-    int plane_size = MP_ALIGN_UP(sstride * MPMAX(samples, 1), 32);
+    // FFmpeg hardcodes similar hidden possibly-requirements in a number of
+    // places: av_frame_get_buffer(), libavcodec's get_buffer(), mem.c,
+    // probably more.
+    int align_samples = MP_ALIGN_UP(MPMAX(samples, 1), 32);
+    int plane_size = MP_ALIGN_UP(sstride * align_samples, 64);
     int size = plane_size * planes;
 
     if (size <= 0 || mp_aframe_is_allocated(frame))

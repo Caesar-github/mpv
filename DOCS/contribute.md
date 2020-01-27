@@ -41,7 +41,7 @@ Copyright of contributions
   behalf of your employer, and the employer owns the copyright, you must mention
   this. If the license of the code is not LGPLv2.1+, you must mention this.
 - These license statements are legally binding.
-- Don't use fake names (something that looks like an actual names, and may be
+- Don't use fake names (something that looks like an actual name, and may be
   someone else's name, but is not your legal name). Using a pseudonyms is
   allowed if it can be used to identify or contact you, even if whatever
   account you used to submit the patch dies.
@@ -55,10 +55,10 @@ Write good commit messages
 - Write informative commit messages. Use present tense to describe the
   situation with the patch applied, and past tense for the situation before
   the change.
-- The subject line (the first line in a commit message) should contain a
+- The subject line (the first line in a commit message) must contain a
   prefix identifying the sub system, followed by a short description what
   impact this commit has. This subject line and the commit message body
-  shouldn't be longer than 72 characters per line, because it messes up the
+  must not be longer than 72 characters per line, because it messes up the
   output of many git tools otherwise.
 
   For example, you fixed a crash in af_volume.c:
@@ -68,7 +68,11 @@ Write good commit messages
 
   Having a prefix gives context, and is especially useful when trying to find
   a specific change by looking at the history, or when running ``git blame``.
-- The body of the commit message (everything else after the subject line) should
+- The first word after the ``:`` is lower case.
+- Don't end the subject line with a ``.``.
+- Put an empty line between the subject line and the commit message.
+  If this is missing, it will break display in common git tools.
+- The body of the commit message (everything else after the subject line) must
   be as informative as possible and contain everything that isn't obvious. Don't
   hesitate to dump as much information as you can - it doesn't cost you
   anything. Put some effort into it. If someone finds a bug months or years
@@ -77,13 +81,10 @@ Write good commit messages
   information to test the original bug. The old bug might be reintroduced while
   fixing the new bug.
 
-  The commit message should be wrapped on 72 characters per line, because git
+  The commit message must be wrapped on 72 characters per line, because git
   tools usually do not break text automatically. On the other hand, you do not
   need to break text that would be unnatural to break (like data for test cases,
   or long URLs).
-
-  Important: put an empty line between the subject line and the commit message.
-  If this is missing, it will break display in common git tools.
 - Another summary of good conventions: https://chris.beams.io/posts/git-commit/
 
 Split changes into multiple commits
@@ -95,6 +96,9 @@ Split changes into multiple commits
   additional cosmetic changes in the same file you're working on. But don't do
   something like reformatting a whole file, and hiding an actual functional
   change in the same commit.
+- Splitting changes does _not_ mean that you should make them as fine-grained
+  as possible. Commits should form logical steps in development. The way you
+  split changes is important for code review and analyzing bugs.
 
 Touching user-visible parts may require updating the mpv docs
 -------------------------------------------------------------
@@ -120,7 +124,7 @@ mpv uses C99 with K&R formatting, with some exceptions.
 - Use the K&R indent style.
 - Use 4 spaces of indentation, never use tabs (except in Makefiles).
 - Add a single space between keywords and binary operators. There are some other
-  cases where spaces should be added. Example:
+  cases where spaces must be added. Example:
 
     ```C
     if ((a * b) > c) {
@@ -153,7 +157,7 @@ mpv uses C99 with K&R formatting, with some exceptions.
             do_something();
     }
     ```
-- If the if has an else branch, both branches should use braces, even if they're
+- If the if has an else branch, both branches must use braces, even if they're
   technically redundant.
 
   Example:
@@ -185,6 +189,17 @@ mpv uses C99 with K&R formatting, with some exceptions.
 - Remove any trailing whitespace.
 - Do not make stray whitespaces changes.
 
+Header #include statement order
+-------------------------------
+
+The order of ``#include`` statements in the source code is not very consistent.
+New code must follow the following conventions:
+
+- Put standard includes (``#include <stdlib.h>`` etc.) on the top,
+- then after a blank line, add library includes (``#include <zlib.h>`` etc.)
+- then after a blank line, add internal includes (``#include "player/core.h"``)
+- sort them alphabetically within these sections
+
 General coding
 --------------
 
@@ -193,7 +208,7 @@ General coding
 - Don't use non-standard language (such as GNU C-only features). In some cases
   they may be warranted, if they are optional (such as attributes enabling
   printf-like format string checks). "#pragma once" is allowed as an exception.
-  But in general, standard C99 should be used.
+  But in general, standard C99 must be used.
 - The same applies to libc functions. We have to be Windows-compatible too. Use
   functions guaranteed by C99 or POSIX only, unless your use is guarded by a
   configure check. There is some restricted use of C11 (ask on IRC for details).

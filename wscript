@@ -40,11 +40,6 @@ build_options = [
         'deps': '!lgpl',
         'func': check_true,
     }, {
-        'name': 'libaf',
-        'desc': 'internal audio filter chain',
-        'deps': 'gpl',
-        'func': check_true,
-    }, {
         'name': '--cplayer',
         'desc': 'mpv CLI player',
         'default': 'enable',
@@ -81,6 +76,18 @@ build_options = [
         'default': 'enable',
         'func': check_true
     }, {
+        'name': '--tests',
+        'desc': 'unit tests (development only)',
+        'default': 'disable',
+        'func': check_true
+    }, {
+        # Reminder: normally always built, but enabled by MPV_LEAK_REPORT.
+        # Building it can be disabled only by defining NDEBUG through CFLAGS.
+        'name': '--ta-leak-report',
+        'desc': 'enable ta leak report by default (development only)',
+        'default': 'disable',
+        'func': check_true
+    }, {
         'name': '--manpage-build',
         'desc': 'manpage generation',
         'func': check_ctx_vars('RST2MAN')
@@ -109,11 +116,6 @@ build_options = [
         'desc': 'inline assembly (currently without effect)',
         'default': 'enable',
         'func': check_true,
-    }, {
-        'name': '--test',
-        'desc': 'test suite (using cmocka)',
-        'func': check_pkg_config('cmocka', '>= 1.1.5'),
-        'default': 'disable',
     }, {
         'name': '--clang-database',
         'desc': 'generate a clang compilation database',
@@ -215,7 +217,7 @@ main_dependencies = [
                 'atomic_int_least64_t test = ATOMIC_VAR_INIT(123);'
                 'atomic_fetch_add(&test, 1)'))
     }, {
-        # C11; technically we still support C99
+        # C11; technically we require C11, but aligned_alloc() is not in MinGW
         'name': 'aligned_alloc',
         'desc': 'C11 aligned_alloc()',
         'func': check_statement('stdlib.h', 'aligned_alloc(1, 1)'),
@@ -394,12 +396,11 @@ iconv support use --disable-iconv.",
     }, {
         'name': '--rubberband',
         'desc': 'librubberband support',
-        'deps': 'libaf',
         'func': check_pkg_config('rubberband', '>= 1.8.0'),
     }, {
         'name': '--zimg',
         'deps': 'aligned_alloc',
-        'desc': 'libzimg support (for vf_fingerprint)',
+        'desc': 'libzimg support (high quality software scaler)',
         'func': check_pkg_config('zimg', '>= 2.9'),
     }, {
         'name': '--lcms2',
@@ -413,7 +414,7 @@ iconv support use --disable-iconv.",
     }, {
         'name': '--libarchive',
         'desc': 'libarchive wrapper for reading zip files and more',
-        'func': check_pkg_config('libarchive >= 3.0.0'),
+        'func': check_pkg_config('libarchive >= 3.4.0'),
     }, {
         'name': '--dvbin',
         'desc': 'DVB input module',
@@ -503,6 +504,7 @@ FFmpeg/Libav libraries. Git master is recommended."
     }, {
         'name': '--ffmpeg-strict-abi',
         'desc': 'Disable all known FFmpeg ABI violations',
+        'func': check_true,
         'default': 'disable',
     }
 ]
@@ -576,6 +578,7 @@ video_output_features = [
         'name': '--sdl2-video',
         'desc': 'SDL2 video output',
         'deps': 'sdl2',
+        'deps_neg': 'cocoa',
         'func': check_true,
     }, {
         'name': '--cocoa',
@@ -644,11 +647,19 @@ video_output_features = [
                    check_cc(fragment=load_fragment('gl_x11.c'),
                             use=['x11', 'libdl', 'pthreads']))
     } , {
+        'name': '--egl',
+        'desc': 'EGL 1.4',
+        'groups': [ 'gl' ],
+        'func': compose_checks(
+            check_pkg_config('egl'),
+            check_statement(['EGL/egl.h'], 'int x[EGL_VERSION_1_4]')
+            ),
+    } , {
         'name': '--egl-x11',
         'desc': 'OpenGL X11 EGL Backend',
-        'deps': 'x11',
+        'deps': 'x11 && egl',
         'groups': [ 'gl' ],
-        'func': check_pkg_config('egl'),
+        'func': check_true,
     } , {
         'name': '--egl-drm',
         'desc': 'OpenGL DRM EGL Backend',
@@ -715,22 +726,22 @@ video_output_features = [
         'name': '--vaapi',
         'desc': 'VAAPI acceleration',
         'deps': 'libdl && (x11 || wayland || egl-drm)',
-        'func': check_pkg_config('libva', '>= 0.36.0'),
+        'func': check_pkg_config('libva', '>= 1.1.0'),
     }, {
         'name': '--vaapi-x11',
         'desc': 'VAAPI (X11 support)',
         'deps': 'vaapi && x11',
-        'func': check_pkg_config('libva-x11', '>= 0.36.0'),
+        'func': check_pkg_config('libva-x11', '>= 1.1.0'),
     }, {
         'name': '--vaapi-wayland',
         'desc': 'VAAPI (Wayland support)',
         'deps': 'vaapi && gl-wayland',
-        'func': check_pkg_config('libva-wayland', '>= 0.36.0'),
+        'func': check_pkg_config('libva-wayland', '>= 1.1.0'),
     }, {
         'name': '--vaapi-drm',
         'desc': 'VAAPI (DRM/EGL support)',
         'deps': 'vaapi && egl-drm',
-        'func': check_pkg_config('libva-drm', '>= 0.36.0'),
+        'func': check_pkg_config('libva-drm', '>= 1.1.0'),
     }, {
         'name': '--vaapi-x-egl',
         'desc': 'VAAPI EGL on X11',
@@ -876,8 +887,13 @@ hwaccel_features = [
         'func': check_pkg_config('ffnvcodec >= 8.2.15.7'),
     }, {
         'name': '--cuda-hwaccel',
-        'desc': 'CUDA hwaccel',
-        'deps': '(gl || vulkan) && ffnvcodec',
+        'desc': 'CUDA acceleration',
+        'deps': 'ffnvcodec',
+        'func': check_true,
+    }, {
+        'name': '--cuda-interop',
+        'desc': 'CUDA with graphics interop',
+        'deps': '(gl || vulkan) && cuda-hwaccel',
         'func': check_true,
     }, {
         'name': '--rpi-mmal',
@@ -894,11 +910,6 @@ standalone_features = [
         'deps': 'os-win32 || !(!(os-cygwin))',
         'func': check_ctx_vars('WINDRES')
     }, {
-        'name': '--apple-remote',
-        'desc': 'Apple Remote support',
-        'deps': 'cocoa',
-        'func': check_true
-    }, {
         'name': '--macos-touchbar',
         'desc': 'macOS Touch Bar support',
         'deps': 'cocoa',
@@ -913,10 +924,20 @@ standalone_features = [
         'deps': 'cocoa',
         'func': check_macos_sdk('10.11')
     }, {
+        'name': '--macos-10-12-2-features',
+        'desc': 'macOS 10.12.2 SDK Features',
+        'deps': 'cocoa',
+        'func': check_macos_sdk('10.12.2')
+    }, {
         'name': '--macos-10-14-features',
         'desc': 'macOS 10.14 SDK Features',
         'deps': 'cocoa',
         'func': check_macos_sdk('10.14')
+    },{
+        'name': '--macos-media-player',
+        'desc': 'macOS Media Player support',
+        'deps': 'macos-10-12-2-features && swift',
+        'func': check_true
     }, {
         'name': '--macos-cocoa-cb',
         'desc': 'macOS libmpv backend',
@@ -929,6 +950,7 @@ _INSTALL_DIRS_LIST = [
     ('confdir', '${SYSCONFDIR}/mpv',  'configuration files'),
     ('zshdir',  '${DATADIR}/zsh/site-functions', 'zsh completion functions'),
     ('confloaddir', '${CONFDIR}', 'configuration files load directory'),
+    ('bashdir', '${DATADIR}/bash-completion/completions', 'bash completion functions'),
 ]
 
 def options(opt):

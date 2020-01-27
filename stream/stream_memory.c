@@ -15,8 +15,6 @@
  * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include <libavutil/common.h>
-
 #include "common/common.h"
 #include "stream.h"
 
@@ -24,13 +22,13 @@ struct priv {
     bstr data;
 };
 
-static int fill_buffer(stream_t *s, char* buffer, int len)
+static int fill_buffer(stream_t *s, void *buffer, int len)
 {
     struct priv *p = s->priv;
     bstr data = p->data;
     if (s->pos < 0 || s->pos > data.len)
         return 0;
-    len = FFMIN(len, data.len - s->pos);
+    len = MPMIN(len, data.len - s->pos);
     memcpy(buffer, data.start + s->pos, len);
     return len;
 }
@@ -40,14 +38,10 @@ static int seek(stream_t *s, int64_t newpos)
     return 1;
 }
 
-static int control(stream_t *s, int cmd, void *arg)
+static int64_t get_size(stream_t *s)
 {
     struct priv *p = s->priv;
-    if (cmd == STREAM_CTRL_GET_SIZE) {
-        *(int64_t *)arg = p->data.len;
-        return 1;
-    }
-    return STREAM_UNSUPPORTED;
+    return p->data.len;
 }
 
 static int open2(stream_t *stream, struct stream_open_args *args)
@@ -55,8 +49,7 @@ static int open2(stream_t *stream, struct stream_open_args *args)
     stream->fill_buffer = fill_buffer;
     stream->seek = seek;
     stream->seekable = true;
-    stream->control = control;
-    stream->read_chunk = 1024 * 1024;
+    stream->get_size = get_size;
 
     struct priv *p = talloc_zero(stream, struct priv);
     stream->priv = p;
@@ -86,6 +79,8 @@ const stream_info_t stream_info_memory = {
     .protocols = (const char*const[]){ "memory", "hex", NULL },
 };
 
+// The data is copied.
+// Caller may need to set stream.stream_origin correctly.
 struct stream *stream_memory_open(struct mpv_global *global, void *data, int len)
 {
     assert(len >= 0);
@@ -93,7 +88,7 @@ struct stream *stream_memory_open(struct mpv_global *global, void *data, int len
     struct stream_open_args sargs = {
         .global = global,
         .url = "memory://",
-        .flags = STREAM_READ | STREAM_SILENT,
+        .flags = STREAM_READ | STREAM_SILENT | STREAM_ORIGIN_DIRECT,
         .sinfo = &stream_info_memory,
         .special_arg = &(bstr){data, len},
     };

@@ -15,11 +15,11 @@ You can encode files from one format/codec to another using this facility.
     Specifies the output format options for libavformat.
     See ``--ofopts=help`` for a full list of supported options.
 
-    Options are managed in lists. There are a few commands to manage the
-    options list.
+    This is a key/value list option. See `List Options`_ for details.
 
-    ``--ofopts-add=<options1[,options2,...]>``
-        Appends the options given as arguments to the options list.
+    ``--ofopts-add=<option>``
+        Appends the option given as an argument to the options list. (Passing
+        multiple options is currently still possible, but deprecated.)
 
     ``--ofopts=""``
         Completely empties the options list.
@@ -41,11 +41,11 @@ You can encode files from one format/codec to another using this facility.
         "``--oac=libmp3lame --oacopts=b=128000``"
             selects 128 kbps MP3 encoding.
 
-    Options are managed in lists. There are a few commands to manage the
-    options list.
+    This is a key/value list option. See `List Options`_ for details.
 
-    ``--oacopts-add=<options1[,options2,...]>``
-        Appends the options given as arguments to the options list.
+    ``--oacopts-add=<option>``
+        Appends the option given as an argument to the options list. (Passing
+        multiple options is currently still possible, but deprecated.)
 
     ``--oacopts=""``
         Completely empties the options list.
@@ -74,11 +74,11 @@ You can encode files from one format/codec to another using this facility.
         ``"--ovc=libx264 --ovcopts=crf=23"``
             selects VBR quality factor 23 for H.264 encoding.
 
-    Options are managed in lists. There are a few commands to manage the
-    options list.
+    This is a key/value list option. See `List Options`_ for details.
 
-    ``--ovcopts-add=<options1[,options2,...]>``
-        Appends the options given as arguments to the options list.
+    ``--ovcopts-add=<option>``
+        Appends the option given as an argument to the options list. (Passing
+        multiple options is currently still possible, but deprecated.)
 
     ``--ovcopts=""``
         Completely empties the options list.
@@ -103,6 +103,8 @@ You can encode files from one format/codec to another using this facility.
     FLAC allow almost arbitrary keys, while support in MP4 and MP3 is more
     limited.
 
+    This is a key/value list option. See `List Options`_ for details.
+
     .. admonition:: Example
 
         "``--oset-metadata=title="Output title",comment="Another tag"``"
@@ -111,6 +113,8 @@ You can encode files from one format/codec to another using this facility.
 ``--oremove-metadata=<metadata-tag[,metadata-tag,...]>``
     Specifies metadata to exclude from the output file when copying from the
     input file.
+
+    This is a string list option. See `List Options`_ for details.
 
     .. admonition:: Example
 

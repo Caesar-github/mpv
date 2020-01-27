@@ -30,7 +30,6 @@
 #include "osdep/atomic.h"
 #include "common/common.h"
 #include "common/global.h"
-#include "misc/ring.h"
 #include "misc/bstr.h"
 #include "options/options.h"
 #include "options/path.h"
@@ -42,6 +41,8 @@
 
 #include "msg.h"
 #include "msg_control.h"
+
+#define TERM_BUF 100
 
 struct mp_log_root {
     struct mpv_global *global;
@@ -58,6 +59,7 @@ struct mp_log_root {
     bool force_stderr;
     struct mp_log_buffer **buffers;
     int num_buffers;
+    struct mp_log_buffer *early_buffer;
     FILE *log_file;
     FILE *stats_file;
     char *log_path;
@@ -83,8 +85,13 @@ struct mp_log {
 
 struct mp_log_buffer {
     struct mp_log_root *root;
-    struct mp_ring *ring;
+    struct mp_log_buffer_entry **entries;   // ringbuffer
+    int capacity;                           // total space in entries[]
+    int entry0;                             // first (oldest) entry index
+    int num_entries;                        // number of valid entries after entry0
+    uint64_t dropped;                       // number of skipped entries
     int level;
+    bool silent;
     void (*wakeup_cb)(void *ctx);
     void *wakeup_cb_ctx;
 };
@@ -116,8 +123,11 @@ static void update_loglevel(struct mp_log *log)
             log->level = mp_msg_find_level(root->msg_levels[n * 2 + 1]);
     }
     log->terminal_level = log->level;
-    for (int n = 0; n < log->root->num_buffers; n++)
-        log->level = MPMAX(log->level, log->root->buffers[n]->level);
+    for (int n = 0; n < log->root->num_buffers; n++) {
+        int buffer_level = log->root->buffers[n]->level;
+        if (buffer_level != MP_LOG_BUFFER_MSGL_TERM)
+            log->level = MPMAX(log->level, buffer_level);
+    }
     if (log->root->log_file)
         log->level = MPMAX(log->level, MSGL_DEBUG);
     if (log->root->stats_file)
@@ -294,6 +304,15 @@ static void write_log_file(struct mp_log *log, int lev, char *text)
     fflush(root->log_file);
 }
 
+static struct mp_log_buffer_entry *log_buffer_read(struct mp_log_buffer *buffer)
+{
+    assert(buffer->num_entries);
+    struct mp_log_buffer_entry *res = buffer->entries[buffer->entry0];
+    buffer->entry0 = (buffer->entry0 + 1) % buffer->capacity;
+    buffer->num_entries -= 1;
+    return res;
+}
+
 static void write_msg_to_buffers(struct mp_log *log, int lev, char *text)
 {
     struct mp_log_root *root = log->root;
@@ -303,27 +322,21 @@ static void write_msg_to_buffers(struct mp_log *log, int lev, char *text)
         if (buffer_level == MP_LOG_BUFFER_MSGL_TERM)
             buffer_level = log->terminal_level;
         if (lev <= buffer_level && lev != MSGL_STATUS) {
-            // Assuming a single writer (serialized by msg lock)
-            int avail = mp_ring_available(buffer->ring) / sizeof(void *);
-            if (avail < 1)
-                continue;
-            struct mp_log_buffer_entry *entry = talloc_ptrtype(NULL, entry);
-            if (avail > 1) {
-                *entry = (struct mp_log_buffer_entry) {
-                    .prefix = talloc_strdup(entry, log->verbose_prefix),
-                    .level = lev,
-                    .text = talloc_strdup(entry, text),
-                };
-            } else {
-                // write overflow message to signal that messages might be lost
-                *entry = (struct mp_log_buffer_entry) {
-                    .prefix = "overflow",
-                    .level = MSGL_FATAL,
-                    .text = "log message buffer overflow\n",
-                };
+            if (buffer->num_entries == buffer->capacity) {
+                struct mp_log_buffer_entry *skip = log_buffer_read(buffer);
+                talloc_free(skip);
+                buffer->dropped += 1;
             }
-            mp_ring_write(buffer->ring, (unsigned char *)&entry, sizeof(entry));
-            if (buffer->wakeup_cb)
+            struct mp_log_buffer_entry *entry = talloc_ptrtype(NULL, entry);
+            *entry = (struct mp_log_buffer_entry) {
+                .prefix = talloc_strdup(entry, log->verbose_prefix),
+                .level = lev,
+                .text = talloc_strdup(entry, text),
+            };
+            int pos = (buffer->entry0 + buffer->num_entries) % buffer->capacity;
+            buffer->entries[pos] = entry;
+            buffer->num_entries += 1;
+            if (buffer->wakeup_cb && !buffer->silent)
                 buffer->wakeup_cb(buffer->wakeup_cb_ctx);
         }
     }
@@ -548,6 +561,9 @@ bool mp_msg_has_log_file(struct mpv_global *global)
 void mp_msg_uninit(struct mpv_global *global)
 {
     struct mp_log_root *root = global->log->root;
+    if (root->early_buffer)
+        mp_msg_log_buffer_destroy(root->early_buffer);
+    assert(root->num_buffers == 0);
     if (root->stats_file)
         fclose(root->stats_file);
     talloc_free(root->stats_path);
@@ -559,6 +575,32 @@ void mp_msg_uninit(struct mpv_global *global)
     global->log = NULL;
 }
 
+void mp_msg_set_early_logging(struct mpv_global *global, bool enable)
+{
+    struct mp_log_root *root = global->log->root;
+    pthread_mutex_lock(&mp_msg_lock);
+
+    if (enable != !!root->early_buffer) {
+        if (enable) {
+            pthread_mutex_unlock(&mp_msg_lock);
+            struct mp_log_buffer *buf =
+                mp_msg_log_buffer_new(global, TERM_BUF, MP_LOG_BUFFER_MSGL_TERM,
+                                      NULL, NULL);
+            pthread_mutex_lock(&mp_msg_lock);
+            assert(!root->early_buffer); // no concurrent calls to this function
+            root->early_buffer = buf;
+        } else {
+            struct mp_log_buffer *buf = root->early_buffer;
+            root->early_buffer = NULL;
+            pthread_mutex_unlock(&mp_msg_lock);
+            mp_msg_log_buffer_destroy(buf);
+            return;
+        }
+    }
+
+    pthread_mutex_unlock(&mp_msg_lock);
+}
+
 struct mp_log_buffer *mp_msg_log_buffer_new(struct mpv_global *global,
                                             int size, int level,
                                             void (*wakeup_cb)(void *ctx),
@@ -568,16 +610,34 @@ struct mp_log_buffer *mp_msg_log_buffer_new(struct mpv_global *global,
 
     pthread_mutex_lock(&mp_msg_lock);
 
+    if (level == MP_LOG_BUFFER_MSGL_TERM) {
+        size = TERM_BUF;
+
+        // The first thing which creates a terminal-level log buffer gets the
+        // early log buffer, if it exists. This is supposed to enable a script
+        // to grab log messages from before it was initialized. It's OK that
+        // this works only for 1 script and only once.
+        if (root->early_buffer) {
+            struct mp_log_buffer *buffer = root->early_buffer;
+            root->early_buffer = NULL;
+            buffer->wakeup_cb = wakeup_cb;
+            buffer->wakeup_cb_ctx = wakeup_cb_ctx;
+            pthread_mutex_unlock(&mp_msg_lock);
+            return buffer;
+        }
+    }
+
+    assert(size > 0);
+
     struct mp_log_buffer *buffer = talloc_ptrtype(NULL, buffer);
     *buffer = (struct mp_log_buffer) {
         .root = root,
         .level = level,
-        .ring = mp_ring_new(buffer, sizeof(void *) * size),
+        .entries = talloc_array(buffer, struct mp_log_buffer_entry *, size),
+        .capacity = size,
         .wakeup_cb = wakeup_cb,
         .wakeup_cb_ctx = wakeup_cb_ctx,
     };
-    if (!buffer->ring)
-        abort();
 
     MP_TARRAY_APPEND(root, root->buffers, root->num_buffers, buffer);
 
@@ -585,6 +645,13 @@ struct mp_log_buffer *mp_msg_log_buffer_new(struct mpv_global *global,
     pthread_mutex_unlock(&mp_msg_lock);
 
     return buffer;
+}
+
+void mp_msg_log_buffer_set_silent(struct mp_log_buffer *buffer, bool silent)
+{
+    pthread_mutex_lock(&mp_msg_lock);
+    buffer->silent = silent;
+    pthread_mutex_unlock(&mp_msg_lock);
 }
 
 void mp_msg_log_buffer_destroy(struct mp_log_buffer *buffer)
@@ -606,12 +673,8 @@ void mp_msg_log_buffer_destroy(struct mp_log_buffer *buffer)
 
 found:
 
-    while (1) {
-        struct mp_log_buffer_entry *e = mp_msg_log_buffer_read(buffer);
-        if (!e)
-            break;
-        talloc_free(e);
-    }
+    while (buffer->num_entries)
+        talloc_free(log_buffer_read(buffer));
     talloc_free(buffer);
 
     atomic_fetch_add(&root->reload_counter, 1);
@@ -622,13 +685,29 @@ found:
 // Thread-safety: one buffer can be read by a single thread only.
 struct mp_log_buffer_entry *mp_msg_log_buffer_read(struct mp_log_buffer *buffer)
 {
-    void *ptr = NULL;
-    int read = mp_ring_read(buffer->ring, (unsigned char *)&ptr, sizeof(ptr));
-    if (read == 0)
-        return NULL;
-    if (read != sizeof(ptr))
-        abort();
-    return ptr;
+    struct mp_log_buffer_entry *res = NULL;
+
+    pthread_mutex_lock(&mp_msg_lock);
+
+    if (!buffer->silent && buffer->num_entries) {
+        if (buffer->dropped) {
+            res = talloc_ptrtype(NULL, res);
+            *res = (struct mp_log_buffer_entry) {
+                .prefix = "overflow",
+                .level = MSGL_FATAL,
+                .text = talloc_asprintf(res,
+                    "log message buffer overflow: %"PRId64" messages skipped\n",
+                    buffer->dropped),
+            };
+            buffer->dropped = 0;
+        } else {
+            res = log_buffer_read(buffer);
+        }
+    }
+
+    pthread_mutex_unlock(&mp_msg_lock);
+
+    return res;
 }
 
 // Thread-safety: fully thread-safe, but keep in mind that the lifetime of

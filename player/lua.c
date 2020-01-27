@@ -73,6 +73,9 @@ static const char * const builtin_lua_scripts[][2] = {
     {"@stats.lua",
 #   include "player/lua/stats.inc"
     },
+    {"@console.lua",
+#   include "player/lua/console.inc"
+    },
     {0}
 };
 
@@ -270,28 +273,6 @@ static int load_scripts(lua_State *L)
     return 0;
 }
 
-static void set_path(lua_State *L)
-{
-    void *tmp = talloc_new(NULL);
-
-    lua_getglobal(L, "package"); // package
-    lua_getfield(L, -1, "path"); // package path
-    const char *path = lua_tostring(L, -1);
-
-    char *newpath = talloc_strdup(tmp, path ? path : "");
-    char **luadir = mp_find_all_config_files(tmp, get_mpctx(L)->global, "scripts");
-    for (int i = 0; luadir && luadir[i]; i++) {
-        newpath = talloc_asprintf_append(newpath, ";%s",
-                        mp_path_join(tmp, luadir[i], "?.lua"));
-    }
-
-    lua_pushstring(L, newpath);  // package path newpath
-    lua_setfield(L, -3, "path"); // package path
-    lua_pop(L, 2);  // -
-
-    talloc_free(tmp);
-}
-
 static int run_lua(lua_State *L)
 {
     struct script_ctx *ctx = lua_touserdata(L, -1);
@@ -343,9 +324,6 @@ static int run_lua(lua_State *L)
     }
     lua_pop(L, 2); // -
 
-    assert(lua_gettop(L) == 0);
-
-    set_path(L);
     assert(lua_gettop(L) == 0);
 
     // run this under an error handler that can do backtraces
@@ -596,9 +574,11 @@ static int script_request_event(lua_State *L)
 static int script_enable_messages(lua_State *L)
 {
     struct script_ctx *ctx = get_ctx(L);
-    check_loglevel(L, 1);
     const char *level = luaL_checkstring(L, 1);
-    return check_error(L, mpv_request_log_messages(ctx->client, level));
+    int r = mpv_request_log_messages(ctx->client, level);
+    if (r == MPV_ERROR_INVALID_PARAMETER)
+        luaL_error(L, "Invalid log level '%s'", level);
+    return check_error(L, r);
 }
 
 static int script_command(lua_State *L)
@@ -993,42 +973,6 @@ static int script_raw_abort_async_command(lua_State *L)
     return 0;
 }
 
-static int script_set_osd_ass(lua_State *L)
-{
-    struct script_ctx *ctx = get_ctx(L);
-    int res_x = luaL_checkinteger(L, 1);
-    int res_y = luaL_checkinteger(L, 2);
-    const char *text = luaL_checkstring(L, 3);
-    if (!text[0])
-        text = " "; // force external OSD initialization
-    osd_set_external(ctx->mpctx->osd, ctx->client, res_x, res_y, (char *)text);
-    mp_wakeup_core(ctx->mpctx);
-    return 0;
-}
-
-static int script_get_osd_size(lua_State *L)
-{
-    struct MPContext *mpctx = get_mpctx(L);
-    struct mp_osd_res vo_res = osd_get_vo_res(mpctx->osd);
-    double aspect = 1.0 * vo_res.w / MPMAX(vo_res.h, 1) /
-                    (vo_res.display_par ? vo_res.display_par : 1);
-    lua_pushnumber(L, vo_res.w);
-    lua_pushnumber(L, vo_res.h);
-    lua_pushnumber(L, aspect);
-    return 3;
-}
-
-static int script_get_osd_margins(lua_State *L)
-{
-    struct MPContext *mpctx = get_mpctx(L);
-    struct mp_osd_res vo_res = osd_get_vo_res(mpctx->osd);
-    lua_pushnumber(L, vo_res.ml);
-    lua_pushnumber(L, vo_res.mt);
-    lua_pushnumber(L, vo_res.mr);
-    lua_pushnumber(L, vo_res.mb);
-    return 4;
-}
-
 static int script_get_mouse_pos(lua_State *L)
 {
     struct MPContext *mpctx = get_mpctx(L);
@@ -1151,7 +1095,7 @@ static int script_file_info(lua_State *L)
         "mode", "size",
         "atime", "mtime", "ctime", NULL
     };
-    const unsigned int stat_values[] = {
+    const lua_Number stat_values[] = {
         statbuf.st_mode,
         statbuf.st_size,
         statbuf.st_atime,
@@ -1161,7 +1105,7 @@ static int script_file_info(lua_State *L)
 
     // Add all fields
     for (int i = 0; stat_names[i]; i++) {
-        lua_pushinteger(L, stat_values[i]);
+        lua_pushnumber(L, stat_values[i]);
         lua_setfield(L, -2, stat_names[i]);
     }
 
@@ -1270,9 +1214,6 @@ static const struct fn_entry main_fns[] = {
     FN_ENTRY(set_property_native),
     FN_ENTRY(raw_observe_property),
     FN_ENTRY(raw_unobserve_property),
-    FN_ENTRY(set_osd_ass),
-    FN_ENTRY(get_osd_size),
-    FN_ENTRY(get_osd_margins),
     FN_ENTRY(get_mouse_pos),
     FN_ENTRY(get_time),
     FN_ENTRY(input_set_section_mouse_area),

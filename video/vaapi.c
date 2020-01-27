@@ -70,7 +70,7 @@ static void va_error_callback(void *context, const char *msg)
 
 static void va_info_callback(void *context, const char *msg)
 {
-    va_message_callback(context, msg, MSGL_V);
+    va_message_callback(context, msg, MSGL_DEBUG);
 }
 
 static void free_device_ref(struct AVHWDeviceContext *hwctx)
@@ -109,10 +109,8 @@ struct mp_vaapi_ctx *va_initialize(VADisplay *display, struct mp_log *plog,
     hwctx->free = free_device_ref;
     hwctx->user_opaque = res;
 
-#if VA_CHECK_VERSION(1, 0, 0)
     vaSetErrorCallback(display, va_error_callback, res);
     vaSetInfoCallback(display,  va_info_callback,  res);
-#endif
 
     int major, minor;
     int status = vaInitialize(display, &major, &minor);

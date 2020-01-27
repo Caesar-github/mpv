@@ -506,7 +506,7 @@ local function add_video(s)
     if append(s, r["w"], {prefix="Native Resolution:"}) then
         append(s, r["h"], {prefix="x", nl="", indent=" ", prefix_sep=" ", no_prefix_markup=true})
     end
-    append_property(s, "window-scale", {prefix="Window Scale:"})
+    append_property(s, "current-window-scale", {prefix="Window Scale:"})
     append(s, format("%.2f", r["aspect"]), {prefix="Aspect Ratio:"})
     append(s, r["pixelformat"], {prefix="Pixel Format:"})
 
@@ -674,6 +674,7 @@ local function cache_stats()
     append(stats, fc, {prefix = "Disk cache:"})
 
     append(stats, info["debug-low-level-seeks"], {prefix = "Media seeks:"})
+    append(stats, info["debug-byte-level-seeks"], {prefix = "Stream seeks:"})
 
     append(stats, "", {prefix=o.nl .. o.nl .. "Ranges:", nl="", indent=""})
 
@@ -813,7 +814,7 @@ local function process_key_binding(oneshot)
             clear_screen()
             remove_page_bindings()
             if recorder then
-                mp.unregister_event(recorder)
+                mp.unobserve_property(recorder)
                 recorder = nil
             end
         end
@@ -821,7 +822,11 @@ local function process_key_binding(oneshot)
     else
         if not oneshot and (o.plot_vsync_jitter or o.plot_vsync_ratio) then
             recorder = record_data(o.skip_frames)
-            mp.register_event("tick", recorder)
+            -- Rely on the fact that "vsync-ratio" is updated at the same time.
+            -- Using "none" to get a sample any time, even if it does not change.
+            -- Will stop working if "vsync-jitter" property change notification
+            -- changes, but it's fine for an internal script.
+            mp.observe_property("vsync-jitter", "none", recorder)
             cache_recorder_timer:resume()
         end
         display_timer:kill()

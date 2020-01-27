@@ -161,7 +161,7 @@ static void handle_event(stream_t *s, const BD_EVENT *ev)
     }
 }
 
-static int bluray_stream_fill_buffer(stream_t *s, char *buf, int len)
+static int bluray_stream_fill_buffer(stream_t *s, void *buf, int len)
 {
     struct bluray_priv_s *b = s->priv;
     BD_EVENT event;
@@ -283,9 +283,6 @@ static int bluray_stream_control(stream_t *s, int cmd, void *arg)
         *(char**)arg = talloc_strdup(NULL, meta->di_name);
         return STREAM_OK;
     }
-    case STREAM_CTRL_GET_SIZE:
-        *(int64_t *)arg = bd_get_title_size(b->bd);
-        return STREAM_OK;
     default:
         break;
     }
@@ -515,12 +512,14 @@ const stream_info_t stream_info_bluray = {
     .name = "bd",
     .open = bluray_stream_open,
     .protocols = (const char*const[]){ "bd", "br", "bluray", NULL },
+    .stream_origin = STREAM_ORIGIN_UNSAFE,
 };
 
 const stream_info_t stream_info_bdnav = {
     .name = "bdnav",
     .open = bluray_stream_open,
     .protocols = (const char*const[]){ "bdnav", "brnav", "bluraynav", NULL },
+    .stream_origin = STREAM_ORIGIN_UNSAFE,
 };
 
 static bool check_bdmv(const char *path)
@@ -608,4 +607,5 @@ const stream_info_t stream_info_bdmv_dir = {
     .name = "bdmv/bluray",
     .open = bdmv_dir_stream_open,
     .protocols = (const char*const[]){ "file", "", NULL },
+    .stream_origin = STREAM_ORIGIN_UNSAFE,
 };

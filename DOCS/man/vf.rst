@@ -85,6 +85,9 @@ libavfilter bridge.
 Video filters are managed in lists. There are a few commands to manage the
 filter list.
 
+``--vf-append=filter``
+    Appends the filter given as arguments to the filter list.
+
 ``--vf-add=filter``
     Appends the filter given as arguments to the filter list. (Passing multiple
     filters is currently still possible, but deprecated.)
@@ -93,12 +96,24 @@ filter list.
     Prepends the filters given as arguments to the filter list. (Passing
     multiple filters is currently still possible, but deprecated.)
 
+``--vf-remove=filter``
+    Deletes the filter from the list. The filter can be either given the way it
+    was added (filter name and its full argument list), or by label (prefixed
+    with ``@``). Matching of filters works as follows: if either of the compared
+    filters has a label set, only the labels are compared. If none of the
+    filters have a label, the filter name, arguments, and argument order are
+    compared. (Passing multiple filters is currently still possible, but
+    deprecated.)
+
+``-vf-toggle=filter``
+    Add the given filter to the list if it was not present yet, or remove it
+    from the list if it was present. Matching of filters works as described in
+    ``--vf-remove``.
+
 ``--vf-del=filter``
-    Deletes the filter. The filter can even given the way it was added (filter
-    name and its full argument list), by label (prefixed with ``@``), or as
-    index number. Index numbers start at 0, negative numbers address the end of
-    the list (-1 is the last). (Passing multiple filters is currently still
-    possible, but deprecated.)
+    Sort of like ``--vf-remove``, but also accepts an index number. Index
+    numbers start at 0, negative numbers address the end of the list (-1 is the
+    last). Deprecated.
 
 ``--vf-clr``
     Completely empties the filter list.
@@ -710,3 +725,39 @@ Available mpv-only filters are:
         Print computed fingerprints the the terminal (default: no). This is
         mostly for testing and such. Scripts should use ``vf-metadata`` to
         read information from this filter instead.
+
+``gpu=...``
+    Convert video to RGB using the OpenGL renderer normally used with
+    ``--vo=gpu``. This requires that the EGL implementation supports off-screen
+    rendering on the default display. (This is the case with Mesa.)
+
+    Sub-options:
+
+    ``w=<pixels>``, ``h=<pixels>``
+        Size of the output in pixels (default: 0). If not positive, this will
+        use the size of the first filtered input frame.
+
+    .. warning::
+
+        This is highly experimental. Performance is bad, and it will not work
+        everywhere in the first place. Some features are not supported.
+
+    .. warning::
+
+        This does not do OSD rendering. If you see OSD, then it has been
+        rendered by the VO backend. (Subtitles are rendered by the ``gpu``
+        filter, if possible.)
+
+    .. warning::
+
+        If you use this with encoding mode, keep in mind that encoding mode will
+        convert the RGB filter's output back to yuv420p in software, using the
+        configured software scaler. Using ``zimg`` might improve this, but in
+        any case it might go against your goals when using this filter.
+
+    .. warning::
+
+        Do not use this with ``--vo=gpu``. It will apply filtering twice, since
+        most ``--vo=gpu`` options are unconditionally applied to the ``gpu``
+        filter. There is no mechanism in mpv to prevent this.
+

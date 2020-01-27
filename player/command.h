@@ -78,8 +78,8 @@ void property_print_help(struct MPContext *mpctx);
 int mp_property_do(const char* name, int action, void* val,
                    struct MPContext *mpctx);
 
-int mp_on_set_option(void *ctx, struct m_config_option *co, void *data, int flags);
-void mp_option_change_callback(void *ctx, struct m_config_option *co, int flags);
+void mp_option_change_callback(void *ctx, struct m_config_option *co, int flags,
+                               bool self_update);
 
 void mp_notify(struct MPContext *mpctx, int event, void *arg);
 void mp_notify_property(struct MPContext *mpctx, const char *property);
@@ -97,6 +97,7 @@ enum {
     MP_EVENT_CACHE_UPDATE,
     MP_EVENT_WIN_RESIZE,
     MP_EVENT_WIN_STATE,
+    MP_EVENT_WIN_STATE2,
     MP_EVENT_CHANGE_PLAYLIST,
     MP_EVENT_CORE_IDLE,
     MP_EVENT_DURATION_UPDATE,

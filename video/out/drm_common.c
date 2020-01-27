@@ -478,6 +478,10 @@ static bool setup_mode(struct kms *kms, const char *mode_spec)
         goto err;
     }
 
+    drmModeModeInfo *mode = &kms->mode.mode;
+    MP_VERBOSE(kms, "Selected mode: %s (%dx%d@%.2fHz)\n",
+        mode->name, mode->hdisplay, mode->vdisplay, mode_get_Hz(mode));
+
     return true;
 
 err:
@@ -538,6 +542,20 @@ struct kms *kms_create(struct mp_log *log, const char *connector_spec,
         mp_err(log, "Cannot open card \"%d\": %s.\n",
                card_no, mp_strerror(errno));
         goto err;
+    }
+
+    char *devname = drmGetDeviceNameFromFd(kms->fd);
+    if (devname) {
+        mp_verbose(log, "Device name: %s\n", devname);
+        drmFree(devname);
+    }
+
+    drmVersionPtr ver = drmGetVersion(kms->fd);
+    if (ver) {
+        mp_verbose(log, "Driver: %s %d.%d.%d (%s)\n", ver->name,
+            ver->version_major, ver->version_minor, ver->version_patchlevel,
+            ver->date);
+        drmFreeVersion(ver);
     }
 
     res = drmModeGetResources(kms->fd);
@@ -608,7 +626,10 @@ void kms_destroy(struct kms *kms)
 
 static double mode_get_Hz(const drmModeModeInfo *mode)
 {
-    return mode->clock * 1000.0 / mode->htotal / mode->vtotal;
+    double rate = mode->clock * 1000.0 / mode->htotal / mode->vtotal;
+    if (mode->flags & DRM_MODE_FLAG_INTERLACE)
+        rate *= 2.0;
+    return rate;
 }
 
 static void kms_show_available_modes(
@@ -923,6 +944,15 @@ void drm_pflip_cb(int fd, unsigned int msc, unsigned int sec,
     const uint64_t ust = (sec * 1000000LL) + usec;
 
     const unsigned int msc_since_last_flip = msc - vsync->msc;
+    if (ready && msc == vsync->msc) {
+        // Seems like some drivers only increment msc every other page flip when
+        // running in interlaced mode (I'm looking at you nouveau). Obviously we
+        // can't work with this, so shame the driver and bail.
+        mp_err(closure->log,
+               "Got the same msc value twice: (msc: %u, vsync->msc: %u). This shouldn't happen. Possibly broken driver/interlaced mode?\n",
+               msc, vsync->msc);
+        goto fail;
+    }
 
     vsync->ust = ust;
     vsync->msc = msc;

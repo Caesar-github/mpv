@@ -23,9 +23,6 @@
 
 #include "cmd.h"
 
-// For mp_input_put_key(): release all keys that are down.
-#define MP_INPUT_RELEASE_ALL -1
-
 struct input_ctx;
 struct mp_log;
 
@@ -207,6 +204,8 @@ void mp_input_run_cmd(struct input_ctx *ictx, const char **cmd);
 void mp_input_bind_key(struct input_ctx *ictx, int key, bstr command);
 
 void mp_input_set_repeat_info(struct input_ctx *ictx, int rate, int delay);
+
+struct mpv_node mp_input_get_bindings(struct input_ctx *ictx);
 
 void mp_input_pipe_add(struct input_ctx *ictx, const char *filename);
 

@@ -257,13 +257,16 @@ static int mp_dvdnav_number_of_subs(stream_t *stream)
     return n;
 }
 
-static int fill_buffer(stream_t *s, char *buf, int max_len)
+static int fill_buffer(stream_t *s, void *buf, int max_len)
 {
     struct priv *priv = s->priv;
     dvdnav_t *dvdnav = priv->dvdnav;
 
-    if (max_len < 2048)
+    if (max_len < 2048) {
+        MP_FATAL(s, "Short read size. Data corruption will follow. Please "
+                    "provide a patch.\n");
         return -1;
+    }
 
     while (1) {
         int len = -1;
@@ -472,6 +475,7 @@ static int control(stream_t *stream, int cmd, void *arg)
             break;
         if (dvdnav_angle_change(dvdnav, new_angle) != DVDNAV_STATUS_OK)
             return 1;
+        break;
     }
     case STREAM_CTRL_GET_LANG: {
         struct stream_lang_req *req = arg;
@@ -571,7 +575,7 @@ static int open_s_internal(stream_t *stream)
     if (!new_dvdnav_stream(stream, filename)) {
         MP_ERR(stream, "Couldn't open DVD device: %s\n",
                 filename);
-        return STREAM_UNSUPPORTED;
+        return STREAM_ERROR;
     }
 
     if (p->track == TITLE_LONGEST) { // longest
@@ -658,6 +662,7 @@ const stream_info_t stream_info_dvdnav = {
     .name = "dvdnav",
     .open = open_s,
     .protocols = (const char*const[]){ "dvd", "dvdnav", NULL },
+    .stream_origin = STREAM_ORIGIN_UNSAFE,
 };
 
 static bool check_ifo(const char *path)
@@ -710,4 +715,5 @@ const stream_info_t stream_info_ifo_dvdnav = {
     .name = "ifo_dvdnav",
     .open = ifo_dvdnav_stream_open,
     .protocols = (const char*const[]){ "file", "", NULL },
+    .stream_origin = STREAM_ORIGIN_UNSAFE,
 };

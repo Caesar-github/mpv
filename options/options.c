@@ -106,10 +106,6 @@ static const struct m_sub_options screenshot_conf = {
 
 static const m_option_t mp_vo_opt_list[] = {
     OPT_SETTINGSLIST("vo", video_driver_list, 0, &vo_obj_list, ),
-    OPT_SUBSTRUCT("sws", sws_opts, sws_conf, 0),
-#if HAVE_ZIMG
-    OPT_SUBSTRUCT("zimg", zimg_opts, zimg_conf, 0),
-#endif
     OPT_FLAG("taskbar-progress", taskbar_progress, 0),
     OPT_FLAG("snap-window", snap_window, 0),
     OPT_FLAG("ontop", ontop, 0),
@@ -123,6 +119,8 @@ static const m_option_t mp_vo_opt_list[] = {
     OPT_SIZE_BOX("autofit-larger", autofit_larger, 0),
     OPT_SIZE_BOX("autofit-smaller", autofit_smaller, 0),
     OPT_DOUBLE("window-scale", window_scale, CONF_RANGE, .min = 0.001, .max = 100),
+    OPT_FLAG("window-minimized", window_minimized, 0),
+    OPT_FLAG("window-maximized", window_maximized, 0),
     OPT_FLAG("force-window-position", force_window_position, 0),
     OPT_STRING("x11-name", winname, 0),
     OPT_FLOATRANGE("monitoraspect", force_monitor_aspect, 0, 0.0, 9.0),
@@ -151,7 +149,7 @@ static const m_option_t mp_vo_opt_list[] = {
     OPT_FLAG("keepaspect-window", keepaspect_window, 0),
     OPT_FLAG("hidpi-window-scale", hidpi_window_scale, 0),
     OPT_FLAG("native-fs", native_fs, 0),
-    OPT_DOUBLE("display-fps", override_display_fps, M_OPT_MIN, .min = 0),
+    OPT_DOUBLE("override-display-fps", override_display_fps, M_OPT_MIN, .min = 0),
     OPT_DOUBLERANGE("video-timing-offset", timing_offset, 0, 0.0, 1.0),
 #if HAVE_X11
     OPT_CHOICE("x11-netwm", x11_netwm, 0,
@@ -322,37 +320,40 @@ const struct m_sub_options filter_conf = {
 #undef OPT_BASE_STRUCT
 #define OPT_BASE_STRUCT struct MPOpts
 
-const m_option_t mp_opts[] = {
+static const m_option_t mp_opts[] = {
     // handled in command line pre-parser (parse_commandline.c)
-    {"v", &m_option_type_dummy_flag, M_OPT_FIXED | CONF_NOCFG | M_OPT_NOPROP,
+    {"v", &m_option_type_dummy_flag, CONF_NOCFG | M_OPT_NOPROP,
      .offset = -1},
-    {"playlist", CONF_TYPE_STRING, CONF_NOCFG | M_OPT_MIN | M_OPT_FIXED | M_OPT_FILE,
+    {"playlist", CONF_TYPE_STRING, CONF_NOCFG | M_OPT_MIN | M_OPT_FILE,
      .min = 1, .offset = -1},
-    {"{", &m_option_type_dummy_flag, CONF_NOCFG | M_OPT_FIXED | M_OPT_NOPROP,
+    {"{", &m_option_type_dummy_flag, CONF_NOCFG | M_OPT_NOPROP,
      .offset = -1},
-    {"}", &m_option_type_dummy_flag, CONF_NOCFG | M_OPT_FIXED | M_OPT_NOPROP,
+    {"}", &m_option_type_dummy_flag, CONF_NOCFG | M_OPT_NOPROP,
      .offset = -1},
 
     // handled in m_config.c
     { "include", CONF_TYPE_STRING, M_OPT_FILE, .offset = -1},
     { "profile", CONF_TYPE_STRING_LIST, 0, .offset = -1},
-    { "show-profile", CONF_TYPE_STRING, CONF_NOCFG | M_OPT_FIXED | M_OPT_NOPROP,
-      .offset = -1},
-    { "list-options", &m_option_type_dummy_flag, CONF_NOCFG | M_OPT_FIXED |
-      M_OPT_NOPROP, .offset = -1},
-    OPT_FLAG("list-properties", property_print_help,
-             CONF_NOCFG | M_OPT_FIXED | M_OPT_NOPROP),
-    { "help", CONF_TYPE_STRING, CONF_NOCFG | M_OPT_FIXED | M_OPT_NOPROP |
-              M_OPT_OPTIONAL_PARAM, .offset = -1},
-    { "h", CONF_TYPE_STRING, CONF_NOCFG | M_OPT_FIXED | M_OPT_NOPROP |
-           M_OPT_OPTIONAL_PARAM, .offset = -1},
+    { "show-profile", CONF_TYPE_STRING, CONF_NOCFG | M_OPT_NOPROP |
+        M_OPT_OPTIONAL_PARAM,  .offset = -1},
+    { "list-options", &m_option_type_dummy_flag, CONF_NOCFG | M_OPT_NOPROP,
+        .offset = -1},
+    OPT_FLAG("list-properties", property_print_help, CONF_NOCFG | M_OPT_NOPROP),
+    { "help", CONF_TYPE_STRING, CONF_NOCFG | M_OPT_NOPROP | M_OPT_OPTIONAL_PARAM,
+        .offset = -1},
+    { "h", CONF_TYPE_STRING, CONF_NOCFG | M_OPT_NOPROP | M_OPT_OPTIONAL_PARAM,
+        .offset = -1},
 
     OPT_PRINT("list-protocols", stream_print_proto_list),
     OPT_PRINT("version", print_version),
     OPT_PRINT("V", print_version),
 
+#if HAVE_TESTS
+    OPT_STRING("unittest", test_mode, CONF_NOCFG | M_OPT_NOPROP),
+#endif
+
     OPT_CHOICE("player-operation-mode", operation_mode,
-               M_OPT_FIXED | M_OPT_PRE_PARSE | M_OPT_NOPROP,
+               M_OPT_PRE_PARSE | M_OPT_NOPROP,
                ({"cplayer", 0}, {"pseudo-gui", 1})),
 
     OPT_FLAG("shuffle", shuffle, 0),
@@ -378,13 +379,13 @@ const m_option_t mp_opts[] = {
                 {"belownormal", BELOW_NORMAL_PRIORITY_CLASS},
                 {"idle",        IDLE_PRIORITY_CLASS})),
 #endif
-    OPT_FLAG("config", load_config, M_OPT_FIXED | CONF_PRE_PARSE),
+    OPT_FLAG("config", load_config, CONF_PRE_PARSE),
     OPT_STRING("config-dir", force_configdir,
-               M_OPT_FIXED | CONF_NOCFG | CONF_PRE_PARSE | M_OPT_FILE),
+               CONF_NOCFG | CONF_PRE_PARSE | M_OPT_FILE),
     OPT_STRINGLIST("reset-on-next-file", reset_options, 0),
 
 #if HAVE_LUA || HAVE_JAVASCRIPT
-    OPT_PATHLIST("scripts", script_files, M_OPT_FIXED | M_OPT_FILE),
+    OPT_PATHLIST("scripts", script_files, M_OPT_FILE),
     OPT_CLI_ALIAS("script", "scripts-append"),
     OPT_KEYVALUELIST("script-opts", script_opts, 0),
     OPT_FLAG("load-scripts", auto_load_scripts, 0),
@@ -395,6 +396,7 @@ const m_option_t mp_opts[] = {
     OPT_STRING("ytdl-format", lua_ytdl_format, 0),
     OPT_KEYVALUELIST("ytdl-raw-options", lua_ytdl_raw_options, 0),
     OPT_FLAG("load-stats-overlay", lua_load_stats, UPDATE_BUILTIN_SCRIPTS),
+    OPT_FLAG("load-osd-console", lua_load_console, UPDATE_BUILTIN_SCRIPTS),
 #endif
 
 // ------------------------- stream options --------------------
@@ -632,6 +634,7 @@ const m_option_t mp_opts[] = {
     OPT_ALIAS("loop", "loop-file"),
 
     OPT_FLAG("resume-playback", position_resume, 0),
+    OPT_FLAG("resume-playback-check-mtime", position_check_mtime, 0),
     OPT_FLAG("save-position-on-quit", position_save_on_quit, 0),
     OPT_FLAG("write-filename-in-watch-later-config", write_filename_in_watch_later_config, 0),
     OPT_FLAG("ignore-path-in-watch-later-config", ignore_path_in_watch_later_config, 0),
@@ -645,7 +648,6 @@ const m_option_t mp_opts[] = {
 
     OPT_STRING("chapters-file", chapter_file, M_OPT_FILE),
 
-    OPT_FLAG("load-unsafe-playlists", load_unsafe_playlists, 0),
     OPT_FLAG("merge-files", merge_files, 0),
 
     // a-v sync stuff:
@@ -698,8 +700,9 @@ const m_option_t mp_opts[] = {
 
     OPT_FLAG("input-terminal", consolecontrols, UPDATE_TERM),
 
-    OPT_STRING("input-file", input_file, M_OPT_FILE | UPDATE_INPUT),
-    OPT_STRING("input-ipc-server", ipc_path, M_OPT_FILE | UPDATE_INPUT),
+    OPT_STRING("input-file", input_file, M_OPT_FILE,
+               .deprecation_message = "use --input-ipc-server"),
+    OPT_STRING("input-ipc-server", ipc_path, M_OPT_FILE),
 
     OPT_SUBSTRUCT("screenshot", screenshot_image_opts, screenshot_conf, 0),
     OPT_STRING("screenshot-template", screenshot_template, 0),
@@ -715,6 +718,7 @@ const m_option_t mp_opts[] = {
     OPT_SUBSTRUCT("", vo, vo_sub_opts, 0),
     OPT_SUBSTRUCT("", demux_opts, demux_conf, 0),
     OPT_SUBSTRUCT("", demux_cache_opts, demux_cache_conf, 0),
+    OPT_SUBSTRUCT("", stream_opts, stream_conf, 0),
 
     OPT_SUBSTRUCT("", gl_video_opts, gl_video_conf, 0),
     OPT_SUBSTRUCT("", spirv_opts, spirv_conf, 0),
@@ -766,6 +770,12 @@ const m_option_t mp_opts[] = {
 
 #if HAVE_VAAPI
     OPT_SUBSTRUCT("vaapi", vaapi_opts, vaapi_conf, 0),
+#endif
+
+    OPT_SUBSTRUCT("sws", sws_opts, sws_conf, 0),
+
+#if HAVE_ZIMG
+    OPT_SUBSTRUCT("zimg", zimg_opts, zimg_conf, 0),
 #endif
 
     OPT_SUBSTRUCT("", encode_opts, encode_config, 0),
@@ -848,7 +858,6 @@ const m_option_t mp_opts[] = {
     OPT_REPLACED("input-unix-socket", "input-ipc-server"),
     OPT_REPLACED("softvol-max", "volume-max"),
     OPT_REMOVED("bluray-angle", "this didn't do anything for a few releases"),
-    OPT_REPLACED("playlist-pos", "playlist-start"),
     OPT_REPLACED("sub-text-font", "sub-font"),
     OPT_REPLACED("sub-text-font-size", "sub-font-size"),
     OPT_REPLACED("sub-text-color", "sub-color"),
@@ -884,11 +893,12 @@ const m_option_t mp_opts[] = {
     OPT_REMOVED("video-stereo-mode", "removed, try --vf=stereo3d"),
     OPT_REMOVED("chapter", "use '--start=#123' '--end=#124' (for chapter 123)"),
     OPT_REPLACED("video-aspect", "video-aspect-override"),
+    OPT_REPLACED("display-fps", "override-display-fps"),
 
     {0}
 };
 
-const struct MPOpts mp_default_opts = {
+static const struct MPOpts mp_default_opts = {
     .use_terminal = 1,
     .msg_color = 1,
     .audio_decoders = NULL,
@@ -910,6 +920,7 @@ const struct MPOpts mp_default_opts = {
     .lua_ytdl_format = NULL,
     .lua_ytdl_raw_options = NULL,
     .lua_load_stats = 1,
+    .lua_load_console = 1,
 #endif
     .auto_load_scripts = 1,
     .loop_times = 1,
@@ -981,6 +992,12 @@ const struct MPOpts mp_default_opts = {
     },
 
     .cuda_device = -1,
+};
+
+const struct m_sub_options mp_opt_root = {
+    .opts = mp_opts,
+    .size = sizeof(struct MPOpts),
+    .defaults = &mp_default_opts,
 };
 
 #endif /* MPLAYER_CFG_MPLAYER_H */

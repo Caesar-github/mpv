@@ -28,6 +28,12 @@
 #define D3D_FEATURE_LEVEL_12_0 (0xc000)
 #define D3D_FEATURE_LEVEL_12_1 (0xc100)
 
+#define DXGI_COLOR_SPACE_RGB_STUDIO_G24_NONE_P709       ((DXGI_COLOR_SPACE_TYPE)20)
+#define DXGI_COLOR_SPACE_RGB_STUDIO_G24_NONE_P2020      ((DXGI_COLOR_SPACE_TYPE)21)
+#define DXGI_COLOR_SPACE_YCBCR_STUDIO_G24_LEFT_P709     ((DXGI_COLOR_SPACE_TYPE)22)
+#define DXGI_COLOR_SPACE_YCBCR_STUDIO_G24_LEFT_P2020    ((DXGI_COLOR_SPACE_TYPE)23)
+#define DXGI_COLOR_SPACE_YCBCR_STUDIO_G24_TOPLEFT_P2020 ((DXGI_COLOR_SPACE_TYPE)24)
+
 struct d3d11_device_opts {
     // Enable the debug layer (D3D11_CREATE_DEVICE_DEBUG)
     bool debug;
@@ -72,6 +78,12 @@ struct d3d11_swapchain_opts {
     int width;
     int height;
     DXGI_FORMAT format;
+    DXGI_COLOR_SPACE_TYPE color_space;
+
+    // mp_colorspace mapping of the configured swapchain colorspace
+    // shall be written into this memory location if configuration
+    // succeeds. Will be ignored if NULL.
+    struct mp_colorspace *configured_csp;
 
     // Use DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL if possible
     bool flip;

@@ -153,6 +153,10 @@ success, ``fn`` is called always a-sync, ``error`` is empty string on success.
 
 ``mp.unregister_script_message(name)``
 
+``mp.create_osd_overlay(format)``
+
+``mp.get_osd_size()``  (returned object has properties: width, height, aspect)
+
 ``mp.msg.log(level, ...)``
 
 ``mp.msg.fatal(...)``
@@ -187,7 +191,8 @@ success, ``fn`` is called always a-sync, ``error`` is empty string on success.
 
 ``mp.add_hook(type, priority, fn)``
 
-``mp.options.read_options(obj [, identifier])`` (types: string/boolean/number)
+``mp.options.read_options(obj [, identifier [, on_update]])`` (types:
+string/boolean/number)
 
 Additional utilities
 --------------------
@@ -240,6 +245,9 @@ Note: ``read_file`` and ``write_file`` throw on errors, allow text content only.
     anything from the filesystem), and returns it as a function. Very similar
     to a ``Function`` constructor, but shows at stack traces as ``fname``.
 
+``mp.module_paths``
+    Global modules search paths array for the ``require`` function (see below).
+
 Timers (global)
 ---------------
 
@@ -278,9 +286,11 @@ CommonJS modules and ``require(id)``
 ------------------------------------
 
 CommonJS Modules are a standard system where scripts can export common functions
-for use by other scripts. A module is a script which adds properties (functions,
-etc) to its invisible ``exports`` object, which another script can access by
-loading it with ``require(module-id)`` - which returns that ``exports`` object.
+for use by other scripts. Specifically, a module is a script which adds
+properties (functions, etc) to its pre-existing ``exports`` object, which
+another script can access with ``require(module-id)``. This runs the module and
+returns its ``exports`` object. Further calls to ``require`` for the same module
+will return its cached ``exports`` object without running the module again.
 
 Modules and ``require`` are supported, standard compliant, and generally similar
 to node.js. However, most node.js modules won't run due to missing modules such
@@ -293,10 +303,16 @@ will load the file ``./foo.js`` and return its ``exports`` object.
 An id is relative (to the script which ``require``'d it) if it starts with
 ``./`` or ``../``. Otherwise, it's considered a "top-level id" (CommonJS term).
 
-Top level id is evaluated as absolute filesystem path if possible (e.g. ``/x/y``
-or ``~/x``). Otherwise, it's searched at ``scripts/modules.js/`` in mpv config
-dirs - in normal config search order. E.g. ``require("x")`` is searched as file
-``x.js`` at those dirs, and id ``foo/x`` is searched as file ``foo/x.js``.
+Top level id is evaluated as absolute filesystem path if possible, e.g. ``/x/y``
+or ``~/x``. Otherwise, it's considered a global module id and searched at
+``scripts/modules.js/`` in mpv config dirs - in normal config search order. E.g.
+``require("x")`` is searched as file ``x.js`` at those dirs, and id ``foo/x`` is
+searched as file ``x.js`` inside dir ``foo`` at those dirs.
+
+Search paths for global module id's are at the array ``mp.module_paths``, which
+is searched in order. Initially it contains one item: ``~~/scripts/modules.js``
+such that it behaves as described above. Modifying it will affect future
+``require`` calls with global module id's which are not already loaded/cached.
 
 No ``global`` variable, but a module's ``this`` at its top lexical scope is the
 global object - also in strict mode. If you have a module which needs ``global``

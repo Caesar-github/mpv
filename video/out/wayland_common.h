@@ -28,6 +28,8 @@
 struct wayland_opts {
     int frame_offset;
     int disable_vsync;
+    int edge_pixels_pointer;
+    int edge_pixels_touch;
 };
 
 struct vo_wayland_sync {
@@ -63,12 +65,13 @@ struct vo_wayland_state {
     struct wl_registry   *registry;
     struct wayland_opts  *opts;
 
+    struct m_config_cache *vo_opts_cache;
+    struct mp_vo_opts *vo_opts;
+
     /* State */
     struct mp_rect geometry;
     struct mp_rect window_size;
     float aspect_ratio;
-    bool fullscreen;
-    bool maximized;
     bool configured;
     bool frame_wait;
     bool hidden;
@@ -77,6 +80,8 @@ struct vo_wayland_state {
     int pending_vo_events;
     int mouse_x;
     int mouse_y;
+    int mouse_unscaled_x;
+    int mouse_unscaled_y;
     int scaling;
     int touch_entries;
     uint32_t pointer_id;
@@ -133,7 +138,6 @@ struct vo_wayland_state {
     struct wl_surface      *cursor_surface;
     int                     allocated_cursor_scale;
     bool                    cursor_visible;
-    bool                    prev_fullscreen;
 };
 
 int vo_wayland_init(struct vo *vo);

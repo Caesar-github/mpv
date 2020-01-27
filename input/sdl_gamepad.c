@@ -29,7 +29,7 @@ struct gamepad_priv {
 
 static Uint32 gamepad_cancel_wakeup;
 
-static void initalize_events()
+static void initialize_events(void)
 {
     gamepad_cancel_wakeup = SDL_RegisterEvents(1);
 }
@@ -198,13 +198,19 @@ static void remove_gamepad(struct mp_input_src *src, int id)
 
 static void read_gamepad_thread(struct mp_input_src *src, void *param)
 {
+    if (SDL_WasInit(SDL_INIT_EVENTS)) {
+        MP_ERR(src, "Another component is using SDL already.\n");
+        mp_input_src_init_done(src);
+        return;
+    }
+
     if (SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER)) {
         MP_ERR(src, "SDL_Init failed\n");
         mp_input_src_init_done(src);
         return;
-    };
+    }
 
-    pthread_once(&events_initialized, initalize_events);
+    pthread_once(&events_initialized, initialize_events);
 
     if (gamepad_cancel_wakeup == (Uint32)-1) {
         MP_ERR(src, "Can't register SDL custom events\n");

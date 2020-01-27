@@ -79,6 +79,7 @@ struct demux_lavf_opts {
     char *sub_cp;
     int rtsp_transport;
     int linearize_ts;
+    int propagate_opts;
 };
 
 const struct m_sub_options demux_lavf_conf = {
@@ -104,6 +105,7 @@ const struct m_sub_options demux_lavf_conf = {
                 {"http", 3})),
         OPT_CHOICE("demuxer-lavf-linearize-timestamps", linearize_ts, 0,
                    ({"no", 0}, {"auto", -1}, {"yes", 1})),
+        OPT_FLAG("demuxer-lavf-propagate-opts", propagate_opts, 0),
         {0}
     },
     .size = sizeof(struct demux_lavf_opts),
@@ -118,6 +120,7 @@ const struct m_sub_options demux_lavf_conf = {
         .sub_cp = "auto",
         .rtsp_transport = 2,
         .linearize_ts = -1,
+        .propagate_opts = 1,
     },
 };
 
@@ -131,7 +134,7 @@ struct format_hack {
     bool max_probe : 1;         // use probescore only if max. probe size reached
     bool ignore : 1;            // blacklisted
     bool no_stream : 1;         // do not wrap struct stream as AVIOContext
-    bool use_stream_ids : 1;    // export the native stream IDs
+    bool use_stream_ids : 1;    // has a meaningful native stream IDs (export it)
     bool fully_read : 1;        // set demuxer.fully_read flag
     bool detect_charset : 1;    // format is a small text file, possibly not UTF8
     bool image_format : 1;      // expected to contain exactly 1 frame
@@ -163,9 +166,12 @@ static const struct format_hack format_hacks[] = {
     {"sdp", .clear_filepos = true, .is_network = true, .no_seek = true},
     {"mpeg", .use_stream_ids = true},
     {"mpegts", .use_stream_ids = true},
-
-    {"mp4", .skipinfo = true, .fix_editlists = true, .no_pcm_seek = true},
-    {"matroska", .skipinfo = true, .no_pcm_seek = true},
+    {"mxf", .use_stream_ids = true},
+    {"avi", .use_stream_ids = true},
+    {"asf", .use_stream_ids = true},
+    {"mp4", .skipinfo = true, .fix_editlists = true, .no_pcm_seek = true,
+            .use_stream_ids = true},
+    {"matroska", .skipinfo = true, .no_pcm_seek = true, .use_stream_ids = true},
 
     {"v4l2", .no_seek = true},
 
@@ -175,7 +181,7 @@ static const struct format_hack format_hacks[] = {
 
     // Some Ogg shoutcast streams are essentially concatenated OGG files. They
     // reset timestamps, which causes all sorts of problems.
-    {"ogg", .linearize_audio_ts = true},
+    {"ogg", .linearize_audio_ts = true, .use_stream_ids = true},
 
     TEXTSUB("aqtitle"), TEXTSUB("jacosub"), TEXTSUB("microdvd"),
     TEXTSUB("mpl2"), TEXTSUB("mpsub"), TEXTSUB("pjs"), TEXTSUB("realtext"),
@@ -232,6 +238,8 @@ typedef struct lavf_priv {
     int linearize_ts;
     bool any_ts_fixed;
 
+    AVDictionary *av_opts;
+
     // Proxying nested streams.
     struct nested_stream *nested;
     int num_nested;
@@ -282,6 +290,8 @@ static int mp_read(void *opaque, uint8_t *buf, int size)
     struct demuxer *demuxer = opaque;
     lavf_priv_t *priv = demuxer->priv;
     struct stream *stream = priv->stream;
+    if (!stream)
+        return 0;
 
     int ret = stream_read_partial(stream, buf, size);
 
@@ -295,6 +305,8 @@ static int64_t mp_seek(void *opaque, int64_t pos, int whence)
     struct demuxer *demuxer = opaque;
     lavf_priv_t *priv = demuxer->priv;
     struct stream *stream = priv->stream;
+    if (!stream)
+        return -1;
 
     MP_TRACE(demuxer, "mp_seek(%p, %"PRId64", %s)\n", stream, pos,
              whence == SEEK_END ? "end" :
@@ -337,7 +349,7 @@ static int64_t mp_read_seek(void *opaque, int stream_idx, int64_t ts, int flags)
         .flags = flags,
     };
 
-    if (stream_control(stream, STREAM_CTRL_AVSEEK, &cmd) == STREAM_OK) {
+    if (stream && stream_control(stream, STREAM_CTRL_AVSEEK, &cmd) == STREAM_OK) {
         stream_drop_buffers(stream);
         return 0;
     }
@@ -357,7 +369,7 @@ static void convert_charset(struct demuxer *demuxer)
 {
     lavf_priv_t *priv = demuxer->priv;
     char *cp = priv->opts->sub_cp;
-    if (!cp || mp_charset_is_utf8(cp))
+    if (!cp || !cp[0] || mp_charset_is_utf8(cp))
         return;
     bstr data = stream_read_complete(priv->stream, NULL, 128 * 1024 * 1024);
     if (!data.start) {
@@ -458,11 +470,10 @@ static int lavf_check_file(demuxer_t *demuxer, enum demux_check check)
         } else {
             int nsize = av_clip(avpd.buf_size * 2, INITIAL_PROBE_SIZE,
                                 PROBE_BUF_SIZE);
-            bstr buf = stream_peek(s, nsize);
-            if (buf.len <= avpd.buf_size)
+            nsize = stream_read_peek(s, avpd.buf, nsize);
+            if (nsize <= avpd.buf_size)
                 final_probe = true;
-            memcpy(avpd.buf, buf.start, buf.len);
-            avpd.buf_size = buf.len;
+            avpd.buf_size = nsize;
 
             priv->avif = av_probe_input_format2(&avpd, avpd.buf_size > 0, &score);
         }
@@ -852,8 +863,27 @@ static int nested_io_open(struct AVFormatContext *s, AVIOContext **pb,
     struct demuxer *demuxer = s->opaque;
     lavf_priv_t *priv = demuxer->priv;
 
+    if (priv->opts->propagate_opts) {
+        // Copy av_opts to options, but only entries that are not present in
+        // options. (Hope this will break less by not overwriting important
+        // settings.)
+        AVDictionaryEntry *cur = NULL;
+        while ((cur = av_dict_get(priv->av_opts, "", cur, AV_DICT_IGNORE_SUFFIX)))
+        {
+            if (!*options || !av_dict_get(*options, cur->key, NULL, 0)) {
+                MP_TRACE(demuxer, "Nested option: '%s'='%s'\n",
+                         cur->key, cur->value);
+                av_dict_set(options, cur->key, cur->value, 0);
+            } else {
+                MP_TRACE(demuxer, "Skipping nested option: '%s'\n", cur->key);
+            }
+        }
+    }
+
     int r = priv->default_io_open(s, pb, url, flags, options);
     if (r >= 0) {
+        if (options)
+            mp_avdict_print_unset(demuxer->log, MSGL_TRACE, *options);
         struct nested_stream nest = {
             .id = *pb,
         };
@@ -926,7 +956,8 @@ static int demux_open_lavf(demuxer_t *demuxer, enum demux_check check)
     AVDictionary *dopts = NULL;
 
     if ((priv->avif_flags & AVFMT_NOFILE) || priv->format_hack.no_stream) {
-        mp_setup_av_network_options(&dopts, demuxer->global, demuxer->log);
+        mp_setup_av_network_options(&dopts, priv->avif->name,
+                                    demuxer->global, demuxer->log);
         // This might be incorrect.
         demuxer->seekable = true;
     } else {
@@ -972,15 +1003,18 @@ static int demux_open_lavf(demuxer_t *demuxer, enum demux_check check)
     if (demuxer->access_references) {
         priv->default_io_open = avfc->io_open;
         priv->default_io_close = avfc->io_close;
-#if !HAVE_FFMPEG_STRICT_ABI
         avfc->io_open = nested_io_open;
         avfc->io_close = nested_io_close;
-#endif
     } else {
         avfc->io_open = block_io_open;
     }
 
     mp_set_avdict(&dopts, lavfdopts->avopts);
+
+    if (av_dict_copy(&priv->av_opts, dopts, 0) < 0) {
+        av_dict_free(&dopts);
+        return -1;
+    }
 
     if (avformat_open_input(&avfc, priv->filename, priv->avif, &dopts) < 0) {
         MP_ERR(demuxer, "avformat_open_input() failed\n");
@@ -1076,7 +1110,7 @@ static int demux_open_lavf(demuxer_t *demuxer, enum demux_check check)
         if (priv->own_stream)
             free_stream(priv->stream);
         priv->own_stream = false;
-        priv->stream = demuxer->stream;
+        priv->stream = NULL;
     }
 
     return 0;
@@ -1096,7 +1130,7 @@ static bool demux_lavf_read_packet(struct demuxer *demux,
             return true;
         if (r == AVERROR_EOF)
             return false;
-        MP_WARN(demux, "error reading packet.\n");
+        MP_WARN(demux, "error reading packet: %s.\n", av_err2str(r));
         return false;
     }
 
@@ -1197,7 +1231,7 @@ static void demux_seek_lavf(demuxer_t *demuxer, double seek_pts, int flags)
 
     if (flags & SEEK_FACTOR) {
         struct stream *s = priv->stream;
-        int64_t end = stream_get_size(s);
+        int64_t end = s ? stream_get_size(s) : -1;
         if (end > 0 && demuxer->ts_resets_possible &&
             !(priv->avif_flags & AVFMT_NO_BYTE_SEEK))
         {

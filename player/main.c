@@ -56,6 +56,7 @@
 #include "demux/demux.h"
 #include "misc/thread_tools.h"
 #include "sub/osd.h"
+#include "test/tests.h"
 #include "video/out/vo.h"
 
 #include "core.h"
@@ -192,6 +193,7 @@ void mp_destroy(struct MPContext *mpctx)
     assert(!mpctx->num_abort_list);
     talloc_free(mpctx->abort_list);
     pthread_mutex_destroy(&mpctx->abort_lock);
+    talloc_free(mpctx->mconfig); // destroy before dispatch
     talloc_free(mpctx);
 }
 
@@ -265,7 +267,9 @@ struct MPContext *mp_create(void)
     }
 
     char *enable_talloc = getenv("MPV_LEAK_REPORT");
-    if (enable_talloc && strcmp(enable_talloc, "1") == 0)
+    if (!enable_talloc)
+        enable_talloc = HAVE_TA_LEAK_REPORT ? "1" : "0";
+    if (strcmp(enable_talloc, "1") == 0)
         talloc_enable_leak_report();
 
     mp_time_init();
@@ -293,8 +297,7 @@ struct MPContext *mp_create(void)
     mpctx->statusline = mp_log_new(mpctx, mpctx->log, "!statusline");
 
     // Create the config context and register the options
-    mpctx->mconfig = m_config_new(mpctx, mpctx->log, sizeof(struct MPOpts),
-                                  &mp_default_opts, mp_opts);
+    mpctx->mconfig = m_config_new(mpctx, mpctx->log, &mp_opt_root);
     mpctx->opts = mpctx->mconfig->optstruct;
     mpctx->global->config = mpctx->mconfig->shadow;
     mpctx->mconfig->includefunc = cfg_include;
@@ -342,6 +345,7 @@ int mp_initialize(struct MPContext *mpctx, char **options)
     }
 
     mp_init_paths(mpctx->global, opts);
+    mp_msg_set_early_logging(mpctx->global, true);
     mp_update_logging(mpctx, true);
 
     if (options) {
@@ -374,17 +378,19 @@ int mp_initialize(struct MPContext *mpctx, char **options)
 
     // From this point on, all mpctx members are initialized.
     mpctx->initialized = true;
-    mpctx->mconfig->option_set_callback = mp_on_set_option;
-    mpctx->mconfig->option_set_callback_cb = mpctx;
     mpctx->mconfig->option_change_callback = mp_option_change_callback;
     mpctx->mconfig->option_change_callback_ctx = mpctx;
+    m_config_set_update_dispatch_queue(mpctx->mconfig, mpctx->dispatch);
     // Run all update handlers.
-    mp_option_change_callback(mpctx, NULL, UPDATE_OPTS_MASK);
+    mp_option_change_callback(mpctx, NULL, UPDATE_OPTS_MASK, false);
 
     if (handle_help_options(mpctx))
         return 1; // help
 
     if (!print_libav_versions(mp_null_log, 0)) {
+        // This happens only if the runtime FFmpeg version is lower than the
+        // build version, which will not work according to FFmpeg's ABI rules.
+        // This does not happen if runtime FFmpeg is newer, which is compatible.
         print_libav_versions(mpctx->log, MSGL_FATAL);
         MP_FATAL(mpctx, "\nmpv was compiled against an incompatible version of "
                  "FFmpeg/Libav than the shared\nlibrary it is linked against. "
@@ -393,7 +399,12 @@ int mp_initialize(struct MPContext *mpctx, char **options)
         return -1;
     }
 
-    if (!mpctx->playlist->first && !opts->player_idle_mode) {
+#if HAVE_TESTS
+    if (opts->test_mode && opts->test_mode[0])
+        return run_tests(mpctx) ? 1 : -1;
+#endif
+
+    if (!mpctx->playlist->num_entries && !opts->player_idle_mode) {
         // nothing to play
         mp_print_version(mpctx->log, true);
         MP_INFO(mpctx, "%s", mp_help_text);

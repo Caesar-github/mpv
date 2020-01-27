@@ -61,7 +61,6 @@ struct tl_root {
 
 struct priv {
     bstr data;
-    bool allow_any;
 };
 
 // Parse a time (absolute file time or duration). Currently equivalent to a
@@ -198,11 +197,12 @@ static struct demuxer *open_source(struct timeline *root,
 {
     for (int n = 0; n < tl->num_parts; n++) {
         struct demuxer *d = tl->parts[n].source;
-        if (d && strcmp(d->stream->url, filename) == 0)
+        if (d && d->filename && strcmp(d->filename, filename) == 0)
             return d;
     }
     struct demuxer_params params = {
         .init_fragment = tl->init_fragment,
+        .stream_flags = root->stream_origin,
     };
     struct demuxer *d = demux_open_url(filename, &params, root->cancel,
                                        root->global);
@@ -268,7 +268,8 @@ static struct timeline_par *build_timeline(struct timeline *root,
 
     if (parts->init_fragment_url && parts->init_fragment_url[0]) {
         MP_VERBOSE(root, "Opening init fragment...\n");
-        stream_t *s = stream_create(parts->init_fragment_url, STREAM_READ,
+        stream_t *s = stream_create(parts->init_fragment_url,
+                                    STREAM_READ | root->stream_origin,
                                     root->cancel, root->global);
         if (s) {
             root->is_network |= s->is_network;
@@ -282,6 +283,7 @@ static struct timeline_par *build_timeline(struct timeline *root,
         }
         struct demuxer_params params = {
             .init_fragment = tl->init_fragment,
+            .stream_flags = root->stream_origin,
         };
         tl->track_layout = demux_open_url("memory://", &params, root->cancel,
                                           root->global);
@@ -366,6 +368,8 @@ static struct timeline_par *build_timeline(struct timeline *root,
 
         if (source && !tl->track_layout && part->is_layout)
             tl->track_layout = source;
+
+        tl->num_parts++;
     }
 
     if (!tl->track_layout) {
@@ -385,7 +389,7 @@ static struct timeline_par *build_timeline(struct timeline *root,
     if (!root->meta)
         root->meta = tl->track_layout;
 
-    tl->num_parts = parts->num_parts;
+    assert(tl->num_parts == parts->num_parts);
     return tl;
 
 error:
@@ -393,15 +397,14 @@ error:
     return NULL;
 }
 
-// For security, don't allow relative or absolute paths, only plain filenames.
-// Also, make these filenames relative to the edl source file.
 static void fix_filenames(struct tl_parts *parts, char *source_path)
 {
+    if (bstr_equals0(mp_split_proto(bstr0(source_path), NULL), "edl"))
+        return;
     struct bstr dirname = mp_dirname(source_path);
     for (int n = 0; n < parts->num_parts; n++) {
         struct tl_part *part = &parts->parts[n];
-        char *filename = mp_basename(part->filename); // plain filename only
-        part->filename = mp_path_join_bstr(parts, dirname, bstr0(filename));
+        part->filename = mp_path_join_bstr(parts, dirname, bstr0(part->filename));
     }
 }
 
@@ -421,8 +424,7 @@ static void build_mpv_edl_timeline(struct timeline *tl)
 
     for (int n = 0; n < root->num_pars; n++) {
         struct tl_parts *parts = root->pars[n];
-        if (!p->allow_any)
-            fix_filenames(parts, tl->demuxer->filename);
+        fix_filenames(parts, tl->demuxer->filename);
         struct timeline_par *par = build_timeline(tl, parts);
         if (!par)
             break;
@@ -454,12 +456,12 @@ static int try_open_file(struct demuxer *demuxer, enum demux_check check)
     struct stream *s = demuxer->stream;
     if (s->info && strcmp(s->info->name, "edl") == 0) {
         p->data = bstr0(s->path);
-        // Source is edl:// and not .edl => allow arbitrary paths
-        p->allow_any = true;
         return 0;
     }
     if (check >= DEMUX_CHECK_UNSAFE) {
-        if (!bstr_equals0(stream_peek(s, strlen(HEADER)), HEADER))
+        char header[sizeof(HEADER) - 1];
+        int len = stream_read_peek(s, header, sizeof(header));
+        if (len != strlen(HEADER) || memcmp(header, HEADER, len) != 0)
             return -1;
     }
     p->data = stream_read_complete(s, demuxer, 1000000);
