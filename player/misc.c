@@ -238,7 +238,9 @@ void error_on_track(struct MPContext *mpctx, struct track *track)
 int stream_dump(struct MPContext *mpctx, const char *source_filename)
 {
     struct MPOpts *opts = mpctx->opts;
-    stream_t *stream = stream_open(source_filename, mpctx->global);
+    stream_t *stream = stream_create(source_filename,
+                                     STREAM_ORIGIN_DIRECT | STREAM_READ,
+                                     mpctx->playback_abort, mpctx->global);
     if (!stream)
         return -1;
 
@@ -258,13 +260,13 @@ int stream_dump(struct MPContext *mpctx, const char *source_filename)
             MP_MSG(mpctx, MSGL_STATUS, "Dumping %lld/%lld...",
                    (long long int)pos, (long long int)size);
         }
-        bstr data = stream_peek(stream, 4096);
-        if (data.len == 0) {
+        uint8_t buf[4096];
+        int len = stream_read(stream, buf, sizeof(buf));
+        if (!len) {
             ok &= stream->eof;
             break;
         }
-        ok &= fwrite(data.start, data.len, 1, dest) == 1;
-        stream_skip(stream, data.len);
+        ok &= fwrite(buf, len, 1, dest) == 1;
         mp_wakeup_core(mpctx); // don't actually sleep
         mp_idle(mpctx); // but process input
     }
@@ -276,11 +278,12 @@ int stream_dump(struct MPContext *mpctx, const char *source_filename)
 
 void merge_playlist_files(struct playlist *pl)
 {
-    if (!pl->first)
+    if (!pl->num_entries)
         return;
     char *edl = talloc_strdup(NULL, "edl://");
-    for (struct playlist_entry *e = pl->first; e; e = e->next) {
-        if (e != pl->first)
+    for (int n = 0; n < pl->num_entries; n++) {
+        struct playlist_entry *e = pl->entries[n];
+        if (n)
             edl = talloc_strdup_append_buffer(edl, ";");
         // Escape if needed
         if (e->filename[strcspn(e->filename, "=%,;\n")] ||

@@ -1,8 +1,7 @@
-#include "test_helpers.h"
-
 #include "common/common.h"
 #include "misc/json.h"
 #include "misc/node.h"
+#include "tests.h"
 
 struct entry {
     const char *src;
@@ -67,19 +66,20 @@ static const struct entry entries[] = {
 
 #define MAX_DEPTH 10
 
-static void test_json(void **state)
+static void run(struct test_ctx *ctx)
 {
     for (int n = 0; n < MP_ARRAY_SIZE(entries); n++) {
         const struct entry *e = &entries[n];
-        print_message("%d: %s\n", n, e->src);
         void *tmp = talloc_new(NULL);
         char *s = talloc_strdup(tmp, e->src);
         json_skip_whitespace(&s);
         struct mpv_node res;
         bool ok = json_parse(tmp, &res, &s, MAX_DEPTH) >= 0;
         assert_true(ok != e->expect_fail);
-        if (!ok)
+        if (!ok) {
+            talloc_free(tmp);
             continue;
+        }
         char *d = talloc_strdup(tmp, "");
         assert_true(json_write(&d, &res) >= 0);
         assert_string_equal(e->out_txt, d);
@@ -88,10 +88,7 @@ static void test_json(void **state)
     }
 }
 
-int main(void) {
-    const struct CMUnitTest tests[] = {
-        cmocka_unit_test(test_json),
-    };
-    return cmocka_run_group_tests(tests, NULL, NULL);
-}
-
+const struct unittest test_json = {
+    .name = "json",
+    .run = run,
+};

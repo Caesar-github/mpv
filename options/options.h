@@ -17,6 +17,8 @@ typedef struct mp_vo_opts {
     int border;
     int fit_border;
     int all_workspaces;
+    int window_minimized;
+    int window_maximized;
 
     int screen_id;
     int fsscreen_id;
@@ -54,9 +56,6 @@ typedef struct mp_vo_opts {
 
     double override_display_fps;
     double timing_offset;
-
-    struct sws_opts *sws_opts;
-    struct zimg_opts *zimg_opts;
 
     // vo_drm
     struct drm_opts *drm_opts;
@@ -126,6 +125,7 @@ typedef struct MPOpts {
     int msg_time;
     char *log_file;
 
+    char *test_mode;
     int operation_mode;
 
     char **reset_options;
@@ -136,6 +136,7 @@ typedef struct MPOpts {
     char *lua_ytdl_format;
     char **lua_ytdl_raw_options;
     int lua_load_stats;
+    int lua_load_console;
 
     int auto_load_scripts;
 
@@ -192,7 +193,6 @@ typedef struct MPOpts {
     int chapter_merge_threshold;
     double chapter_seek_threshold;
     char *chapter_file;
-    int load_unsafe_playlists;
     int merge_files;
     int quiet;
     int load_config;
@@ -234,6 +234,7 @@ typedef struct MPOpts {
     double ab_loop[2];
     double step_sec;
     int position_resume;
+    int position_check_mtime;
     int position_save_on_quit;
     int write_filename_in_watch_later_config;
     int ignore_path_in_watch_later_config;
@@ -310,6 +311,7 @@ typedef struct MPOpts {
 
     struct demux_opts *demux_opts;
     struct demux_cache_opts *demux_cache_opts;
+    struct stream_opts *stream_opts;
 
     struct vd_lavc_params *vd_lavc_params;
     struct ad_lavc_params *ad_lavc_params;
@@ -339,6 +341,8 @@ typedef struct MPOpts {
     struct wayland_opts *wayland_opts;
     struct dvd_opts *dvd_opts;
     struct vaapi_opts *vaapi_opts;
+    struct sws_opts *sws_opts;
+    struct zimg_opts *zimg_opts;
 
     int cuda_device;
 } MPOpts;
@@ -353,13 +357,13 @@ struct filter_opts {
     int deinterlace;
 };
 
-extern const m_option_t mp_opts[];
-extern const struct MPOpts mp_default_opts;
 extern const struct m_sub_options vo_sub_opts;
 extern const struct m_sub_options dvd_conf;
 extern const struct m_sub_options mp_subtitle_sub_opts;
 extern const struct m_sub_options mp_osd_render_sub_opts;
 extern const struct m_sub_options filter_conf;
 extern const struct m_sub_options resample_conf;
+extern const struct m_sub_options stream_conf;
+extern const struct m_sub_options mp_opt_root;
 
 #endif

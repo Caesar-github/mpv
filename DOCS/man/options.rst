@@ -10,6 +10,8 @@ Track Selection
     language codes, Matroska, MPEG-TS and NUT use ISO 639-2 three-letter
     language codes, while OGM uses a free-form identifier. See also ``--aid``.
 
+    This is a string list option. See `List Options`_ for details.
+
     .. admonition:: Examples
 
         - ``mpv dvd://1 --alang=hu,en`` chooses the Hungarian language track
@@ -23,6 +25,8 @@ Track Selection
     language codes, Matroska uses ISO 639-2 three letter language codes while
     OGM uses a free-form identifier. See also ``--sid``.
 
+    This is a string list option. See `List Options`_ for details.
+
     .. admonition:: Examples
 
         - ``mpv dvd://1 --slang=hu,en`` chooses the Hungarian subtitle track on
@@ -32,6 +36,8 @@ Track Selection
 
 ``--vlang=<...>``
     Equivalent to ``--alang`` and ``--slang``, for video tracks.
+
+    This is a string list option. See `List Options`_ for details.
 
 ``--aid=<ID|auto|no>``
     Select audio track. ``auto`` selects the default, ``no`` disables audio.
@@ -700,10 +706,14 @@ Program Behavior
     Load a Lua script. The second option allows you to load multiple scripts by
     separating them with the path separator (``:`` on Unix, ``;`` on Windows).
 
+    ``--scripts`` is a path list option. See `List Options`_ for details.
+
 ``--script-opts=key1=value1,key2=value2,...``
     Set options for scripts. A script can query an option by key. If an
     option is used and what semantics the option value has depends entirely on
     the loaded scripts. Values not claimed by any scripts are ignored.
+
+    This is a key/value list option. See `List Options`_ for details.
 
 ``--merge-files``
     Pretend that all files passed to mpv are concatenated into a single, big
@@ -713,6 +723,13 @@ Program Behavior
     Do not restore playback position from the ``watch_later`` configuration
     subdirectory (usually ``~/.config/mpv/watch_later/``).
     See ``quit-watch-later`` input command.
+
+``--resume-playback-check-mtime``
+    Only restore the playback position from the ``watch_later`` configuration
+    subdirectory (usually ``~/.config/mpv/watch_later/``) if the file's
+    modification time is the same as at the time of saving. This may prevent
+    skipping forward in files with the same name which have different content.
+    (Default: ``no``)
 
 ``--profile=<profile1,profile2,...>``
     Use the given profile(s), ``--profile=help`` displays a list of the
@@ -736,6 +753,8 @@ Program Behavior
     command line.
 
     The special name ``all`` resets as many options as possible.
+
+    This is a string list option. See `List Options`_ for details.
 
     .. admonition:: Examples
 
@@ -761,7 +780,8 @@ Program Behavior
     (Default: disabled)
 
 ``--show-profile=<profile>``
-    Show the description and content of a profile.
+    Show the description and content of a profile. Lists all profiles if no
+    parameter is provided.
 
 ``--use-filedir-conf``
     Look for a file-specific configuration file in the same directory as the
@@ -827,6 +847,8 @@ Program Behavior
     information to mpv. Take note that SOCKS proxies aren't supported and
     https URLs also bypass the proxy. This is a limitation in FFmpeg.
 
+    This is a key/value list option. See `List Options`_ for details.
+
     .. admonition:: Example
 
         - ``--ytdl-raw-options=username=user,password=pass``
@@ -838,6 +860,12 @@ Program Behavior
     Enable the builtin script that shows useful playback information on a key
     binding (default: yes). By default, the ``i`` key is used (``I`` to make
     the overlay permanent).
+
+``--load-osd-console=<yes|no>``
+    Enable the builtin script that shows a console on a key binding and lets
+    you enter commands (default: yes). By default,. The ``´`` key is used to
+    show the console, and ``ESC`` to hide it again. (This is based on  a user
+    script called ``repl.lua``.)
 
 ``--player-operation-mode=<cplayer|pseudo-gui>``
     For enabling "pseudo GUI mode", which means that the defaults for some
@@ -881,25 +909,41 @@ Video
     The argument selects the drop methods, and can be one of the following:
 
     <no>
-        Disable any framedropping.
+        Disable any frame dropping. Not recommended, for testing only.
     <vo>
         Drop late frames on video output (default). This still decodes and
-        filters all frames, but doesn't render them on the VO. It tries to query
-        the display FPS (X11 only, not correct on multi-monitor systems), or
-        assumes infinite display FPS if that fails. Drops are indicated in
-        the terminal status line as ``Dropped:`` field. If the decoder is too slow,
-        in theory all frames would have to be dropped (because all frames are
-        too late) - to avoid this, frame dropping stops if the effective
-        framerate is below 10 FPS.
+        filters all frames, but doesn't render them on the VO. Drops are
+        indicated in the terminal status line as ``Dropped:`` field.
+
+        In audio sync. mode, this drops frames that are outdated at the time of
+        display. If the decoder is too slow, in theory all frames would have to
+        be dropped (because all frames are too late) - to avoid this, frame
+        dropping stops  if the effective framerate is below 10 FPS.
+
+        In display-sync. modes (see ``--video-sync``), this affects only how
+        A/V drops or repeats frames. If this mode is disabled, A/V desync will
+        in theory not affect video scheduling anymore (much like the
+        ``display-resample-desync`` mode). However, even if disabled, frames
+        will still be skipped (i.e. dropped) according to the ratio between
+        video and display frequencies.
+
+        This is the recommended mode, and the default.
     <decoder>
         Old, decoder-based framedrop mode. (This is the same as ``--framedrop=yes``
         in mpv 0.5.x and before.) This tells the decoder to skip frames (unless
         they are needed to decode future frames). May help with slow systems,
         but can produce unwatchable choppy output, or even freeze the display
-        completely. Not recommended.
+        completely.
+
+        This uses a heuristic which may not make sense, and in  general cannot
+        achieve good results, because the decoder's frame dropping cannot be
+        controlled in a predictable manner. Not recommended.
+
+        Even if you want to use this, prefer ``decoder+vo`` for better results.
+
         The ``--vd-lavc-framedrop`` option controls what frames to drop.
     <decoder+vo>
-        Enable both modes. Not recommended.
+        Enable both modes. Not recommended. Better than just ``decoder`` mode.
 
     .. note::
 
@@ -925,8 +969,7 @@ Video
       frame, so if this is not done, there is some likeliness that the VO has
       to drop some frames if rendering the first frame takes longer than needed.
 
-
-``--display-fps=<fps>``
+``--override-display-fps=<fps>``
     Set the display FPS used with the ``--video-sync=display-*`` modes. By
     default, a detected value is used. Keep in mind that setting an incorrect
     value (even if slightly incorrect) can ruin video playback. On multi-monitor
@@ -936,24 +979,68 @@ Video
     Set this option only if you have reason to believe the automatically
     determined value is wrong.
 
+``--display-fps=<fps>``
+    Deprecated alias for ``--override-display-fps``.
+
 ``--hwdec=<api>``
     Specify the hardware video decoding API that should be used if possible.
     Whether hardware decoding is actually done depends on the video codec. If
     hardware decoding is not possible, mpv will fall back on software decoding.
 
+    Hardware decoding is not enabled by default, because it is typically an
+    additional source of errors. It is worth using only if your CPU is too
+    slow to decode a specific video.
+
+    .. note::
+
+        Use the ``Ctrl+h`` shortcut to toggle hardware decoding at runtime. It
+        toggles this option between ``auto`` and ``no``.
+
+        Always enabling HW decoding by putting it into the config file is
+        discouraged. If you use the Ubuntu package, delete ``/etc/mpv/mpv.conf``,
+        as the package tries to enable HW decoding by default by setting
+        ``hwdec=vaapi`` (which is less than ideal, and may even cause
+        sub-optimal wrappers to be used). Or at least change it to
+        ``hwdec=auto-safe``.
+
+    Use one of the auto modes if you want to enable hardware decoding.
+    Explicitly selecting the mode is mostly meant for testing and debugging.
+    It's a bad idea to put explicit selection into the config file if you
+    want thing to just keep working after updates and so on.
+
+    .. note::
+
+        Even if enabled, hardware decoding is still only white-listed for some
+        codecs. See ``--hwdec-codecs`` to enable hardware decoding in more cases.
+
+    .. admonition:: Which method to choose?
+
+        - If you only want to enable hardware decoding at runtime, don't set the
+          parameter, or put ``hwdec=no`` into your ``mpv.conf`` (relevant on
+          distros which force-enable it by default, such as on Ubuntu). Use the
+          ``Ctrl+h`` default binding to enable it at runtime.
+        - If you're not sure, but want hardware decoding always enabled by
+          default, put ``hwdec=auto-safe`` into your ``mpv.conf``, and
+          acknowledge that this use case is not "really" supported and may cause
+          problems.
+        - If you want to test available hardware decoding methods, pass
+          ``--hwdec=auto --hwdec-codecs=all`` and look at the terminal output.
+        - If you're a developer, or want to perform elaborate tests, you may
+          need any of the other possible option values.
+
     ``<api>`` can be one of the following:
 
     :no:        always use software decoding (default)
-    :auto:      enable best hw decoder (see below)
+    :auto:      forcibly enable any hw decoder found (see below)
     :yes:       exactly the same as ``auto``
+    :auto-safe: enable any whitelisted hw decoder (see below)
     :auto-copy: enable best hw decoder with copy-back (see below)
-    :vdpau:     requires ``--vo=gpu`` with ``--gpu-context=x11``,
-                or ``--vo=vdpau`` (Linux only)
+    :vdpau:     requires ``--vo=gpu`` with X11, or ``--vo=vdpau`` (Linux only)
     :vdpau-copy: copies video back into system RAM (Linux with some GPUs only)
     :vaapi:     requires ``--vo=gpu`` or ``--vo=vaapi`` (Linux only)
     :vaapi-copy: copies video back into system RAM (Linux with some GPUs only)
     :videotoolbox: requires ``--vo=gpu`` (OS X 10.8 and up),
-                   or ``--vo=opengl-cb`` (iOS 9.0 and up)
+                   or ``--vo=libmpv`` (iOS 9.0 and up)
     :videotoolbox-copy: copies video back into system RAM (OS X 10.8 or iOS 9.0 and up)
     :dxva2:     requires ``--vo=gpu`` with ``--gpu-context=d3d11``,
                 ``--gpu-context=angle`` or ``--gpu-context=dxinterop``
@@ -966,10 +1053,10 @@ Video
     :mediacodec-copy: copies video back to system RAM (Android only)
     :mmal:      requires ``--vo=gpu`` (Raspberry Pi only - default if available)
     :mmal-copy: copies video back to system RAM (Raspberry Pi only)
-    :cuda:      requires ``--vo=gpu`` (Any platform CUDA is available)
-    :cuda-copy: copies video back to system RAM (Any platform CUDA is available)
     :nvdec:     requires ``--vo=gpu`` (Any platform CUDA is available)
     :nvdec-copy: copies video back to system RAM (Any platform CUDA is available)
+    :cuda:      requires ``--vo=gpu`` (Any platform CUDA is available)
+    :cuda-copy: copies video back to system RAM (Any platform CUDA is available)
     :crystalhd: copies video back to system RAM (Any platform supported by hardware)
     :rkmpp:     requires ``--vo=gpu`` (some RockChip devices only)
 
@@ -980,49 +1067,53 @@ Video
     work, it will always fall back to software decoding, instead of trying the
     next method (might matter on some Linux systems).
 
+    ``auto-safe`` is similar to ``auto``, but allows only whitelisted methods
+    that are considered "safe". This is supposed to be a reasonable way to
+    enable hardware decdoding by default in a config file (even though you
+    shouldn't do that anyway; prefer runtime enabling with ``Ctrl+h``). Unlike
+    ``auto``, this will not try to enable unknown or known-to-be-bad methods. In
+    addition, this may disable hardware decoding in other situations when it's
+    known to cause problems, but currently this mechanism is quite primitive.
+    (As an example for something that still causes problems: certain
+    combinations of HEVC and Intel chips on Windows tend to cause mpv to crash,
+    most likely due to driver bugs.)
+
+    ``auto-copy-safe`` selects the union of methods selected with ``auto-safe``
+    and ``auto-copy``.
+
     ``auto-copy`` selects only modes that copy the video data back to system
     memory after decoding. This selects modes like ``vaapi-copy`` (and so on).
-    If none of these work, hardware decoding is disabled. This mode is always
-    guaranteed to incur no additional loss compared to software decoding, and
-    will allow CPU processing with video filters.
+    If none of these work, hardware decoding is disabled. This mode is usually
+    guaranteed to incur no additional quality loss compared to software
+    decoding (assuming modern codecs and an error free video stream), and will
+    allow CPU processing with video filters. This mode works with all video
+    filters and VOs.
 
-    The ``vaapi`` mode, if used with ``--vo=gpu``, requires Mesa 11 and most
-    likely works with Intel GPUs only. It also requires the opengl EGL backend.
-
-    The ``cuda`` and ``cuda-copy`` modes provides deinterlacing in the decoder
-    which is useful as there is no other deinterlacing mechanism in the gpu
-    output path. To use this deinterlacing you must pass the option:
-    ``vd-lavc-o=deint=[weave|bob|adaptive]``.
-    Pass ``weave`` (or leave the option unset) to not attempt any
-    deinterlacing. ``cuda`` should always be preferred unless the ``gpu``
-    vo is not being used or filters are required.
-
-    ``nvdec`` is a newer implementation of CUVID/CUDA decoding, which uses the
-    FFmpeg decoders for file parsing. Experimental, is known not to correctly
-    check whether decoding is supported by the hardware at all. Deinterlacing
-    is not supported. Since this uses FFmpeg's codec parsers, it is expected
-    that this generally causes fewer issues than ``cuda``.
-
-    Most video filters will not work with hardware decoding as they are
-    primarily implemented on the CPU. Some exceptions are ``vdpaupp``,
-    ``vdpaurb`` and ``vavpp``. See `VIDEO FILTERS`_ for more details.
-
-    The ``...-copy`` modes (e.g. ``dxva2-copy``) allow you to use hardware
-    decoding with any VO, backend or filter. Because these copy the decoded
-    video back to system RAM, they're likely less efficient than the direct
-    modes (like e.g. ``dxva2``), and probably not more efficient than software
-    decoding except for some codecs (e.g. HEVC).
-
-    .. note::
-
-        When using this switch, hardware decoding is still only done for some
-        codecs. See ``--hwdec-codecs`` to enable hardware decoding for more
-        codecs.
+    Because these copy the decoded video back to system RAM, they're often less
+    efficient than the direct modes, and may not help too much over software
+    decoding.
 
     .. note::
 
        Most non-copy methods only work with the OpenGL GPU backend. Currently,
-       only the ``nvdec`` and ``cuda`` methods work with Vulkan.
+       only the ``vaapi``, ``nvdec`` and ``cuda`` methods work with Vulkan.
+
+    The ``vaapi`` mode, if used with ``--vo=gpu``, requires Mesa 11, and most
+    likely works with Intel and AMD GPUs only. It also requires the opengl EGL
+    backend.
+
+    ``nvdec`` and ``nvdec-copy`` are the newest, and recommended method to do
+    hardware decoding on Nvidia GPUs.
+
+    ``cuda`` and ``cuda-copy`` are an older implementation of hardware decoding
+    on Nvidia GPUs that uses Nvidia's bitstream parsers rather than FFmpeg's.
+    This can lead to feature deficiencies, such as incorrect playback of HDR
+    content, and ``nvdec``/``nvdec-copy`` should always be preferred unless you
+    specifically need Nvidia's deinterlacing algorithms. To use this
+    deinterlacing you must pass the option:
+    ``vd-lavc-o=deint=[weave|bob|adaptive]``.
+    Pass ``weave`` (or leave the option unset) to not attempt any
+    deinterlacing.
 
     .. admonition:: Quality reduction with hardware decoding
 
@@ -1040,10 +1131,10 @@ Video
         cases, hardware decoding can also reduce the bit depth of the decoded
         image, which can introduce banding or precision loss for 10-bit files.
 
-        ``vdpau`` is usually safe, except for 10 bit video. If deinterlacing
-        enabled (or the ``vdpaupp`` video filter is active in general), it
-        forces RGB conversion. The latter currently does not treat certain
-        colorspaces like BT.2020 correctly.
+        ``vdpau`` always does RGB conversion in hardware, which does not
+        support newer colorspaces like BT.2020 correctly. However, ``vdpau``
+        doesn't support 10 bit or HDR encodings, so these limitations are
+        unlikely to be relevant.
 
         ``vaapi`` and ``d3d11va`` are safe. Enabling deinterlacing (or simply
         their respective post-processing filters) will possibly at least reduce
@@ -1059,10 +1150,11 @@ Video
         ``rpi`` always uses the hardware overlay renderer, even with
         ``--vo=gpu``.
 
-        ``cuda`` should be safe, but it has been reported to corrupt the
-        timestamps causing glitched, flashing frames on some files. It can also
-        sometimes cause massive framedrops for unknown reasons. Caution is
-        advised.
+        ``cuda`` should usually be safe, but depending on how a file/stream
+        has been mixed, it has been reported to corrupt the timestamps causing
+        glitched, flashing frames. It can also sometimes cause massive
+        framedrops for unknown reasons. Caution is advised, and ``nvdec``
+        should always be preferred.
 
         ``crystalhd`` is not safe. It always converts to 4:2:2 YUV, which
         may be lossy, depending on how chroma sub-sampling is done during
@@ -1088,13 +1180,13 @@ Video
     This option is for troubleshooting hwdec interop issues. Since it's a
     debugging option, its semantics may change at any time.
 
-    This is useful for the ``gpu`` and ``opengl-cb`` VOs for selecting which
+    This is useful for the ``gpu`` and ``libmpv`` VOs for selecting which
     hwdec interop context to use exactly. Effectively it also can be used
     to block loading of certain backends.
 
     If set to ``auto`` (default), the behavior depends on the VO: for ``gpu``,
     it does nothing, and the interop context is loaded on demand (when the
-    decoder probes for ``--hwdec`` support). For ``opengl-cb``, which has
+    decoder probes for ``--hwdec`` support). For ``libmpv``, which has
     has no on-demand loading, this is equivalent to ``all``.
 
     The empty string is equivalent to ``auto``.
@@ -1140,17 +1232,18 @@ Video
 
 ``--cuda-decode-device=<auto|0..>``
     Choose the GPU device used for decoding when using the ``cuda`` or
-    ``nvdec`` hwdecs with the OpenGL GPU backend.
+    ``nvdec`` hwdecs with the OpenGL GPU backend, and with the ``cuda-copy``
+    or ``nvdec-copy`` hwdecs in all cases.
 
-    By default, the device that is being used to provide ``gpu`` output will
-    also be used for decoding (and in the vast majority of cases, only one
-    GPU will be present).
+    For the OpenGL GPU backend, the default device used for decoding is the one
+    being used to provide ``gpu`` output (and in the vast majority of cases,
+    only one GPU will be present).
 
-    Note that when using the ``cuda-copy`` or ``nvdec-copy`` hwdec, a
-    different option must be passed: ``--vd-lavc-o=gpu=<0..>``.
+    For the ``copy`` hwdecs, the default device will be the first device
+    enumerated by the CUDA libraries - however that is done.
 
-    Note that this option is not available with the Vulkan GPU backend. With
-    Vulkan, decoding must always happen on the display device.
+    For the Vulkan GPU backend, decoding must always happen on the display
+    device, and this option has no effect.
 
 ``--vaapi-device=<device file>``
     Choose the DRM device for ``vaapi-copy``. This should be the path to a
@@ -1371,6 +1464,11 @@ Video
     (default: 3). If this is a number, then fallback will be triggered if
     N frames fail to decode in a row. 1 is equivalent to ``yes``.
 
+    Setting this to a higher number might break the playback start fallback: if
+    a fallback happens, parts of the file will be skipped, approximately by to
+    the number of packets that could not be decoded. Values below an unspecified
+    count will not have this problem, because mpv retains the packets.
+
 ``--vd-lavc-dr=<yes|no>``
     Enable direct rendering (default: yes). If this is set to ``yes``, the
     video will be decoded directly to GPU video memory (or staging buffers).
@@ -1402,6 +1500,8 @@ Video
     Some options which used to be direct options can be set with this
     mechanism, like ``bug``, ``gray``, ``idct``, ``ec``, ``vismv``,
     ``skip_top`` (was ``st``), ``skip_bottom`` (was ``sb``), ``debug``.
+
+    This is a key/value list option. See `List Options`_ for details.
 
     .. admonition:: Example
 
@@ -1662,6 +1762,8 @@ Audio
     unneeded and pass all unknown options through the AVOption system is
     welcome. A full list of AVOptions can be found in the FFmpeg manual.
 
+    This is a key/value list option. See `List Options`_ for details.
+
 ``--ad-spdif-dtshd=<yes|no>``, ``--dtshd``, ``--no-dtshd``
     If DTS is passed through, use DTS-HD.
 
@@ -1749,7 +1851,7 @@ Audio
 ``--audio-files=<files>``
     Play audio from an external file while viewing a video.
 
-    This is a list option. See `List Options`_ for details.
+    This is a path list option. See `List Options`_ for details.
 
 ``--audio-file=<file>``
     CLI/config file only alias for ``--audio-files-append``. Each use of this
@@ -1830,6 +1932,8 @@ Audio
 ``--audio-file-paths=<path1:path2:...>``
     Equivalent to ``--sub-file-paths`` option, but for auto-loaded audio files.
 
+    This is a path list option. See `List Options`_ for details.
+
 ``--audio-client-name=<name>``
     The application name the player reports to the audio API. Can be useful
     if you want to force a different audio profile (e.g. with PulseAudio),
@@ -1903,7 +2007,7 @@ Subtitles
     and ``--secondary-sid`` to select the second index. (The index is printed
     on the terminal output after the ``--sid=`` in the list of streams.)
 
-    ``--sub-files`` is a list option (see `List Options`_  for details), and
+    ``--sub-files`` is a path list option (see `List Options`_  for details), and
     can take multiple file names separated by ``:`` (Unix) or ``;`` (Windows),
     while  ``--sub-file`` takes a single filename, but can be used multiple
     times to add multiple files. Technically, ``--sub-file`` is a CLI/config
@@ -1994,6 +2098,8 @@ Subtitles
 
 ``--sub-ass-force-style=<[Style.]Param=Value[,...]>``
     Override some style or script info parameters.
+
+    This is a string list option. See `List Options`_ for details.
 
     .. admonition:: Examples
 
@@ -2275,7 +2381,7 @@ Subtitles
         - ``/path/to/video/subtitles/``
         -  the ``sub`` configuration subdirectory (usually ``~/.config/mpv/sub/``)
 
-    This is a list option. See `List Options`_ for details.
+    This is a path list option. See `List Options`_ for details.
 
 ``--sub-visibility``, ``--no-sub-visibility``
     Can be used to disable display of subtitles, but still select and decode
@@ -2510,8 +2616,8 @@ Window
 ``--fs-screen=<all|current|0-32>``
     In multi-monitor configurations (i.e. a single desktop that spans across
     multiple displays), this option tells mpv which screen to go fullscreen to.
-    If ``default`` is provided mpv will fallback on using the behavior
-    depending on what the user provided with the ``screen`` option.
+    If ``current`` is used mpv will fallback on what the user provided with
+    the ``screen`` option.
 
     .. admonition:: Note (X11)
 
@@ -2763,6 +2869,23 @@ Window
     For example, ``--window-scale=0.5`` would show the window at half the
     video size.
 
+``--window-minimized=<yes|no>``
+    Whether the video window is minimized or not. Setting this will minimize,
+    or unminimze, the video window if the current VO supports it. Note that
+    some VOs may support minimization while not supporting unminimization
+    (eg: Wayland).
+
+    Whether this option and ``--window-maximized`` work on program start or
+    at runtime, and whether they're (at runtime) updated to reflect the actual
+    window state, heavily depends on the VO and the windowing system. Some VOs
+    simply do not implement them or parts of them, while other VOs may be
+    restricted by the windowing systems (especially Wayland).
+
+``--window-maximized=<yes|no>``
+    Whether the video window is maximized or not. Setting this will maximize,
+    or unmaximize, the video window if the current VO supports it. See
+    ``--window-minimized`` for further remarks.
+
 ``--cursor-autohide=<number|no|always>``
     Make mouse cursor automatically hide after given number of milliseconds.
     ``no`` will disable cursor autohide. ``always`` means the cursor will stay
@@ -2815,7 +2938,7 @@ Window
         - ``--monitoraspect=16:9`` or ``--monitoraspect=1.7777``
 
 ``--hidpi-window-scale``, ``--no-hidpi-window-scale``
-    (OS X and X11 only)
+    (OS X, X11, and Wayland only)
     Scale the window size according to the backing scale factor (default: yes).
     On regular HiDPI resolutions the window opens with double the size but appears
     as having the same size as on none-HiDPI resolutions. This is the default OS X
@@ -3061,6 +3184,8 @@ Demuxer
     be found in the FFmpeg manual. Note that some options may conflict
     with mpv options.
 
+    This is a key/value list option. See `List Options`_ for details.
+
     .. admonition:: Example
 
         ``--demuxer-lavf-o=fflags=+ignidx``
@@ -3091,6 +3216,18 @@ Demuxer
     breaks this even more, while if it's disabled, you can at least seek within
     the first song in the stream. Well, you won't get anything useful either
     way if the seek is outside of mpv's cache.
+
+``--demuxer-lavf-propagate-opts=<yes|no>``
+    Propagate FFmpeg-level options to recursively opened connections (default:
+    yes). This is needed because FFmpeg will apply these settings to nested
+    AVIO contexts automatically. On the other hand, this could break in certain
+    situations - it's the FFmpeg API, you just can't win.
+
+    This affects in particular the ``--timeout`` option and anything passed
+    with ``--demuxer-lavf-o``.
+
+    If this option is deemed unnecessary at some point in the future, it will
+    be removed without notice.
 
 ``--demuxer-mkv-subtitle-preroll=<yes|index|no>``, ``--mkv-subtitle-preroll``
     Try harder to show embedded soft subtitles when seeking somewhere. Normally,
@@ -3321,6 +3458,18 @@ Demuxer
     after the initial caching. This option is useless if the file cannot be
     cached completely.
 
+``--rar-list-all-volumes=<yes|no>``
+    When opening multi-volume rar files, open all volumes to create a full list
+    of contained files (default: no). If disabled, only the archive entries
+    whose headers are located within the first volume are listed (and thus
+    played when opening a .rar file with mpv). Doing so speeds up opening, and
+    the typical idiotic use-case of playing uncompressed multi-volume rar files
+    that contain a single media file is made faster.
+
+    Opening is still slow, because for unknown, idiotic, and unnecessary reasons
+    libarchive opens all volumes anyway when playing the main file, even though
+    mpv iterated no archive entries yet.
+
 Input
 -----
 
@@ -3368,6 +3517,8 @@ Input
     like any other binding). See `INPUT.CONF`_.
 
 ``--input-file=<filename>``
+    Deprecated. Use ``--input-ipc-server``.
+
     Read commands from the given file. Mostly useful with a FIFO. Since
     mpv 0.7.0 also understands JSON commands (see `JSON IPC`_), but you can't
     get replies or events. Use ``--input-ipc-server`` for something
@@ -3403,12 +3554,8 @@ Input
 
     See `JSON IPC`_ for details.
 
-``--input-appleremote=<yes|no>``
-    (OS X only)
-    Enable/disable Apple Remote support. Enabled by default (except for libmpv).
-
 ``--input-gamepad=<yes|no>``
-    Enable/disable SDL2 Gamepad support. Enabled by default (except for libmpv).
+    Enable/disable SDL2 Gamepad support. Disabled by default.
 
 ``--input-cursor``, ``--no-input-cursor``
     Permit mpv to receive pointer events reported by the video output
@@ -3833,6 +3980,21 @@ Software Scaler
 ``--sws-cvs=<v>``
     Software scaler chroma vertical shifting. See ``--sws-scaler``.
 
+``--sws-bitexact=<yes|no>``
+    Unknown functionality (default: no). Consult libswscale source code. The
+    primary purpose of this, as far as libswscale API goes), is to produce
+    exactly the same output for the same input on all platforms (output has the
+    same "bits" everywhere, thus "bitexact"). Typically disables optimizations.
+
+``--sws-fast=<yes|no>``
+    Allow optimizations that help with performance, but reduce quality (default:
+    no).
+
+    VOs like ``drm`` and ``x11`` will benefit a lot from using ``--sws-fast``.
+    You may need to set other options, like ``--sws-scaler``. The builtin
+    ``sws-fast`` profile sets this option and some others to gain performance
+    for reduced quality.
+
 ``--sws-allow-zimg=<yes|no>``
     Allow using zimg (if the component using the internal swscale wrapper
     explicitly allows so). In this case, zimg *may* be used, if the internal
@@ -3846,10 +4008,30 @@ Software Scaler
     correctly, a verbose priority log message will indicate whether zimg is
     being used.
 
-    Currently, barely anything uses this.
+    Most things which need software conversion can make use of this.
 
-``--zimg--scaler=<point|bilinear|bicubic|spline16|lanczos>``
-    Zimg luma scaler to use (default: bilinear).
+``--zimg-scaler=<point|bilinear|bicubic|spline16|spline36|lanczos>``
+    Zimg luma scaler to use (default: lanczos).
+
+``--zimg-scaler-param-a=<default|float>``, ``--zimg-scaler-param-b=<default|float>``
+    Set scaler parameters. By default, these are set to the special string
+    ``default``, which maps to a scaler-specific default value. Ignored if the
+    scaler is not tunable.
+
+    ``lanczos``
+        ``--zimg-scaler-param-a`` is the number of taps.
+
+    ``bicubic``
+        a and b are the bicubic b and c parameters.
+
+``--zimg-scaler-chroma=...``
+    Same as ``--zimg-scaler``, for for chroma interpolation (default: bilinear).
+
+``--zimg-scaler-chroma-param-a``, ``--zimg-scaler-chroma-param-b``
+    Same as ``--zimg-scaler-param-a`` / ``--zimg-scaler-param-b``, for chroma.
+
+``--zimg-dither=<no|ordered|random|error-diffusion>``
+    Dithering (default: random).
 
 ``--zimg-fast=<yes|no>``
     Allow optimizations that help with performance, but reduce quality (default:
@@ -3903,6 +4085,8 @@ It also sets the defaults for the ``lavrresample`` audio filter.
 ``--audio-swresample-o=<string>``
     Set AVOptions on the SwrContext or AVAudioResampleContext. These should
     be documented by FFmpeg or Libav.
+
+    This is a key/value list option. See `List Options`_ for details.
 
 Terminal
 --------
@@ -4125,6 +4309,32 @@ Cache
 
     Currently, this is used for ``--cache-on-disk`` only.
 
+``--stream-buffer-size=<bytesize>``
+    Size of the low level stream byte buffer (default: 128KB). This is used as
+    buffer between demuxer and low level I/O (e.g. sockets). Generally, this
+    can be very small, and the main purpose is similar to the internal buffer
+    FILE in the C standard library will have.
+
+    Half of the buffer is always used for guaranteed seek back, which is
+    important for unseekable input.
+
+    There are known cases where this can help performance to set a large buffer:
+
+        1. mp4 files. libavformat may trigger many small seeks in both
+           directions, depending on how the file was muxed.
+
+        2. Certain network filesystems, which do not have a cache, and where
+           small reads can be inefficient.
+
+    In other cases, setting this to a large value can reduce performance.
+
+    Usually, read accesses are at half the buffer size, but it may happen that
+    accesses are done alternating with smaller and larger sizes (this is due to
+    the internal ring buffer wrap-around).
+
+    See ``--list-options`` for defaults and value range. ``<bytesize>`` options
+    accept suffixes such as ``KiB`` and ``MiB``.
+
 Network
 -------
 
@@ -4140,6 +4350,8 @@ Network
 
 ``--http-header-fields=<field1,field2>``
     Set custom HTTP fields when accessing HTTP stream.
+
+    This is a string list option. See `List Options`_ for details.
 
     .. admonition:: Example
 
@@ -4184,9 +4396,10 @@ Network
     Specify a referrer path or URL for HTTP requests.
 
 ``--network-timeout=<seconds>``
-    Specify the network timeout in seconds. This affects at least HTTP. The
-    special value 0 (default) uses the FFmpeg/Libav defaults. If a protocol
-    is used which does not support timeouts, this option is silently ignored.
+    Specify the network timeout in seconds (default: 60 seconds). This affects
+    at least HTTP. The special value 0 uses the FFmpeg/Libav defaults. If a
+    protocol is used which does not support timeouts, this option is silently
+    ignored.
 
     .. warning::
 
@@ -4195,8 +4408,10 @@ Network
         option accept different units (seconds instead of microseconds, causing
         mpv to pass it huge values), it will also overflow FFmpeg internal
         calculations. The worst is that merely setting the option will put RTSP
-        into listening mode, which breaks any client uses. Do not use this
-        option with RTSP URLs.
+        into listening mode, which breaks any client uses. At time of this
+        writing, the fix was not made effective yet. For this reason, this
+        option is ignored (or should be ignored) on RTSP URLs. You can still
+        set the timeout option directly with ``--demuxer-lavf-o``.
 
 ``--rtsp-transport=<lavf|udp|tcp|http>``
     Select RTSP transport method (default: tcp). This selects the underlying
@@ -4329,7 +4544,7 @@ GPU renderer options
 -----------------------
 
 The following video options are currently all specific to ``--vo=gpu`` and
-``--vo=opengl-cb`` only, which are the only VOs that implement them.
+``--vo=libmpv`` only, which are the only VOs that implement them.
 
 ``--scale=<filter>``
     The filter function to use when upscaling video.
@@ -4656,7 +4871,7 @@ The following video options are currently all specific to ``--vo=gpu`` and
     require driver-specific hacks if using multiple monitors, to ensure mpv
     syncs to the right one. Compositing window managers can also lead to bad
     results, as can missing or incorrect display FPS information (see
-    ``--display-fps``).
+    ``--override-display-fps``).
 
 ``--vulkan-swap-mode=<mode>``
     Controls the presentation mode of the vulkan swapchain. This is similar
@@ -4694,8 +4909,8 @@ The following video options are currently all specific to ``--vo=gpu`` and
     GPUs. It's worth noting that if async compute is enabled, and the device
     supports more compute queues than graphics queues (bound by the restrictions
     set by ``--vulkan-queue-count``), mpv will internally try and prefer the
-    use of compute shaders over fragment shaders wherever possible. Not enabled
-    by default, since it seems to cause issues with some drivers.
+    use of compute shaders over fragment shaders wherever possible. Enabled by
+    default, although Nvidia users may want to disable it.
 
 ``--d3d11-warp=<yes|no|auto>``
     Use WARP (Windows Advanced Rasterization Platform) with the D3D11 GPU
@@ -4746,6 +4961,19 @@ The following video options are currently all specific to ``--vo=gpu`` and
         from Windows 10. Thus on older systems it will only automatically
         utilize the rgba8 output format.
 
+``--d3d11-output-csp=<auto|srgb|linear|pq|bt.2020>``
+    Select a specific D3D11 output color space to utilize for D3D11 rendering.
+    "auto" is the default, which will select the color space of the desktop
+    on which the swap chain is located.
+
+    Values other than "srgb" and "pq" have had issues in testing, so they
+    are mostly available for manual testing.
+
+    .. note::
+
+        Swap chain color space configuration is only available from an API
+        available from Windows 10. Thus on older systems it will not work.
+
 ``--d3d11va-zero-copy=<yes|no>``
     By default, when using hardware decoding with ``--gpu-api=d3d11``, the
     video image will be copied (GPU-to-GPU) from the decoder surface to a
@@ -4758,7 +4986,7 @@ The following video options are currently all specific to ``--vo=gpu`` and
 
     Currently only relevant for ``--gpu-api=d3d11``.
 
-``--wayland-frame-wait-offset=<-100..3000>``
+``--wayland-frame-wait-offset=<-500..3000>``
     Control the amount of offset (in microseconds) to add to wayland's frame wait
     (default 1000). The wayland context assumes that if frame callback or presentation
     feedback isn't received within a certain amount of time then the video is being
@@ -4789,11 +5017,15 @@ The following video options are currently all specific to ``--vo=gpu`` and
         This option is deprecated, since there is only one reasonable value.
         It may be removed in the future.
 
-``--glsl-shaders=<file-list>``
+``--glsl-shader=<file>``, ``--glsl-shaders=<file-list>``
     Custom GLSL hooks. These are a flexible way to add custom fragment shaders,
     which can be injected at almost arbitrary points in the rendering pipeline,
-    and access all previous intermediate textures. Each use of the option will
-    add another file to the internal list of shaders (see `List Options`_).
+    and access all previous intermediate textures.
+
+    Each use of the ``--glsl-shader`` option will add another file to the
+    internal list of shaders, while ``--glsl-shaders`` takes a list of files,
+    and overwrites the internal list with it. The latter is a path list option
+    (see `List Options`_ for details).
 
     .. admonition:: Warning
 
@@ -5274,7 +5506,7 @@ The following video options are currently all specific to ``--vo=gpu`` and
     auto
         auto-select (default)
     cocoa
-        Cocoa/OS X (deprecated, use --vo=opengl-cb instead)
+        Cocoa/OS X (deprecated, use --vo=libmpv instead)
     win
         Win32/WGL
     winvk
@@ -5303,11 +5535,6 @@ The following video options are currently all specific to ``--vo=gpu`` and
         X11/EGL
     android
         Android/EGL. Requires ``--wid`` be set to an ``android.view.Surface``.
-    vdpauglx
-        Use vdpau presentation with GLX as backing. Experimental use only.
-        Using this will have no advantage (other than additional bugs or
-        performance problems), and is for doing experiments only. Will not
-        be used automatically.
 
 ``--gpu-api=<type>``
     Controls which type of graphics APIs will be accepted:
@@ -5784,6 +6011,8 @@ Miscellaneous
     The default includes a common list of tags, call mpv with ``--list-options``
     to see it.
 
+    This is a string list option. See `List Options`_ for details.
+
 ``--mc=<seconds/frame>``
     Maximum A-V sync correction per frame (in seconds)
 
@@ -5940,6 +6169,8 @@ Miscellaneous
     other options such as e.g. user agent are not available with all protocols,
     and printing errors for unknown options would end up being too noisy.)
 
+    This is a key/value list option. See `List Options`_ for details.
+
 ``--vo-mmcss-profile=<name>``
     (Windows only.)
     Set the MMCSS profile for the video renderer thread (default: ``Playback``).
@@ -5970,7 +6201,7 @@ Miscellaneous
     it slightly less intrusive. (In mpv 0.28.0 and before, this was not quite
     strictly enforced.)
 
-    This is a list option. See `List Options`_ for details.
+    This is a path list option. See `List Options`_ for details.
 
 ``--external-file=<file>``
     CLI/config file only alias for ``--external-files-append``. Each use of this
@@ -6080,3 +6311,33 @@ Miscellaneous
 
     See the FFmpeg libavfilter documentation for details on the available
     filters.
+
+``--metadata-codepage=<codepage>``
+    Codepage for various input metadata (default: ``utf-8``). This affects how
+    file tags, chapter titles, etc. are interpreted. You can for example set
+    this to ``auto`` to enable autodetection of the codepage. (This is not the
+    default because non-UTF-8 codepages are an obscure fringe use-case.)
+
+    See ``--sub-codepage`` option on how codepages are specified and further
+    details regarding autodetection and codepage conversion. (The underlying
+    code is the same.)
+
+    Conversion is not applied to metadata that is updated at runtime.
+
+
+Debugging
+---------
+
+``--unittest=<name>``
+    Run an internal unit test. There are multiple, and the name specifies which.
+
+    The special value ``all-simple`` runs all tests which do not need further
+    setup (other arguments and such). Some tests may need additional arguments
+    to do anything useful.
+
+    On success, the player binary exits with exit status 0, otherwise it returns
+    with an undefined non-0 exit status (it may crash or abort itself on test
+    failures).
+
+    This is only enabled if built with ``--enable-tests``, and should normally
+    be enabled and used by developers only.

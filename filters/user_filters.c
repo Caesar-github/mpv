@@ -20,6 +20,14 @@ static bool get_desc_from(const struct mp_user_filter_entry **list, int num,
     return true;
 }
 
+static bool check_unknown_entry(const char *name, int media_type)
+{
+    // Generic lavfi bridge: skip the lavfi- prefix, if present.
+    if (strncmp(name, "lavfi-", 6) == 0)
+        name += 6;
+    return mp_lavfi_is_usable(name, media_type);
+}
+
 // --af option
 
 const struct mp_user_filter_entry *af_list[] = {
@@ -48,11 +56,17 @@ static void print_af_lavfi_help(struct mp_log *log, const char *name)
     print_lavfi_help(log, name, AVMEDIA_TYPE_AUDIO);
 }
 
+static bool check_af_lavfi(const char *name)
+{
+    return check_unknown_entry(name, AVMEDIA_TYPE_AUDIO);
+}
+
 const struct m_obj_list af_obj_list = {
     .get_desc = get_af_desc,
     .description = "audio filters",
     .allow_disable_entries = true,
     .allow_unknown_entries = true,
+    .check_unknown_entry = check_af_lavfi,
     .print_help_list = print_af_help_list,
     .print_unknown_entry_help = print_af_lavfi_help,
 };
@@ -79,6 +93,9 @@ const struct mp_user_filter_entry *vf_list[] = {
 #if HAVE_D3D_HWACCEL
     &vf_d3d11vpp,
 #endif
+#if HAVE_EGL_HELPERS && HAVE_GL && HAVE_EGL
+    &vf_gpu,
+#endif
 };
 
 static bool get_vf_desc(struct m_obj_desc *dst, int index)
@@ -96,11 +113,17 @@ static void print_vf_lavfi_help(struct mp_log *log, const char *name)
     print_lavfi_help(log, name, AVMEDIA_TYPE_VIDEO);
 }
 
+static bool check_vf_lavfi(const char *name)
+{
+    return check_unknown_entry(name, AVMEDIA_TYPE_VIDEO);
+}
+
 const struct m_obj_list vf_obj_list = {
     .get_desc = get_vf_desc,
     .description = "video filters",
     .allow_disable_entries = true,
     .allow_unknown_entries = true,
+    .check_unknown_entry = check_vf_lavfi,
     .print_help_list = print_vf_help_list,
     .print_unknown_entry_help = print_vf_lavfi_help,
 };

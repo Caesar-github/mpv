@@ -80,7 +80,7 @@ static int64_t get_size(stream_t *s)
     return size == (off_t)-1 ? -1 : size;
 }
 
-static int fill_buffer(stream_t *s, char *buffer, int max_len)
+static int fill_buffer(stream_t *s, void *buffer, int max_len)
 {
     struct priv *p = s->priv;
 
@@ -120,7 +120,7 @@ static int fill_buffer(stream_t *s, char *buffer, int max_len)
     return 0;
 }
 
-static int write_buffer(stream_t *s, char *buffer, int len)
+static int write_buffer(stream_t *s, void *buffer, int len)
 {
     struct priv *p = s->priv;
     return write(p->fd, buffer, len);
@@ -130,21 +130,6 @@ static int seek(stream_t *s, int64_t newpos)
 {
     struct priv *p = s->priv;
     return lseek(p->fd, newpos, SEEK_SET) != (off_t)-1;
-}
-
-static int control(stream_t *s, int cmd, void *arg)
-{
-    switch (cmd) {
-    case STREAM_CTRL_GET_SIZE: {
-        int64_t size = get_size(s);
-        if (size >= 0) {
-            *(int64_t *)arg = size;
-            return 1;
-        }
-        break;
-    }
-    }
-    return STREAM_UNSUPPORTED;
 }
 
 static void s_close(stream_t *s)
@@ -343,8 +328,7 @@ static int open_f(stream_t *stream)
     stream->fast_skip = true;
     stream->fill_buffer = fill_buffer;
     stream->write_buffer = write_buffer;
-    stream->control = control;
-    stream->read_chunk = 64 * 1024;
+    stream->get_size = get_size;
     stream->close = s_close;
 
     if (check_stream_network(p->fd))
@@ -365,5 +349,5 @@ const stream_info_t stream_info_file = {
     .protocols = (const char*const[]){ "file", "", "fd", "fdclose",
                                        "appending", NULL },
     .can_write = true,
-    .is_safe = true,
+    .stream_origin = STREAM_ORIGIN_FS,
 };

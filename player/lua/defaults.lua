@@ -54,10 +54,10 @@ local function reserve_binding()
     return "__keybinding" .. tostring(message_id)
 end
 
-local function dispatch_key_binding(name, state)
+local function dispatch_key_binding(name, state, key_name, key_text)
     local fn = dispatch_key_bindings[name]
     if fn then
-        fn(name, state)
+        fn(name, state, key_name, key_text)
     end
 end
 
@@ -131,8 +131,15 @@ end
 -- "Newer" and more convenient API
 
 local key_bindings = {}
+local key_binding_counter = 0
+local key_bindings_dirty = false
 
-local function update_key_bindings()
+function mp.flush_keybindings()
+    if not key_bindings_dirty then
+        return
+    end
+    key_bindings_dirty = false
+
     for i = 1, 2 do
         local section, flags
         local def = i == 1
@@ -143,11 +150,18 @@ local function update_key_bindings()
             section = "input_forced_" .. mp.script_name
             flags = "force"
         end
-        local cfg = ""
+        local bindings = {}
         for k, v in pairs(key_bindings) do
             if v.bind and v.forced ~= def then
-                cfg = cfg .. v.bind .. "\n"
+                bindings[#bindings + 1] = v
             end
+        end
+        table.sort(bindings, function(a, b)
+            return a.priority < b.priority
+        end)
+        local cfg = ""
+        for _, v in ipairs(bindings) do
+            cfg = cfg .. v.bind .. "\n"
         end
         mp.input_define_section(section, cfg, flags)
         -- TODO: remove the section if the script is stopped
@@ -156,9 +170,13 @@ local function update_key_bindings()
 end
 
 local function add_binding(attrs, key, name, fn, rp)
-    rp = rp or ""
-    if (type(name) ~= "string") and (not fn) then
+    if (type(name) ~= "string") and (name ~= nil) then
+        rp = fn
         fn = name
+        name = nil
+    end
+    rp = rp or ""
+    if name == nil then
         name = reserve_binding()
     end
     local repeatable = rp == "repeatable" or rp["repeatable"]
@@ -176,10 +194,15 @@ local function add_binding(attrs, key, name, fn, rp)
             ["r"] = "repeat",
             ["p"] = "press",
         }
-        key_cb = function(name, state)
+        key_cb = function(name, state, key_name, key_text)
+            if key_text == "" then
+                key_text = nil
+            end
             fn({
                 event = key_states[state:sub(1, 1)] or "unknown",
-                is_mouse = state:sub(2, 2) == "m"
+                is_mouse = state:sub(2, 2) == "m",
+                key_name = key_name,
+                key_text = key_text,
             })
         end
         msg_cb = function()
@@ -208,8 +231,11 @@ local function add_binding(attrs, key, name, fn, rp)
         attrs.bind = key .. " script-binding " .. mp.script_name .. "/" .. name
     end
     attrs.name = name
+    -- new bindings override old ones (but do not overwrite them)
+    key_binding_counter = key_binding_counter + 1
+    attrs.priority = key_binding_counter
     key_bindings[name] = attrs
-    update_key_bindings()
+    key_bindings_dirty = true
     dispatch_key_bindings[name] = key_cb
     mp.register_script_message(name, msg_cb)
 end
@@ -225,7 +251,7 @@ end
 function mp.remove_key_binding(name)
     key_bindings[name] = nil
     dispatch_key_bindings[name] = nil
-    update_key_bindings()
+    key_bindings_dirty = true
     mp.unregister_script_message(name)
 end
 
@@ -497,6 +523,8 @@ function mp.dispatch_events(allow_wait)
     end
 end
 
+mp.register_idle(mp.flush_keybindings)
+
 -- additional helpers
 
 function mp.osd_message(text, duration)
@@ -559,6 +587,64 @@ function mp.abort_async_command(t)
     if t.id ~= nil then
         mp.raw_abort_async_command(t.id)
     end
+end
+
+local overlay_mt = {}
+overlay_mt.__index = overlay_mt
+local overlay_new_id = 0
+
+function mp.create_osd_overlay(format)
+    overlay_new_id = overlay_new_id + 1
+    local overlay = {
+        format = format,
+        id = overlay_new_id,
+        data = "",
+        res_x = 0,
+        res_y = 720,
+    }
+    setmetatable(overlay, overlay_mt)
+    return overlay
+end
+
+function overlay_mt.update(ov)
+    local cmd = {}
+    for k, v in pairs(ov) do
+        cmd[k] = v
+    end
+    cmd.name = "osd-overlay"
+    cmd.res_x = math.floor(cmd.res_x)
+    cmd.res_y = math.floor(cmd.res_y)
+    mp.command_native(cmd)
+end
+
+function overlay_mt.remove(ov)
+    mp.command_native {
+        name = "osd-overlay",
+        id = ov.id,
+        format = "none",
+        data = "",
+    }
+end
+
+-- legacy API
+function mp.set_osd_ass(res_x, res_y, data)
+    if not mp._legacy_overlay then
+        mp._legacy_overlay = mp.create_osd_overlay("ass-events")
+    end
+    mp._legacy_overlay.res_x = res_x
+    mp._legacy_overlay.res_y = res_y
+    mp._legacy_overlay.data = data
+    mp._legacy_overlay:update()
+end
+
+function mp.get_osd_size()
+    local prop = mp.get_property_native("osd-dimensions")
+    return prop.w, prop.h, prop.aspect
+end
+
+function mp.get_osd_margins()
+    local prop = mp.get_property_native("osd-dimensions")
+    return prop.ml, prop.mt, prop.mr, prop.mb
 end
 
 local mp_utils = package.loaded["mp.utils"]
@@ -654,6 +740,30 @@ end
 
 function mp_utils.subprocess_detached(t)
     mp.commandv("run", unpack(t.args))
+end
+
+function mp_utils.shared_script_property_set(name, value)
+    if value ~= nil then
+        -- no such thing as change-list with mpv_node, so build a string value
+        mp.commandv("change-list", "shared-script-properties", "append",
+                    name .. "=" .. value)
+    else
+        mp.commandv("change-list", "shared-script-properties", "remove", name)
+    end
+end
+
+function mp_utils.shared_script_property_get(name)
+    local map = mp.get_property_native("shared-script-properties")
+    return map and map[name]
+end
+
+-- cb(name, value) on change and on init
+function mp_utils.shared_script_property_observe(name, cb)
+    -- it's _very_ wasteful to observe the mpv core "super" property for every
+    -- shared sub-property, but then again you shouldn't use this
+    mp.observe_property("shared-script-properties", "native", function(_, val)
+        cb(name, val and val[name])
+    end)
 end
 
 return {}

@@ -13,6 +13,15 @@ struct mpv_global;
 bool mp_zimg_supports_in_format(int imgfmt);
 bool mp_zimg_supports_out_format(int imgfmt);
 
+struct zimg_opts {
+    int scaler;
+    double scaler_params[2];
+    int scaler_chroma;
+    double scaler_chroma_params[2];
+    int dither;
+    int fast;
+};
+
 struct mp_zimg_context {
     // Can be set for verbose error printing.
     struct mp_log *log;
@@ -20,12 +29,7 @@ struct mp_zimg_context {
     // User configuration. Note: changing these requires calling mp_zimg_config()
     // to update the filter graph. The first mp_zimg_convert() call (or if the
     // image format changes) will do this automatically.
-    zimg_resample_filter_e scaler;
-    double scaler_params[2];
-    zimg_resample_filter_e scaler_chroma;
-    double scaler_chroma_params[2];
-    zimg_dither_type_e dither;
-    bool fast; // reduce quality for better performance
+    struct zimg_opts opts;
 
     // Input/output parameters. Note: if these mismatch with the
     // mp_zimg_convert() parameters, mp_zimg_config() will be called
@@ -33,6 +37,7 @@ struct mp_zimg_context {
     struct mp_image_params src, dst;
 
     // Cached zimg state (if any). Private, do not touch.
+    struct m_config_cache *opts_cache;
     zimg_filter_graph *zimg_graph;
     void *zimg_tmp;
     struct mp_zimg_repack *zimg_src;
@@ -42,6 +47,12 @@ struct mp_zimg_context {
 // Allocate a zimg context. Always succeeds. Returns a talloc pointer (use
 // talloc_free() to release it).
 struct mp_zimg_context *mp_zimg_alloc(void);
+
+// Enable auto-update of parameters from command line. Don't try to set custom
+// options (other than possibly .src/.dst), because they might be overwritten
+// if the user changes any options.
+void mp_zimg_enable_cmdline_opts(struct mp_zimg_context *ctx,
+                                 struct mpv_global *g);
 
 // Try to build the conversion chain using the parameters currently set in ctx.
 // If this succeeds, mp_zimg_convert() will always succeed (probably), as long
@@ -57,7 +68,3 @@ bool mp_zimg_config_image_params(struct mp_zimg_context *ctx);
 // Convert/scale src to dst. On failure, the data in dst is not touched.
 bool mp_zimg_convert(struct mp_zimg_context *ctx, struct mp_image *dst,
                      struct mp_image *src);
-
-// Set the global zimg command line parameters on this context. Use this if you
-// want the user to be able to change the scaler etc.
-void mp_zimg_set_from_cmdline(struct mp_zimg_context *ctx, struct mpv_global *g);

@@ -244,8 +244,6 @@ static bool resize(struct vo *vo)
         return false;
     }
 
-    mp_sws_set_from_cmdline(p->sws, vo->global);
-    p->sws->allow_zimg = true;
     p->sws->dst = (struct mp_image_params) {
         .imgfmt = fmte->mpfmt,
         .w = p->dst_w,
@@ -352,7 +350,8 @@ static void draw_image(struct vo *vo, mp_image_t *mpi)
 
 static int query_format(struct vo *vo, int format)
 {
-    if (sws_isSupportedInput(imgfmt2pixfmt(format)))
+    struct priv *p = vo->priv;
+    if (mp_sws_supports_formats(p->sws, IMGFMT_RGB0, format))
         return 1;
     return 0;
 }
@@ -378,6 +377,7 @@ static int preinit(struct vo *vo)
     p->vo = vo;
     p->sws = mp_sws_alloc(vo);
     p->sws->log = vo->log;
+    mp_sws_enable_cmdline_opts(p->sws, vo->global);
 
     if (!vo_x11_init(vo))
         goto error;

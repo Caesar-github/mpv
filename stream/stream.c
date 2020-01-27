@@ -22,7 +22,6 @@
 #include <strings.h>
 #include <assert.h>
 
-#include <libavutil/common.h>
 #include "osdep/io.h"
 
 #include "mpv_talloc.h"
@@ -34,6 +33,7 @@
 #include "misc/bstr.h"
 #include "misc/thread_tools.h"
 #include "common/msg.h"
+#include "options/m_config.h"
 #include "options/options.h"
 #include "options/path.h"
 #include "osdep/timer.h"
@@ -95,7 +95,29 @@ static const stream_info_t *const stream_list[] = {
     NULL
 };
 
-static bool stream_seek_unbuffered(stream_t *s, int64_t newpos);
+// Because of guarantees documented on STREAM_BUFFER_SIZE.
+// Half the buffer is used as forward buffer, the other for seek-back.
+#define STREAM_MIN_BUFFER_SIZE (STREAM_BUFFER_SIZE * 2)
+
+struct stream_opts {
+    int64_t buffer_size;
+    int load_unsafe_playlists;
+};
+
+#define OPT_BASE_STRUCT struct stream_opts
+
+const struct m_sub_options stream_conf = {
+    .opts = (const struct m_option[]){
+        OPT_BYTE_SIZE("stream-buffer-size", buffer_size, 0,
+                      STREAM_MIN_BUFFER_SIZE, 512 * 1024 * 1024),
+        OPT_FLAG("load-unsafe-playlists", load_unsafe_playlists, 0),
+        {0}
+    },
+    .size = sizeof(struct stream_opts),
+    .defaults = &(const struct stream_opts){
+        .buffer_size = 128 * 1024,
+    },
+};
 
 // return -1 if not hex char
 static int hex2dec(char c)
@@ -182,35 +204,106 @@ static const char *match_proto(const char *url, const char *proto)
     return NULL;
 }
 
-// Resize the current stream buffer, or do nothing if the size is adequate.
-// Caller must ensure the used buffer is not less than the new buffer size.
-// Calling this with 0 ensures it uses the default buffer size.
-static void stream_resize_buffer(struct stream *s, int new)
+// src and new are both STREAM_ORIGIN_* values. This checks whether a stream
+// with flags "new" can be opened from the "src". On success, return
+// new origin, on incompatibility return 0.
+static int check_origin(int src, int new)
 {
-    new = MPMAX(new, STREAM_BUFFER_SIZE);
-
-    if (new == s->buffer_alloc)
-        return;
-
-    int buffer_used = s->buf_len - s->buf_pos;
-    assert(buffer_used <= new);
-
-    void *nbuf = s->buffer_inline;
-    if (new > STREAM_BUFFER_SIZE)
-        nbuf = ta_alloc_size(s, new);
-
-    if (nbuf) {
-        if (s->buffer)
-            memmove(nbuf, &s->buffer[s->buf_pos], buffer_used);
-        s->buf_pos = 0;
-        s->buf_len = buffer_used;
-
-        if (s->buffer != s->buffer_inline)
-            ta_free(s->buffer);
-
-        s->buffer = nbuf;
-        s->buffer_alloc = new;
+    switch (src) {
+    case STREAM_ORIGIN_DIRECT:
+    case STREAM_ORIGIN_UNSAFE:
+        // Allow anything, but constrain it to the new origin.
+        return new;
+    case STREAM_ORIGIN_FS:
+        // From unix FS, allow all but unsafe.
+        if (new == STREAM_ORIGIN_FS || new == STREAM_ORIGIN_NET)
+            return new;
+        break;
+    case STREAM_ORIGIN_NET:
+        // Allow only other network links.
+        if (new == STREAM_ORIGIN_NET)
+            return new;
+        break;
     }
+    return 0;
+}
+
+// Read len bytes from the start position, and wrap around as needed. Limit the
+// actually read data to the size of the buffer. Return amount of copied bytes.
+//  len: max bytes to copy to dst
+//  pos: index into s->buffer[], e.g. s->buf_start is byte 0
+//  returns: bytes copied to dst (limited by len and available buffered data)
+static int ring_copy(struct stream *s, void *dst, int len, int pos)
+{
+    assert(len >= 0);
+
+    if (pos < s->buf_start || pos > s->buf_end)
+        return 0;
+
+    int copied = 0;
+    len = MPMIN(len, s->buf_end - pos);
+
+    if (len && pos <= s->buffer_mask) {
+        int copy = MPMIN(len, s->buffer_mask + 1 - pos);
+        memcpy(dst, &s->buffer[pos], copy);
+        copied += copy;
+        len -= copy;
+        pos += copy;
+    }
+
+    if (len) {
+        memcpy((char *)dst + copied, &s->buffer[pos & s->buffer_mask], len);
+        copied += len;
+    }
+
+    return copied;
+}
+
+// Resize the current stream buffer. Uses a larger size if needed to keep data.
+// Does nothing if the size is adequate. Calling this with 0 ensures it uses the
+// default buffer size if possible.
+// The caller must check whether enough data was really allocated.
+// Returns false if buffer allocation failed.
+static bool stream_resize_buffer(struct stream *s, uint32_t new)
+{
+    // Keep all valid buffer.
+    int old_used_len = s->buf_end - s->buf_start;
+    int old_pos = s->buf_cur - s->buf_start;
+    new = MPMAX(new, old_used_len);
+
+    new = MPMAX(new, s->requested_buffer_size);
+
+    // This much is always required.
+    new = MPMAX(new, STREAM_MIN_BUFFER_SIZE);
+
+    new = mp_round_next_power_of_2(new);
+    if (!new || new > INT_MAX / 8)
+        return false;
+
+    if (new == s->buffer_mask + 1)
+        return true;
+
+    MP_DBG(s, "resize stream to %d bytes\n", new);
+
+    void *nbuf = ta_alloc_size(s, new);
+    if (!nbuf)
+        return false; // oom; tolerate it, caller needs to check if required
+
+    int new_len = 0;
+    if (s->buffer)
+        new_len = ring_copy(s, nbuf, new, s->buf_start);
+    assert(new_len == old_used_len);
+    assert(old_pos <= old_used_len);
+    s->buf_start = 0;
+    s->buf_cur = old_pos;
+    s->buf_end = new_len;
+
+    ta_free(s->buffer);
+
+    s->buffer = nbuf;
+    s->buffer_mask = new - 1;
+
+    return true;
 }
 
 static int stream_create_instance(const stream_info_t *sinfo,
@@ -221,11 +314,6 @@ static int stream_create_instance(const stream_info_t *sinfo,
     int flags = args->flags;
 
     *ret = NULL;
-
-    if (!sinfo->is_safe && (flags & STREAM_SAFE_ONLY))
-        return STREAM_UNSAFE;
-    if (!sinfo->is_network && (flags & STREAM_NETWORK_ONLY))
-        return STREAM_UNSAFE;
 
     const char *path = url;
     for (int n = 0; sinfo->protocols && sinfo->protocols[n]; n++) {
@@ -239,6 +327,7 @@ static int stream_create_instance(const stream_info_t *sinfo,
 
     stream_t *s = talloc_zero(NULL, stream_t);
     s->global = args->global;
+    struct stream_opts *opts = mp_get_config_group(s, s->global, &stream_conf);
     if (flags & STREAM_SILENT) {
         s->log = mp_null_log;
     } else {
@@ -248,8 +337,8 @@ static int stream_create_instance(const stream_info_t *sinfo,
     s->cancel = args->cancel;
     s->url = talloc_strdup(s, url);
     s->path = talloc_strdup(s, path);
-    s->is_network = sinfo->is_network;
     s->mode = flags & (STREAM_READ | STREAM_WRITE);
+    s->requested_buffer_size = opts->buffer_size;
 
     int opt;
     mp_read_option_raw(s->global, "access-references", &m_option_type_flag, &opt);
@@ -269,6 +358,18 @@ static int stream_create_instance(const stream_info_t *sinfo,
         return STREAM_NO_MATCH;
     }
 
+    s->stream_origin = flags & STREAM_ORIGIN_MASK; // pass through by default
+    if (opts->load_unsafe_playlists) {
+        s->stream_origin = STREAM_ORIGIN_DIRECT;
+    } else if (sinfo->stream_origin) {
+        s->stream_origin = check_origin(s->stream_origin, sinfo->stream_origin);
+    }
+
+    if (!s->stream_origin) {
+        talloc_free(s);
+        return STREAM_UNSAFE;
+    }
+
     int r = STREAM_UNSUPPORTED;
     if (sinfo->open2) {
         r = sinfo->open2(s, args);
@@ -280,11 +381,10 @@ static int stream_create_instance(const stream_info_t *sinfo,
         return r;
     }
 
-    if (!s->read_chunk)
-        s->read_chunk = 4 * STREAM_BUFFER_SIZE;
-
-    stream_resize_buffer(s, 0);
-    MP_HANDLE_OOM(s->buffer);
+    if (!stream_resize_buffer(s, 0)) {
+        free_stream(s);
+        return STREAM_ERROR;
+    }
 
     assert(s->seekable == !!s->seek);
 
@@ -357,14 +457,10 @@ struct stream *stream_create(const char *url, int flags,
     return s;
 }
 
-struct stream *stream_open(const char *filename, struct mpv_global *global)
-{
-    return stream_create(filename, STREAM_READ, NULL, global);
-}
-
 stream_t *open_output_stream(const char *filename, struct mpv_global *global)
 {
-    return stream_create(filename, STREAM_WRITE, NULL, global);
+    return stream_create(filename, STREAM_ORIGIN_DIRECT | STREAM_WRITE,
+                         NULL, global);
 }
 
 // Read function bypassing the local stream buffer. This will not write into
@@ -392,111 +488,124 @@ static int stream_read_unbuffered(stream_t *s, void *buf, int len)
     return res;
 }
 
-// Ask for having "total" bytes ready to read in the stream buffer. This can do
-// a partial read if requested, so it can actually read less.
+// Ask for having at most "forward" bytes ready to read in the buffer.
 // To read everything, you may have to call this in a loop.
-//  total: desired amount of bytes in buffer
-//  allow_short: if true, attempt at most once to read more if needed
-//  returns: actual bytes in buffer (can be smaller or larger than total)
-static int stream_extend_buffer(struct stream *s, int total, bool allow_short)
+//  forward: desired amount of bytes in buffer after s->cur_pos
+//  returns: progress (false on EOF or on OOM or if enough data was available)
+static bool stream_read_more(struct stream *s, int forward)
 {
-    assert(total >= 0);
+    assert(forward >= 0);
 
-    if (s->buf_len - s->buf_pos < total) {
-        // Move to front to guarantee we really can read up to max size.
-        s->buf_len = s->buf_len - s->buf_pos;
-        memmove(s->buffer, &s->buffer[s->buf_pos], s->buf_len);
-        s->buf_pos = 0;
+    int forward_avail = s->buf_end - s->buf_cur;
+    if (forward_avail >= forward)
+        return false;
 
-        // Read ahead by about as much as stream_fill_buffer() would, to avoid
-        // that many small stream_peek() calls will read the buffer at these
-        // quantities.
-        total = MPMAX(total, STREAM_BUFFER_SIZE);
+    // Avoid that many small reads will lead to many low-level read calls.
+    forward = MPMAX(forward, s->requested_buffer_size / 2);
 
-        // Allocate more if the buffer is too small. Also, if the buffer is
-        // larger than needed, resize it to smaller. This assumes stream_peek()
-        // calls are rare or done with small sizes.
-        stream_resize_buffer(s, total);
+    // Keep guaranteed seek-back.
+    int buf_old = MPMIN(s->buf_cur - s->buf_start, s->requested_buffer_size / 2);
 
-        // Read less if allocation above failed.
-        total = MPMIN(total, s->buffer_alloc);
+    if (!stream_resize_buffer(s, buf_old + forward))
+        return false;
 
-        // Fill rest of the buffer. Can be partial.
-        while (total > s->buf_len) {
-            int read = stream_read_unbuffered(s, &s->buffer[s->buf_len],
-                                              total - s->buf_len);
-            s->buf_len += read;
-            if (allow_short || !read)
-                break;
+    int buf_alloc = s->buffer_mask + 1;
+
+    assert(s->buf_start <= s->buf_cur);
+    assert(s->buf_cur <= s->buf_end);
+    assert(s->buf_cur < buf_alloc * 2);
+    assert(s->buf_end < buf_alloc * 2);
+    assert(s->buf_start < buf_alloc);
+
+    // Note: read as much as possible, even if forward is much smaller. Do
+    // this because the stream buffer is supposed to set an approx. minimum
+    // read size on it.
+    int read = buf_alloc - buf_old - forward_avail; // free buffer past end
+
+    int pos = s->buf_end & s->buffer_mask;
+    read = MPMIN(read, buf_alloc - pos);
+
+    // Note: if wrap-around happens, we need to make two calls. This may
+    // affect latency (e.g. waiting for new data on a socket), so do only
+    // 1 read call always.
+    read = stream_read_unbuffered(s, &s->buffer[pos], read);
+
+    s->buf_end += read;
+
+    // May have overwritten old data.
+    if (s->buf_end - s->buf_start >= buf_alloc) {
+        assert(s->buf_end >= buf_alloc);
+
+        s->buf_start = s->buf_end - buf_alloc;
+
+        assert(s->buf_start <= s->buf_cur);
+        assert(s->buf_cur <= s->buf_end);
+
+        if (s->buf_start >= buf_alloc) {
+            s->buf_start -= buf_alloc;
+            s->buf_cur -= buf_alloc;
+            s->buf_end -= buf_alloc;
         }
-
-        if (s->buf_len)
-            s->eof = 0;
     }
 
-    return s->buf_len - s->buf_pos;
-}
+    // Must not have overwritten guaranteed old data.
+    assert(s->buf_cur - s->buf_start >= buf_old);
 
-int stream_fill_buffer(stream_t *s)
-{
-    return stream_extend_buffer(s, STREAM_BUFFER_SIZE, true);
+    if (s->buf_cur < s->buf_end)
+        s->eof = 0;
+
+    return !!read;
 }
 
 // Read between 1..buf_size bytes of data, return how much data has been read.
 // Return 0 on EOF, error, or if buf_size was 0.
-int stream_read_partial(stream_t *s, char *buf, int buf_size)
+int stream_read_partial(stream_t *s, void *buf, int buf_size)
 {
-    assert(s->buf_pos <= s->buf_len);
+    assert(s->buf_cur <= s->buf_end);
     assert(buf_size >= 0);
-    if (s->buf_pos == s->buf_len && buf_size > 0) {
-        s->buf_pos = s->buf_len = 0;
-        stream_resize_buffer(s, 0);
-        // Do a direct read
-        // Also, small reads will be more efficient with buffering & copying
-        if (buf_size >= STREAM_BUFFER_SIZE)
+    if (s->buf_cur == s->buf_end && buf_size > 0) {
+        if (buf_size > (s->buffer_mask + 1) / 2) {
+            // Direct read if the buffer is too small anyway.
+            stream_drop_buffers(s);
             return stream_read_unbuffered(s, buf, buf_size);
-        if (!stream_fill_buffer(s))
-            return 0;
+        }
+        stream_read_more(s, 1);
     }
-    int len = FFMIN(buf_size, s->buf_len - s->buf_pos);
-    memcpy(buf, &s->buffer[s->buf_pos], len);
-    s->buf_pos += len;
-    if (len > 0)
-        s->eof = 0;
-    return len;
+    int res = ring_copy(s, buf, buf_size, s->buf_cur);
+    s->buf_cur += res;
+    return res;
 }
 
-int stream_read(stream_t *s, char *mem, int total)
+// Slow version of stream_read_char(); called by it if the buffer is empty.
+int stream_read_char_fallback(stream_t *s)
+{
+    uint8_t c;
+    return stream_read_partial(s, &c, 1) ? c : -256;
+}
+
+int stream_read(stream_t *s, void *mem, int total)
 {
     int len = total;
     while (len > 0) {
         int read = stream_read_partial(s, mem, len);
         if (read <= 0)
             break; // EOF
-        mem += read;
+        mem = (char *)mem + read;
         len -= read;
     }
     total -= len;
-    if (total > 0)
-        s->eof = 0;
     return total;
 }
 
-// Read ahead at most len bytes without changing the read position. Return a
-// pointer to the internal buffer, starting from the current read position.
-// Reading ahead may require memory allocation. If allocation fails, read ahead
-// is silently limited to the last successful allocation.
-// The returned buffer becomes invalid on the next stream call, and you must
-// not write to it.
-struct bstr stream_peek(stream_t *s, int len)
+// Like stream_read(), but do not advance the current position. This may resize
+// the buffer to satisfy the read request.
+int stream_read_peek(stream_t *s, void *buf, int buf_size)
 {
-    assert(len >= 0);
-
-    int avail = stream_extend_buffer(s, len, false);
-    return (bstr){.start = &s->buffer[s->buf_pos], .len = MPMIN(len, avail)};
+    while (stream_read_more(s, buf_size)) {}
+    return ring_copy(s, buf, buf_size, s->buf_cur);
 }
 
-int stream_write_buffer(stream_t *s, unsigned char *buf, int len)
+int stream_write_buffer(stream_t *s, void *buf, int len)
 {
     if (!s->write_buffer)
         return -1;
@@ -506,7 +615,7 @@ int stream_write_buffer(stream_t *s, unsigned char *buf, int len)
         if (w <= 0)
             return -1;
         s->pos += w;
-        buf += w;
+        buf = (char *)buf + w;
         len -= w;
     }
     return orig_len;
@@ -518,14 +627,14 @@ int stream_write_buffer(stream_t *s, unsigned char *buf, int len)
 static bool stream_skip_read(struct stream *s, int64_t len)
 {
     while (len > 0) {
-        unsigned int left = s->buf_len - s->buf_pos;
+        unsigned int left = s->buf_end - s->buf_cur;
         if (!left) {
-            if (!stream_fill_buffer(s))
+            if (!stream_read_more(s, 1))
                 return false;
             continue;
         }
         unsigned skip = MPMIN(len, left);
-        s->buf_pos += skip;
+        s->buf_cur += skip;
         len -= skip;
     }
     return true;
@@ -537,7 +646,7 @@ static bool stream_skip_read(struct stream *s, int64_t len)
 void stream_drop_buffers(stream_t *s)
 {
     s->pos = stream_tell(s);
-    s->buf_pos = s->buf_len = 0;
+    s->buf_start = s->buf_cur = s->buf_end = 0;
     s->eof = 0;
     stream_resize_buffer(s, 0);
 }
@@ -546,6 +655,11 @@ void stream_drop_buffers(stream_t *s)
 static bool stream_seek_unbuffered(stream_t *s, int64_t newpos)
 {
     if (newpos != s->pos) {
+        MP_VERBOSE(s, "stream level seek from %" PRId64 " to %" PRId64 "\n",
+                   s->pos, newpos);
+
+        s->total_stream_seeks++;
+
         if (newpos > s->pos && !s->seekable) {
             MP_ERR(s, "Cannot seek forward in this stream\n");
             return false;
@@ -568,7 +682,8 @@ static bool stream_seek_unbuffered(stream_t *s, int64_t newpos)
 
 bool stream_seek(stream_t *s, int64_t pos)
 {
-    MP_TRACE(s, "seek to %lld\n", (long long)pos);
+    MP_TRACE(s, "seek request from %" PRId64 " to %" PRId64 "\n",
+             stream_tell(s), pos);
 
     s->eof = 0; // eof should be set only on read; seeking always clears it
 
@@ -577,14 +692,12 @@ bool stream_seek(stream_t *s, int64_t pos)
         pos = 0;
     }
 
-    if (pos == stream_tell(s))
-        return true;
-
-    if (pos < s->pos) {
-        int64_t x = pos - (s->pos - (int)s->buf_len);
-        if (x >= 0) {
-            s->buf_pos = x;
-            assert(s->buf_pos <= s->buf_len);
+    if (pos <= s->pos) {
+        int64_t x = pos - (s->pos - (int)s->buf_end);
+        if (x >= (int)s->buf_start) {
+            s->buf_cur = x;
+            assert(s->buf_cur >= s->buf_start);
+            assert(s->buf_cur <= s->buf_end);
             return true;
         }
     }
@@ -592,35 +705,24 @@ bool stream_seek(stream_t *s, int64_t pos)
     if (s->mode == STREAM_WRITE)
         return s->seekable && s->seek(s, pos);
 
-    int64_t newpos = pos;
-
-    MP_TRACE(s, "Seek from %" PRId64 " to %" PRId64
-             " (with offset %d)\n", s->pos, pos, (int)(pos - newpos));
-
-    if (pos >= s->pos && !s->seekable && s->fast_skip) {
-        // skipping is handled by generic code below
-    } else if (!stream_seek_unbuffered(s, newpos)) {
-        return false;
+    // Skip data instead of performing a seek in some cases.
+    if (pos >= s->pos &&
+        ((!s->seekable && s->fast_skip) ||
+         pos - s->pos <= s->requested_buffer_size))
+    {
+        return stream_skip_read(s, pos - stream_tell(s));
     }
 
-    return stream_skip_read(s, pos - stream_tell(s));
+    return stream_seek_unbuffered(s, pos);
 }
 
-bool stream_skip(stream_t *s, int64_t len)
+// Like stream_seek(), but strictly prefer skipping data instead of failing, if
+// it's a forward-seek.
+bool stream_seek_skip(stream_t *s, int64_t pos)
 {
-    int64_t target = stream_tell(s) + len;
-    if (len < 0)
-        return stream_seek(s, target);
-    if (len > 2 * STREAM_BUFFER_SIZE && s->seekable) {
-        // Seek to 1 byte before target - this is the only way to distinguish
-        // skip-to-EOF and skip-past-EOF in general. Successful seeking means
-        // absolutely nothing, so test by doing a real read of the last byte.
-        if (!stream_seek(s, target - 1))
-            return false;
-        stream_read_char(s);
-        return !stream_eof(s) && stream_tell(s) == target;
-    }
-    return stream_skip_read(s, len);
+    return !s->seekable && pos > stream_tell(s)
+        ? stream_skip_read(s, pos - stream_tell(s))
+        : stream_seek(s, pos);
 }
 
 int stream_control(stream_t *s, int cmd, void *arg)
@@ -631,10 +733,7 @@ int stream_control(stream_t *s, int cmd, void *arg)
 // Return the current size of the stream, or a negative value if unknown.
 int64_t stream_get_size(stream_t *s)
 {
-    int64_t size = -1;
-    if (stream_control(s, STREAM_CTRL_GET_SIZE, &size) != STREAM_OK)
-        size = -1;
-    return size;
+    return s->get_size ? s->get_size(s) : -1;
 }
 
 void free_stream(stream_t *s)
@@ -647,87 +746,17 @@ void free_stream(stream_t *s)
     talloc_free(s);
 }
 
-static uint16_t stream_read_word_endian(stream_t *s, bool big_endian)
-{
-    unsigned int y = stream_read_char(s);
-    y = (y << 8) | stream_read_char(s);
-    if (!big_endian)
-        y = ((y >> 8) & 0xFF) | (y << 8);
-    return y;
-}
-
-// Read characters until the next '\n' (including), or until the buffer in s is
-// exhausted.
-static int read_characters(stream_t *s, uint8_t *dst, int dstsize, int utf16)
-{
-    if (utf16 == 1 || utf16 == 2) {
-        uint8_t *cur = dst;
-        while (1) {
-            if ((cur - dst) + 8 >= dstsize) // PUT_UTF8 writes max. 8 bytes
-                return -1; // line too long
-            uint32_t c;
-            uint8_t tmp;
-            GET_UTF16(c, stream_read_word_endian(s, utf16 == 2), return -1;)
-            if (s->eof)
-                break; // legitimate EOF; ignore the case of partial reads
-            PUT_UTF8(c, tmp, *cur++ = tmp;)
-            if (c == '\n')
-                break;
-        }
-        return cur - dst;
-    } else {
-        if (s->buf_pos >= s->buf_len)
-            stream_fill_buffer(s);
-        uint8_t *src = s->buffer + s->buf_pos;
-        int src_len = s->buf_len - s->buf_pos;
-        uint8_t *end = memchr(src, '\n', src_len);
-        int len = end ? end - src + 1 : src_len;
-        if (len > dstsize)
-            return -1; // line too long
-        memcpy(dst, src, len);
-        s->buf_pos += len;
-        return len;
-    }
-}
-
-// On error, or if the line is larger than max-1, return NULL and unset s->eof.
-// On EOF, return NULL, and s->eof will be set.
-// Otherwise, return the line (including \n or \r\n at the end of the line).
-// If the return value is non-NULL, it's always the same as mem.
-// utf16: 0: UTF8 or 8 bit legacy, 1: UTF16-LE, 2: UTF16-BE
-unsigned char *stream_read_line(stream_t *s, unsigned char *mem, int max,
-                                int utf16)
-{
-    if (max < 1)
-        return NULL;
-    int read = 0;
-    while (1) {
-        // Reserve 1 byte of ptr for terminating \0.
-        int l = read_characters(s, &mem[read], max - read - 1, utf16);
-        if (l < 0 || memchr(&mem[read], '\0', l)) {
-            MP_WARN(s, "error reading line\n");
-            s->eof = false;
-            return NULL;
-        }
-        read += l;
-        if (l == 0 || (read > 0 && mem[read - 1] == '\n'))
-            break;
-    }
-    mem[read] = '\0';
-    if (s->eof && read == 0) // legitimate EOF
-        return NULL;
-    return mem;
-}
-
 static const char *const bom[3] = {"\xEF\xBB\xBF", "\xFF\xFE", "\xFE\xFF"};
 
 // Return utf16 argument for stream_read_line
 int stream_skip_bom(struct stream *s)
 {
-    bstr data = stream_peek(s, 4);
+    char buf[4];
+    int len = stream_read_peek(s, buf, sizeof(buf));
+    bstr data = {buf, len};
     for (int n = 0; n < 3; n++) {
         if (bstr_startswith0(data, bom[n])) {
-            stream_skip(s, strlen(bom[n]));
+            stream_seek_skip(s, stream_tell(s) + strlen(bom[n]));
             return n;
         }
     }
@@ -770,7 +799,7 @@ struct bstr stream_read_complete(struct stream *s, void *talloc_ctx,
             talloc_free(buf);
             return (struct bstr){NULL, 0};
         }
-        bufsize = FFMIN(bufsize + (bufsize >> 1), max_size + padding);
+        bufsize = MPMIN(bufsize + (bufsize >> 1), max_size + padding);
     }
     buf = talloc_realloc_size(talloc_ctx, buf, total_read + padding);
     memset(&buf[total_read], 0, padding);
@@ -782,7 +811,8 @@ struct bstr stream_read_file(const char *filename, void *talloc_ctx,
 {
     struct bstr res = {0};
     char *fname = mp_get_user_path(NULL, global, filename);
-    stream_t *s = stream_open(fname, global);
+    stream_t *s =
+        stream_create(fname, STREAM_ORIGIN_DIRECT | STREAM_READ, NULL, global);
     if (s) {
         res = stream_read_complete(s, talloc_ctx, max_size);
         free_stream(s);

@@ -96,10 +96,10 @@ char *mp_format_time(double time, bool fractions)
 // Set rc to the union of rc and rc2
 void mp_rect_union(struct mp_rect *rc, const struct mp_rect *rc2)
 {
-    rc->x0 = FFMIN(rc->x0, rc2->x0);
-    rc->y0 = FFMIN(rc->y0, rc2->y0);
-    rc->x1 = FFMAX(rc->x1, rc2->x1);
-    rc->y1 = FFMAX(rc->y1, rc2->y1);
+    rc->x0 = MPMIN(rc->x0, rc2->x0);
+    rc->y0 = MPMIN(rc->y0, rc2->y0);
+    rc->x1 = MPMAX(rc->x1, rc2->x1);
+    rc->y1 = MPMAX(rc->y1, rc2->y1);
 }
 
 // Returns whether or not a point is contained by rc
@@ -112,10 +112,10 @@ bool mp_rect_contains(struct mp_rect *rc, int x, int y)
 // Return false if the result is empty.
 bool mp_rect_intersection(struct mp_rect *rc, const struct mp_rect *rc2)
 {
-    rc->x0 = FFMAX(rc->x0, rc2->x0);
-    rc->y0 = FFMAX(rc->y0, rc2->y0);
-    rc->x1 = FFMIN(rc->x1, rc2->x1);
-    rc->y1 = FFMIN(rc->y1, rc2->y1);
+    rc->x0 = MPMAX(rc->x0, rc2->x0);
+    rc->y0 = MPMAX(rc->y0, rc2->y0);
+    rc->x1 = MPMIN(rc->x1, rc2->x1);
+    rc->y1 = MPMIN(rc->y1, rc2->y1);
 
     return rc->x1 > rc->x0 && rc->y1 > rc->y0;
 }
@@ -317,4 +317,36 @@ char **mp_dup_str_array(void *tctx, char **s)
     if (r)
         MP_TARRAY_APPEND(tctx, r, num_r, NULL);
     return r;
+}
+
+// Return rounded down integer log 2 of v, i.e. position of highest set bit.
+//  mp_log2(0)  == 0
+//  mp_log2(1)  == 0
+//  mp_log2(31) == 4
+//  mp_log2(32) == 5
+unsigned int mp_log2(uint32_t v)
+{
+#if defined(__GNUC__) && __GNUC__ >= 4
+    return v ? 31 - __builtin_clz(v) : 0;
+#else
+    for (int x = 31; x >= 0; x--) {
+        if (v & (((uint32_t)1) << x))
+            return x;
+    }
+    return 0;
+#endif
+}
+
+// If a power of 2, return it, otherwise return the next highest one, or 0.
+//  mp_round_next_power_of_2(65)            == 128
+//  mp_round_next_power_of_2(64)            == 64
+//  mp_round_next_power_of_2(0)             == 1
+//  mp_round_next_power_of_2(UINT32_MAX)    == 0
+uint32_t mp_round_next_power_of_2(uint32_t v)
+{
+    for (int n = 0; n < 30; n++) {
+        if ((1 << n) >= v)
+            return 1 << n;
+    }
+    return 0;
 }

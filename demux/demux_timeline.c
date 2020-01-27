@@ -133,7 +133,7 @@ static void associate_streams(struct demuxer *demuxer,
 
             // Matching by demuxer ID is supposedly useful and preferable for
             // ordered chapters.
-            if (sh->demuxer_id == vs->sh->demuxer_id)
+            if (sh->demuxer_id >= 0 && sh->demuxer_id == vs->sh->demuxer_id)
                 other = vs;
         }
 
@@ -212,6 +212,7 @@ static void reopen_lazy_segments(struct demuxer *demuxer,
     struct demuxer_params params = {
         .init_fragment = src->tl->init_fragment,
         .skip_lavf_probing = true,
+        .stream_flags = demuxer->stream_origin,
     };
     src->current->d = demux_open_url(src->current->url, &params,
                                      demuxer->cancel, demuxer->global);

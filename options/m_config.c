@@ -53,10 +53,14 @@ static const union m_option_value default_value;
 // Maximal include depth.
 #define MAX_RECURSION_DEPTH 8
 
+// Maximum possibly option name length (as it appears to the user).
+#define MAX_OPT_NAME_LEN 80
+
 // For use with m_config_cache.
 struct m_config_shadow {
-    struct m_config *root;
     pthread_mutex_t lock;
+    // Incremented on every option change.
+    mp_atomic_uint64 ts;
     // -- immutable after init
     // List of m_sub_options instances.
     // Index 0 is the top-level and is always present.
@@ -66,7 +70,7 @@ struct m_config_shadow {
     int num_groups;
     // -- protected by lock
     struct m_config_data *data; // protected shadow copy of the option data
-    struct m_config_cache **listeners;
+    struct config_cache **listeners;
     int num_listeners;
 };
 
@@ -81,6 +85,8 @@ struct m_config_group {
                         // or -1 for group 0
     int parent_ptr;     // ptr offset in the parent group's data, or -1 if
                         // none
+    const char *prefix; // concat_name(_, prefix, opt->name) => full name
+                        // (the parent names are already included in this)
 };
 
 // A copy of option data. Used for the main option struct, the shadow data,
@@ -90,13 +96,34 @@ struct m_config_data {
     int group_index;                // start index into m_config.groups[]
     struct m_group_data *gdata;     // user struct allocation (our copy of data)
     int num_gdata;                  // (group_index+num_gdata = end index)
-    atomic_llong ts;                // last change timestamp we've seen
+};
+
+struct config_cache {
+    struct m_config_cache *public;
+
+    struct m_config_data *data;     // public data
+    struct m_config_data *src;      // global data (currently ==shadow->data)
+    struct m_config_shadow *shadow; // global metadata
+    uint64_t ts;                    // timestamp of this data copy
+    bool in_list;                   // part of m_config_shadow->listeners[]
+    int upd_group;                  // for "incremental" change notification
+    int upd_opt;
+
+
+    // --- Implicitly synchronized by setting/unsetting wakeup_cb.
+    struct mp_dispatch_queue *wakeup_dispatch_queue;
+    void (*wakeup_dispatch_cb)(void *ctx);
+    void *wakeup_dispatch_cb_ctx;
+
+    // --- Protected by shadow->lock
+    void (*wakeup_cb)(void *ctx);
+    void *wakeup_cb_ctx;
 };
 
 // Per m_config_data state for each m_config_group.
 struct m_group_data {
     char *udata;        // pointer to group user option struct
-    long long ts;       // incremented on every write access
+    uint64_t ts;        // timestamp of the data copy
 };
 
 struct m_profile {
@@ -115,7 +142,10 @@ struct m_opt_backup {
     void *backup;
 };
 
-static void add_sub_group(struct m_config *config, const char *name_prefix,
+static struct m_config_cache *m_config_cache_alloc_internal(void *ta_parent,
+                                            struct m_config_shadow *shadow,
+                                            const struct m_sub_options *group);
+static void add_sub_group(struct m_config_shadow *shadow, const char *name_prefix,
                           int parent_group_index, int parent_ptr,
                           const struct m_sub_options *subopts);
 
@@ -129,11 +159,107 @@ static struct m_group_data *m_config_gdata(struct m_config_data *data,
     return &data->gdata[group_index - data->group_index];
 }
 
+// Like concat_name(), but returns either a, b, or buf. buf/buf_size is used as
+// target for snprintf(). (buf_size is recommended to be MAX_OPT_NAME_LEN.)
+static const char *concat_name_buf(char *buf, size_t buf_size,
+                                   const char *a, const char *b)
+{
+    assert(a);
+    assert(b);
+    if (!a[0])
+        return b;
+    if (!b[0])
+        return a;
+    snprintf(buf, buf_size, "%s-%s", a, b);
+    return buf;
+}
+
+// Return full option name from prefix (a) and option name (b). Returns either
+// a, b, or a talloc'ed string under ta_parent.
+static const char *concat_name(void *ta_parent, const char *a, const char *b)
+{
+    char buf[MAX_OPT_NAME_LEN];
+    const char *r = concat_name_buf(buf, sizeof(buf), a, b);
+    return r == buf ? talloc_strdup(ta_parent, r) : r;
+}
+
+struct opt_iterate_state {
+    // User can read these fields.
+    int group_index;
+    int opt_index;
+    const struct m_option *opt;
+    const char *full_name; // may point to name_buf
+
+    // Internal.
+    int group_index_end;
+    char name_buf[MAX_OPT_NAME_LEN];
+    struct m_config_shadow *shadow;
+};
+
+// Start iterating all options and sub-options in the given group.
+static void opt_iterate_init(struct opt_iterate_state *iter,
+                             struct m_config_shadow *shadow, int group_index)
+{
+    assert(group_index >= 0 && group_index < shadow->num_groups);
+    iter->group_index = group_index;
+    iter->group_index_end = group_index + shadow->groups[group_index].group_count;
+    iter->opt_index = -1;
+    iter->shadow = shadow;
+}
+
+// Get the first or next option. Returns false if end reached. If this returns
+// true, most fields in *iter are valid.
+// This does not return pseudo-option entries (like m_option_type_subconfig).
+static bool opt_iterate_next(struct opt_iterate_state *iter)
+{
+    if (iter->group_index < 0)
+        return false;
+
+
+    while (1) {
+        if (iter->group_index >= iter->group_index_end) {
+            iter->group_index = -1;
+            return false;
+        }
+
+        iter->opt_index += 1;
+
+        struct m_config_group *g = &iter->shadow->groups[iter->group_index];
+        const struct m_option *opts = g->group->opts;
+
+        if (!opts || !opts[iter->opt_index].name) {
+            iter->group_index += 1;
+            iter->opt_index = -1;
+            continue;
+        }
+
+        iter->opt = &opts[iter->opt_index];
+
+        if (iter->opt->type == &m_option_type_subconfig)
+            continue;
+
+        iter->full_name = concat_name_buf(iter->name_buf, sizeof(iter->name_buf),
+                                          g->prefix, iter->opt->name);
+        return true;
+    }
+    assert(0);
+}
+
+static void list_profiles(struct m_config *config)
+{
+    MP_INFO(config, "Available profiles:\n");
+    for (struct m_profile *p = config->profiles; p; p = p->next)
+        MP_INFO(config, "\t%s\t%s\n", p->name, p->desc ? p->desc : "");
+    MP_INFO(config, "\n");
+}
+
 static int show_profile(struct m_config *config, bstr param)
 {
     struct m_profile *p;
-    if (!param.len)
-        return M_OPT_MISSING_PARAM;
+    if (!param.len) {
+        list_profiles(config);
+        return M_OPT_EXIT;
+    }
     if (!(p = m_config_get_profile(config, param))) {
         MP_ERR(config, "Unknown profile '%.*s'.\n", BSTR_P(param));
         return M_OPT_EXIT;
@@ -288,62 +414,79 @@ static struct m_config_data *allocate_option_data(void *ta_parent,
     for (int n = group_index; n < group_index + root_group->group_count; n++)
         alloc_group(data, n, copy);
 
-    if (copy)
-        data->ts = copy->ts;
-
     return data;
+}
+
+static void shadow_destroy(void *p)
+{
+    struct m_config_shadow *shadow = p;
+
+    // must all have been unregistered
+    assert(shadow->num_listeners == 0);
+
+    talloc_free(shadow->data);
+    pthread_mutex_destroy(&shadow->lock);
+}
+
+static struct m_config_shadow *m_config_shadow_new(const struct m_sub_options *root)
+{
+    struct m_config_shadow *shadow = talloc_zero(NULL, struct m_config_shadow);
+    talloc_set_destructor(shadow, shadow_destroy);
+    pthread_mutex_init(&shadow->lock, NULL);
+
+    add_sub_group(shadow, NULL, -1, -1, root);
+
+    if (!root->size)
+        return shadow;
+
+    shadow->data = allocate_option_data(shadow, shadow, 0, NULL);
+
+    return shadow;
 }
 
 static void config_destroy(void *p)
 {
     struct m_config *config = p;
+    config->option_change_callback = NULL;
     m_config_restore_backups(config);
 
-    talloc_free(config->data);
-
-    if (config->shadow) {
-        // must all have been unregistered
-        assert(config->shadow->num_listeners == 0);
-        talloc_free(config->shadow->data);
-        pthread_mutex_destroy(&config->shadow->lock);
-        talloc_free(config->shadow);
-    }
+    talloc_free(config->cache);
+    talloc_free(config->shadow);
 }
 
 struct m_config *m_config_new(void *talloc_ctx, struct mp_log *log,
-                              size_t size, const void *defaults,
-                              const struct m_option *options)
+                              const struct m_sub_options *root)
 {
     struct m_config *config = talloc(talloc_ctx, struct m_config);
     talloc_set_destructor(config, config_destroy);
     *config = (struct m_config){.log = log,};
 
-    config->shadow = talloc_zero(NULL, struct m_config_shadow);
-    pthread_mutex_init(&config->shadow->lock, NULL);
-    config->shadow->root = config;
+    config->shadow = m_config_shadow_new(root);
 
-    struct m_sub_options *subopts = talloc_ptrtype(config, subopts);
-    *subopts = (struct m_sub_options){
-        .opts = options,
-        .size = size,
-        .defaults = defaults,
-    };
-    add_sub_group(config, NULL, -1, -1, subopts);
+    if (root->size) {
+        config->cache =
+            m_config_cache_alloc_internal(config, config->shadow, root);
+        config->optstruct = config->cache->opts;
+    }
 
-    if (!size)
-        return config;
+    struct opt_iterate_state it;
+    opt_iterate_init(&it, config->shadow, 0);
+    while (opt_iterate_next(&it)) {
+        struct m_config_option co = {
+            .name = talloc_strdup(config, it.full_name),
+            .opt = it.opt,
+            .group_index = it.group_index,
+            .is_hidden = !!it.opt->deprecation_message,
+        };
 
-    config->data = allocate_option_data(config, config->shadow, 0, NULL);
-    config->optstruct = config->data->gdata[0].udata;
+        struct m_group_data *gdata = config->cache
+            ? m_config_gdata(config->cache->internal->data,  it.group_index)
+            : NULL;
 
-    config->shadow->data =
-        allocate_option_data(config->shadow, config->shadow, 0, config->data);
+        if (gdata && co.opt->offset >= 0)
+            co.data = gdata->udata + co.opt->offset;
 
-    for (int n = 0; n < config->num_opts; n++) {
-        struct m_config_option *co = &config->opts[n];
-        struct m_group_data *gdata = m_config_gdata(config->data, co->group_index);
-        if (gdata && co->opt->offset >= 0)
-            co->data = gdata->udata + co->opt->offset;
+        MP_TARRAY_APPEND(config, config->opts, config->num_opts, co);
     }
 
     return config;
@@ -354,9 +497,16 @@ static struct m_config *m_config_from_obj_desc(void *talloc_ctx,
                                                struct mpv_global *global,
                                                struct m_obj_desc *desc)
 {
-    struct m_config *c =
-        m_config_new(talloc_ctx, log, desc->priv_size, desc->priv_defaults,
-                     desc->options);
+    struct m_sub_options *root = talloc_ptrtype(NULL, root);
+    *root = (struct m_sub_options){
+        .opts = desc->options,
+        // (global == NULL got repurposed to mean "no alloc")
+        .size = global ? desc->priv_size : 0,
+        .defaults = desc->priv_defaults,
+    };
+
+    struct m_config *c = m_config_new(talloc_ctx, log, root);
+    talloc_steal(c, root);
     c->global = global;
     if (desc->set_defaults && c->global)
         desc->set_defaults(c->global, c->optstruct);
@@ -367,7 +517,7 @@ struct m_config *m_config_from_obj_desc_noalloc(void *talloc_ctx,
                                                 struct mp_log *log,
                                                 struct m_obj_desc *desc)
 {
-    return m_config_new(talloc_ctx, log, 0, desc->priv_defaults, desc->options);
+    return m_config_from_obj_desc(talloc_ctx, log, NULL, desc);
 }
 
 static const struct m_config_group *find_group(struct mpv_global *global,
@@ -483,7 +633,7 @@ void m_config_backup_all_opts(struct m_config *config)
         ensure_backup(config, &config->opts[n]);
 }
 
-static void init_obj_settings_list(struct m_config *config,
+static void init_obj_settings_list(struct m_config_shadow *shadow,
                                    int parent_group_index,
                                    const struct m_obj_list *list)
 {
@@ -492,42 +642,36 @@ static void init_obj_settings_list(struct m_config *config,
         if (!list->get_desc(&desc, n))
             break;
         if (desc.global_opts) {
-            add_sub_group(config, NULL, parent_group_index, -1,
+            add_sub_group(shadow, NULL, parent_group_index, -1,
                           desc.global_opts);
         }
         if (list->use_global_options && desc.options) {
-            struct m_sub_options *conf = talloc_ptrtype(config, conf);
+            struct m_sub_options *conf = talloc_ptrtype(shadow, conf);
             *conf = (struct m_sub_options){
                 .prefix = desc.options_prefix,
                 .opts = desc.options,
                 .defaults = desc.priv_defaults,
                 .size = desc.priv_size,
             };
-            add_sub_group(config, NULL, parent_group_index, -1, conf);
+            add_sub_group(shadow, NULL, parent_group_index, -1, conf);
         }
     }
 }
 
-static const char *concat_name(void *ta_parent, const char *a, const char *b)
-{
-    assert(a);
-    assert(b);
-    if (!a[0])
-        return b;
-    if (!b[0])
-        return a;
-    return talloc_asprintf(ta_parent, "%s-%s", a, b);
-}
-
-static void add_sub_group(struct m_config *config, const char *name_prefix,
+static void add_sub_group(struct m_config_shadow *shadow, const char *name_prefix,
                           int parent_group_index, int parent_ptr,
                           const struct m_sub_options *subopts)
 {
-    struct m_config_shadow *shadow = config->shadow;
-
     // Can't be used multiple times.
     for (int n = 0; n < shadow->num_groups; n++)
         assert(shadow->groups[n].group != subopts);
+
+    if (!name_prefix)
+        name_prefix = "";
+    if (subopts->prefix && subopts->prefix[0]) {
+        assert(!name_prefix[0]);
+        name_prefix = subopts->prefix;
+    }
 
     // You can only use UPDATE_ flags here.
     assert(!(subopts->change_flags & ~(unsigned)UPDATE_OPTS_MASK));
@@ -540,14 +684,8 @@ static void add_sub_group(struct m_config *config, const char *name_prefix,
         .group = subopts,
         .parent_group = parent_group_index,
         .parent_ptr = parent_ptr,
+        .prefix = name_prefix,
     };
-
-    if (!name_prefix)
-        name_prefix = "";
-    if (subopts->prefix && subopts->prefix[0]) {
-        assert(!name_prefix[0]);
-        name_prefix = subopts->prefix;
-    }
 
     for (int i = 0; subopts->opts && subopts->opts[i].name; i++) {
         const struct m_option *opt = &subopts->opts[i];
@@ -561,27 +699,39 @@ static void add_sub_group(struct m_config *config, const char *name_prefix,
                 assert(!substruct_read_ptr(ptr));
             }
 
-            const char *prefix = concat_name(config, name_prefix, opt->name);
-            add_sub_group(config, prefix, group_index, opt->offset, new_subopts);
+            const char *prefix = concat_name(shadow, name_prefix, opt->name);
+            add_sub_group(shadow, prefix, group_index, opt->offset, new_subopts);
 
-        } else {
+        } else if (opt->type == &m_option_type_obj_settings_list) {
+            const struct m_obj_list *objlist = opt->priv;
+            init_obj_settings_list(shadow, group_index, objlist);
+        }
+    }
 
-            struct m_config_option co = {
-                .name = concat_name(config, name_prefix, opt->name),
-                .opt = opt,
-                .group_index = group_index,
-                .is_hidden = !!opt->deprecation_message,
-            };
-            MP_TARRAY_APPEND(config, config->opts, config->num_opts, co);
-
-            if (opt->type == &m_option_type_obj_settings_list) {
-                const struct m_obj_list *objlist = opt->priv;
-                init_obj_settings_list(config, group_index, objlist);
-            }
+    if (subopts->get_sub_options) {
+        for (int i = 0; ; i++) {
+            const struct m_sub_options *sub = NULL;
+            if (!subopts->get_sub_options(i, &sub))
+                break;
+            if (sub)
+                add_sub_group(shadow, NULL, group_index, -1, sub);
         }
     }
 
     shadow->groups[group_index].group_count = shadow->num_groups - group_index;
+}
+
+static uint64_t get_option_change_mask(struct m_config_shadow *shadow,
+                                       int group_index, int group_root,
+                                       const struct m_option *opt)
+{
+    uint64_t changed = opt->flags & UPDATE_OPTS_MASK;
+    while (group_index != group_root) {
+        struct m_config_group *g = &shadow->groups[group_index];
+        changed |= g->group->change_flags;
+        group_index = g->parent_group;
+    }
+    return changed;
 }
 
 struct m_config_option *m_config_get_co_raw(const struct m_config *config,
@@ -715,9 +865,6 @@ static int handle_set_opt_flags(struct m_config *config,
         (co->is_set_from_cmdline || co->is_set_from_config))
         set = false;
 
-    if ((flags & M_SETOPT_NO_FIXED) && (optflags & M_OPT_FIXED))
-        return M_OPT_INVALID;
-
     if ((flags & M_SETOPT_NO_PRE_PARSE) && (optflags & M_OPT_PRE_PARSE))
         return M_OPT_INVALID;
 
@@ -758,10 +905,7 @@ static int m_config_handle_special_options(struct m_config *config,
                 MP_INFO(config, "No profiles have been defined.\n");
                 return M_OPT_EXIT;
             }
-            MP_INFO(config, "Available profiles:\n");
-            for (struct m_profile *p = config->profiles; p; p = p->next)
-                MP_INFO(config, "\t%s\t%s\n", p->name, p->desc ? p->desc : "");
-            MP_INFO(config, "\n");
+            list_profiles(config);
             return M_OPT_EXIT;
         }
 
@@ -810,9 +954,82 @@ static int m_config_handle_special_options(struct m_config *config,
     return M_OPT_UNKNOWN;
 }
 
-int m_config_set_option_raw_direct(struct m_config *config,
-                                   struct m_config_option *co,
-                                   void *data, int flags)
+// This notification happens when anyone other than m_config->cache (i.e. not
+// through m_config_set_option_raw() or related) changes any options.
+static void async_change_cb(void *p)
+{
+    struct m_config *config = p;
+
+    void *ptr;
+    while (m_config_cache_get_next_changed(config->cache, &ptr)) {
+        // Regrettable linear search, might degenerate to quadratic.
+        for (int n = 0; n < config->num_opts; n++) {
+            struct m_config_option *co = &config->opts[n];
+            if (co->data == ptr) {
+                if (config->option_change_callback) {
+                    config->option_change_callback(
+                        config->option_change_callback_ctx, co,
+                        config->cache->change_flags, false);
+                }
+                break;
+            }
+        }
+        config->cache->change_flags = 0;
+    }
+}
+
+void m_config_set_update_dispatch_queue(struct m_config *config,
+                                        struct mp_dispatch_queue *dispatch)
+{
+    m_config_cache_set_dispatch_change_cb(config->cache, dispatch,
+                                          async_change_cb, config);
+}
+
+// Normally m_config_cache will not send notifications when _we_ change our
+// own stuff. For whatever funny reasons, we need that, though.
+static void force_self_notify_change_opt(struct m_config *config,
+                                         struct m_config_option *co,
+                                         bool self_notification)
+{
+    int changed =
+        get_option_change_mask(config->shadow, co->group_index, 0, co->opt);
+
+    if (config->option_change_callback) {
+        config->option_change_callback(config->option_change_callback_ctx, co,
+                                       changed, self_notification);
+    }
+}
+
+static void notify_opt(struct m_config *config, void *ptr, bool self_notification)
+{
+    for (int n = 0; n < config->num_opts; n++) {
+        struct m_config_option *co = &config->opts[n];
+        if (co->data == ptr) {
+            if (m_config_cache_write_opt(config->cache, co->data))
+                force_self_notify_change_opt(config, co, self_notification);
+            return;
+        }
+    }
+    // ptr doesn't point to any config->optstruct field declared in the
+    // option list?
+    assert(false);
+}
+
+void m_config_notify_change_opt_ptr(struct m_config *config, void *ptr)
+{
+    notify_opt(config, ptr, true);
+}
+
+void m_config_notify_change_opt_ptr_notify(struct m_config *config, void *ptr)
+{
+    // (the notify bool is inverted: by not marking it as self-notification,
+    // the mpctx option change handler actually applies it)
+    notify_opt(config, ptr, false);
+}
+
+int m_config_set_option_raw(struct m_config *config,
+                            struct m_config_option *co,
+                            void *data, int flags)
 {
     if (!co)
         return M_OPT_UNKNOWN;
@@ -830,30 +1047,13 @@ int m_config_set_option_raw_direct(struct m_config *config,
     if (!co->data)
         return flags & M_SETOPT_FROM_CMDLINE ? 0 : M_OPT_UNKNOWN;
 
-    m_option_copy(co->opt, co->data, data);
-
     m_config_mark_co_flags(co, flags);
-    m_config_notify_change_co(config, co);
+
+    m_option_copy(co->opt, co->data, data);
+    if (m_config_cache_write_opt(config->cache, co->data))
+        force_self_notify_change_opt(config, co, false);
 
     return 0;
-}
-
-int m_config_set_option_raw(struct m_config *config, struct m_config_option *co,
-                            void *data, int flags)
-{
-    if (!co)
-        return M_OPT_UNKNOWN;
-
-    if (config->option_set_callback) {
-        int r = handle_set_opt_flags(config, co, flags);
-        if (r <= 1)
-            return r;
-
-        return config->option_set_callback(config->option_set_callback_cb,
-                                           co, data, flags);
-    } else {
-        return m_config_set_option_raw_direct(config, co, data, flags);
-    }
 }
 
 // Handle CLI exceptions to option handling.
@@ -956,8 +1156,8 @@ int m_config_set_option_cli(struct m_config *config, struct bstr name,
         goto done;
 
     if (r == 2) {
-        MP_DBG(config, "Setting option '%.*s' = '%.*s' (flags = %d)\n",
-               BSTR_P(name), BSTR_P(param), flags);
+        MP_VERBOSE(config, "Setting option '%.*s' = '%.*s' (flags = %d)\n",
+                   BSTR_P(name), BSTR_P(param), flags);
     }
 
     union m_option_value val = {0};
@@ -1093,8 +1293,6 @@ void m_config_print_option_list(const struct m_config *config, const char *name)
             MP_INFO(config, " [not in config files]");
         if (opt->flags & M_OPT_FILE)
             MP_INFO(config, " [file]");
-        if (opt->flags & M_OPT_FIXED)
-            MP_INFO(config, " [no runtime changes]");
         if (opt->type == &m_option_type_alias)
             MP_INFO(config, " for %s", (char *)opt->priv);
         if (opt->type == &m_option_type_cli_alias)
@@ -1186,6 +1384,7 @@ int m_config_set_profile(struct m_config *config, char *name, int flags)
         MP_WARN(config, "Unknown profile '%s'.\n", name);
         return M_OPT_INVALID;
     }
+    MP_VERBOSE(config, "Applying profile '%s'...\n", name);
 
     if (config->profile_depth > MAX_PROFILE_DEPTH) {
         MP_WARN(config, "WARNING: Profile inclusion too deep.\n");
@@ -1246,16 +1445,14 @@ static void cache_destroy(void *p)
     m_config_cache_set_dispatch_change_cb(cache, NULL, NULL, NULL);
 }
 
-struct m_config_cache *m_config_cache_alloc(void *ta_parent,
-                                            struct mpv_global *global,
+static struct m_config_cache *m_config_cache_alloc_internal(void *ta_parent,
+                                            struct m_config_shadow *shadow,
                                             const struct m_sub_options *group)
 {
-    struct m_config_shadow *shadow = global->config;
     int group_index = -1;
 
     for (int n = 0; n < shadow->num_groups; n++) {
-        // group==NULL is special cased to root group.
-        if (shadow->groups[n].group == group || (!group && !n)) {
+        if (shadow->groups[n].group == group) {
             group_index = n;
             break;
         }
@@ -1263,141 +1460,234 @@ struct m_config_cache *m_config_cache_alloc(void *ta_parent,
 
     assert(group_index >= 0); // invalid group (or not in option tree)
 
-    struct m_config_cache *cache = talloc_zero(ta_parent, struct m_config_cache);
+    struct cache_alloc {
+        struct m_config_cache a;
+        struct config_cache b;
+    };
+    struct cache_alloc *alloc = talloc_zero(ta_parent, struct cache_alloc);
+    assert((void *)&alloc->a == (void *)alloc);
+    struct m_config_cache *cache = &alloc->a;
     talloc_set_destructor(cache, cache_destroy);
-    cache->shadow = shadow;
+    cache->internal = &alloc->b;
+
+    struct config_cache *in = cache->internal;
+    in->shadow = shadow;
+    in->src = shadow->data;
 
     pthread_mutex_lock(&shadow->lock);
-    cache->data = allocate_option_data(cache, shadow, group_index, shadow->data);
+    in->data = allocate_option_data(cache, shadow, group_index, in->src);
     pthread_mutex_unlock(&shadow->lock);
 
-    cache->opts = cache->data->gdata[0].udata;
+    cache->opts = in->data->gdata[0].udata;
+
+    in->upd_group = -1;
 
     return cache;
 }
 
-static bool update_options(struct m_config_data *dst, struct m_config_data *src)
+struct m_config_cache *m_config_cache_alloc(void *ta_parent,
+                                            struct mpv_global *global,
+                                            const struct m_sub_options *group)
 {
-    assert(dst->shadow == src->shadow);
+    return m_config_cache_alloc_internal(ta_parent, global->config, group);
+}
 
-    bool res = false;
-    dst->ts = src->ts;
+static void update_next_option(struct m_config_cache *cache, void **p_opt)
+{
+    struct config_cache *in = cache->internal;
+    struct m_config_data *dst = in->data;
+    struct m_config_data *src = in->src;
 
-    // Must be from same root, but they can have arbitrary overlap.
-    int group_s = MPMAX(dst->group_index, src->group_index);
-    int group_e = MPMIN(dst->group_index + dst->num_gdata,
-                        src->group_index + src->num_gdata);
-    assert(group_s >= 0 && group_e <= dst->shadow->num_groups);
-    for (int n = group_s; n < group_e; n++) {
-        struct m_config_group *g = &dst->shadow->groups[n];
-        const struct m_option *opts = g->group->opts;
-        struct m_group_data *gsrc = m_config_gdata(src, n);
-        struct m_group_data *gdst = m_config_gdata(dst, n);
+    assert(src->group_index == 0); // must be the option root currently
+
+    *p_opt = NULL;
+
+    while (in->upd_group < dst->group_index + dst->num_gdata) {
+        struct m_group_data *gsrc = m_config_gdata(src, in->upd_group);
+        struct m_group_data *gdst = m_config_gdata(dst, in->upd_group);
         assert(gsrc && gdst);
 
-        if (gdst->ts >= gsrc->ts)
-            continue;
-        gdst->ts = gsrc->ts;
-        res = true;
+        if (gdst->ts < gsrc->ts) {
+            struct m_config_group *g = &dst->shadow->groups[in->upd_group];
+            const struct m_option *opts = g->group->opts;
 
-        for (int i = 0; opts && opts[i].name; i++) {
-            const struct m_option *opt = &opts[i];
+            while (opts && opts[in->upd_opt].name) {
+                const struct m_option *opt = &opts[in->upd_opt];
 
-            if (opt->offset >= 0 && opt->type->size) {
-                m_option_copy(opt, gdst->udata + opt->offset,
-                                   gsrc->udata + opt->offset);
+                if (opt->offset >= 0 && opt->type->size) {
+                    void *dsrc = gsrc->udata + opt->offset;
+                    void *ddst = gdst->udata + opt->offset;
+
+                    if (!m_option_equal(opt, ddst, dsrc)) {
+                        uint64_t ch = get_option_change_mask(dst->shadow,
+                                        in->upd_group, dst->group_index, opt);
+
+                        if (cache->debug) {
+                            char *vdst = m_option_print(opt, ddst);
+                            char *vsrc = m_option_print(opt, dsrc);
+                            mp_warn(cache->debug, "Option '%s' changed from "
+                                    "'%s' to' %s' (flags = 0x%"PRIx64")\n",
+                                    opt->name, vdst, vsrc, ch);
+                            talloc_free(vdst);
+                            talloc_free(vsrc);
+                        }
+
+                        m_option_copy(opt, ddst, dsrc);
+                        cache->change_flags |= ch;
+
+                        in->upd_opt++; // skip this next time
+                        *p_opt = ddst;
+                        return;
+                    }
+                }
+
+                in->upd_opt++;
             }
+
+            gdst->ts = gsrc->ts;
         }
+
+        in->upd_group++;
+        in->upd_opt = 0;
     }
 
-    return res;
+    in->upd_group = -1;
+}
+
+static bool cache_check_update(struct m_config_cache *cache)
+{
+    struct config_cache *in = cache->internal;
+    struct m_config_shadow *shadow = in->shadow;
+
+    // Using atomics and checking outside of the lock - it's unknown whether
+    // this makes it faster or slower. Just cargo culting it.
+    uint64_t new_ts = atomic_load(&shadow->ts);
+    if (in->ts >= new_ts)
+        return false;
+
+    in->ts = new_ts;
+    in->upd_group = in->data->group_index;
+    in->upd_opt = 0;
+    return true;
 }
 
 bool m_config_cache_update(struct m_config_cache *cache)
 {
-    struct m_config_shadow *shadow = cache->shadow;
+    struct config_cache *in = cache->internal;
+    struct m_config_shadow *shadow = in->shadow;
 
-    // Using atomics and checking outside of the lock - it's unknown whether
-    // this makes it faster or slower. Just cargo culting it.
-    if (atomic_load_explicit(&cache->data->ts, memory_order_relaxed) >=
-        atomic_load(&shadow->data->ts))
+    if (!cache_check_update(cache))
         return false;
 
     pthread_mutex_lock(&shadow->lock);
-    bool res = update_options(cache->data, shadow->data);
+    bool res = false;
+    while (1) {
+        void *p;
+        update_next_option(cache, &p);
+        if (!p)
+            break;
+        res = true;
+    }
     pthread_mutex_unlock(&shadow->lock);
     return res;
 }
 
-void m_config_notify_change_co(struct m_config *config,
-                               struct m_config_option *co)
+bool m_config_cache_get_next_changed(struct m_config_cache *cache, void **opt)
 {
-    struct m_config_shadow *shadow = config->shadow;
-    assert(co->data);
+    struct config_cache *in = cache->internal;
+    struct m_config_shadow *shadow = in->shadow;
 
-    if (shadow) {
-        pthread_mutex_lock(&shadow->lock);
+    *opt = NULL;
+    if (!cache_check_update(cache) && in->upd_group < 0)
+        return false;
 
-        struct m_config_data *data = shadow->data;
-        struct m_group_data *gdata = m_config_gdata(data, co->group_index);
-        assert(gdata);
+    pthread_mutex_lock(&shadow->lock);
+    update_next_option(cache, opt);
+    pthread_mutex_unlock(&shadow->lock);
+    return !!*opt;
+}
 
-        gdata->ts = atomic_fetch_add(&data->ts, 1) + 1;
+static void find_opt(struct m_config_shadow *shadow, struct m_config_data *data,
+                     void *ptr, int *group_idx, int *opt_idx)
+{
+    *group_idx = -1;
+    *opt_idx = -1;
 
-        m_option_copy(co->opt, gdata->udata + co->opt->offset, co->data);
+    for (int n = data->group_index; n < data->group_index + data->num_gdata; n++)
+    {
+        struct m_group_data *gd = m_config_gdata(data, n);
+        struct m_config_group *g = &shadow->groups[n];
+        const struct m_option *opts = g->group->opts;
 
-        for (int n = 0; n < shadow->num_listeners; n++) {
-            struct m_config_cache *cache = shadow->listeners[n];
-            if (cache->wakeup_cb && m_config_gdata(cache->data, co->group_index))
-                cache->wakeup_cb(cache->wakeup_cb_ctx);
+        for (int i = 0; opts && opts[i].name; i++) {
+            const struct m_option *opt = &opts[i];
+
+            if (opt->offset >= 0 && opt->type->size &&
+                ptr == gd->udata + opt->offset)
+            {
+                *group_idx = n;
+                *opt_idx = i;
+                return;
+            }
         }
-
-        pthread_mutex_unlock(&shadow->lock);
-    }
-
-    int changed = co->opt->flags & UPDATE_OPTS_MASK;
-    int group_index = co->group_index;
-    while (group_index >= 0) {
-        struct m_config_group *g = &shadow->groups[group_index];
-        changed |= g->group->change_flags;
-        group_index = g->parent_group;
-    }
-
-    if (config->option_change_callback) {
-        config->option_change_callback(config->option_change_callback_ctx, co,
-                                       changed);
     }
 }
 
-void m_config_notify_change_opt_ptr(struct m_config *config, void *ptr)
+bool m_config_cache_write_opt(struct m_config_cache *cache, void *ptr)
 {
-    for (int n = 0; n < config->num_opts; n++) {
-        struct m_config_option *co = &config->opts[n];
-        if (co->data == ptr) {
-            m_config_notify_change_co(config, co);
-            return;
+    struct config_cache *in = cache->internal;
+    struct m_config_shadow *shadow = in->shadow;
+
+    int group_idx = -1;
+    int opt_idx = -1;
+    find_opt(shadow, in->data, ptr, &group_idx, &opt_idx);
+
+    // ptr was not in cache->opts, or no option declaration matching it.
+    assert(group_idx >= 0);
+
+    struct m_config_group *g = &shadow->groups[group_idx];
+    const struct m_option *opt = &g->group->opts[opt_idx];
+
+    pthread_mutex_lock(&shadow->lock);
+
+    struct m_group_data *gdst = m_config_gdata(in->data, group_idx);
+    struct m_group_data *gsrc = m_config_gdata(in->src, group_idx);
+    assert(gdst && gsrc);
+
+    bool changed = !m_option_equal(opt, gsrc->udata + opt->offset, ptr);
+    if (changed) {
+        m_option_copy(opt, gsrc->udata + opt->offset, ptr);
+
+        gsrc->ts = atomic_fetch_add(&shadow->ts, 1) + 1;
+
+        for (int n = 0; n < shadow->num_listeners; n++) {
+            struct config_cache *listener = shadow->listeners[n];
+            if (listener->wakeup_cb && m_config_gdata(listener->data, group_idx))
+                listener->wakeup_cb(listener->wakeup_cb_ctx);
         }
     }
-    // ptr doesn't point to any config->optstruct field declared in the
-    // option list?
-    assert(false);
+
+    pthread_mutex_unlock(&shadow->lock);
+
+    return changed;
 }
 
 void m_config_cache_set_wakeup_cb(struct m_config_cache *cache,
                                   void (*cb)(void *ctx), void *cb_ctx)
 {
-    struct m_config_shadow *shadow = cache->shadow;
+    struct config_cache *in = cache->internal;
+    struct m_config_shadow *shadow = in->shadow;
 
     pthread_mutex_lock(&shadow->lock);
-    if (cache->in_list) {
+    if (in->in_list) {
         for (int n = 0; n < shadow->num_listeners; n++) {
-            if (shadow->listeners[n] == cache) {
+            if (shadow->listeners[n] == in) {
                 MP_TARRAY_REMOVE_AT(shadow->listeners, shadow->num_listeners, n);
                 break;
             }
         }
         for (int n = 0; n < shadow->num_listeners; n++)
-            assert(shadow->listeners[n] != cache); // only 1 wakeup_cb per cache
+            assert(shadow->listeners[n] != in); // only 1 wakeup_cb per cache
         // (The deinitialization path relies on this to free all memory.)
         if (!shadow->num_listeners) {
             talloc_free(shadow->listeners);
@@ -1405,48 +1695,50 @@ void m_config_cache_set_wakeup_cb(struct m_config_cache *cache,
         }
     }
     if (cb) {
-        MP_TARRAY_APPEND(NULL, shadow->listeners, shadow->num_listeners, cache);
-        cache->in_list = true;
-        cache->wakeup_cb = cb;
-        cache->wakeup_cb_ctx = cb_ctx;
+        MP_TARRAY_APPEND(NULL, shadow->listeners, shadow->num_listeners, in);
+        in->in_list = true;
+        in->wakeup_cb = cb;
+        in->wakeup_cb_ctx = cb_ctx;
     }
     pthread_mutex_unlock(&shadow->lock);
 }
 
 static void dispatch_notify(void *p)
 {
-    struct m_config_cache *cache = p;
+    struct config_cache *in = p;
 
-    assert(cache->wakeup_dispatch_queue);
-    mp_dispatch_enqueue_notify(cache->wakeup_dispatch_queue,
-                               cache->wakeup_dispatch_cb,
-                               cache->wakeup_dispatch_cb_ctx);
+    assert(in->wakeup_dispatch_queue);
+    mp_dispatch_enqueue_notify(in->wakeup_dispatch_queue,
+                               in->wakeup_dispatch_cb,
+                               in->wakeup_dispatch_cb_ctx);
 }
 
 void m_config_cache_set_dispatch_change_cb(struct m_config_cache *cache,
                                            struct mp_dispatch_queue *dispatch,
                                            void (*cb)(void *ctx), void *cb_ctx)
 {
+    struct config_cache *in = cache->internal;
+
     // Removing the old one is tricky. First make sure no new notifications will
     // come.
     m_config_cache_set_wakeup_cb(cache, NULL, NULL);
     // Remove any pending notifications (assume we're on the same thread as
     // any potential mp_dispatch_queue_process() callers).
-    if (cache->wakeup_dispatch_queue) {
-        mp_dispatch_cancel_fn(cache->wakeup_dispatch_queue,
-                              cache->wakeup_dispatch_cb,
-                              cache->wakeup_dispatch_cb_ctx);
+    if (in->wakeup_dispatch_queue) {
+        mp_dispatch_cancel_fn(in->wakeup_dispatch_queue,
+                              in->wakeup_dispatch_cb,
+                              in->wakeup_dispatch_cb_ctx);
     }
 
-    cache->wakeup_dispatch_queue = NULL;
-    cache->wakeup_dispatch_cb = NULL;
-    cache->wakeup_dispatch_cb_ctx = NULL;
+    in->wakeup_dispatch_queue = NULL;
+    in->wakeup_dispatch_cb = NULL;
+    in->wakeup_dispatch_cb_ctx = NULL;
 
     if (cb) {
-        cache->wakeup_dispatch_queue = dispatch;
-        cache->wakeup_dispatch_cb = cb;
-        cache->wakeup_dispatch_cb_ctx = cb_ctx;
-        m_config_cache_set_wakeup_cb(cache, dispatch_notify, cache);
+        in->wakeup_dispatch_queue = dispatch;
+        in->wakeup_dispatch_cb = cb;
+        in->wakeup_dispatch_cb_ctx = cb_ctx;
+        m_config_cache_set_wakeup_cb(cache, dispatch_notify, in);
     }
 }
 
@@ -1464,14 +1756,23 @@ void mp_read_option_raw(struct mpv_global *global, const char *name,
                         const struct m_option_type *type, void *dst)
 {
     struct m_config_shadow *shadow = global->config;
-    struct m_config_option *co = m_config_get_co_raw(shadow->root, bstr0(name));
-    assert(co);
-    assert(co->opt->offset >= 0);
-    assert(co->opt->type == type);
 
-    struct m_group_data *gdata = m_config_gdata(shadow->data, co->group_index);
-    assert(gdata);
+    struct opt_iterate_state it;
+    opt_iterate_init(&it, shadow, 0);
+    while (opt_iterate_next(&it)) {
+        if (strcmp(name, it.full_name) == 0) {
+            struct m_group_data *gdata =
+                m_config_gdata(shadow->data, it.group_index);
+            assert(gdata);
 
-    memset(dst, 0, co->opt->type->size);
-    m_option_copy(co->opt, dst, gdata->udata + co->opt->offset);
+            assert(it.opt->offset >= 0);
+            assert(it.opt->type == type);
+
+            memset(dst, 0, it.opt->type->size);
+            m_option_copy(it.opt, dst, gdata->udata + it.opt->offset);
+            return;
+        }
+    }
+
+    assert(0); // not found
 }

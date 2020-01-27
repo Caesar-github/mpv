@@ -34,6 +34,7 @@
 #include "input/keycodes.h"
 #include "input/input.h"
 #include "common/msg.h"
+#include "options/m_config.h"
 #include "options/options.h"
 
 #include "osdep/timer.h"
@@ -151,6 +152,18 @@ const struct keymap_entry keys[] = {
     {SDLK_F24, MP_KEY_F + 24}
 };
 
+struct mousemap_entry {
+    Uint8 sdl;
+    int mpv;
+};
+const struct mousemap_entry mousebtns[] = {
+    {SDL_BUTTON_LEFT, MP_MBTN_LEFT},
+    {SDL_BUTTON_MIDDLE, MP_MBTN_MID},
+    {SDL_BUTTON_RIGHT, MP_MBTN_RIGHT},
+    {SDL_BUTTON_X1, MP_MBTN_BACK},
+    {SDL_BUTTON_X2, MP_MBTN_FORWARD},
+};
+
 struct priv {
     SDL_Window *window;
     SDL_Renderer *renderer;
@@ -177,6 +190,7 @@ struct priv {
     double osd_pts;
     Uint32 wakeup_event;
     bool screensaver_enabled;
+    struct m_config_cache *opts_cache;
 
     // options
     int allow_sw;
@@ -387,7 +401,8 @@ static inline void set_screensaver(bool enabled)
 static void set_fullscreen(struct vo *vo)
 {
     struct priv *vc = vo->priv;
-    int fs = vo->opts->fullscreen;
+    struct mp_vo_opts *opts = vc->opts_cache->opts;
+    int fs = opts->fullscreen;
     SDL_bool prev_screensaver_state = SDL_IsScreenSaverEnabled();
 
     Uint32 fs_flag;
@@ -524,6 +539,12 @@ static void wait_events(struct vo *vo, int64_t until_time_us)
                 check_resize(vo);
                 vo_event(vo, VO_EVENT_RESIZE);
                 break;
+            case SDL_WINDOWEVENT_ENTER:
+                mp_input_put_key(vo->input_ctx, MP_KEY_MOUSE_ENTER);
+                break;
+            case SDL_WINDOWEVENT_LEAVE:
+                mp_input_put_key(vo->input_ctx, MP_KEY_MOUSE_LEAVE);
+                break;
             }
             break;
         case SDL_QUIT:
@@ -580,16 +601,36 @@ static void wait_events(struct vo *vo, int64_t until_time_us)
         case SDL_MOUSEMOTION:
             mp_input_set_mouse_pos(vo->input_ctx, ev.motion.x, ev.motion.y);
             break;
-        case SDL_MOUSEBUTTONDOWN:
-            mp_input_put_key(vo->input_ctx,
-                (MP_MBTN_BASE + ev.button.button - 1) | MP_KEY_STATE_DOWN);
+        case SDL_MOUSEBUTTONDOWN: {
+            int i;
+            for (i = 0; i < sizeof(mousebtns) / sizeof(mousebtns[0]); ++i)
+                if (mousebtns[i].sdl == ev.button.button) {
+                    mp_input_put_key(vo->input_ctx, mousebtns[i].mpv | MP_KEY_STATE_DOWN);
+                    break;
+                }
             break;
-        case SDL_MOUSEBUTTONUP:
-            mp_input_put_key(vo->input_ctx,
-                (MP_MBTN_BASE + ev.button.button - 1) | MP_KEY_STATE_UP);
+        }
+        case SDL_MOUSEBUTTONUP: {
+            int i;
+            for (i = 0; i < sizeof(mousebtns) / sizeof(mousebtns[0]); ++i)
+                if (mousebtns[i].sdl == ev.button.button) {
+                    mp_input_put_key(vo->input_ctx, mousebtns[i].mpv | MP_KEY_STATE_UP);
+                    break;
+                }
             break;
-        case SDL_MOUSEWHEEL:
+        }
+        case SDL_MOUSEWHEEL: {
+#if SDL_VERSION_ATLEAST(2, 0, 4)
+            double multiplier = ev.wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -0.1 : 0.1;
+#else
+            double multiplier = 0.1;
+#endif
+            int y_code = ev.wheel.y > 0 ? MP_WHEEL_UP : MP_WHEEL_DOWN;
+            mp_input_put_wheel(vo->input_ctx, y_code, abs(ev.wheel.y) * multiplier);
+            int x_code = ev.wheel.x > 0 ? MP_WHEEL_RIGHT : MP_WHEEL_LEFT;
+            mp_input_put_wheel(vo->input_ctx, x_code, abs(ev.wheel.x) * multiplier);
             break;
+        }
         }
     }
 }
@@ -769,10 +810,12 @@ static int preinit(struct vo *vo)
 {
     struct priv *vc = vo->priv;
 
-    if (SDL_WasInit(SDL_INIT_VIDEO)) {
-        MP_ERR(vo, "already initialized\n");
+    if (SDL_WasInit(SDL_INIT_EVENTS)) {
+        MP_ERR(vo, "Another component is using SDL already.\n");
         return -1;
     }
+
+    vc->opts_cache = m_config_cache_alloc(vc, vo->global, &vo_sub_opts);
 
     // predefine SDL defaults (SDL env vars shall override)
     SDL_SetHintWithPriority(SDL_HINT_RENDER_SCALE_QUALITY, "1",
@@ -808,6 +851,9 @@ static int preinit(struct vo *vo)
     vc->wakeup_event = SDL_RegisterEvents(1);
     if (vc->wakeup_event == (Uint32)-1)
         MP_ERR(vo, "SDL_RegisterEvents() failed.\n");
+
+    MP_WARN(vo, "Warning: this legacy VO has bad performance. Consider fixing "
+                "your graphics drivers, or not forcing the sdl VO.\n");
 
     return 0;
 }
@@ -886,9 +932,15 @@ static int control(struct vo *vo, uint32_t request, void *data)
     struct priv *vc = vo->priv;
 
     switch (request) {
-    case VOCTRL_FULLSCREEN:
-        set_fullscreen(vo);
+    case VOCTRL_VO_OPTS_CHANGED: {
+        void *opt;
+        while (m_config_cache_get_next_changed(vc->opts_cache, &opt)) {
+            struct mp_vo_opts *opts = vc->opts_cache->opts;
+            if (&opts->fullscreen == opt)
+                set_fullscreen(vo);
+        }
         return 1;
+    }
     case VOCTRL_REDRAW_FRAME:
         draw_image(vo, NULL);
         return 1;

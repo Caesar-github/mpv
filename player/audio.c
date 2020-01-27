@@ -486,6 +486,7 @@ void reinit_audio_chain_src(struct MPContext *mpctx, struct track *track)
     ao_c->last_out_pts = MP_NOPTS_VALUE;
     ao_c->ao_buffer = mp_audio_buffer_create(NULL);
     ao_c->ao = mpctx->ao;
+    ao_c->delay = mpctx->opts->audio_delay;
 
     if (track) {
         ao_c->track = track;
@@ -626,8 +627,7 @@ static bool get_sync_samples(struct MPContext *mpctx, int *skip)
         !mp_audio_buffer_samples(mpctx->ao_chain->ao_buffer))
         return false; // no audio read yet
 
-    bool sync_to_video = mpctx->vo_chain && !mpctx->vo_chain->is_coverart &&
-                         mpctx->video_status != STATUS_EOF;
+    bool sync_to_video = mpctx->vo_chain && mpctx->video_status != STATUS_EOF;
 
     double sync_pts = MP_NOPTS_VALUE;
     if (sync_to_video) {
@@ -655,6 +655,9 @@ static bool get_sync_samples(struct MPContext *mpctx, int *skip)
         return true;
     }
     ptsdiff = MPCLAMP(ptsdiff, -3600, 3600);
+
+    MP_VERBOSE(mpctx, "audio sync: sync_to_video=%d, offset=%f\n",
+               sync_to_video, ptsdiff);
 
     int align = af_format_sample_alignment(ao_format);
     *skip = (int)(-ptsdiff * play_samplerate) / align * align;

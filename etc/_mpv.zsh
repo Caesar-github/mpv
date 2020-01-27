@@ -33,13 +33,6 @@ local -a tag_order
 zstyle -a ":completion:*:*:$service:*" tag-order tag_order ||
   zstyle  ":completion:*:*:$service:*" tag-order '!urls'
 
-# Use PCRE for regular expression matching if possible. This approximately
-# halves the execution time of generate_arguments compared to the default POSIX
-# regex, which translates to a more responsive first tab press. However, we
-# can't rely on PCRE being available, so we keep all our patterns
-# POSIX-compatible.
-setopt re_match_pcre &>/dev/null
-
 typeset -ga _mpv_completion_arguments _mpv_completion_protocols
 
 function generate_arguments {
@@ -51,7 +44,7 @@ function generate_arguments {
   local list_options_line
   for list_options_line in "${(@f)$($words[1] --list-options)}"; do
 
-    [[ $list_options_line =~ '^\s+--(\S+)\s*(.*)' ]] || continue
+    [[ $list_options_line =~ $'^[ \t]+--([^ \t]+)[ \t]*(.*)' ]] || continue
 
     local name=$match[1] desc=$match[2]
 
@@ -79,10 +72,10 @@ function generate_arguments {
 
       _mpv_completion_arguments+="$name"
 
-    elif [[ $desc =~ '^alias for --(\S+)' ]]; then
+    elif [[ $desc =~ $'^alias for (--)?([^ \t]+)' ]]; then
 
       # Save this for later; we might not have parsed the target option yet
-      option_aliases+="$name $match[1]"
+      option_aliases+="$name $match[2]"
 
     else
 
@@ -154,7 +147,7 @@ function generate_protocols {
   _mpv_completion_protocols=()
   local list_protos_line
   for list_protos_line in "${(@f)$($words[1] --list-protocols)}"; do
-    if [[ $list_protos_line =~ '^\s+(.*)' ]]; then
+    if [[ $list_protos_line =~ $'^[ \t]+(.*)' ]]; then
       _mpv_completion_protocols+="$match[1]"
     fi
   done
@@ -169,6 +162,12 @@ function generate_if_changed {
   zmodload -F zsh/stat b:zstat
   current_binary+=T$(zstat +mtime $current_binary)
   if [[ $_mpv_completion_binary[$1] != $current_binary ]]; then
+    # Use PCRE for regular expression matching if possible. This approximately
+    # halves the execution time of generate_arguments compared to the default
+    # POSIX regex, which translates to a more responsive first tab press.
+    # However, we can't rely on PCRE being available, so we keep all our
+    # patterns POSIX-compatible.
+    zmodload -s -F zsh/pcre C:pcre-match && setopt re_match_pcre
     generate_$1
     _mpv_completion_binary[$1]=$current_binary
   fi
@@ -193,7 +192,7 @@ case $state in
     local pattern name_group=1 desc_group=2
     case $option_name in
       audio-device|vulkan-device)
-        pattern='^\s+'\''([^'\'']*)'\''\s+\((.*)\)'
+        pattern=$'^[ \t]+'\''([^'\'']*)'\'$'[ \t]+''\((.*)\)'
       ;;
       profile)
         # The generic pattern would actually work in most cases for --profile,
@@ -202,7 +201,7 @@ case $state in
         pattern=$'^\t([^\t]*)\t(.*)'
       ;;
       *)
-        pattern='^\s+(--'${option_name}'=)?(\S+)\s*[-:]?\s*(.*)'
+        pattern=$'^[ \t]+(--'${option_name}$'=)?([^ \t]+)[ \t]*[-:]?[ \t]*(.*)'
         name_group=2 desc_group=3
       ;;
     esac

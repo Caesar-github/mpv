@@ -199,7 +199,7 @@ struct mp_imgfmt_desc mp_imgfmt_get_desc(int mpfmt)
     if ((pd->flags & AV_PIX_FMT_FLAG_HWACCEL)) {
         desc.flags |= MP_IMGFLAG_HWACCEL;
     } else if (fmt == AV_PIX_FMT_XYZ12LE || fmt == AV_PIX_FMT_XYZ12BE) {
-        desc.flags |= MP_IMGFLAG_XYZ;
+        /* nothing */
     } else if (!(pd->flags & AV_PIX_FMT_FLAG_RGB) &&
                fmt != AV_PIX_FMT_MONOBLACK &&
                fmt != AV_PIX_FMT_PAL8)
@@ -211,12 +211,6 @@ struct mp_imgfmt_desc mp_imgfmt_get_desc(int mpfmt)
 
     if (pd->flags & AV_PIX_FMT_FLAG_ALPHA)
         desc.flags |= MP_IMGFLAG_ALPHA;
-
-    if (mpfmt >= IMGFMT_RGB0_START && mpfmt <= IMGFMT_RGB0_END)
-        desc.flags &= ~MP_IMGFLAG_ALPHA;
-
-    if (desc.num_planes == pd->nb_components)
-        desc.flags |= MP_IMGFLAG_PLANAR;
 
     if (!(pd->flags & AV_PIX_FMT_FLAG_HWACCEL) &&
         !(pd->flags & AV_PIX_FMT_FLAG_BITSTREAM))
@@ -254,8 +248,6 @@ struct mp_imgfmt_desc mp_imgfmt_get_desc(int mpfmt)
         {
 
             desc.flags |= MP_IMGFLAG_YUV_NV;
-            if (fmt == AV_PIX_FMT_NV21)
-                desc.flags |= MP_IMGFLAG_YUV_NV_SWAP;
         }
         if (desc.flags & (MP_IMGFLAG_YUV_P | MP_IMGFLAG_RGB_P | MP_IMGFLAG_YUV_NV))
             desc.component_bits += shift;
@@ -454,6 +446,8 @@ bool mp_get_regular_imgfmt(struct mp_regular_imgfmt *dst, int imgfmt)
         return false; // it's satan himself
 #endif
 
+    res.forced_csp = mp_imgfmt_get_forced_csp(imgfmt);
+
     if (!validate_regular_imgfmt(&res))
         return false;
 
@@ -461,6 +455,41 @@ bool mp_get_regular_imgfmt(struct mp_regular_imgfmt *dst, int imgfmt)
     return true;
 }
 
+static bool regular_imgfmt_equals(struct mp_regular_imgfmt *a,
+                                  struct mp_regular_imgfmt *b)
+{
+    if (a->component_type != b->component_type ||
+        a->component_size != b->component_size ||
+        a->num_planes     != b->num_planes ||
+        a->component_pad  != b->component_pad ||
+        a->forced_csp     != b->forced_csp ||
+        a->chroma_w       != b->chroma_w ||
+        a->chroma_h       != b->chroma_h)
+        return false;
+
+    for (int n = 0; n < a->num_planes; n++) {
+        int num_comps = a->planes[n].num_components;
+        if (num_comps != b->planes[n].num_components)
+            return false;
+        for (int i = 0; i < num_comps; i++) {
+            if (a->planes[n].components[i] != b->planes[n].components[i])
+                return false;
+        }
+    }
+
+    return true;
+}
+
+// Find a format that matches this one exactly.
+int mp_find_regular_imgfmt(struct mp_regular_imgfmt *src)
+{
+    for (int n = IMGFMT_START + 1; n < IMGFMT_END; n++) {
+        struct mp_regular_imgfmt f;
+        if (mp_get_regular_imgfmt(&f, n) && regular_imgfmt_equals(src, &f))
+            return n;
+    }
+    return 0;
+}
 
 // Find a format that has the given flags set with the following configuration.
 int mp_imgfmt_find(int xs, int ys, int planes, int component_bits, int flags)
@@ -502,101 +531,3 @@ int mp_imgfmt_select_best_list(int *dst, int num_dst, int src)
         best = best ? mp_imgfmt_select_best(best, dst[n], src) : dst[n];
     return best;
 }
-
-#if 0
-
-#include <libavutil/frame.h>
-#include "sws_utils.h"
-
-int main(int argc, char **argv)
-{
-    const AVPixFmtDescriptor *avd = av_pix_fmt_desc_next(NULL);
-    for (; avd; avd = av_pix_fmt_desc_next(avd)) {
-        enum AVPixelFormat fmt = av_pix_fmt_desc_get_id(avd);
-        if (fmt == AV_PIX_FMT_YUVJ420P || fmt == AV_PIX_FMT_YUVJ422P ||
-            fmt == AV_PIX_FMT_YUVJ444P || fmt == AV_PIX_FMT_YUVJ440P)
-            continue;
-        printf("%s (%d)", avd->name, (int)fmt);
-        int mpfmt = pixfmt2imgfmt(fmt);
-        bool generic = mpfmt >= IMGFMT_AVPIXFMT_START &&
-                       mpfmt < IMGFMT_AVPIXFMT_END;
-        printf(" mp=%d%s\n  ", mpfmt, generic ? " [GENERIC]" : "");
-        struct mp_imgfmt_desc d = mp_imgfmt_get_desc(mpfmt);
-        if (d.id)
-            assert(d.avformat == fmt);
-#define FLAG(t, c) if (d.flags & (t)) printf("[%s]", c);
-        FLAG(MP_IMGFLAG_BYTE_ALIGNED, "BA")
-        FLAG(MP_IMGFLAG_ALPHA, "a")
-        FLAG(MP_IMGFLAG_PLANAR, "P")
-        FLAG(MP_IMGFLAG_YUV_P, "YUVP")
-        FLAG(MP_IMGFLAG_YUV_NV, "NV")
-        FLAG(MP_IMGFLAG_YUV_NV_SWAP, "NVSWAP")
-        FLAG(MP_IMGFLAG_YUV, "yuv")
-        FLAG(MP_IMGFLAG_RGB, "rgb")
-        FLAG(MP_IMGFLAG_XYZ, "xyz")
-        FLAG(MP_IMGFLAG_LE, "le")
-        FLAG(MP_IMGFLAG_BE, "be")
-        FLAG(MP_IMGFLAG_PAL, "pal")
-        FLAG(MP_IMGFLAG_HWACCEL, "hw")
-        int fcsp = mp_imgfmt_get_forced_csp(mpfmt);
-        if (fcsp)
-            printf(" fcsp=%d", fcsp);
-        printf(" ctype=%d", mp_imgfmt_get_component_type(mpfmt));
-        printf("\n");
-        printf("  planes=%d, chroma=%d:%d align=%d:%d bits=%d cbits=%d\n",
-               d.num_planes, d.chroma_xs, d.chroma_ys, d.align_x, d.align_y,
-               d.plane_bits, d.component_bits);
-        printf("  {");
-        for (int n = 0; n < MP_MAX_PLANES; n++)
-            printf("%d/%d/[%d:%d] ", d.bytes[n], d.bpp[n], d.xs[n], d.ys[n]);
-        printf("}\n");
-        if (mpfmt && !(d.flags & MP_IMGFLAG_HWACCEL) && fmt != AV_PIX_FMT_UYYVYY411)
-        {
-            AVFrame *fr = av_frame_alloc();
-            fr->format = fmt;
-            fr->width = 128;
-            fr->height = 128;
-            int err = av_frame_get_buffer(fr, MP_IMAGE_BYTE_ALIGN);
-            assert(err >= 0);
-            struct mp_image *mpi = mp_image_alloc(mpfmt, fr->width, fr->height);
-            assert(mpi);
-            // A rather fuzzy test, which might fail even if there's no bug.
-            for (int n = 0; n < 4; n++) {
-                if (!!mpi->planes[n] != !!fr->data[n]) {
-                    printf("   Warning: p%d: %p %p\n", n,
-                           mpi->planes[n], fr->data[n]);
-                }
-                if (mpi->stride[n] != fr->linesize[n]) {
-                    printf("   Warning: p%d: %d %d\n", n,
-                           mpi->stride[n], fr->linesize[n]);
-                }
-            }
-            talloc_free(mpi);
-            av_frame_free(&fr);
-        }
-        struct mp_regular_imgfmt reg;
-        if (mp_get_regular_imgfmt(&reg, mpfmt)) {
-            const char *type = "unknown";
-            switch (reg.component_type) {
-            case MP_COMPONENT_TYPE_UINT:  type = "uint"; break;
-            case MP_COMPONENT_TYPE_FLOAT: type = "float"; break;
-            }
-            printf("  Regular: %d planes, %d bytes per comp., %d bit-pad, "
-                   "%dx%d chroma, type=%s\n",
-                   reg.num_planes, reg.component_size, reg.component_pad,
-                   reg.chroma_w, reg.chroma_h, type);
-            for (int n = 0; n < reg.num_planes; n++) {
-                struct mp_regular_imgfmt_plane *plane = &reg.planes[n];
-                printf("     %d: {", n);
-                for (int i = 0; i < plane->num_components; i++) {
-                    if (i > 0)
-                        printf(", ");
-                    printf("%d", plane->components[i]);
-                }
-                printf("}\n");
-            }
-        }
-    }
-}
-
-#endif

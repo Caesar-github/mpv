@@ -68,7 +68,8 @@ const struct m_sub_options stream_lavf_conf = {
     },
     .size = sizeof(struct stream_lavf_params),
     .defaults = &(const struct stream_lavf_params){
-        .useragent = (char *)mpv_version,
+        .useragent = "libmpv",
+        .timeout = 60,
     },
 };
 
@@ -77,7 +78,7 @@ static const char *const http_like[];
 static int open_f(stream_t *stream);
 static struct mp_tags *read_icy(stream_t *stream);
 
-static int fill_buffer(stream_t *s, char *buffer, int max_len)
+static int fill_buffer(stream_t *s, void *buffer, int max_len)
 {
     AVIOContext *avio = s->priv;
 #if LIBAVFORMAT_VERSION_MICRO >= 100 && LIBAVFORMAT_VERSION_INT >= AV_VERSION_INT(57, 81, 100)
@@ -88,7 +89,7 @@ static int fill_buffer(stream_t *s, char *buffer, int max_len)
     return (r <= 0) ? -1 : r;
 }
 
-static int write_buffer(stream_t *s, char *buffer, int len)
+static int write_buffer(stream_t *s, void *buffer, int len)
 {
     AVIOContext *avio = s->priv;
     avio_write(avio, buffer, len);
@@ -107,6 +108,12 @@ static int seek(stream_t *s, int64_t newpos)
     return 1;
 }
 
+static int64_t get_size(stream_t *s)
+{
+    AVIOContext *avio = s->priv;
+    return avio_size(avio);
+}
+
 static void close_f(stream_t *stream)
 {
     AVIOContext *avio = stream->priv;
@@ -122,15 +129,7 @@ static void close_f(stream_t *stream)
 static int control(stream_t *s, int cmd, void *arg)
 {
     AVIOContext *avio = s->priv;
-    int64_t size;
     switch(cmd) {
-    case STREAM_CTRL_GET_SIZE:
-        size = avio_size(avio);
-        if (size >= 0) {
-            *(int64_t *)arg = size;
-            return 1;
-        }
-        break;
     case STREAM_CTRL_AVSEEK: {
         struct stream_avseek *c = arg;
         int64_t r = avio_seek_time(avio, c->stream_index, c->timestamp, c->flags);
@@ -182,8 +181,8 @@ static int interrupt_cb(void *ctx)
 
 static const char * const prefix[] = { "lavf://", "ffmpeg://" };
 
-void mp_setup_av_network_options(AVDictionary **dict, struct mpv_global *global,
-                                 struct mp_log *log)
+void mp_setup_av_network_options(AVDictionary **dict, const char *target_fmt,
+                                 struct mpv_global *global, struct mp_log *log)
 {
     void *temp = talloc_new(NULL);
     struct stream_lavf_params *opts =
@@ -222,10 +221,15 @@ void mp_setup_av_network_options(AVDictionary **dict, struct mpv_global *global,
         av_dict_set(dict, "headers", cust_headers, 0);
     av_dict_set(dict, "icy", "1", 0);
     // So far, every known protocol uses microseconds for this
+    // Except rtsp.
     if (opts->timeout > 0) {
-        char buf[80];
-        snprintf(buf, sizeof(buf), "%lld", (long long)(opts->timeout * 1e6));
-        av_dict_set(dict, "timeout", buf, 0);
+        if (target_fmt && strcmp(target_fmt, "rtsp") == 0) {
+            mp_verbose(log, "Broken FFmpeg RTSP API => not setting timeout.\n");
+        } else {
+            char buf[80];
+            snprintf(buf, sizeof(buf), "%lld", (long long)(opts->timeout * 1e6));
+            av_dict_set(dict, "timeout", buf, 0);
+        }
     }
     if (opts->http_proxy && opts->http_proxy[0])
         av_dict_set(dict, "http_proxy", opts->http_proxy, 0);
@@ -294,7 +298,7 @@ static int open_f(stream_t *stream)
     av_dict_set(&dict, "reconnect", "1", 0);
     av_dict_set(&dict, "reconnect_delay_max", "7", 0);
 
-    mp_setup_av_network_options(&dict, stream->global, stream->log);
+    mp_setup_av_network_options(&dict, NULL, stream->global, stream->log);
 
     AVIOInterruptCB cb = {
         .callback = interrupt_cb,
@@ -333,10 +337,13 @@ static int open_f(stream_t *stream)
     stream->seek = stream->seekable ? seek : NULL;
     stream->fill_buffer = fill_buffer;
     stream->write_buffer = write_buffer;
+    stream->get_size = get_size;
     stream->control = control;
     stream->close = close_f;
     // enable cache (should be avoided for files, but no way to detect this)
     stream->streaming = true;
+    if (stream->info->stream_origin == STREAM_ORIGIN_NET)
+        stream->is_network = true;
     res = STREAM_OK;
 
 out:
@@ -413,8 +420,7 @@ const stream_info_t stream_info_ffmpeg = {
      "gopher", "data",
      NULL },
   .can_write = true,
-  .is_safe = true,
-  .is_network = true,
+  .stream_origin = STREAM_ORIGIN_NET,
 };
 
 // Unlike above, this is not marked as safe, and can contain protocols which
@@ -428,6 +434,7 @@ const stream_info_t stream_info_ffmpeg_unsafe = {
      "lavf", "ffmpeg", "udp", "ftp", "tcp", "tls", "unix", "sftp", "md5",
      "concat",
      NULL },
+  .stream_origin = STREAM_ORIGIN_UNSAFE,
   .can_write = true,
 };
 

@@ -223,6 +223,12 @@ i and I
     file such as codec, framerate, number of dropped frames and so on. See
     `STATS`_ for more information.
 
+del
+    Cycles visibility between never / auto (mouse-move) / always
+
+\`
+    Show the console. (ESC closes it again. See `CONSOLE`_.)
+
 (The following keys are valid only when using a video output that supports the
 corresponding adjustment.)
 
@@ -268,10 +274,19 @@ in the mpv git repository.
 Mouse Control
 -------------
 
-button 3 and button 4
-    Seek backward/forward 1 minute.
+Left double click
+    Toggle fullscreen on/off.
 
-button 5 and button 6
+Right click
+    Toggle pause on/off.
+
+Forward/Back button
+    Skip to next/previous entry in playlist.
+
+Wheel up/down
+    Seek forward/backward 10 seconds.
+
+Wheel left/right
     Decrease/increase volume.
 
 
@@ -299,7 +314,7 @@ Legacy option syntax
 --------------------
 
 The ``--option=value`` syntax is not strictly enforced, and the alternative
-legacy syntax ``-option value`` and ``--option value`` will also work. This is
+legacy syntax ``-option value`` and ``-option=value`` will also work. This is
 mostly  for compatibility with MPlayer. Using these should be avoided. Their
 semantics can change any time in the future.
 
@@ -309,9 +324,15 @@ because ``--fs`` is a flag option that requires no parameter. If an option
 changes and its parameter becomes optional, then a command line using the
 alternative syntax will break.
 
-Currently, the parser makes no difference whether an option starts with ``--``
-or a single ``-``. This might also change in the future, and ``--option value``
-might always interpret ``value`` as filename in order to reduce ambiguities.
+Until mpv 0.31.0, there was no difference whether an option started with ``--``
+or a single ``-``. Newer mpv releases strictly expect that you pass the option
+value after a ``=``. For example, before ``mpv --log-file f.txt`` would write
+a log to ``f.txt``, but now this command line fails, as ``--log-file`` expects
+an option value, and ``f.txt`` is simply considered a normal file to be played
+(as in ``mpv f.txt``).
+
+The future plan is that ``-option value`` will not work anymore, and options
+with a single ``-`` behave the same as ``--`` options.
 
 Escaping spaces and other special characters
 --------------------------------------------
@@ -463,62 +484,98 @@ List Options
 ------------
 
 Some options which store lists of option values can have action suffixes. For
-example, you can set a ``,``-separated list of filters with ``--vf``, but the
-option also allows you to append filters with ``--vf-append``.
+example, the ``--display-tags`` option takes a ``,``-separated list of tags, but
+the option also allows you to append a single tag with ``--display-tags-append``,
+and the tag name can for example contain a literal ``,`` without the need for
+escaping.
 
-Options for filenames do not use ``,`` as separator, but ``:`` (Unix) or ``;``
-(Windows).
+String list and path list options
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+String lists are separated by ``,``. The strings are not parsed or interpreted
+by the option system itself. However, most
+
+Path or file list options use ``:`` (Unix) or ``;`` (Windows) as separator,
+instead of ``,``.
+
+They support the following operations:
 
 ============= ===============================================
 Suffix        Meaning
 ============= ===============================================
--add          Append 1 or more items (may become alias for -append)
--append       Append single item (avoids need for escaping)
--clr          Clear the option
--del          Delete an existing item by integer index
--pre          Prepend 1 or more items
--set          Set a list of items
--toggle       Append an item, or remove if if it already exists
+-set          Set a list of items (using the list separator, interprets escapes)
+-append       Append single item (does not interpret escapes)
+-add          Append 1 or more items (same syntax as -set)
+-pre          Prepend 1 or more items (same syntax as -set)
+-clr          Clear the option (remove all items)
+-remove       Delete item if present (does not interpret escapes)
+-del          Delete 1 or more items by integer index (deprecated)
+-toggle       Append an item, or remove if if it already exists (no escapes)
 ============= ===============================================
 
-Although some operations allow specifying multiple ``,``-separated items, using
-this is strongly discouraged and deprecated, except for ``-set``.
+``-append`` is meant as a simple way to append a single item without having
+to escape the argument (you may still need to escape on the shell level).
 
-Without suffix, the action taken is normally ``-set``.
+Key/value list options
+~~~~~~~~~~~~~~~~~~~~~~
+
+A key/value list is a list of key/value string pairs. In programming languages,
+this type of data structure is often called a map or a dictionary. The order
+normally does not matter, although in some cases the order might matter.
+
+They support the following operations:
+
+============= ===============================================
+Suffix        Meaning
+============= ===============================================
+-set          Set a list of items (using ``,`` as separator)
+-append       Append a single item (escapes for the key, no escapes for the value)
+-add          Append 1 or more items (same syntax as -set)
+-remove       Delete item by key if present (does not interpret escapes)
+============= ===============================================
+
+Keys are unique within the list. If an already present key is set, the existing
+key is removed before the new value is appended.
+
+Filter options
+~~~~~~~~~~~~~~
+
+This is a very complex option type for the ``--af`` and ``--vf`` options only.
+They often require complicated escaping. See `VIDEO FILTERS`_ for details. They
+support the following operations:
+
+============= ===============================================
+Suffix        Meaning
+============= ===============================================
+-set          Set a list of filters (using ``,`` as separator)
+-append       Append single filter
+-add          Append 1 or more filters (same syntax as -set)
+-pre          Prepend 1 or more filters (same syntax as -set)
+-clr          Clear the option (remove all filters)
+-remove       Delete filter if present
+-del          Delete 1 or more filters by integer index or filter label (deprecated)
+-toggle       Append a filter, or remove if if it already exists
+-help         Pseudo operation that prints a help text to the terminal
+============= ===============================================
+
+General
+~~~~~~~
+
+Without suffix, the operation used is normally ``-set``.
+
+Although some operations allow specifying multiple items, using this is strongly
+discouraged and deprecated, except for ``-set``. There is a chance that
+operations like ``-add`` and ``-pre`` will work like ``-append`` and accept a
+single, unescaped item only (so the ``,`` separator will not be interpreted and
+is passed on as part of the value).
 
 Some options (like ``--sub-file``, ``--audio-file``, ``--glsl-shader``) are
 aliases for the proper option with ``-append`` action. For example,
 ``--sub-file`` is an alias for ``--sub-files-append``.
 
-Some options only support a subset of the above.
-
 Options of this type can be changed at runtime using the ``change-list``
-command, which takes the suffix as separate operation parameter.
-
-Playing DVDs
-------------
-
-DVDs can be played with the ``dvd://[title]`` syntax. The optional
-title specifier is a number which selects between separate video
-streams on the DVD. If no title is given (``dvd://``) then the longest
-title is selected automatically by the library. This is usually what
-you want. mpv does not support DVD menus.
-
-DVDs which have been copied on to a hard drive or other mounted
-filesystem (by e.g. the ``dvdbackup`` tool) are accommodated by
-specifying the path to the local copy: ``--dvd-device=PATH``.
-Alternatively, running ``mpv PATH`` should auto-detect a DVD directory
-tree and play the longest title.
-
-.. note:: DVD subtitles
-    
-    DVDs use image-based subtitles. Image subtitles are implemented as
-    a bitmap video stream which can be superimposed over the main
-    movie. mpv's subtitle styling and positioning options and keyboard
-    shortcuts generally do not work with image-based subtitles.
-    Exceptions include options like ``--stretch-dvd-subs`` and
-    ``--stretch-image-subs-to-screen``.
-
+command, which takes the suffix (without the ``-``) as separate operation
+parameter.
 
 CONFIGURATION FILES
 ===================
@@ -641,12 +698,8 @@ Some profiles are loaded automatically. The following example demonstrates this:
 
     ::
 
-        [protocol.dvd]
-        profile-desc="profile for dvd:// streams"
-        alang=en
-
-        [extension.flv]
-        profile-desc="profile for .flv files"
+        [extension.mkv]
+        profile-desc="profile for .mkv files"
         vf=flip
 
 The profile name follows the schema ``type.name``, where type can be
@@ -655,6 +708,51 @@ and ``extension`` for the extension of the path of the currently played file
 (*not* the file format).
 
 This feature is very limited, and there are no other auto profiles.
+
+Using mpv from other programs or scripts
+========================================
+
+There are three choices for using mpv from other programs or scripts:
+
+    1. Calling it as UNIX process. If you do this, *do not parse terminal output*.
+       The terminal output is intended for humans, and may change any time. In
+       addition, terminal behavior itself may change any time. Compatibility
+       cannot be guaranteed.
+
+       Your code should work even if you pass ``--no-terminal``. Do not attempt
+       to simulate user input by sending terminal control codes to mpv's stdin.
+       If you need interactive control, using ``--input-ipc-server`` is
+       recommended. This gives you access to the `JSON IPC`_  over unix domain
+       sockets (or named pipes on Windows).
+
+       Depending on what you do, passing ``--no-config`` or ``--config-dir`` may
+       be a good idea to avoid conflicts with the normal mpv user configuration
+       intended for CLI playback.
+
+       Using ``--input-ipc-server`` is also suitable for purposes like remote
+       control (however, the IPC protocol itself is not "secure" and not
+       intended to be so).
+
+    2. Using libmpv. This is generally recommended when mpv is used as playback
+       backend for a completely different application. The provided C API is
+       very close to CLI mechanisms and the scripting API.
+
+       Note that even though libmpv has different defaults, it can be configured
+       to work exactly like the CLI player (except command line parsing is
+       unavailable).
+
+       See `EMBEDDING INTO OTHER PROGRAMS (LIBMPV)`_.
+
+    3. As a user script (`LUA SCRIPTING`_, `JAVASCRIPT`_, `C PLUGINS`_). This is
+       recommended when the goal is to "enhance" the CLI player. Scripts get
+       access to the entire client API of mpv.
+
+       This is the standard way to create third-party extensions for the player.
+
+All these access the client API, which is the sum of the various mechanisms
+provided by the player core, as documented here: `OPTIONS`_,
+`List of Input Commands`_, `Properties`_, `List of events`_ (also see C API),
+`Hooks`_.
 
 TAKING SCREENSHOTS
 ==================
@@ -783,10 +881,10 @@ PROTOCOLS
 
 ``ytdl://...``
 
-    By default, the youtube-dl hook script (enabled by default for mpv CLI)
-    only looks at http URLs. Prefixing an URL with ``ytdl://`` forces it to
-    be always processed by the script. This can also be used to invoke special
-    youtube-dl functionality like playing a video by ID or invoking search.
+    By default, the youtube-dl hook script only looks at http(s) URLs. Prefixing
+    an URL with ``ytdl://`` forces it to be always processed by the script. This
+    can also be used to invoke special youtube-dl functionality like playing a
+    video by ID or invoking search.
 
     Keep in mind that you can't pass youtube-dl command line options by this,
     and you have to use ``--ytdl-raw-options`` instead.
@@ -811,28 +909,14 @@ PROTOCOLS
 
     ``bluray://`` is an alias.
 
-``dvd://[title|[starttitle]-endtitle][/device]`` ``--dvd-device=PATH``
+``dvd://[title][/device]`` ``--dvd-device=PATH``
 
     Play a DVD. DVD menus are not supported. If no title is given, the longest
-    title is auto-selected.
+    title is auto-selected. Without ``--dvd-device``, it will probably try
+    to open an actual optical drive, if available and implemented for the OS.
 
     ``dvdnav://`` is an old alias for ``dvd://`` and does exactly the same
     thing.
-
-``dvdread://...:``
-
-    Play a DVD using the old libdvdread code. This is what MPlayer and
-    older mpv versions used for ``dvd://``. Use is discouraged. It's
-    provided only for compatibility and for transition, and to work
-    around outstanding dvdnav bugs (see "DVD library choices" above).
-
-``tv://[channel][/input_id]`` ``--tv-...``
-
-    Analogue TV via V4L. Also useful for webcams. (Linux only.)
-
-``pvr://`` ``--pvr-...``
-
-    PVR. (Linux only.)
 
 ``dvb://[cardnumber@]channel`` ``--dvbin-...``
 
@@ -857,9 +941,17 @@ PROTOCOLS
     demuxer name, and ``options`` is the (pseudo-)filename passed to the
     demuxer.
 
-    For example, ``mpv av://lavfi:mandelbrot`` makes use of the libavfilter
-    wrapper included in libavdevice, and will use the ``mandelbrot`` source
-    filter to generate input data.
+    .. admonition:: Example
+
+        ::
+
+            mpv av://v4l2:/dev/video0 --profile=low-latency --untimed
+
+        This plays video from the first v4l input with nearly the lowest latency
+        possible. It's a good replacement for the removed ``tv://`` input.
+        Using ``--untimed`` is a hack to output a captured frame immediately,
+        instead of respecting the input framerate. (There may be better ways to
+        handle this in the future.)
 
     ``avdevice://`` is an alias.
 
@@ -972,6 +1064,8 @@ works like in older mpv releases. The profiles are currently defined as follows:
 
 .. include:: stats.rst
 
+.. include:: console.rst
+
 .. include:: lua.rst
 
 .. include:: javascript.rst
@@ -1009,7 +1103,11 @@ behavior of mpv.
     of ``--v`` options passed to the command line.
 
 ``MPV_LEAK_REPORT``
-    If set to ``1``, enable internal talloc leak reporting.
+    If set to ``1``, enable internal talloc leak reporting. If set to another
+    value, disable leak reporting. If unset, use the default, which normally is
+    ``0``. If mpv was built with ``--enable-ta-leak-report``, the default is
+    ``1``. If leak reporting was disabled at compile time (``NDEBUG`` in
+    custom ``CFLAGS``), this environment variable is ignored.
 
 ``LADSPA_PATH``
     Specifies the search path for LADSPA plugins. If it is unset, fully
@@ -1144,9 +1242,10 @@ For Windows-specifics, see `FILES ON WINDOWS`_ section.
 
 ``~/.config/mpv/scripts/``
     All files in this directory are loaded as if they were passed to the
-    ``--script`` option. They are loaded in alphabetical order, and sub-directories
-    and files with no ``.lua`` extension are ignored. The ``--load-scripts=no``
-    option disables loading these files.
+    ``--script`` option. They are loaded in alphabetical order. Directory entries
+    other than files are ignored. Files with unknown extension lead to an
+    initialization error. Files with ``.disable`` extension are ignored. The
+    ``--load-scripts=no`` option disables loading these files.
 
 ``~/.config/mpv/watch_later/``
     Contains temporary config files needed for resuming playback of files with

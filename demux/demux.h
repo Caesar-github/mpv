@@ -47,6 +47,7 @@ struct demux_reader_state {
     int64_t file_cache_bytes;
     double seeking; // current low level seek target, or NOPTS
     int low_level_seeks; // number of started low level seeks
+    uint64_t byte_level_seeks; // number of byte stream level seeks
     double ts_last; // approx. timestamp of demuxer position
     uint64_t bytes_per_second; // low level statistics
     // Positions that can be seeked to without incurring the latency of a low
@@ -96,6 +97,9 @@ struct timeline;
 typedef struct demuxer_desc {
     const char *name;      // Demuxer name, used with -demuxer switch
     const char *desc;      // Displayed to user
+
+    // If non-NULL, these are added to the global option list.
+    const struct m_sub_options *options;
 
     // Return 0 on success, otherwise -1
     int (*open)(struct demuxer *demuxer, enum demux_check check);
@@ -196,6 +200,7 @@ typedef struct demuxer {
     bool fully_read;
     bool is_network; // opened directly from a network stream
     bool is_streaming; // implies a "slow" input, such as network or FUSE
+    int stream_origin; // any STREAM_ORIGIN_* (set from source stream)
     bool access_references; // allow opening other files/URLs
 
     // Bitmask of DEMUX_EVENT_*

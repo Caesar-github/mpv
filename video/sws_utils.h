@@ -13,7 +13,6 @@ struct mpv_global;
 // Guaranteed to be a power of 2 and > 1.
 #define SWS_MIN_BYTE_ALIGN MP_IMAGE_BYTE_ALIGN
 
-extern const int mp_sws_hq_flags;
 extern const int mp_sws_fast_flags;
 
 bool mp_sws_supported_format(int imgfmt);
@@ -48,14 +47,15 @@ struct mp_sws_context {
     bool supports_csp;
 
     // Private.
+    struct m_config_cache *opts_cache;
     struct mp_sws_context *cached; // contains parameters for which sws is valid
     struct mp_zimg_context *zimg;
-    bool opts_allow_zimg, zimg_ok;
+    bool zimg_ok;
 };
 
 struct mp_sws_context *mp_sws_alloc(void *talloc_ctx);
+void mp_sws_enable_cmdline_opts(struct mp_sws_context *ctx, struct mpv_global *g);
 int mp_sws_reinit(struct mp_sws_context *ctx);
-void mp_sws_set_from_cmdline(struct mp_sws_context *ctx, struct mpv_global *g);
 int mp_sws_scale(struct mp_sws_context *ctx, struct mp_image *dst,
                  struct mp_image *src);
 

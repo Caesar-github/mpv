@@ -41,6 +41,8 @@ commands they're bound to on the OSD, instead of executing the commands::
 (Only closing the window will make **mpv** exit, pressing normal keys will
 merely display the binding, even if mapped to quit.)
 
+Also see `Key names`_.
+
 input.conf syntax
 -----------------
 
@@ -77,6 +79,80 @@ If ``a`` or ``a-b`` or ``b`` are already bound, this will run the first command
 that matches, and the multi-key command will never be called. Intermediate keys
 can be remapped to ``ignore`` in order to avoid this issue. The maximum number
 of (non-modifier) keys for combinations is currently 4.
+
+Key names
+---------
+
+All mouse and keyboard input is to converted to mpv-specific key names. Key
+names are either special symbolic identifiers representing a physical key, or a
+text key names, which are unicode code points encoded as UTF-8. These are what
+keyboard input would normally produce, for example ``a`` for the A key. As a
+consequence, mpv uses input translated by the current OS keyboard layout, rather
+than physical scan codes.
+
+Currently there is the hardcoded assumption that every text key can be
+represented as a single unicode code point (in NFKC form).
+
+All key names can be combined with the modifiers ``Shift``, ``Ctrl``, ``Alt``,
+``Meta``. They must be prefixed to the actual key name, where each modifier
+is followed by a ``+`` (for example ``ctrl+q``).
+
+Symbolic key names and modifier names are case-insensitive. Unicode key names
+are case-sensitive because input bindings typically respect the shift key.
+
+Another type of key names are hexadecimal key names, that serve as fallback
+for special keys that are neither unicode, nor have a special mpv defined name.
+They will break as soon as mpv adds proper names for them, but can enable you
+to use a key at all if that does not happen.
+
+All symbolic names are listed by ``--input-keylist``. ``--input-test`` is a
+special mode that prints all input on the OSD.
+
+Comments on some symbolic names:
+
+``KP*``
+    Keypad names. Behavior varies by backend (whether they implement this, and
+    on how they treat numlock), but typically, mpv tries to map keys on the
+    keypad to separate names, even if they produce the same text as normal keys.
+
+``MOUSE_BTN*``, ``MBTN*``
+    Various mouse buttons.
+
+    Depending on backend, the mouse wheel might also be represented as a button.
+    In addition, ``MOUSE_BTN3`` to ``MOUSE_BTN6`` are deprecated aliases for
+    ``WHEEL_UP``, ``WHEEL_DOWN``, ``WHEEL_LEFT``, ``WHEEL_RIGHT``.
+
+    ``MBTN*`` are aliases for ``MOUSE_BTN*``.
+
+``WHEEL_*``
+    Mouse wheels (typically).
+
+``AXIS_*``
+    Deprecated aliases for ``WHEEL_*``.
+
+``*_DBL``
+    Mouse button double clicks.
+
+``MOUSE_MOVE``, ``MOUSE_ENTER``, ``MOUSE_LEAVE``
+    Emitted by mouse move events. Enter/leave happens when the mouse enters or
+    leave the mpv window (or the current mouse region, using the deprecated
+    mouse region input section mechanism).
+
+``CLOSE_WIN``
+    Pseudo key emitted when closing the mpv window using the OS window manager
+    (for example, by clicking the close button in the window title bar).
+
+``GAMEPAD_*``
+    Keys emitted by the SDL gamepad backend.
+
+``UNMAPPED``
+    Pseudo-key that matches any unmapped key. (You should probably avoid this
+    if possible, because it might change behavior or get removed in the future.)
+
+``ANY_UNICODE``
+    Pseudo-key that matches any key that produces text. (You should probably
+    avoid this if possible, because it might change behavior or get removed in
+    the future.)
 
 Flat command syntax
 -------------------
@@ -349,6 +425,12 @@ Remember to quote string arguments in input.conf (see `Flat command syntax`_).
 ``playlist-shuffle``
     Shuffle the playlist. This is similar to what is done on start if the
     ``--shuffle`` option is used.
+
+``playlist-unshuffle``
+    Attempt to revert the previous ``playlist-shuffle`` command. This works
+    only once (multiple successive ``playlist-unshuffle`` commands do nothing).
+    May not work correctly if new recursive playlists have been opened since
+    a ``playlist-shuffle`` command.
 
 ``run <command> [<arg1> [<arg2> [...]]]``
     Run the given command. Unlike in MPlayer/mplayer2 and earlier versions of
@@ -649,6 +731,10 @@ Input Commands that are Possibly Subject to Change
 ``vf <operation> <value>``
     Change video filter chain.
 
+    The semantics are exactly the same as with option parsing (see
+    `VIDEO FILTERS`_). As such the text below is a redundant and incomplete
+    summary.
+
     The first argument decides what happens:
 
     <set>
@@ -672,7 +758,7 @@ Input Commands that are Possibly Subject to Change
         cases, the second parameter is a comma separated list of filter names
         or integer indexes. ``0`` would denote the first filter. Negative
         indexes start from the last filter, and ``-1`` denotes the last
-        filter.
+        filter. Deprecated.
 
     <clr>
         Remove all filters. Note that like the other sub-commands, this does
@@ -728,6 +814,8 @@ Input Commands that are Possibly Subject to Change
     list yourself when adding a second key binding for cycling backwards.
 
 ``enable-section <name> [<flags>]``
+    This command is deprecated, except for mpv-internal uses.
+
     Enable all key bindings in the named input section.
 
     The enabled input sections form a stack. Bindings in sections on the top of
@@ -750,9 +838,13 @@ Input Commands that are Possibly Subject to Change
         Same.
 
 ``disable-section <name>``
+    This command is deprecated, except for mpv-internal uses.
+
     Disable the named input section. Undoes ``enable-section``.
 
 ``define-section <name> <contents> [<flags>]``
+    This command is deprecated, except for mpv-internal uses.
+
     Create a named input section, or replace the contents of an already existing
     input section. The ``contents`` parameter uses the same syntax as the
     ``input.conf`` file (except that using the section syntax in it is not
@@ -851,6 +943,86 @@ Input Commands that are Possibly Subject to Change
     Remove an overlay added with ``overlay-add`` and the same ID. Does nothing
     if no overlay with this ID exists.
 
+``osd-overlay``
+    Add/update/remove an OSD overlay.
+
+    (Although this sounds similar to ``overlay-add``, ``osd-overlay`` is for
+    text overlays, while ``overlay-add`` is for bitmaps. Maybe ``overlay-add``
+    will be merged into ``osd-overlay`` to remove this oddity.)
+
+    You can use this to add text overlays in ASS format. ASS has advanced
+    positioning and rendering tags, which can be used to render almost any kind
+    of vector graphics.
+
+    This command accepts the following parameters:
+
+    ``id``
+        Arbitrary integer that identifies the overlay. Multiple overlays can be
+        added by calling this command with different ``id`` parameters. Calling
+        this command with the same ``id`` replaces the previously set overlay.
+
+        There is a separate namespace for each libmpv client (i.e. IPC
+        connection, script), so IDs can be made up and assigned by the API user
+        without conflicting with other API users.
+
+        If the libmpv client is destroyed, all overlays associated with it are
+        also deleted. In particular, connecting via ``--input-ipc-server``,
+        adding an overlay, and disconnecting will remove the overlay immediately
+        again.
+
+    ``format``
+        String that gives the type of the overlay. Accepts the following values:
+
+        ``ass-events``
+            The ``data`` parameter is a string. The string is split on the
+            newline character. Every line is turned into the ``Text`` part of
+            a ``Dialogue`` ASS event. Timing is unused (but behavior of timing
+            dependent ASS tags may change in future mpv versions).
+
+            Note that it's better to put multiple lines into ``data``, instead
+            of adding multiple OSD overlays.
+
+            This provides 2 ASS ``Styles``. ``OSD`` contains the text style as
+            defined by the current ``--osd-...`` options. ``Default`` is
+            similar, and contains style that ``OSD`` would have if all options
+            were set to the default.
+
+            In addition, the ``res_x`` and ``res_y`` options specify the value
+            of the ASS ``PlayResX`` and ``PlayResY`` header fields. If ``res_y``
+            is set to 0, ``PlayResY`` is initialized to an arbitrary default
+            value (but note that the default for this command is 720, not 0).
+            If ``res_x`` is set to 0, ``PlayResX`` is set based on ``res_y``
+            such that a virtual ASS pixel has a square pixel aspect ratio.
+
+        ``none``
+            Special value that causes the overlay to be removed. Most parameters
+            other than ``id`` and ``format`` are mostly ignored.
+
+    ``data``
+        String defining the overlay contents according to the ``format``
+        parameter.
+
+    ``res_x``, ``res_y``
+        Used if ``format`` is set to ``ass-events`` (see description there).
+        Optional, defaults to 0/720.
+
+    ``z``
+        The Z order of the overlay. Optional, defaults to 0.
+
+        Note that Z order between different overlays of different formats is
+        static, and cannot be changed (currently, this means that bitmap
+        overlays added by ``overlay-add`` are always on top of the ASS overlays
+        added by ``osd-overlay``). In addition, the builtin OSD components are
+        always below any of the custom OSD. (This includes subtitles of any kind
+        as well as text rendered by ``show-text``.)
+
+        It's possible that future mpv versions will randomly change how Z order
+        between different OSD formats and builtin OSD is handled.
+
+    Note: always use named arguments (``mpv_command_node()``). Scripts should
+    use the ``mp.create_osd_overlay()`` helper instead of invoking this command
+    directly.
+
 ``script-message [<arg1> [<arg2> [...]]]``
     Send a message to all clients, and pass it the following list of arguments.
     What this message means, how many arguments it takes, and what the arguments
@@ -886,14 +1058,22 @@ Input Commands that are Possibly Subject to Change
     2. The name of the binding (as established above).
     3. The key state as string (see below).
     4. The key name (since mpv 0.15.0).
+    5. The text the key would produce, or empty string if not applicable.
 
-    The key state consists of 2 letters:
+    The 5th argument is only set if no modifiers are present (using the shift
+    key with a letter is normally not emitted as having a modifier, and results
+    in upper case text instead, but some backends may mess up).
+
+    The key state consists of 2 characters:
 
     1. One of ``d`` (key was pressed down), ``u`` (was released), ``r`` (key
        is still down, and was repeated; only if key repeat is enabled for this
        binding), ``p`` (key was pressed; happens if up/down can't be tracked).
     2. Whether the event originates from the mouse, either ``m`` (mouse button)
        or ``-`` (something else).
+
+    Future versions can add more arguments and more key state characters to
+    support more input peculiarities.
 
 ``ab-loop``
     Cycle through A-B loop states. The first command will set the ``A`` point
@@ -1435,6 +1615,18 @@ Property list
     Current MKV edition number. Setting this property to a different value will
     restart playback. The number of the first edition is 0.
 
+    Before mpv 0.31.0, this showed the actual edition selected at runtime, if
+    you didn't set the option or property manually. With mpv 0.31.0 and later,
+    this strictly returns the user-set option or property value, and the
+    ``current-edition`` property was added to return the runtime selected
+    edition (this matters with ``--edition=auto``, the default).
+
+``current-edition``
+    Currently selected edition. This property is unavailable if no file is
+    loaded, or the file has no editions. (Matroska files make a difference
+    between having no editions and a single edition, which will be reflected by
+    the property, although in practice it does not matter.)
+
 ``chapters``
     Number of chapters.
 
@@ -1924,8 +2116,19 @@ Property list
     (or to be exact, the size the video filters output). ``2`` will set the
     double size, ``0.5`` halves the size.
 
-``window-minimized``
-    Return whether the video window is minimized or not.
+    See ``current-window-scale`` for the value derived from the actual window
+    size.
+
+    Since mpv 0.31.0, this always returns the previously set value (or the
+    default value), instead of the value implied by the actual window size.
+    Before mpv 0.31.0, this returned what ``current-window-scale`` returns now,
+    after the window was created.
+
+``current-window-scale``
+    The ``window-scale`` value calculated from the current window size. This
+    has the same value as ``window-scale`` if the window size was not changed
+    since setting the option, and the window size was not restricted in other
+    ways. The property is unavailable if no video is active.
 
 ``display-names``
     Names of the displays that the mpv window covers. On X11, these
@@ -1936,12 +2139,17 @@ Property list
     Display Product Names as used in the System Information and only one display
     name is returned since a window can only be on one screen.
 
-``display-fps`` (RW)
+``display-fps``
     The refresh rate of the current display. Currently, this is the lowest FPS
     of any display covered by the video, as retrieved by the underlying system
     APIs (e.g. xrandr on X11). It is not the measured FPS. It's not necessarily
     available on all platforms. Note that any of the listed facts may change
     any time without a warning.
+
+    Writing to this property is deprecated. It has the same effect as writing to
+    ``override-display-fps``. Since mpv 0.31.0, this property is unavailable
+    if no display FPS was reported (e.g. if no video is active), while in older
+    versions, it returned the ``--display-fps`` option value.
 
 ``estimated-display-fps``
     Only available if display-sync mode (as selected by ``--video-sync``) is
@@ -1950,6 +2158,12 @@ Property list
 
 ``vsync-jitter``
     Estimated deviation factor of the vsync duration.
+
+``display-hidpi-scale``
+    The HiDPI scale factor as reported by the windowing backend. If no VO is
+    active, or if the VO does not report a value, this property is unavailable.
+    It may be saner to report an absolute DPI, however, this is the way HiDPI
+    support is implemented on most OS APIs. See also ``--hidpi-window-scale``.
 
 ``video-aspect`` (RW)
     Deprecated. This is tied to ``--video-aspect-override``, but always
@@ -1963,8 +2177,39 @@ Property list
     ``overlay-add`` command. It gives you the actual OSD size, which can be
     different from the window size in some cases.
 
+    Alias to ``osd-dimensions/w`` and ``osd-dimensions/h``.
+
 ``osd-par``
     Last known OSD display pixel aspect (can be 0).
+
+    Alias to ``osd-dimensions/osd-par``.
+
+``osd-dimensions``
+    Last known OSD dimensions.
+
+    Has the following sub-properties (which can be read as ``MPV_FORMAT_NODE``
+    or Lua table with ``mp.get_property_native``):
+
+    ``w``
+        Size of the VO window in OSD render units (usually pixels, but may be
+        scaled pixels with VOs like ``xv``).
+
+    ``h``
+        Size of the VO window in OSD render units,
+
+    ``par``
+        Pixel aspect ratio of the OSD (usually 1).
+
+    ``aspect``
+        Display aspect ratio of the VO window. (Computing from the properties
+        above.)
+
+    ``mt``, ``mb``, ``ml``, ``mr``
+        OSD to video margins (top, bottom, left, right). This describes the
+        area into which the video is rendered.
+
+    Any of these properties may be unavailable or set to dummy values if the
+    VO window is not created or visible.
 
 ``sub-text``
     Return the current subtitle text regardless of sub visibility.
@@ -2050,7 +2295,11 @@ Property list
         String describing the media type. One of ``audio``, ``video``, ``sub``.
 
     ``track-list/N/src-id``
-        Track ID as used in the source file. Not always available.
+        Track ID as used in the source file. Not always available. (It is
+        missing if the format has no native ID, if the track is a pseudo-track
+        that does not exist in this way in the actual file, or if the format
+        is handled by libavformat, and the format was not whitelisted as having
+        track IDs.)
 
     ``track-list/N/title``
         Track title as it is stored in the file. Not always available.
@@ -2407,6 +2656,28 @@ Property list
 ``current-ao``
     Current audio output driver (name as used with ``--ao``).
 
+``shared-script-properties`` (RW)
+    This is a key/value map of arbitrary strings shared between scripts for
+    general use. The player itself does not use any data in it (although some
+    builtin scripts may). The property is not preserved across player restarts.
+
+    This is very primitive, inefficient, and annoying to use. It's a makeshift
+    solution which could go away any time (for example, when a better solution
+    becomes available). This is also why this property has an annoying name. You
+    should avoid using it, unless you absolutely have to.
+
+    Lua scripting has helpers starting with ``utils.shared_script_property_``.
+    They are undocumented because you should not use this property. If you still
+    think you must, you should use the helpers instead of the property directly.
+
+    You are supposed to use the ``change-list`` command to modify the contents.
+    Reading, modifying, and writing the property manually could data loss if two
+    scripts update different keys at the same time due to lack of
+    synchronization. The Lua helpers take care of this.
+
+    (There is no way to ensure synchronization if two scripts try to update the
+    same key at the same time.)
+
 ``working-directory``
     Return the working directory of the mpv process. Can be useful for JSON IPC
     users, because the command line player usually works with relative paths.
@@ -2540,6 +2811,56 @@ Property list
     is not a map, as order matters and duplicate entries are possible. Recursive
     profiles are not expanded, and show up as special ``profile`` options.
 
+``command-list``
+    Return the list of input commands. This returns an array of maps, where
+    each map node represents a command. This map currently only has a single
+    entry: ``name`` for the name of the command. (This property is supposed to
+    be a replacement for ``--input-cmdlist``. The option dumps some more
+    information, but it's a valid feature request to extend this property if
+    needed.)
+
+``input-bindings``
+    Return list of current input key bindings. This returns an array of maps,
+    where each map node represents a binding for a single key/command. This map
+    has the following entries:
+
+    ``key``
+        The key name. This is normalized and may look slightly different from
+        how it was specified in the source (e.g. in input.conf).
+
+    ``cmd``
+        The command mapped to the key. (Currently, this is exactly the same
+        string as specified in the source, other than stripping whitespace and
+        comments. It's possible that it will be normalized in the future.)
+
+    ``is_weak``
+        If set to true, any existing and active user bindings will take priority.
+
+    ``owner``
+        If this entry exists, the name of the script (or similar) which added
+        this binding.
+
+    ``section``
+        Name of the section this binding is part of. This is a rarely used
+        mechanism. This entry may be removed or change meaning in the future.
+
+    ``priority``
+        A number. Bindings with a higher value are preferred over bindings
+        with a lower value. If the value is negative, this binding is inactive
+        and will not be triggered by input. Note that mpv does not use this
+        value internally, and matching of bindings may work slightly differently
+        in some cases. In addition, this value is dynamic and can change around
+        at runtime.
+
+    ``comment``
+        If available, the comment following the command on the same line. (For
+        example, the input.conf entry ``f cycle bla # toggle bla`` would
+        result in an entry with ``comment = "toggle bla", cmd = "cycle bla"``.)
+
+    This property is read-only, and change notification is not supported.
+    Currently, there is no mechanism to change key bindings at runtime, other
+    than scripts adding or removing their own bindings.
+
 Inconsistencies between options and properties
 ----------------------------------------------
 
@@ -2547,54 +2868,31 @@ You can access (almost) all options as properties, though there are some
 caveats with some properties (due to historical reasons):
 
 ``vid``, ``aid``, ``sid``
-    While playback is active, you can set existing tracks only. (The option
-    allows setting any track ID, and which tracks to enable is chosen at
-    loading time.)
+    While playback is active, these result the actually active tracks. For
+    example, if you set ``aid=5``, and the currently played file contains no
+    audio track with ID 5, the ``aid`` property will return ``no``.
 
-    Option changes at runtime are affected by this as well.
+    Before mpv 0.31.0, you could set existing tracks at runtime only.
 
 ``display-fps``
-    If a VO is created, this will return either the actual display FPS, or
-    an invalid value, instead of the option value.
+    This inconsistent behavior is deprecated. Post-deprecation, the reported
+    value and the option value are cleanly separated (``override-display-fps``
+    for the option value).
 
 ``vf``, ``af``
     If you set the properties during playback, and the filter chain fails to
-    reinitialize, the new value will be rejected. Setting the option or
-    setting the property outside of playback will always succeed/fail in the
-    same way. Also, there are no ``vf-add`` etc. properties, but you can use
-    the ``vf``/``af`` group of commands to achieve the same.
+    reinitialize, the option will be set, but the runtime filter chain does not
+    change. On the other hand, the next video to be played will fail, because
+    the initial filter chain cannot be created.
 
-    Option changes at runtime are affected by this as well.
-
-``edition``
-    While a file is loaded, the property will always return the effective
-    edition, and setting the ``auto`` value will show somewhat strange behavior
-    (the property eventually switching to whatever is the default edition).
+    This behavior changed in mpv 0.31.0. Before this, the new value was rejected
+    *iff* video (for ``vf``) or audio (for ``af``) was active. If playback was
+    not active, the behavior was the same as the current behavior.
 
 ``playlist``
     The property is read-only and returns the current internal playlist. The
     option is for loading playlist during command line parsing. For client API
     uses, you should use the ``loadlist`` command instead.
-
-``window-scale``
-    Might verify the set value when setting while a window is created.
-
-``audio-file``, ``sub-file``, ``external-file``
-    These options/properties are actually lists of filenames. To make the
-    command-line interface easier, each ``--audio-file=...`` option appends
-    the full string to the internal list. However, when used as properties,
-    every time you set the property as a string the internal list will be
-    replaced with a single entry containing the string you set. ``,`` or other
-    separators are never used. You have to use ``MPV_FORMAT_NODE_ARRAY`` (or
-    corresponding API, e.g. ``mp.set_property_native()`` with a table in Lua)
-    to set multiple entries.
-
-    Strictly speaking, option access via API (e.g. ``mpv_set_option_string()``)
-    has the same problem, and it's only a difference between CLI/API.
-
-``playlist-pos``, ``chapter``
-    These properties behave different from the deprecated options with the same
-    names.
 
 ``profile``, ``include``
     These are write-only, and will perform actions as they are written to,

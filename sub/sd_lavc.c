@@ -249,8 +249,8 @@ static void read_sub_bitmaps(struct sd *sd, struct sub *sub)
         b->stride = sub->data->stride[0];
         b->bitmap = sub->data->planes[0] + pos.y * b->stride + pos.x * 4;
 
-        sub->src_w = FFMAX(sub->src_w, b->x + b->w);
-        sub->src_h = FFMAX(sub->src_h, b->y + b->h);
+        sub->src_w = MPMAX(sub->src_w, b->x + b->w);
+        sub->src_h = MPMAX(sub->src_h, b->y + b->h);
 
         assert(r->nb_colors > 0);
         assert(r->nb_colors <= 256);
@@ -451,8 +451,8 @@ static void get_bitmaps(struct sd *sd, struct mp_osd_res d, int format,
         h = priv->video_params.h;
     }
     if (current->src_w > w || current->src_h > h) {
-        w = priv->video_params.w;
-        h = priv->video_params.h;
+        w = MPMAX(priv->video_params.w, current->src_w);
+        h = MPMAX(priv->video_params.h, current->src_h);
     }
 
     if (opts->sub_pos != 100 && opts->ass_style_override) {

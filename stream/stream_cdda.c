@@ -153,7 +153,7 @@ static void cdparanoia_callback(long int inpos, paranoia_cb_mode_t function)
 {
 }
 
-static int fill_buffer(stream_t *s, char *buffer, int max_len)
+static int fill_buffer(stream_t *s, void *buffer, int max_len)
 {
     cdda_priv *p = (cdda_priv *)s->priv;
     int16_t *buf;
@@ -262,12 +262,14 @@ static int control(stream_t *stream, int cmd, void *arg)
         *(double *)arg = pos / (44100.0 * 2 * 2);
         return STREAM_OK;
     }
-    case STREAM_CTRL_GET_SIZE:
-        *(int64_t *)arg =
-            (p->end_sector + 1 - p->start_sector) * CDIO_CD_FRAMESIZE_RAW;
-        return STREAM_OK;
     }
     return STREAM_UNSUPPORTED;
+}
+
+static int64_t get_size(stream_t *st)
+{
+    cdda_priv *p = st->priv;
+    return (p->end_sector + 1 - p->start_sector) * CDIO_CD_FRAMESIZE_RAW;
 }
 
 static int open_cdda(stream_t *st)
@@ -383,6 +385,7 @@ static int open_cdda(stream_t *st)
     st->seek = seek;
     st->seekable = true;
     st->control = control;
+    st->get_size = get_size;
     st->close = close_cdda;
 
     st->streaming = true;
@@ -398,4 +401,5 @@ const stream_info_t stream_info_cdda = {
     .name = "cdda",
     .open = open_cdda,
     .protocols = (const char*const[]){"cdda", NULL },
+    .stream_origin = STREAM_ORIGIN_UNSAFE,
 };

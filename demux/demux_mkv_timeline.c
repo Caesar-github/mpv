@@ -172,6 +172,7 @@ static bool check_file_seg(struct tl_ctx *ctx, char *filename, int segment)
         .matroska_wanted_segment = segment,
         .matroska_was_valid = &was_valid,
         .disable_timeline = true,
+        .stream_flags = ctx->tl->stream_origin,
     };
     struct mp_cancel *cancel = ctx->tl->cancel;
     if (mp_cancel_test(cancel))
@@ -257,8 +258,10 @@ static void find_ordered_chapter_sources(struct tl_ctx *ctx)
                 playlist_parse_file(opts->ordered_chapters_files,
                                     ctx->tl->cancel, ctx->global);
             talloc_steal(tmp, pl);
-            for (struct playlist_entry *e = pl ? pl->first : NULL; e; e = e->next)
-                MP_TARRAY_APPEND(tmp, filenames, num_filenames, e->filename);
+            for (int n = 0; n < pl->num_entries; n++) {
+                MP_TARRAY_APPEND(tmp, filenames, num_filenames,
+                                 pl->entries[n]->filename);
+            }
         } else if (!ctx->demuxer->stream->is_local_file) {
             MP_WARN(ctx, "Playback source is not a "
                     "normal disk file. Will not search for related files.\n");
@@ -515,7 +518,7 @@ void build_ordered_chapter_timeline(struct timeline *tl)
         .global = tl->global,
         .tl = tl,
         .demuxer = demuxer,
-        .opts = mp_get_config_group(ctx, tl->global, GLOBAL_CONFIG),
+        .opts = mp_get_config_group(ctx, tl->global, &mp_opt_root),
     };
 
     if (!ctx->opts->ordered_chapters || !demuxer->access_references) {

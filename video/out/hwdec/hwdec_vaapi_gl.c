@@ -19,17 +19,12 @@
 #include "hwdec_vaapi.h"
 
 #include <EGL/egl.h>
-#include <EGL/eglext.h>
 #include "video/out/opengl/ra_gl.h"
 
-#ifndef GL_OES_EGL_image
 typedef void* GLeglImageOES;
-#endif
-#ifndef EGL_KHR_image
 typedef void *EGLImageKHR;
-#endif
 
-#ifndef EGL_LINUX_DMA_BUF_EXT
+// Any EGL_EXT_image_dma_buf_import definitions used in this source file.
 #define EGL_LINUX_DMA_BUF_EXT             0x3270
 #define EGL_LINUX_DRM_FOURCC_EXT          0x3271
 #define EGL_DMA_BUF_PLANE0_FD_EXT         0x3272
@@ -41,7 +36,11 @@ typedef void *EGLImageKHR;
 #define EGL_DMA_BUF_PLANE2_FD_EXT         0x3278
 #define EGL_DMA_BUF_PLANE2_OFFSET_EXT     0x3279
 #define EGL_DMA_BUF_PLANE2_PITCH_EXT      0x327A
-#endif
+
+// Any EGL_EXT_image_dma_buf_import definitions used in this source file.
+#define EGL_DMA_BUF_PLANE3_FD_EXT         0x3440
+#define EGL_DMA_BUF_PLANE3_OFFSET_EXT     0x3441
+#define EGL_DMA_BUF_PLANE3_PITCH_EXT      0x3442
 
 struct vaapi_gl_mapper_priv {
     GLuint gl_textures[4];
@@ -140,7 +139,6 @@ static void vaapi_gl_mapper_uninit(const struct ra_hwdec_mapper *mapper)
 
 static bool vaapi_gl_map(struct ra_hwdec_mapper *mapper)
 {
-#if VA_CHECK_VERSION(1, 1, 0)
     struct priv *p_mapper = mapper->priv;
     struct vaapi_gl_mapper_priv *p = p_mapper->interop_mapper_priv;
 
@@ -173,52 +171,6 @@ static bool vaapi_gl_map(struct ra_hwdec_mapper *mapper)
         mapper->tex[n] = p_mapper->tex[n];
     }
     gl->BindTexture(GL_TEXTURE_2D, 0);
-#endif
-    return true;
-}
-
-static bool vaapi_gl_map_legacy(struct ra_hwdec_mapper *mapper,
-                                const VABufferInfo *buffer_info,
-                                const int *drm_fmts) {
-    struct priv *p_mapper = mapper->priv;
-    struct vaapi_gl_mapper_priv *p = p_mapper->interop_mapper_priv;
-
-    GL *gl = ra_gl_get(mapper->ra);
-
-    VAImage *va_image = &p_mapper->current_image;
-
-    for (int n = 0; n < p_mapper->num_planes; n++) {
-        int attribs[20] = {EGL_NONE};
-        int num_attribs = 0;
-
-        const struct ra_format *fmt = p_mapper->tex[n]->params.format;
-        int n_comp = fmt->num_components;
-        int comp_s = fmt->component_size[n] / 8;
-        if (n_comp < 1 || n_comp > 3 || comp_s < 1 || comp_s > 2)
-            return false;
-        int drm_fmt = drm_fmts[n_comp - 1 + (comp_s - 1) * 4];
-        if (!drm_fmt)
-            return false;
-
-        ADD_ATTRIB(EGL_LINUX_DRM_FOURCC_EXT, drm_fmt);
-        ADD_ATTRIB(EGL_WIDTH, p_mapper->tex[n]->params.w);
-        ADD_ATTRIB(EGL_HEIGHT, p_mapper->tex[n]->params.h);
-        ADD_ATTRIB(EGL_DMA_BUF_PLANE0_FD_EXT, buffer_info->handle);
-        ADD_ATTRIB(EGL_DMA_BUF_PLANE0_OFFSET_EXT, va_image->offsets[n]);
-        ADD_ATTRIB(EGL_DMA_BUF_PLANE0_PITCH_EXT, va_image->pitches[n]);
-
-        p->images[n] = p->CreateImageKHR(eglGetCurrentDisplay(),
-            EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, NULL, attribs);
-        if (!p->images[n])
-            return false;
-
-        gl->BindTexture(GL_TEXTURE_2D, p->gl_textures[n]);
-        p->EGLImageTargetTexture2DOES(GL_TEXTURE_2D, p->images[n]);
-
-        mapper->tex[n] = p_mapper->tex[n];
-    }
-    gl->BindTexture(GL_TEXTURE_2D, 0);
-
     return true;
 }
 
@@ -252,9 +204,9 @@ bool vaapi_gl_init(const struct ra_hwdec *hw)
         return false;
 
     GL *gl = ra_gl_get(hw->ra);
-    if (!strstr(exts, "EXT_image_dma_buf_import") ||
-        !strstr(exts, "EGL_KHR_image_base") ||
-        !strstr(gl->extensions, "GL_OES_EGL_image") ||
+    if (!gl_check_extension(exts, "EGL_EXT_image_dma_buf_import") ||
+        !gl_check_extension(exts, "EGL_KHR_image_base") ||
+        !gl_check_extension(gl->extensions, "GL_OES_EGL_image") ||
         !(gl->mpgl_caps & MPGL_CAP_TEX_RG))
         return false;
 
@@ -263,7 +215,6 @@ bool vaapi_gl_init(const struct ra_hwdec *hw)
     p->interop_init = vaapi_gl_mapper_init;
     p->interop_uninit = vaapi_gl_mapper_uninit;
     p->interop_map = vaapi_gl_map;
-    p->interop_map_legacy = vaapi_gl_map_legacy;
     p->interop_unmap = vaapi_gl_unmap;
 
     return true;

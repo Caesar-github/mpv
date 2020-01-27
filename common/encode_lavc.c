@@ -77,25 +77,25 @@ struct mux_stream {
 #define OPT_BASE_STRUCT struct encode_opts
 const struct m_sub_options encode_config = {
     .opts = (const m_option_t[]) {
-        OPT_STRING("o", file, M_OPT_FIXED | CONF_NOCFG | CONF_PRE_PARSE | M_OPT_FILE),
-        OPT_STRING("of", format, M_OPT_FIXED),
-        OPT_KEYVALUELIST("ofopts", fopts, M_OPT_FIXED | M_OPT_HAVE_HELP),
-        OPT_STRING("ovc", vcodec, M_OPT_FIXED),
-        OPT_KEYVALUELIST("ovcopts", vopts, M_OPT_FIXED | M_OPT_HAVE_HELP),
-        OPT_STRING("oac", acodec, M_OPT_FIXED),
-        OPT_KEYVALUELIST("oacopts", aopts, M_OPT_FIXED | M_OPT_HAVE_HELP),
-        OPT_FLOATRANGE("ovoffset", voffset, M_OPT_FIXED, -1000000.0, 1000000.0,
+        OPT_STRING("o", file, CONF_NOCFG | CONF_PRE_PARSE | M_OPT_FILE),
+        OPT_STRING("of", format, 0),
+        OPT_KEYVALUELIST("ofopts", fopts, M_OPT_HAVE_HELP),
+        OPT_STRING("ovc", vcodec, 0),
+        OPT_KEYVALUELIST("ovcopts", vopts, M_OPT_HAVE_HELP),
+        OPT_STRING("oac", acodec, 0),
+        OPT_KEYVALUELIST("oacopts", aopts, M_OPT_HAVE_HELP),
+        OPT_FLOATRANGE("ovoffset", voffset, 0, -1000000.0, 1000000.0,
                        .deprecation_message = "--audio-delay (once unbroken)"),
-        OPT_FLOATRANGE("oaoffset", aoffset, M_OPT_FIXED, -1000000.0, 1000000.0,
+        OPT_FLOATRANGE("oaoffset", aoffset, 0, -1000000.0, 1000000.0,
                        .deprecation_message = "--audio-delay (once unbroken)"),
-        OPT_FLAG("orawts", rawts, M_OPT_FIXED),
-        OPT_FLAG("ovfirst", video_first, M_OPT_FIXED,
+        OPT_FLAG("orawts", rawts, 0),
+        OPT_FLAG("ovfirst", video_first, 0,
                  .deprecation_message = "no replacement"),
-        OPT_FLAG("oafirst", audio_first, M_OPT_FIXED,
+        OPT_FLAG("oafirst", audio_first, 0,
                  .deprecation_message = "no replacement"),
-        OPT_FLAG("ocopy-metadata", copy_metadata, M_OPT_FIXED),
-        OPT_KEYVALUELIST("oset-metadata", set_metadata, M_OPT_FIXED),
-        OPT_STRINGLIST("oremove-metadata", remove_metadata, M_OPT_FIXED),
+        OPT_FLAG("ocopy-metadata", copy_metadata, 0),
+        OPT_KEYVALUELIST("oset-metadata", set_metadata, 0),
+        OPT_STRINGLIST("oremove-metadata", remove_metadata, 0),
 
         OPT_REMOVED("ocopyts", "ocopyts is now the default"),
         OPT_REMOVED("oneverdrop", "no replacement"),
@@ -720,7 +720,7 @@ int encode_lavc_getstatus(struct encode_lavc_context *ctx,
 
     double now = mp_time_sec();
     float minutes, megabytes, fps, x;
-    float f = FFMAX(0.0001, relative_position);
+    float f = MPMAX(0.0001, relative_position);
 
     pthread_mutex_lock(&ctx->lock);
 
@@ -830,7 +830,9 @@ static void encoder_2pass_prepare(struct encoder_context *p)
 
     if (p->encoder->flags & AV_CODEC_FLAG_PASS2) {
         MP_INFO(p, "Reading 2-pass log: %s\n", filename);
-        struct stream *s = stream_open(filename, p->global);
+        struct stream *s = stream_create(filename,
+                                         STREAM_ORIGIN_DIRECT | STREAM_READ,
+                                         NULL, p->global);
         if (s) {
             struct bstr content = stream_read_complete(s, p, 1000000000);
             if (content.start) {

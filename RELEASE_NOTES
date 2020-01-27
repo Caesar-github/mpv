@@ -1,9 +1,7 @@
-Release 0.30.0
+Release 0.32.0
 ==============
 
 This release requires FFmpeg 4.0 or newer.
-This release has replaced the internal Vulkan rendering abstraction
-with libplacebo's more up-to-date implementation.
 
 
 Features
@@ -12,54 +10,25 @@ Features
 Added
 ~~~~~
 
-- vo_gpu: vulkan: hwdec_cuda: Add support for Vulkan interop
-- command: support for async commands
-- input: support for named arguments
-- cocoa-cb: add support for mac 10.14 Dark mode and run time switching
-- vo_gpu: switch to Vulkan API implementation based on libplacebo
-- context_drm_egl: Add support for presentation feedback
-- vo_gpu: implement error diffusion for dithering
-- vo/gpu: hwdec_vdpau: Support direct mode for 4:4:4 content
-- vo_gpu: hwdec_vaapi: Add Vulkan interop
-- video, TOOLS: add vf_fingerprint and a skip-logo script
-- vo_gpu: d3d11: add support for presentation feedback
-- vo_drm: 30bpp support
-- cocoa-cb: add support for 10bit opengl rendering
-- video: add pure gamma TRC curves for 2.0, 2.4 and 2.6
-- vo_drm: Implement N-buffering and presentation feedback
-- Reintroduce vo_wayland as vo_wlshm
-- video: add zimg wrapper
-- wayland: add presentation time
-- input: add gamepad support through SDL2
+- stream_libarchive: enable RAR5 support
+- bash completion: add initial implementation
+- cocoa-cb: add support for forcing the dedicated GPU for rendering
+- cocoa-cb: add pinch to resize window gesture
+- w32_common: support minimizing/maximizing using osc window controls
 
 
 Changed
 ~~~~~~~
 
-- cocoa-cb: use libmpv's advanced rendering control and timing
-- vo_gpu: improve tone mapping desaturation
-- vo_gpu: redesign peak detection algorithm
-- vo_gpu: allow boosting dark scenes when tone mapping
-- osc: improve look of seekranges
-- vo_gpu: x11: remove special vdpau probing, use EGL by default
-- demux: sort filenames naturally when playing a directory / archive
-- stream_dvb: rewrite channel switching, remove old stream control
-- filters: extend vf_format so that it can convert color parameters
+- wayland: print warning on GNOME due to serious issues with their compositor
+- player: write watch-later config even for unseekable streams
 
 
 Removed
 ~~~~~~~
 
-- demux, stream: rip out the classic stream cache
-- vo_gpu: removed internal Vulkan implementation
-- Remove libdvdread support in favor of libdvdnav
-- demux, stream: remove much of the optical disc support
-- Remove classic Linux analog TV support, and DVB runtime controls
-- demux, stream: remove old rar support in favor of libarchive
-- vo_gpu: remove mali-fbdev
-- vo_gpu: remove vdpau/GLX backend
-- vf_vapourynth: remove Lua backend
-- vo_gpu: remove hwdec_d3d11eglrgb
+- vo_gpu: hwdec_vdpau: remove direct_mode
+- vo_gpu: hwdec_vaegl: remove support for old-style interop
 
 
 Options and Commands
@@ -68,67 +37,33 @@ Options and Commands
 Added
 ~~~~~
 
-- command: add a subprocess command
-- vo_gpu: added --tone-mapping-max-boost, --hdr-peak-decay-rate, --hdr-scene-threshold-low/high
-- player: add --demuxer-cache-wait option
-- Implement backwards playback
-- demux: add a on-disk cache
-- demux, command: add another stream recording mechanism, `dump-cache` command
-- ao_pulse: add --pulse-allow-suspended
-- command: add video-add/video-remove/video-reload commands
-- demux_cue: added --demuxer-cue-codepage to select CUE sheet charset
-- input: add keybind command
-- command: add sub-start & sub-end properties
-- video/d3d11: added --d3d11-adapter to select a rendering adapter by name
-- vo_gpu/d3d11: added --d3d11-output-format for configuring swap chain format
+- command: add a playlist-unshuffle command
+- command: add osd-dimensions property
+- input: new PLAYONLY and PAUSEONLY keycodes
 
 
 Changed
 ~~~~~~~
 
-- vo_gpu: split --linear-scaling into --linear-upscaling and --linear-downscaling
-- vo_gpu: split --tone-mapping-desaturate into strength and exponent
-- drm: rename --drm-osd-plane-id to --drm-draw-plane, --drm-video-plane-id to --drm-drmprime-video-plane, --drm-osd-size to --drm-draw-surface-size
-
-
-Deprecated
-~~~~~~~~~~
-
-- options: deprecate --video-aspect, replaced by --video-aspect-override
-- options: deprecate --record-file, --spirv-compiler
-
-
-Removed
-~~~~~~~
-
-- options: remove deprecated --chapter option
-- demux: remove "program" property
-- stream: remove "disc-titles", "disc-title", "disc-title-list", and "angle" properties
-- cocoa-cb: remove --macos-title-bar-style, replaced by --macos-title-bar-material and --macos-title-bar-appearance
-- spirv: remove support for --spirv-compiler=nvidia (shaderc is the only remaining option)
+- options: change option parsing when using a single dash
+  This adds a warning for `-o file.mkv` and disallows the use of
+  `--o file.mkv` (use `--o=file.mkv` instead).
 
 
 Fixes and Minor Enhancements
 ----------------------------
 
-- context_drm_egl: implement n-buffering
-- cocoa-cb: add support for custom colored title bar
-- vo_gpu: x11egl: support Mesa OML sync extension
-- demux, demux_edl: add extension for tracks sourced from separate streams
-- context_drm_egl: Use eglGetPlatformDisplayEXT if available
-- vo_gpu: vulkan: add Android context
-- wayland: use xdg-decoration if available
-- vo_gpu: glx: use GLX_OML_sync_control for better vsync reporting
-- demux: runtime option changing for cache and stream recording
-- x11: fix ICC profiling for multiple monitors
-- zsh completion: move generation to runtime and improve
+- lua: fix mp.file_info for large files
+- vo_gpu: fix crash if dither texture fails to allocate
+- wayland: unscrew up cursors, fix various issues
+- osc: usability improvements for osc window controls
 
 
 This listing is not complete. Check DOCS/client-api-changes.rst for a history
 of changes to the client API, and DOCS/interface-changes.rst for a history
 of changes to other user-visible interfaces.
 
-A complete changelog can be seen by running `git log v0.29.1..v0.30.0`
+A complete changelog can be seen by running `git log v0.31.0..v0.32.0`
 in the git repository or by visiting either
-https://github.com/mpv-player/mpv/compare/v0.29.1...v0.30.0 or
-https://git.srsfckn.biz/mpv/log/?qt=range&q=v0.29.1..v0.30.0
+https://github.com/mpv-player/mpv/compare/v0.31.0...v0.32.0 or
+https://git.srsfckn.biz/mpv/log/?qt=range&q=v0.31.0..v0.32.0

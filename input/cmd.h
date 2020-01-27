@@ -40,6 +40,7 @@ struct mp_cmd_def {
     bool vararg;        // last argument can be given 0 to multiple times
     bool scalable;
     bool is_ignore;
+    bool is_noisy;      // reduce log level
     bool default_async; // default to MP_ASYNC flag if none set by user
     // If you set this, handler() must ensure mp_cmd_ctx_complete() is called
     // at some point (can be after handler() returns). If you don't set it, the
@@ -99,7 +100,8 @@ typedef struct mp_cmd {
     struct mp_cmd_arg *args;
     int nargs;
     int flags; // mp_cmd_flags bitfield
-    bstr original;
+    char *original;
+    char *desc; // (usually NULL since stripped away later)
     char *input_section;
     bool is_up_down : 1;
     bool is_up : 1;
@@ -114,6 +116,7 @@ typedef struct mp_cmd {
     const struct mp_cmd_def *def;
     char *sender; // name of the client API user which sent this
     char *key_name; // string representation of the key binding
+    char *key_text; // text if key is a text key
 } mp_cmd_t;
 
 extern const struct mp_cmd_def mp_cmds[];

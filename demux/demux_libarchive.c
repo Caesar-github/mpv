@@ -20,11 +20,16 @@
 
 #include "common/common.h"
 #include "common/playlist.h"
+#include "options/m_config.h"
 #include "stream/stream.h"
 #include "misc/natural_sort.h"
 #include "demux.h"
 
 #include "stream/stream_libarchive.h"
+
+struct demux_libarchive_opts {
+    int rar_list_all_volumes;
+};
 
 static int cmp_filename(const void *a, const void *b)
 {
@@ -43,27 +48,32 @@ static int open_file(struct demuxer *demuxer, enum demux_check check)
         probe_size *= 100;
     }
 
-    bstr probe = stream_peek(demuxer->stream, probe_size);
-    if (probe.len == 0)
+    void *probe = ta_alloc_size(NULL, probe_size);
+    if (!probe)
         return -1;
+    int probe_got = stream_read_peek(demuxer->stream, probe, probe_size);
     struct stream *probe_stream =
-        stream_memory_open(demuxer->global, probe.start, probe.len);
-    struct mp_archive *mpa = mp_archive_new(mp_null_log, probe_stream, flags);
+        stream_memory_open(demuxer->global, probe, probe_got);
+    struct mp_archive *mpa = mp_archive_new(mp_null_log, probe_stream, flags, 0);
     bool ok = !!mpa;
     free_stream(probe_stream);
     mp_archive_free(mpa);
+    ta_free(probe);
     if (!ok)
         return -1;
 
-    mpa = mp_archive_new(demuxer->log, demuxer->stream, flags);
+    struct demux_libarchive_opts *opts =
+        mp_get_config_group(demuxer, demuxer->global, demuxer->desc->options);
+
+    if (!opts->rar_list_all_volumes)
+        flags |= MP_ARCHIVE_FLAG_NO_RAR_VOLUMES;
+
+    mpa = mp_archive_new(demuxer->log, demuxer->stream, flags, 0);
     if (!mpa)
         return -1;
 
     struct playlist *pl = talloc_zero(demuxer, struct playlist);
     demuxer->playlist = pl;
-
-    // make it load archive://
-    pl->disable_safety = true;
 
     char *prefix = mp_url_escape(mpa, demuxer->stream->url, "~|");
 
@@ -72,7 +82,7 @@ static int open_file(struct demuxer *demuxer, enum demux_check check)
 
     while (mp_archive_next_entry(mpa)) {
         // stream_libarchive.c does the real work
-        char *f = talloc_asprintf(mpa, "archive://%s|%s", prefix,
+        char *f = talloc_asprintf(mpa, "archive://%s|/%s", prefix,
                                   mpa->entry_filename);
         MP_TARRAY_APPEND(mpa, files, num_files, f);
     }
@@ -83,6 +93,8 @@ static int open_file(struct demuxer *demuxer, enum demux_check check)
     for (int n = 0; n < num_files; n++)
         playlist_add_file(pl, files[n]);
 
+    playlist_set_stream_flags(pl, demuxer->stream_origin);
+
     demuxer->filetype = "archive";
     demuxer->fully_read = true;
 
@@ -92,8 +104,17 @@ static int open_file(struct demuxer *demuxer, enum demux_check check)
     return 0;
 }
 
+#define OPT_BASE_STRUCT struct demux_libarchive_opts
+
 const struct demuxer_desc demuxer_desc_libarchive = {
     .name = "libarchive",
     .desc = "libarchive wrapper",
     .open = open_file,
+    .options = &(const struct m_sub_options){
+        .opts = (const struct m_option[]) {
+            OPT_FLAG("rar-list-all-volumes", rar_list_all_volumes, 0),
+            {0}
+        },
+        .size = sizeof(OPT_BASE_STRUCT),
+    },
 };

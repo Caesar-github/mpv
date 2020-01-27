@@ -228,9 +228,12 @@ static void update_opts(void *p)
     if (m_config_cache_update(vo->opts_cache)) {
         read_opts(vo);
 
-        // "Legacy" update of video position related options.
-        if (vo->driver->control)
+        if (vo->driver->control) {
+            vo->driver->control(vo, VOCTRL_VO_OPTS_CHANGED, NULL);
+            // "Legacy" update of video position related options.
+            // Unlike VOCTRL_VO_OPTS_CHANGED, often not propagated to backends.
             vo->driver->control(vo, VOCTRL_SET_PANSCAN, NULL);
+        }
     }
 
     if (vo->gl_opts_cache && m_config_cache_update(vo->gl_opts_cache)) {
@@ -879,6 +882,9 @@ static bool render_frame(struct vo *vo)
     }
     if (in->current_frame->num_vsyncs > 0)
         in->current_frame->num_vsyncs -= 1;
+
+    // Always render when paused (it's typically the last frame for a while).
+    in->dropped_frame &= !in->paused;
 
     bool use_vsync = in->current_frame->display_synced && !in->paused;
     if (use_vsync && !in->expecting_vsync) // first DS frame in a row
