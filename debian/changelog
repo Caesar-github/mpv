@@ -1,13 +1,19 @@
-mpv (0.32.0-1) UNRELEASED; urgency=medium
-
-  [ Debian Janitor ]
-  * Set upstream metadata fields: Bug-Database, Repository, Repository-
-    Browse.
+mpv (0.32.0-1) unstable; urgency=medium
 
   [ James Cowgill ]
-  *
+  * New upstream release.
 
- -- James Cowgill <jcowgill@debian.org>  Wed, 29 Jan 2020 00:01:02 +0000
+  * d/copyright: Add updates for 0.32.0.
+  * d/control:
+    - Update libarchive dependency.
+    - Bump standards version to 4.5.0.
+  * d/patches: Refresh patches.
+
+  [ Debian Janitor ]
+  * Set upstream metadata fields:
+    Bug-Database, Repository, Repository-Browse.
+
+ -- James Cowgill <jcowgill@debian.org>  Wed, 29 Jan 2020 01:03:08 +0000
 
 mpv (0.30.0-1) unstable; urgency=medium
 
