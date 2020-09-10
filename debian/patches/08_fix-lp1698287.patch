@@ -1,0 +1,33 @@
+Description: Prefer native Wayland over X11 if both are present
+ In Gnome Shell with Xwayland running, both options are present but only
+ one will work with libva (VA-API). This is because libva only supports DRI2
+ and Xwayland only supports DRI3. So libva fails to initialize using the x11
+ option. So we force mpv to use native Wayland instead, which libva supports
+ properly (albeit without a titlebar). (LP: #1698287)
+Author: Daniel van Vugt <daniel.van.vugt@canonical.com>
+Bug-Ubuntu: https://bugs.launchpad.net/bugs/1698287
+Forwarded: yes
+Last-Update: 2017-08-09
+
+--- a/video/out/opengl/context.c	2017-04-23 07:57:53.000000000 +0800
++++ b/video/out/opengl/context.c	2017-06-28 16:05:12.884011509 +0800
+@@ -65,6 +65,9 @@
+ #if HAVE_GL_DXINTEROP
+     &mpgl_driver_dxinterop,
+ #endif
++#if HAVE_GL_WAYLAND
++    &mpgl_driver_wayland,
++#endif
+ #if HAVE_GL_X11
+     &mpgl_driver_x11_probe,
+ #endif
+@@ -74,9 +77,6 @@
+ #if HAVE_GL_X11
+     &mpgl_driver_x11,
+ #endif
+-#if HAVE_GL_WAYLAND
+-    &mpgl_driver_wayland,
+-#endif
+ #if HAVE_EGL_DRM
+     &mpgl_driver_drm,
+     &mpgl_driver_drm_egl,

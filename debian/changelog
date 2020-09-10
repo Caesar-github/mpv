@@ -1,0 +1,722 @@
+mpv (0.27.2-1ubuntu1) bionic; urgency=medium
+
+  * Merge from Debian unstable (LP: #1753472). Remaining changes:
+    - Prefer Wayland over X11, so if both are present (e.g. Xwayland) then
+      VA-API gets a display type that works. (LP: #1698287)
+    - Enable VA-API hardware acceleration by default.
+      (LP: #1708102, LP: #1737670, LP: #1728514)
+
+ -- James Cowgill <jcowgill@debian.org>  Mon, 09 Apr 2018 15:17:34 +0100
+
+mpv (0.27.2-1) unstable; urgency=medium
+
+  * New upstream bugfix release.
+    - Also whitelist subtitle URLs in youtube-dl hook. (Closes: #890410)
+
+ -- James Cowgill <jcowgill@debian.org>  Fri, 16 Feb 2018 22:56:00 +0000
+
+mpv (0.27.1-1) unstable; urgency=medium
+
+  * New upstream bugfix release.
+  * debian/patches/09_ytdl-hook-whitelist-protocols.patch:
+    - Drop, slightly modified version applied upstream.
+
+ -- James Cowgill <jcowgill@debian.org>  Mon, 12 Feb 2018 19:57:05 +0000
+
+mpv (0.27.0-4) unstable; urgency=high
+
+  * debian/patches/09_ytdl-hook-whitelist-protocols.patch:
+    - Fix regression in CVE-2018-6360 patch which broke youtube playlists.
+      (Closes: #889892)
+
+ -- James Cowgill <jcowgill@debian.org>  Thu, 08 Feb 2018 11:51:09 +0000
+
+mpv (0.27.0-3) unstable; urgency=high
+
+  * debian/patches/09_ytdl-hook-whitelist-protocols.patch:
+    - Add patch which whitelists protocols received from youtube-dl.
+      Fixes CVE-2018-6360. (Closes: #888654)
+
+ -- James Cowgill <jcowgill@debian.org>  Sat, 03 Feb 2018 14:59:20 +0100
+
+mpv (0.27.0-2ubuntu4) bionic; urgency=medium
+
+  * Only try hwdec=vaapi, or nothing at all. This avoids problems with other
+    acceleration methods such as Nvidia CUDA (LP: #1737670, LP: #1728514)
+
+ -- Daniel van Vugt <daniel.van.vugt@canonical.com>  Fri, 15 Dec 2017 09:47:31 +0100
+
+mpv (0.27.0-2ubuntu3) bionic; urgency=medium
+
+  * No-change rebuild against libcdio17
+
+ -- Steve Langasek <steve.langasek@ubuntu.com>  Wed, 06 Dec 2017 02:52:35 +0000
+
+mpv (0.27.0-2ubuntu2) bionic; urgency=medium
+
+  * No-change rebuild for mpv library name change.
+
+ -- Matthias Klose <doko@ubuntu.com>  Sun, 19 Nov 2017 22:47:19 +0100
+
+mpv (0.27.0-2ubuntu1) bionic; urgency=medium
+
+  * Merge with Debian; remaining changes:
+    - Prefer Wayland over X11, so if both are present (e.g. Xwayland) then
+      VA-API gets a display type that works (LP: #1698287)
+    - Enable hardware acceleration by default (LP: #1708102)
+
+ -- Matthias Klose <doko@ubuntu.com>  Fri, 10 Nov 2017 09:37:05 +0100
+
+mpv (0.27.0-2) unstable; urgency=medium
+
+  * debian/control:
+    - Bump standards version to 4.1.1 (no changes).
+  * debian/patches:
+    - Add upstream patch to fix FTBFS with libva 2.0. (Closes: #879057)
+
+ -- James Cowgill <jcowgill@debian.org>  Sat, 21 Oct 2017 13:35:54 +0100
+
+mpv (0.27.0-1) unstable; urgency=medium
+
+  * New upstream release.
+
+  * debian/control:
+    - Bump standards version to 4.1.0 (no changes).
+  * debian/copyright:
+    - Update copyright.
+  * debian/patches:
+    - Refresh.
+  * debian/rules:
+    - Re-enable DVB. (Closes: #873294)
+    - Run waf using python3 instead of python2.
+
+ -- James Cowgill <jcowgill@debian.org>  Fri, 15 Sep 2017 09:37:24 +0100
+
+mpv (0.26.0-3ubuntu2) bionic; urgency=medium
+
+  * No-change rebuild for libcdaudio soname change.
+
+ -- Matthias Klose <doko@ubuntu.com>  Thu, 26 Oct 2017 11:32:58 +0000
+
+mpv (0.26.0-3ubuntu1) artful; urgency=medium
+
+  * Prefer Wayland over X11, so if both are present (e.g. Xwayland) then
+    VA-API gets a display type that works (LP: #1698287)
+  * Enable hardware acceleration by default (LP: #1708102)
+
+ -- Daniel van Vugt <daniel.van.vugt@canonical.com>  Wed, 09 Aug 2017 16:38:55 +0800
+
+mpv (0.26.0-3) unstable; urgency=medium
+
+  * Bump ffmpeg build dependency to >= 3.3.
+    - Should fix hardware decoding in 0.26.0. (Closes: #869093)
+
+ -- James Cowgill <jcowgill@debian.org>  Wed, 26 Jul 2017 22:55:30 +0100
+
+mpv (0.26.0-2) unstable; urgency=medium
+
+  * debian/control, debian/rules:
+    - Remove --enable-tv option and drop libv4l-dev build dependency. This
+      functionality is now provided through ffmpeg.
+  * debian/patches/07_io-stdin-used.patch:
+    - Add _IO_stdin_used to mpv version script. Should fix FTBFS on alpha,
+      mips* and powerpc*.
+
+ -- James Cowgill <jcowgill@debian.org>  Fri, 21 Jul 2017 10:03:53 +0100
+
+mpv (0.26.0-1) unstable; urgency=medium
+
+  * New upstream release.
+    - Fixes unfinished --audio-spdif sentence in the manpage.
+      (Closes: #864908)
+
+  * debian/copyright:
+    - Update d/copyright and list of GPL-2 files.
+    - Clarify license of distributed binaries is GPL-3+.
+  * debian/patches:
+    - Refresh patches.
+    - Update waf to 1.9.8.
+  * debian/rules:
+    - Reformat and sort configure options in d/rules.
+    - Fix DEB_HOST_MULTIARCH when d/rules is invoked directly.
+    - Enable libsmbclient and tv (disabled upstream).
+
+ -- James Cowgill <jcowgill@debian.org>  Wed, 19 Jul 2017 14:59:54 +0100
+
+mpv (0.25.0-3) unstable; urgency=medium
+
+  * debian/control:
+    - Drop mplayer2 transitional package.
+    - Build-Depend on libcaca-dev. (Closes: #865517)
+
+ -- James Cowgill <jcowgill@debian.org>  Thu, 22 Jun 2017 12:19:08 +0100
+
+mpv (0.25.0-2) unstable; urgency=medium
+
+  * Upload to unstable.
+
+  * debian/control:
+    - Drop build dependencies on libenca-dev and libguess-dev.
+      Thanks to Yuriy M. Kaminskiy
+    - Bump standards to 4.0.0 (no changes required).
+
+ -- James Cowgill <jcowgill@debian.org>  Mon, 19 Jun 2017 09:11:40 +0100
+
+mpv (0.25.0-1) experimental; urgency=medium
+
+  * New upstream release.
+
+  * debian/compat:
+    - Use debhelper compat 10.
+  * debian/copyright:
+    - Update various files which were relicensed from GPL to LGPL.
+  * debian/patches:
+    - Refresh.
+  * debian/rules:
+    - Re-enable dvd functionality which was disabled by default upstream.
+
+ -- James Cowgill <jcowgill@debian.org>  Wed, 26 Apr 2017 21:34:39 +0100
+
+mpv (0.24.0-1) experimental; urgency=medium
+
+  * New upstream release.
+    - Fixes segfaults on TV input. (Closes: #853798)
+
+  * debian/control:
+    - Enable uchardet for subtitle encoding detection. (Closes: #854788)
+  * debian/copyright:
+    - Update copyright dates.
+
+ -- James Cowgill <jcowgill@debian.org>  Sun, 12 Feb 2017 21:12:19 +0000
+
+mpv (0.23.0-1) unstable; urgency=medium
+
+  * New upstream release.
+
+  * debian/control:
+    - Build-depend on ffmpeg 3.2.2.
+    - Use https for the Homepage field.
+  * debian/copyright:
+    - Update for 0.23.0.
+  * debian/patches:
+    - Refresh.
+    - Use https for BTS links in debian/patches.
+
+ -- James Cowgill <jcowgill@debian.org>  Tue, 27 Dec 2016 23:02:13 +0000
+
+mpv (0.22.0-1) unstable; urgency=medium
+
+  * New upstream release.
+
+  * Refresh patches.
+  * Update debian/copyright.
+
+ -- James Cowgill <jcowgill@debian.org>  Sun, 20 Nov 2016 23:13:33 +0000
+
+mpv (0.21.0-2) unstable; urgency=medium
+
+  * Add a transitional package for mplayer2.
+    - Add symlinks for mplayer and its man page.
+    - Add mplayer2.NEWS.
+    - Build-Depend on dpkg-dev >= 1.17 for dpkg-parsechangelog -S.
+
+ -- James Cowgill <jcowgill@debian.org>  Wed, 26 Oct 2016 09:08:05 +0100
+
+mpv (0.21.0-1) unstable; urgency=medium
+
+  * New upstream release.
+
+  * debian/control:
+    - Enable GBM and V4L2.
+  * debian/libmpv-dev.examples:
+    - Drop, contents now included in main mpv manpage.
+  * debian/patches:
+    - Refresh patches.
+    - Drop 01_desktop-path.patch.
+  * debian/rules:
+    - Remove verbose flag from waf configure.
+    - Remove dh_install override and use debian/tmp explicitly in
+      mpv.install.
+
+ -- James Cowgill <jcowgill@debian.org>  Thu, 20 Oct 2016 11:43:36 +0100
+
+mpv (0.20.0-1) unstable; urgency=medium
+
+  * New upstream release.
+
+ -- James Cowgill <jcowgill@debian.org>  Sat, 27 Aug 2016 00:20:40 +0100
+
+mpv (0.19.0-1) unstable; urgency=medium
+
+  * New upstream release.
+  * Add new mpv_stream_cb_add_ro symbol to libmpv1.symbols.
+  * Update debian/copyright.
+  * Refresh patches.
+
+ -- James Cowgill <jcowgill@debian.org>  Thu, 25 Aug 2016 22:29:49 +0100
+
+mpv (0.18.1-1) unstable; urgency=medium
+
+  * New upstream release. (Closes: #833713)
+
+  * debian/control:
+    - Add myself to the list of uploaders.
+    - Enable smbclient support. (LP: #1502533)
+  * debian/patches:
+    - Suppress ffmpeg version mismatch error. (Closes: #831537)
+
+ -- James Cowgill <jcowgill@debian.org>  Wed, 10 Aug 2016 22:03:00 +0100
+
+mpv (0.18.0-1) unstable; urgency=medium
+
+  * Team upload.
+
+  [ James Cowgill ]
+  * New upstream release. (Closes: #815692)
+  * debian/control:
+    - Use cgit in the Vcs-Browser URL.
+  * debian/copyright:
+    - GPL-2: sort and add missing files.
+    - Add files licensed under the ISC license.
+
+  [ Mateusz Łukasik ]
+  * debian/patches:
+    - Refresh 01_desktop-path.patch.
+    - Remove 05_fix-typo.patch -- included upstream.
+    - Add 05_add-keywords.patch to provides keywords by desktop file.
+  * debian/control:
+    - Bump Standards-Version to 3.9.8.
+    - Use secured links for Vcs.
+  * Drop mpv-dbg and libmpv-dbg packages.
+  * Update debian/copyright.
+  * debian/rules:
+    - Enable encoding.
+  * Update debian/libmpv-dev.examples.
+
+ -- James Cowgill <jcowgill@debian.org>  Tue, 05 Jul 2016 13:53:51 +0200
+
+mpv (0.14.0-1) unstable; urgency=medium
+
+  * New upstream release (Closes: #806183)
+  * Fix spelling-error-in-binary
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Sun, 27 Dec 2015 19:27:18 +0100
+
+mpv (0.12.0-1) unstable; urgency=medium
+
+  * New upstream release
+    - Restore x11 video output (Closes: #800109)
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Thu, 29 Oct 2015 11:19:56 +0100
+
+mpv (0.11.0-1) unstable; urgency=medium
+
+  * New upstream release
+  * Drop ladspa-sdk and libbs2b-dev from Build-Depends
+  * Enable sndio audio output (Closes: #798985)
+  * Re-enable PIE.
+    Thanks to Simon Ruderich for the patch (Closes: #799738)
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Thu, 24 Sep 2015 21:04:07 +0200
+
+mpv (0.10.0-1) unstable; urgency=medium
+
+  * New upstream release
+  * Bump versioned Build-Depends for ffmpeg
+  * Update waf to v1.8.12
+  * Refresh patches
+  * Disable PIE to avoid build failure
+  * Enable rubberband support (Closes: #797734)
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Fri, 04 Sep 2015 10:52:31 +0200
+
+mpv (0.9.2-1) unstable; urgency=medium
+
+  [ Alessandro Ghedini ]
+  * New upstream release
+  * Add xdg-utils to Recommends
+    xdg-screensaver is used to disable the screen saver.
+  * Bump versioned Build-Depends on libav
+
+  [ Jérémy Bobbio ]
+  * Stop recording the build date (Closes: #784267)
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Sat, 30 May 2015 15:05:54 +0200
+
+mpv (0.9.1-1) unstable; urgency=medium
+
+  * New upstream release
+  * Update 02_fix-config-path.patch
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Sun, 03 May 2015 12:51:14 +0200
+
+mpv (0.9.0-1) unstable; urgency=medium
+
+  * New upstream release
+  * Bump required libass version
+  * libmpg123 support was dropped upstream
+  * LIRC support was dropped upstream
+  * Joystick support was dropped upstream
+  * Refresh patches
+  * Update symbols file
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Mon, 27 Apr 2015 10:24:25 +0200
+
+mpv (0.8.3-1) unstable; urgency=medium
+
+  * New upstream release
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Tue, 17 Mar 2015 14:53:12 +0100
+
+mpv (0.8.2-1) unstable; urgency=medium
+
+  * New upstream release
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Sun, 01 Mar 2015 13:05:37 +0100
+
+mpv (0.8.0-1) unstable; urgency=medium
+
+  * New upstream release
+  * Update to waf 1.8.4
+  * Don't run clean if no waf is present
+  * Refresh patches
+  * Update symbols file
+  * Only enable joystick support on linux
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Wed, 18 Feb 2015 15:12:55 +0100
+
+mpv (0.7.3-1) unstable; urgency=medium
+
+  * New upstream release
+  * Bump version of youtube-dl in Recommends
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Wed, 28 Jan 2015 17:18:43 +0100
+
+mpv (0.7.2-1) unstable; urgency=medium
+
+  * New upstream release
+    - Enable ytdl_hook script by default (Closes: #772472)
+  * Enable joystick support (Closes: #773234)
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Sat, 20 Dec 2014 12:31:39 +0100
+
+mpv (0.7.1-1) unstable; urgency=medium
+
+  * New upstream release
+  * Update 03_waf.patch to waf 1.8.1
+  * Refresh patches
+  * Manually set zsh completion install path
+  * Remove --nocache option from waf invocation
+  * Update libmpv symbols file
+  * Drop libquvi support, replaced by built-in Lua script based on youtube-dl
+  * Add Recommends on youtube-dl
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Wed, 03 Dec 2014 10:43:28 +0100
+
+mpv (0.6.2-2) unstable; urgency=medium
+
+  * Re-enable CDDA support via libcdio (Closes: #766725)
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Sat, 25 Oct 2014 15:16:57 +0200
+
+mpv (0.6.2-1) unstable; urgency=medium
+
+  * New upstream release
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Fri, 24 Oct 2014 21:16:49 +0200
+
+mpv (0.6.1-1) unstable; urgency=medium
+
+  * New upstream release
+    - Fix the autodetection of the input format in the vf_stereo3d filter
+      (Closes: #763904)
+    - Don't create 0x0 windows on X11 (Closes: #764419)
+  * Remove unused build deps
+  * Enable support for xrandr
+  * Bump Standards-Version to 3.9.6 (no changes needed)
+  * Don't install input configuration files as examples (they are now installed
+    by the upstream build system as normal documentation)
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Sun, 12 Oct 2014 14:39:57 +0200
+
+mpv (0.6.0-1) unstable; urgency=medium
+
+  * New upstream release
+    - Add video/ogg to the list of supported MIME types in the *.desktop file
+      (Closes: #763173)
+  * Switch to libjpeg-turbo (Closes: #763484)
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Tue, 30 Sep 2014 21:15:03 +0200
+
+mpv (0.5.4-1) unstable; urgency=medium
+
+  * New upstream release
+    - Rebuild should fix warnings regarding libav libraries versions
+      (Closes: #762229)
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Tue, 23 Sep 2014 21:37:19 +0200
+
+mpv (0.5.3-1) unstable; urgency=medium
+
+  * New upstream release
+  * Fix wildcard-matches-nothing-in-dep5-copyright
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Wed, 10 Sep 2014 20:05:33 +0200
+
+mpv (0.5.1-1) unstable; urgency=medium
+
+  * New upstream release
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Wed, 27 Aug 2014 11:05:35 +0200
+
+mpv (0.5.0-1) unstable; urgency=medium
+
+  * New upstream release
+  * Update path of example Lua scripts
+  * Refresh 02_fix-config-path.patch
+  * Update *.symbols file
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Tue, 12 Aug 2014 11:52:56 +0200
+
+mpv (0.4.2-1) unstable; urgency=medium
+
+  * New upstream release
+    - Include point releases too in the release notes (Closes: #722997)
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Sat, 26 Jul 2014 12:29:29 +0200
+
+mpv (0.4.1-1) unstable; urgency=medium
+
+  * New upstream release
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Fri, 11 Jul 2014 18:11:27 +0200
+
+mpv (0.4.0-1) unstable; urgency=medium
+
+  * New upstream release
+  * Refresh 01_desktop-path.patch
+  * Refresh 02_fix-config-path.patch
+  * Enable shared libmpv client library
+  * Make mpv Multi-Arch: foreign
+  * Add mpv-dbg package as well
+  * Disable libpostproc support (ffmpeg's libpostproc is needed)
+  * Install Lua scripting examples
+  * Disable cdda support
+  * Bump lcms2 versioned Build-Depends
+  * Build and install zsh completion script
+  * Install upstream release notes as changelog (Closes: #722997)
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Wed, 25 Jun 2014 21:10:18 +0200
+
+mpv (0.3.11-1) unstable; urgency=medium
+
+  * New upstream release
+  * Drop gcc-4.8 Build-Depends for sparc (Closes: #751321)
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Sun, 15 Jun 2014 14:35:14 +0200
+
+mpv (0.3.10-2) unstable; urgency=medium
+
+  * Switch to Lua 5.2
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Wed, 28 May 2014 21:45:06 +0200
+
+mpv (0.3.10-1) unstable; urgency=medium
+
+  * New upstream release
+  * Enable support for libavdevice
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Sun, 25 May 2014 14:59:56 +0200
+
+mpv (0.3.9-2) unstable; urgency=low
+
+  [ Reinhard Tartler ]
+  * Merge branch experimental
+
+  [ Alessandro Ghedini ]
+  * Remove forced gcc-4.8 build depends on powerpc
+  * Rebuild against libav10
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Mon, 12 May 2014 12:06:15 +0200
+
+mpv (0.3.9-1) unstable; urgency=medium
+
+  * New upstream release
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Wed, 30 Apr 2014 13:28:31 +0200
+
+mpv (0.3.8-1) unstable; urgency=medium
+
+  * New upstream release
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Fri, 18 Apr 2014 10:56:21 +0200
+
+mpv (0.3.7-1) unstable; urgency=medium
+
+  * New upstream release
+  * Enable all hardening options.
+    Thanks to Simon Ruderich for the patch (Closes: #741439)
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Sun, 30 Mar 2014 20:00:42 +0200
+
+mpv (0.3.6-1) unstable; urgency=medium
+
+  * New upstream release
+  * Update 03_waf.patch to newer waf version
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Tue, 11 Mar 2014 16:00:20 +0100
+
+mpv (0.3.5-1) unstable; urgency=medium
+
+  * New upstream release
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Wed, 12 Feb 2014 22:56:33 +0100
+
+mpv (0.3.4-1) unstable; urgency=medium
+
+  * New upstream release
+  * Refresh patches
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Sat, 01 Feb 2014 12:20:29 +0100
+
+mpv (0.3.3-1+exp1) experimental; urgency=low
+
+  * Rebuild against libav10
+
+ -- Reinhard Tartler <siretart@tauware.de>  Fri, 17 Jan 2014 03:35:15 +0000
+
+mpv (0.3.3-1) unstable; urgency=medium
+
+  * New upstream release
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Thu, 16 Jan 2014 23:34:23 +0100
+
+mpv (0.3.2-1) unstable; urgency=medium
+
+  * New upstream release
+  * Default to gcc-4.8 on powerpcspe too (Closes: #733924)
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Mon, 06 Jan 2014 21:19:23 +0100
+
+mpv (0.3.1-1) unstable; urgency=medium
+
+  * New upstream release
+  * Drop 04_use-atomic-not-sync.patch (merged upstream)
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Wed, 01 Jan 2014 22:51:36 +0100
+
+mpv (0.3.0-2) unstable; urgency=medium
+
+  * Enable ALSA on Linux only (should fix FTBFS on kfreebsd)
+  * Add 04_use-atomic-not-sync.patch to fix FTBFS on mips, powerpc and sparc
+    (Closes: #733632)
+  * Explicitly use gcc-4.8 on powerpc and sparc
+  * Use waf verbose output (shows build commands)
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Tue, 31 Dec 2013 12:38:24 +0100
+
+mpv (0.3.0-1) unstable; urgency=medium
+
+  * New upstream release
+    - Fix --vf=expand example in manpage (Closes: #732271)
+  * Add 03_waf.patch to provide uncompressed waf scripts and modules
+  * Switch to waf build script
+  * Drop libmng-dev Build-Depends (not used anymore)
+  * Bump Standards-Version to 3.9.5 (no changes needed)
+  * Enable support for dvdnav
+  * Install more docs
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Sun, 29 Dec 2013 20:04:26 +0100
+
+mpv (0.2.4-2) unstable; urgency=medium
+
+  * Use /etc/mpv instead of /usr/etc/mpv for configuration (Closes: #732214)
+    - Add 02_fix-config-path.patch to update the manpage regarding
+      config directories
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Sun, 15 Dec 2013 19:31:51 +0100
+
+mpv (0.2.4-1) unstable; urgency=low
+
+  * New upstream release
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Sun, 01 Dec 2013 22:37:02 +0100
+
+mpv (0.2.3-1) unstable; urgency=low
+
+  * New upstream release
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Fri, 08 Nov 2013 11:34:14 +0100
+
+mpv (0.2.2-1) unstable; urgency=low
+
+  * New upstream release
+  * Use absolute paths for (Try)Exec in mpv.desktop (Closes: #728149)
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Sun, 03 Nov 2013 12:01:35 +0100
+
+mpv (0.2.1-1) unstable; urgency=low
+
+  * New upstream release
+  * Drop 01_spelling.patch (merged upstream)
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Sun, 20 Oct 2013 17:04:17 +0200
+
+mpv (0.2.0-1) unstable; urgency=low
+
+  * New upstream release
+  * Install sample configuration files as examples
+  * Enable Lua scripting support
+  * Remove copyright for talloc (not used anymore)
+  * Update installed docs list
+  * Update 01_spelling.patch
+  * Enable VAAPI support
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Wed, 16 Oct 2013 12:38:59 +0200
+
+mpv (0.1.7-1) unstable; urgency=low
+
+  * New upstream release
+  * Do not use python3 version of python-docutils
+    (it seems to be having some trouble on the buildd)
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Sat, 21 Sep 2013 11:39:51 +0200
+
+mpv (0.1.6-1) unstable; urgency=low
+
+  * New upstream release
+  * Add 01_spelling.patch to fix spelling error found by lintian
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Sat, 14 Sep 2013 15:36:57 +0200
+
+mpv (0.1.5-1) unstable; urgency=low
+
+  [ Andreas Boll ]
+  * Restrict wayland support to linux-any
+  * Fix Vcs-Browser url
+
+  [ Alessandro Ghedini ]
+  * New upstream release
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Sat, 07 Sep 2013 12:01:58 +0200
+
+mpv (0.1.4-1) unstable; urgency=low
+
+  * New upstream release
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Mon, 02 Sep 2013 13:10:37 +0200
+
+mpv (0.1.3-1) unstable; urgency=low
+
+  * New upstream release
+  * Enable libpostproc support
+  * Tighten Build-Depends on libav libraries
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Sun, 25 Aug 2013 10:49:15 +0200
+
+mpv (0.1.0-1) unstable; urgency=low
+
+  * Initial release (Closes: #719654)
+
+ -- Alessandro Ghedini <ghedo@debian.org>  Wed, 14 Aug 2013 12:28:04 +0200
+

@@ -1,0 +1,44 @@
+#!/usr/bin/make -f
+
+include /usr/share/dpkg/architecture.mk
+
+export DEB_BUILD_MAINT_OPTIONS := hardening=+all # #741439, #799738
+
+ifeq ($(DEB_HOST_ARCH_OS),linux)
+  ARCH_CONFIGURE = --enable-dvbin
+endif
+
+%:
+	dh $@
+
+override_dh_auto_configure:
+	python3 ./waf configure						\
+			--prefix=/usr					\
+			--libdir=/usr/lib/$(DEB_HOST_MULTIARCH)		\
+			--confdir=/etc/mpv				\
+			--zshdir=/usr/share/zsh/vendor-completions	\
+			--enable-cdda					\
+			--enable-dvdnav					\
+			--enable-dvdread				\
+			--enable-encoding				\
+			--enable-libmpv-shared				\
+			--enable-libsmbclient				\
+			--enable-sdl2					\
+			--enable-sndio					\
+			--enable-zsh-comp				\
+			--disable-build-date				\
+			$(ARCH_CONFIGURE)
+
+override_dh_auto_build:
+	python3 ./waf -v build
+
+override_dh_auto_install:
+	python3 ./waf -v install --destdir=debian/tmp
+	cp -f debian/mpv.conf.ubuntu debian/tmp/etc/mpv/mpv.conf
+
+override_dh_installchangelogs:
+	dh_installchangelogs RELEASE_NOTES
+
+override_dh_auto_clean:
+	test -s ./waf && python3 ./waf -v distclean || true
+	find . -name "*.pyc" -delete
